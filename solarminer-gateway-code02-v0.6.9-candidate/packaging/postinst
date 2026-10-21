@@ -74,6 +74,7 @@ case "${1:-}" in
       systemctl daemon-reload
       systemctl enable solarminer-gateway.service
       systemctl enable --now solarminer-recovery.timer
+      systemctl enable --now solarminer-update-check-daily.timer
       systemctl restart solarminer-gateway.service || systemctl start solarminer-gateway.service
     fi
     ;;
