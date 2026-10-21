@@ -19,7 +19,7 @@ A pen deve conter, na mesma pasta:
 - `install-from-usb.sh` (este repositório: `packaging/install-from-usb.sh`);
 - exatamente um pacote oficial `solarminer-gateway_*_amd64.deb`;
 - `release-pubkey.pem`, a chave pública Ed25519 de release obtida por uma origem confiável;
-- a impressão SHA-256 do ficheiro da chave, obtida por um canal independente.
+- o SHA-256 do pacote e a impressão SHA-256 do ficheiro da chave, ambos obtidos por canais independentes.
 
 Depois de instalar Debian minimal/netinst e iniciar sessão como `root`, monta a pen e executa o script diretamente como root:
 
@@ -27,7 +27,7 @@ Depois de instalar Debian minimal/netinst e iniciar sessão como `root`, monta a
 sh /media/<utilizador>/<PEN>/install-from-usb.sh
 ```
 
-O script verifica Debian, Python, AMD64, pacote e impressão da chave. Pede o URL GitHub inicial e permite registar outros repositórios aprovados. Esses URLs ficam numa allowlist root-owned; a PWA Owner pode selecionar e guardar apenas uma dessas origens. O script usa `apt-get` para obter dependências Debian. Não é necessário executar o comando `sudo`; o pacote instala a dependência `sudo` usada pelo serviço para invocar somente o helper privilegiado autorizado.
+O script verifica Debian, Python, AMD64, o hash do pacote e a impressão da chave. Pede o URL GitHub inicial e permite registar outros repositórios aprovados. Esses URLs ficam numa allowlist root-owned; a PWA Owner pode selecionar e guardar apenas uma dessas origens. O script usa `apt-get` para obter dependências Debian. Não é necessário executar o comando `sudo`; o pacote instala a dependência `sudo` usada pelo serviço para invocar somente o helper privilegiado autorizado.
 
 A instalação do pacote configura o serviço e o timer diário de verificação. A verificação usa a origem Owner guardada (ou a primeira origem aprovada no arranque inicial), exige a chave pública provisionada e verifica manifesto Ed25519, hash, tamanho, versão, arquitetura e dependências. Não executa código do repositório. A aplicação de um pacote continua a exigir confirmação Owner pela PWA.
 
