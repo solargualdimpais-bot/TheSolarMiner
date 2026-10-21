@@ -1396,6 +1396,17 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         manifest = json.loads(raw)
         key = update_manager.load_release_key(key_path)
         checked = update_manager.verify_manifest(manifest, key, PACKAGE_VERSION)
+        comparison = subprocess.run(
+            ["/usr/bin/dpkg", "--compare-versions", manifest["version"], "gt", PACKAGE_VERSION],
+            capture_output=True, timeout=3, check=False)
+        if comparison.returncode == 1:
+            return {"status": "current", "installed_version": PACKAGE_VERSION,
+                    "latest_version": manifest["version"], "signature_valid": True,
+                    "compatible": True, "activation_available": False,
+                    "message": "gateway_already_at_or_newer_than_release",
+                    **({"repository_url": repository_url} if repository_url else {})}
+        if comparison.returncode != 0:
+            raise update_manager.UpdateValidationError("release_version_comparison_failed")
         package_origin = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(manifest["package_url"])
         package_origin_value = update_manager.normalize_https_origin(
             f"https://{package_origin.hostname}" + (f":{package_origin.port}" if package_origin.port else "")) if package_origin.hostname else ""
