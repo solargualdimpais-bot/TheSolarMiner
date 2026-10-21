@@ -579,6 +579,7 @@ async function refreshGatewayUpdateStatus() {
   showGatewayUpdateMessage(result.status === "VERIFIED" && !result.activation_available
     ? "Pacote verificado; a aplicação está bloqueada pelo preflight de recuperação."
     : result.status === "CURRENT" ? `O Gateway já está atualizado. Versão verificada: ${result.target_version}.`
+    : result.status === "FAILED" ? `A última verificação falhou: ${gatewayUpdateFailureText(result.details?.reason)}`
     : `Estado da atualização: ${result.status || "desconhecido"}${result.target_version ? ` · destino ${result.target_version}` : ""}.`);
   return result;
 }
