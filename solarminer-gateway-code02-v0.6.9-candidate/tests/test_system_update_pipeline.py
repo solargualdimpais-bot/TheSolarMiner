@@ -111,6 +111,7 @@ def _pipeline_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, versio
     pipeline = SystemUpdatePipeline(root=root, data_dir=data, db_path=db, public_key=key_path, runner=runner)
     # These transaction tests focus on apply/rollback; permission policy is tested above.
     monkeypatch.setattr(pipeline, "_check_deployment_root_permissions", lambda: None)
+    monkeypatch.setattr("solarminer_gateway.system_update_pipeline._validate_root_owned_not_writable", lambda *_args: None)
     monkeypatch.setattr(pipeline, "preflight", lambda: {"status": "ready"})
     monkeypatch.setattr("solarminer_gateway.system_update_pipeline.os.geteuid", lambda: 0)
     return pipeline, root, previous, db, op_id
