@@ -540,10 +540,10 @@ function setGatewayUpdateDetails(result) {
   const apply = $("#gateway-update-apply");
   if (!details || !apply) return;
   details.textContent = "";
-  if (result?.available_version) {
+  if (result?.available_version || result?.latest_version) {
     const rows = [
       `Versão instalada: ${result.installed_version || "desconhecida"}`,
-      `Versão disponível: ${result.available_version}`,
+      result.available_version ? `Versão disponível: ${result.available_version}` : `Versão no GitHub: ${result.latest_version}`,
       `Assinatura: ${result.signature_valid ? "válida" : "não validada"}`,
       `Hash SHA-256: ${result.sha256 || "não disponível"}`,
       result.repository_url ? `Repositório: ${result.repository_url}` : ""
@@ -567,10 +567,19 @@ async function refreshGatewayUpdateStatus() {
       activation_available: result.activation_available,
       repository_url: result.details?.repository_url, sha256: result.details?.package_sha256
     });
+  } else if (result.status === "CURRENT" && result.target_version) {
+    setGatewayUpdateDetails({
+      status: "current", installed_version: result.installed_version,
+      latest_version: result.target_version, signature_valid: true, compatible: true,
+      activation_available: false, repository_url: result.details?.repository_url
+    });
   } else {
     setGatewayUpdateDetails(null);
   }
-  showGatewayUpdateMessage(result.status === "VERIFIED" && !result.activation_available ? "Pacote verificado; a aplicação está bloqueada pelo preflight de recuperação." : `Estado da atualização: ${result.status || "desconhecido"}${result.target_version ? ` · destino ${result.target_version}` : ""}.`);
+  showGatewayUpdateMessage(result.status === "VERIFIED" && !result.activation_available
+    ? "Pacote verificado; a aplicação está bloqueada pelo preflight de recuperação."
+    : result.status === "CURRENT" ? `O Gateway já está atualizado. Versão verificada: ${result.target_version}.`
+    : `Estado da atualização: ${result.status || "desconhecido"}${result.target_version ? ` · destino ${result.target_version}` : ""}.`);
   return result;
 }
 $("#gateway-update-check").addEventListener("click", async () => {
@@ -588,6 +597,8 @@ $("#gateway-update-check").addEventListener("click", async () => {
       showGatewayUpdateMessage(result.activation_available
         ? "Pacote verificado e pronto. Revê a versão e confirma explicitamente para aplicar."
         : "Pacote assinado e transferido, mas o preflight de recuperação bloqueou a aplicação.");
+    } else if (result.status === "current") {
+      showGatewayUpdateMessage(`O Gateway já está atualizado. Versão verificada: ${result.latest_version}.`);
     } else {
       showGatewayUpdateMessage(`Atualização bloqueada: ${gatewayUpdateFailureText(result.message)}`);
     }
