@@ -1,0 +1,7 @@
+# Connector process isolation — CODE 02 v0.6.1
+
+The v0.6.1 policy renderer emits per-connector systemd service units with a dedicated unprivileged account, no-new-privileges, strict filesystem protection, private temporary/device namespaces, restricted system calls/namespaces, resource limits, cgroup-wide kill semantics, and network deny-by-default with an optional single private device IP allow rule. The Gateway database path is not granted writable access; only the connector-specific state directory is allowed.
+
+**Rendered policy is not operational proof.** The current test container has no active systemd system manager, so this release cannot verify user provisioning, cgroup enforcement, network filtering, actual service startup, or process-to-Gateway IPC on a live Debian system. The helper does not silently fall back to in-process execution. This iteration provides the policy and dependency primitives, but the Connector Manager does not yet dispatch the Deye connector through this sandbox; catalog signing and operational systemd integration remain blocked.
+
+Before production use, provision a root-owned unit and dedicated user via a privileged package/admin step, confirm the unit's writable paths and IP allowlist, test database denial and network denial from inside the service, and validate cleanup/rollback across interrupted lifecycle operations. A venv or Unix user alone is not sufficient isolation.

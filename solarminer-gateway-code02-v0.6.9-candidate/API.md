@@ -1,0 +1,96 @@
+# API v1 (CODE 01)
+
+All network use is intended over TLS. Bootstrap is loopback-only and the bootstrap token is never returned by the API.
+
+| Method | Path | Access |
+|---|---|---|
+| GET | `/api/v1/health` | Public, minimal health and bootstrap state |
+| GET | `/api/v1/info` | Public, product/version only |
+| GET | `/api/v1/bootstrap/status` | Public, state only |
+| POST | `/api/v1/bootstrap/owner` | Loopback only, one-time token + Ed25519 proof + timestamp/nonce |
+| POST | `/api/v1/auth/login` | Password + associated device Ed25519 signature |
+| POST | `/api/v1/auth/logout` | Authenticated session |
+| GET | `/api/v1/status` | `read` permission |
+| POST | `/api/v1/users` | `manage_users`; owner creation is prohibited here |
+| GET | `/api/v1/users` | `manage_users` |
+| POST | `/api/v1/users/{id}/revoke` | `owner` only + current password reauthentication; cannot revoke self; kept guarded to prevent bypass |
+| PATCH | `/api/v1/users/{id}/role` | `owner` only + current password reauthentication; cannot change own role |
+| PATCH | `/api/v1/users/{id}/status` | `owner` only + current password reauthentication; cannot deactivate self |
+| POST | `/api/v1/devices/pairing-codes` | `manage_devices`; issues a one-time pairing code for an active username |
+| POST | `/api/v1/devices/pair` | One-time pairing code + Ed25519 proof; creates active device association |
+| POST | `/api/v1/devices` | `manage_devices`; MAC remains declared metadata |
+| POST | `/api/v1/devices/{id}/revoke` | `manage_devices` |
+| GET | `/api/v1/audit` | `manage_gateway` |
+
+Device signatures use Ed25519. Browser pairing signs the exact UTF-8 string `PAIR\n{pairing_code}\n{sha256(public_key_spki_der)}\n{NORMALIZED_MAC}\n{timestamp}\n{nonce}`. Pairing codes are random, single-use, administrator-issued, scoped to one active username, and expire after 60–600 seconds (default 300); only the code digest is persisted. Login signs the exact UTF-8 string `LOGIN\n{username}\n{device_id}\n{timestamp}\n{nonce}` and submits the signature as lowercase/uppercase hexadecimal. Bootstrap signs `BOOTSTRAP\n{username}\n{NORMALIZED_MAC}\n{timestamp}\n{nonce}`. Timestamps must be within ±300 seconds. Nonces are stored under a uniqueness constraint and inserted in the same SQLite transaction as the protected action. Session bearer tokens are random opaque values; only SHA-256 digests are stored. Password hashes use Argon2id via argon2-cffi with memory=65536 KiB, iterations=3, parallelism=2.
+
+Role permissions:
+
+- `owner`: read, operate, manage users/devices/roles/gateway, recovery.
+- `admin`: read, operate, manage users/devices; cannot create/promote an owner.
+- `operator`: read and operate.
+- `viewer`: read only.
+
+The current CODE 01 API does not expose a general-purpose operation endpoint, password-change endpoint, recovery command, independent MAC verification procedure, or a complete cross-platform browser signing client. A1b adds the role-change and account-status endpoints documented below; no broader user-management endpoints are claimed.
+
+
+## CODE 01 / A1b user management
+
+`PATCH /api/v1/users/{id}/role` accepts exactly `{"role":"owner|admin|operator|viewer","current_password":"..."}`. `PATCH /api/v1/users/{id}/status` accepts exactly `{"status":"active|revoked","current_password":"..."}`. The legacy `POST /api/v1/users/{id}/revoke` now requires `{"current_password":"..."}` and is subject to the same owner-only, reauthentication, and self-deactivation restrictions to prevent bypassing A1b. The existing database status value `revoked` represents a deactivated account; reactivation uses `active`. Extra fields and non-string values are rejected by request validation.
+
+Both PATCH operations and the legacy `POST /api/v1/users/{id}/revoke` require an authenticated active owner session and verify the owner's current password against the owner account, inside a `BEGIN IMMEDIATE` transaction. The actor's role, status, session revocation/expiry, device state, and credential version are rechecked in the transaction. Passwords are never included in responses, logs, or audit details. Role changes use the A1 `credential_version` trigger to invalidate prior target sessions. Deactivation revokes target sessions and device associations; reactivation restores associations only to active devices and never restores old sessions. The owner's own session remains valid unless its own credentials/session are independently revoked.
+
+Responses: `200` success; `400` invalid role/status values; `401` reauthentication failure or invalidated session; `403` non-owner or forbidden self-change; `404` target not found; `409` last-active-owner invariant conflict; `422` malformed JSON/schema/type validation; `503` database operation unavailable. Unauthenticated requests fail with `401`.
+
+
+## A2 owner recovery (local only)
+
+No HTTP endpoint accepts a recovery key or performs owner recovery. During the existing loopback-only `POST /api/v1/bootstrap/owner` operation, the successful one-time response includes `recovery_key`; the bootstrap client must show it once and must not log or persist it. The value is generated from 32 CSPRNG bytes, displayed as `SMR1-` plus grouped Base32, and only a domain-separated SHA-256 verifier is persisted. Because the key has 256 bits of entropy, a slow password KDF is not required for this verifier; human-chosen passwords continue to use Argon2id.
+
+Local commands are installed as `/usr/bin/solarminer-gateway`:
+
+- `sudo solarminer-gateway recovery-setup` creates or rotates the key for an active owner who can reauthenticate with the current password and prove possession of an associated active Ed25519 device. Use after upgrading an existing A1b database that predates recovery-key provisioning.
+- `sudo solarminer-gateway recovery` consumes the offline key once, changes the owner password, invalidates sessions, revokes the owner's old device associations, registers a new device after a fresh Ed25519 challenge proof, and rotates the recovery key.
+- `sudo solarminer-gateway emergency-reset` is an independent OS-root-only path when the recovery key is lost. It requires an explicit confirmation and a protected, integrity-checked SQLite backup before mutation. It preserves the database and unrelated user data; it is not a factory reset.
+
+Each command requires a TTY, root privileges, and a provably stopped `solarminer-gateway.service`. Recovery keys and passwords are read interactively without echo and are never accepted as command-line arguments or environment variables. The challenge message signed by a new device is the exact UTF-8 text printed by the command, beginning `SOLARMINER-GATEWAY-DEVICE-PROOF-V1`, followed by the purpose (`recovery` or `emergency`), owner UUID, and 64-character lowercase hex challenge, each on a separate line. Setup proofs also include the existing device UUID before the challenge.
+
+A successful recovery invalidates all prior owner sessions and increments `credential_version`. A role removal from owner or account deactivation consumes any active recovery key. The new recovery key is displayed only after commit. If the commit succeeds but terminal delivery fails, the plaintext key cannot be reconstructed from the stored verifier; the operator must use the emergency procedure to rotate it again. Audit success events are in the same transaction as the protected mutation; failed attempts are recorded separately without secret material.
+
+## CODE 02 — Connector Manager v0.6.0
+
+The CODE 02 routes are authenticated with existing Gateway sessions and RBAC. See `CODE02_CONNECTOR_MANAGER.md` for payload examples, signature trust, bounded discovery and limitations.
+
+- `GET /api/v1/connectors/catalog` — returns catalog only after Ed25519 signature and schema verification.
+- `GET /api/v1/connectors` — installed connector records.
+- `POST /api/v1/connectors/{id}/install` — JSON `{"confirmed": true}`; requires `manage_gateway`.
+- `POST /api/v1/connectors/{id}/update` — JSON `{"confirmed":true}`; reconciles metadata after a trusted Debian package upgrade, not a code downloader.
+- `PATCH /api/v1/connectors/{id}/config` — JSON `{"config":{"timeout_seconds":1.5}}`; only supported non-secret settings are accepted.
+- `POST /api/v1/connectors/{id}/test` — JSON `{"host":"192.168.1.20","port":4028}`; TCP connect/close only, no application payload.
+- `DELETE /api/v1/connectors/{id}/remove` — JSON body `{"confirmed": true}`; requires `manage_gateway`.
+- `POST /api/v1/devices/discover` — JSON `{"cidr":"192.168.1.0/30","ports":[80,443],"timeout_seconds":0.25}`; private network only, bounded scan, no protocol payload.
+- `GET /api/v1/devices/discovered` — discovered TCP endpoints.
+- `GET /api/v1/devices/{discovered_id}/capabilities` — only reports transport reachability evidence; does not claim device capabilities.
+
+## CODE 02 v0.6.5 browser authentication
+
+The browser client uses Web Crypto Ed25519 with a non-exportable private `CryptoKey`, stores the key in IndexedDB, and keeps bearer sessions only in memory. The exact additive pairing/login flow, endpoint payloads, CORS development allowlist and residual XSS/TLS risks are documented in `CODE02_V065_AUTH.md`. No token refresh endpoint was added; after expiry, login is repeated with the password and associated device signature.
+
+
+## CODE 02 v0.6.6 — presence (additive)
+
+| Method | Path | Access |
+|---|---|---|
+| POST | `/api/v1/presence/heartbeat` | Existing authenticated session with `read`; user/device derived from session, request body ignored/not used |
+| GET | `/api/v1/presence/me` | Existing authenticated session with `read`; returns only the caller's user/device presence |
+
+`POST /api/v1/presence/heartbeat` creates or refreshes the caller's presence for 120 seconds. Persisted writes are throttled to at most one every five seconds per user/device pair. The Gateway generates `last_seen_at` and `expires_at`. Response states are `online`; `GET /api/v1/presence/me` returns `unknown` when no record exists, `online` before expiry, and `offline` after expiry. `connection_method` is always `unknown` in this increment; the client cannot claim LAN/REMOTE. Presence transitions are audited. Authenticated logout removes the current user/device presence. No API claims physical presence.
+
+## v0.6.8 — integração PWA e convites QR
+
+- `GET /api/v1/status`, `GET /api/v1/energy/categories` e `GET /api/v1/energy/equipment` são usados pela PWA depois de autenticação; não existem novos endpoints de telemetria ou histórico nesta versão.
+- `POST /api/v1/invites` continua Owner-only. A resposta inclui `qr_payload` e `qr_svg`; o SVG é gerado localmente e não usa serviço externo. O token de convite é segredo de utilização única.
+- `GET /api/v1/invites` não devolve o token nem o hash do token.
+- `POST /api/v1/invites/{invite_id}/revoke` revoga apenas convites pendentes.
+- `POST /api/v1/presence/heartbeat` e `GET /api/v1/presence/me` exigem sessão autenticada. O estado indica atividade recente da sessão, não presença física nem caminho LAN/REMOTO.
+- `POST /api/v1/system/update/apply` permanece HTTP 503 até a ativação de release, recuperação independente, migração e rollback serem integrados e comprovados de ponta a ponta.
