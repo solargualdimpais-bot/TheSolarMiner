@@ -203,8 +203,12 @@ def test_repository_update_check_is_owner_only_and_passes_allowlisted_source(cli
         return {"status": "verified_staged", "available_version": "0.6.9",
                 "signature_valid": True, "activation_available": True}
     monkeypatch.setattr(gateway.update_manager, "load_update_source", load_source)
+    monkeypatch.setattr(gateway.update_manager, "list_update_sources", lambda path: [source])
     monkeypatch.setattr(gateway, "_check_system_update_manifest", check_manifest)
 
+    initial = client.get("/api/v1/system/update/source", headers=headers)
+    assert initial.status_code == 200
+    assert initial.json()["repository_url"] == source["repository_url"]
     response = client.post("/api/v1/system/update/check", headers=headers,
                            json={"repository_url": "https://github.com/solarminer/releases"})
     assert response.status_code == 200, response.text
@@ -212,6 +216,10 @@ def test_repository_update_check_is_owner_only_and_passes_allowlisted_source(cli
     assert seen["url"] == source["repository_url"]
     assert seen["manifest_url"] == source["manifest_url"]
     assert seen["kwargs"]["repository_url"] == source["repository_url"]
+    with gateway.db() as conn:
+        saved = conn.execute("SELECT value FROM system_state WHERE key='update_repository_url'").fetchone()
+    assert saved and saved["value"] == source["repository_url"]
+    assert client.get("/api/v1/system/update/source", headers=headers).json()["repository_url"] == source["repository_url"]
 
 
 def test_repository_update_check_rejects_non_owner_roles(client):
@@ -239,6 +247,9 @@ def test_repository_update_check_rejects_non_owner_roles(client):
             headers={"Authorization": f"Bearer update-session-token-{role}"},
             json={"repository_url": "https://github.com/solarminer/releases"})
         assert response.status_code == 403, (role, response.text)
+        source_response = client.get("/api/v1/system/update/source",
+            headers={"Authorization": f"Bearer update-session-token-{role}"})
+        assert source_response.status_code == 403, (role, source_response.text)
 
 
 def test_repository_update_check_rejects_invalid_and_unconfigured_urls(client, monkeypatch):
