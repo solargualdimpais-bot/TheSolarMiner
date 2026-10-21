@@ -8,7 +8,7 @@ test:
 	PYTHONPATH=src $(PYTHON) -m pytest -q
 
 deb:
-	./packaging/build-deb.sh "$(abspath $(OUT))"
+	sh ./packaging/build-deb.sh "$(abspath $(OUT))"
 
 test-package: deb
 	dpkg-deb --info "$(PACKAGE)"
