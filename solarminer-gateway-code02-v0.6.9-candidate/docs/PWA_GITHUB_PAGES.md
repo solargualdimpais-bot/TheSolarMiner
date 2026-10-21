@@ -42,21 +42,16 @@ Uma sessão Owner pode consultar os dados disponíveis no Gateway, gerir convite
 
 O Gateway disponibiliza APIs de leitura/identidade, administração e atualização, mas não há ainda uma API de comandos físicos para todos os equipamentos, regras de automatização, meteorologia ou histórico energético. A interface não afirma que esses elementos funcionam como controlos reais. A integração física exige perfil e validação específica de cada inversor, bateria, carregador ou dispositivo.
 
-## Compatibilidade do Gateway instalado
+## Recuperar um Gateway 0.6.10–0.6.12 antes da primeira conta Owner
 
-O fluxo remoto de bootstrap e a identidade por dispositivo são introduzidos no pacote 0.6.12. Um Gateway 0.6.10 já instalado tem de receber uma atualização assinada para 0.6.12 antes de a PWA publicada poder criar o Owner remotamente. O pacote 0.6.11 não deve ser usado para este upgrade: o respetivo `postinst` não corre no pipeline que ativa a release por symlink. Na versão 0.6.12, o comando local de emissão do token também cria ou valida a identidade, preservando chaves já existentes. A publicação Pages, por si só, não atualiza o pacote do Gateway.
+O Gateway que ainda não tem Owner e apresenta `recovery required` não deve ser atualizado pelo fluxo online enquanto o estado de recuperação da instalação anterior estiver bloqueado. A atualização remota 0.6.12 já demonstrou falha nesse estado. Usa o pacote assinado da release 0.6.13 por USB para fazer a reparação local: o instalador valida o manifesto Ed25519 com a chave que já está confiada no Gateway, verifica pacote/hash/versão/arquitetura, cria backup SQLite, ativa a release e tenta rollback para a release e base de dados anteriores se o health check falhar.
 
-### Atualizar o Gateway 0.6.10 já instalado
-
-Depois de o release assinado `gateway-v0.6.12` estar publicado, inicia sessão no Gateway como `root` e executa estes comandos, um de cada vez. O primeiro corre a verificação configurada no próprio Gateway; não instala nada. O segundo procura uma operação `VERIFIED` para a versão 0.6.12. Só continua se encontrar essa operação:
+No Debian 13 amd64, inicia sessão como `root`, monta a pen em `/mnt/solarminer-usb` e executa `sh /mnt/solarminer-usb/repair-existing-from-usb.sh`. Depois de confirmar que o script terminou com health check válido, emite o token local de bootstrap, um comando de cada vez:
 
 ```sh
-systemctl start solarminer-update-check-daily.service
-OP_ID=$(/usr/bin/python3 -c 'import sqlite3; c=sqlite3.connect("/var/lib/solarminer/gateway.db"); r=c.execute("SELECT id FROM update_operations WHERE state=? AND target_version=? ORDER BY updated_at DESC LIMIT 1", ("VERIFIED", "0.6.12")).fetchone(); print(r[0] if r else "")')
-test -n "$OP_ID" || { echo "Não existe pacote 0.6.12 validado; não foi aplicada nenhuma atualização."; exit 1; }
-/usr/sbin/solarminer-update-apply --enqueue "$OP_ID"
+systemctl stop solarminer-gateway.service
+solarminer-gateway bootstrap-token
+systemctl start solarminer-gateway.service
 ```
 
-O helper root volta a executar o preflight e enfileira a instalação pelo serviço systemd isolado; a rotina existente valida novamente manifesto, assinatura e pacote e executa backup, staging, ativação, health check e rollback. A verificação diária não aplica atualizações sozinha. Confirma o resultado com `systemctl status "solarminer-update-apply@$OP_ID.service"` e consulta `/var/lib/solarminer/gateway.db` para o estado final. Se a operação não aparecer como `VERIFIED`, não forces a instalação: verifica a chave de release, a allowlist e o log de `solarminer-update-check-daily.service`.
-
-Este procedimento depende de o Gateway 0.6.10 ter sido instalado com a chave pública de release e a allowlist oficial, como no instalador USB assinado. Não usa `sudo`; os comandos são executados numa sessão root. O procedimento e o health check precisam ainda de ser confirmados no Gateway físico antes de declarar a instalação validada.
+Escreve a confirmação `ISSUE-OWNER-BOOTSTRAP-TOKEN` quando solicitada; compara a fingerprint local com a PWA e conclui a criação do Owner em 15 minutos. Se a assinatura, a origem, a instalação ou o health check falhar, não repitas a atualização online: conserva `/var/log/solarminer-usb-repair.log` e `/var/lib/solarminer/backups/` e resolve a mensagem indicada. A instalação USB é uma reparação específica da versão 0.6.13, não substitui o mecanismo autenticado de atualização em operação normal.

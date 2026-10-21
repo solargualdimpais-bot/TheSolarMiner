@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Release tag to create, e.g. gateway-v0.6.12"
+        description: "Release tag to create, e.g. gateway-v0.6.13"
         required: true
         type: string
 
@@ -62,7 +62,9 @@ jobs:
 
       - name: Check USB installer shell syntax
         working-directory: solarminer-gateway-code02-v0.6.9-candidate
-        run: sh -n packaging/install-from-usb.sh
+        run: |
+          sh -n packaging/install-from-usb.sh
+          sh -n packaging/repair-existing-from-usb.sh
 
       - name: Run Gateway tests
         working-directory: solarminer-gateway-code02-v0.6.9-candidate
@@ -184,6 +186,46 @@ jobs:
           echo "manifest=${PACKAGE%/*}/solarminer-release.json" >> "$GITHUB_OUTPUT"
           echo "public_key=${PACKAGE%/*}/release-pubkey.pem" >> "$GITHUB_OUTPUT"
 
+      - name: Download and verify rollback packages for supported installed versions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLIC_KEY: ${{ steps.manifest.outputs.public_key }}
+        run: |
+          set -eu
+          ROLLBACK_ROOT="$RUNNER_TEMP/solarminer-usb-rollback"
+          mkdir -p "$ROLLBACK_ROOT"
+          for VERSION in 0.6.10 0.6.11 0.6.12; do
+            DEST="$ROLLBACK_ROOT/$VERSION"
+            mkdir -p "$DEST"
+            gh release download "gateway-v$VERSION" \
+              --pattern "solarminer-gateway_${VERSION}_amd64.deb" \
+              --pattern solarminer-release.json \
+              --dir "$DEST" --repo "$GITHUB_REPOSITORY"
+            python3 - "$VERSION" "$DEST" "$PUBLIC_KEY" <<'PY'
+          import hashlib, json, pathlib, sys
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+          version, directory, key_path = sys.argv[1:]
+          directory = pathlib.Path(directory)
+          package = directory / f"solarminer-gateway_{version}_amd64.deb"
+          manifest = json.loads((directory / "solarminer-release.json").read_text(encoding="utf-8"))
+          key = serialization.load_pem_public_key(pathlib.Path(key_path).read_bytes())
+          if not isinstance(key, Ed25519PublicKey):
+              raise SystemExit("release key is not Ed25519")
+          if manifest.get("version") != version or manifest.get("release_id") != f"gateway-v{version}":
+              raise SystemExit(f"rollback manifest identity mismatch for {version}")
+          if manifest.get("package_name") != package.name or manifest.get("package_url") != f"https://github.com/{__import__('os').environ['GITHUB_REPOSITORY']}/releases/download/gateway-v{version}/{package.name}":
+              raise SystemExit(f"rollback package URL mismatch for {version}")
+          if type(manifest.get("package_size")) is not int or manifest["package_size"] != package.stat().st_size:
+              raise SystemExit(f"rollback package size mismatch for {version}")
+          if hashlib.sha256(package.read_bytes()).hexdigest() != manifest.get("sha256"):
+              raise SystemExit(f"rollback package hash mismatch for {version}")
+          unsigned = {name: value for name, value in manifest.items() if name != "signature"}
+          signature = bytes.fromhex(manifest["signature"])
+          key.verify(signature, json.dumps(unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+          PY
+          done
+
       - name: Assemble verified USB installer
         id: usb
         env:
@@ -196,8 +238,14 @@ jobs:
           BUNDLE="$RUNNER_TEMP/solarminer-usb-installer"
           mkdir -p "$BUNDLE"
           cp "$PACKAGE" "$MANIFEST" "$PUBLIC_KEY" "$BUNDLE/"
+          for VERSION in 0.6.10 0.6.11 0.6.12; do
+            cp "$RUNNER_TEMP/solarminer-usb-rollback/$VERSION/solarminer-gateway_${VERSION}_amd64.deb" "$BUNDLE/"
+            cp "$RUNNER_TEMP/solarminer-usb-rollback/$VERSION/solarminer-release.json" "$BUNDLE/solarminer-release-$VERSION.json"
+          done
           cp solarminer-gateway-code02-v0.6.9-candidate/packaging/install-from-usb.sh "$BUNDLE/"
+          cp solarminer-gateway-code02-v0.6.9-candidate/packaging/repair-existing-from-usb.sh "$BUNDLE/"
           cp solarminer-gateway-code02-v0.6.9-candidate/packaging/USB_INSTALL_README.txt "$BUNDLE/README.txt"
+          cp solarminer-gateway-code02-v0.6.9-candidate/packaging/USB_REPAIR_README.txt "$BUNDLE/REPAIR_EXISTING_README.txt"
           OUTPUT="$GITHUB_WORKSPACE/solarminer-gateway-code02-v0.6.9-candidate/dist/solarminer-gateway-usb-installer_${RELEASE_VERSION}_amd64.zip"
           (cd "$BUNDLE" && zip -q -r "$OUTPUT" .)
           echo "bundle=$OUTPUT" >> "$GITHUB_OUTPUT"

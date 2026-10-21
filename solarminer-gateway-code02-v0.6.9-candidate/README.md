@@ -1,6 +1,6 @@
-# SolarMiner Gateway — CODE 02 v0.6.9 candidate (API contract v0.6.0)
+# SolarMiner Gateway — signed CODE 02 package (API contract v0.6.0)
 
-Standalone foundation for local identity, bootstrap, authentication, authorization, device identity and audit. This directory is deliberately separate from the archived Prova 0 v0.3.0 artifacts; its package build writes `dist/solarminer-gateway_0.6.9_amd64.deb`; the API-reported version remains `0.6.0` for compatibility.
+Standalone Gateway foundation for local identity, bootstrap, authentication, authorization, device identity and audit. This directory is deliberately separate from the archived Prova 0 v0.3.0 artifacts. The current package version is recorded in `packaging/control`; the API-reported version remains `0.6.0` for compatibility. Release workflow builds, tests, signs and publishes the Debian package and USB bundle.
 
 ## Build and test
 
@@ -8,6 +8,8 @@ Standalone foundation for local identity, bootstrap, authentication, authorizati
 make test
 make deb
 ```
+
+For the signed install/repair USB workflow and first Owner bootstrap, see [`docs/INSTALL_DEBIAN_AMD64.md`](docs/INSTALL_DEBIAN_AMD64.md), [`packaging/USB_INSTALL_README.txt`](packaging/USB_INSTALL_README.txt), and [`packaging/USB_REPAIR_README.txt`](packaging/USB_REPAIR_README.txt). The repair tool is for a previously installed Gateway; it is not an unattended USB autorun feature. Release notes for the current repair are in [`docs/CHANGELOG_V0613.md`](docs/CHANGELOG_V0613.md).
 
 The supported deployment target is Debian 13 (Trixie) or later on `amd64`, with Python 3.13 or later. Runtime dependencies include `sudo`, `dpkg`, `python3-pydantic (>= 2)`, `python3-fastapi (>= 0.115.11)`, `python3-uvicorn`, `python3-argon2`, `python3-cryptography`, `python3-qrcode`, `openssl`, and `adduser`. The Debian package creates a dedicated `solarminer` service identity and a self-signed TLS certificate. Review `docs/TLS_TRUST.md` before LAN exposure.
 
