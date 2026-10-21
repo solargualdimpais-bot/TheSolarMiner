@@ -1,0 +1,16 @@
+ new Debian package, version 2.0.
+ size 11340 bytes: control archive=1140 bytes.
+     447 bytes,    10 lines      control
+    1333 bytes,    27 lines   *  postinst             #!/bin/sh
+     225 bytes,     7 lines   *  postrm               #!/bin/sh
+     278 bytes,    11 lines   *  prerm                #!/bin/sh
+ Package: solarminer-gateway
+ Version: 0.4.0
+ Section: net
+ Priority: optional
+ Architecture: amd64
+ Depends: python3 (>= 3.11), python3-fastapi, python3-uvicorn, python3-argon2, python3-cryptography, openssl, adduser
+ Maintainer: SolarMiner Gateway Maintainers
+ Description: SolarMiner Gateway local identity and authentication service
+  The local authority for owner bootstrap, user/device identity, authentication,
+  authorization, audit and status API.

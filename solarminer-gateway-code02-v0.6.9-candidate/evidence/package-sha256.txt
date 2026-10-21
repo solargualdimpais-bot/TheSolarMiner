@@ -1,0 +1,1 @@
+b5eb1ddab76a1de9ae478d6f37f9813f73e67f025b41f0ca402d64a54dcaf2e7  /mnt/data/solarminer-code01-work/solarminer-gateway/dist/solarminer-gateway_0.4.0_amd64.deb

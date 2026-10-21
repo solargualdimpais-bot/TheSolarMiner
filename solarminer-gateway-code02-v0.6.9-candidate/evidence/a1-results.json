@@ -1,0 +1,40 @@
+{
+  "workstream": "SolarMiner Gateway CODE 01 A1",
+  "status": "PARTIALLY_VALIDATED",
+  "source": "solarminer-gateway-code01-v0.4.0.zip",
+  "github_repository_access": "NOT_CONFIRMED",
+  "github_changes_made": false,
+  "protected_artifacts": {
+    "prova0_deb_sha256": "8716677481e91dd3b95f3de3ca84c9d0076cc708996a21d0211da858edad7fa6",
+    "prova0_source_zip_sha256": "e40c462bc3ae638ad73ce48218a81079a9da62b1194dfdc87fa70218092ba4bc",
+    "code01_base_deb_sha256": "975eda1d05e756a3685697f716b8998fc7bd351122e97c4a04cb36cbcbdb152a",
+    "prova0_artifacts_modified": false,
+    "code01_base_package_overwritten": false
+  },
+  "tests": {
+    "make_test": {"status": "PASS", "passed": 20, "failed": 0},
+    "make_deb": {"status": "PASS", "repeated_build_hashes_match": true, "sha256": "2d60a9e79cdae4671cadf78c6eba5a08b3581ee242670cc46375736c3ae49f9e"},
+    "package_structure": "PASS",
+    "existing_v1_database_migration": "PASS",
+    "last_owner_api_guard": "PASS",
+    "last_owner_sqlite_update_delete_replace_triggers": "PASS",
+    "concurrent_last_owner_revocation": "PASS",
+    "session_logout_and_device_revocation": "PASS",
+    "session_invalidation_after_role_change_trigger": "PASS",
+    "direct_unauthenticated_protected_routes": "PASS",
+    "self_role_change_api_and_audit": "BLOCKED_ENDPOINT_NOT_PRESENT",
+    "role_change_other_user_api_and_audit": "BLOCKED_ENDPOINT_NOT_PRESENT",
+    "installed_systemd_lifecycle": "BLOCKED_NOT_EXECUTED",
+    "physical_hardware": "BLOCKED_NOT_AVAILABLE"
+  },
+  "version_two_migration": {
+    "type": "additive",
+    "drops_tables_or_columns": false,
+    "triggers": [
+      "protect_last_active_owner_update",
+      "protect_last_active_owner_delete",
+      "protect_last_active_owner_replace",
+      "invalidate_sessions_on_role_change"
+    ]
+  }
+}

@@ -1,0 +1,40 @@
+[Unit]
+Description=SolarMiner isolated connector deye-modbus-tcp
+After=network.target
+
+[Service]
+Type=exec
+User=smc-afe62928b92a0674
+Group=smc-afe62928b92a0674
+ExecStart="/usr/bin/python3" "-I" "-m" "solarminer_gateway.connector_worker" "--socket" "/var/lib/solarminer/connectors/deye-modbus-tcp/worker.sock" "--gateway-uid" "999"
+WorkingDirectory=/var/lib/solarminer/connectors/deye-modbus-tcp
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=192.168.1.44/32
+ReadWritePaths=/var/lib/solarminer/connectors/deye-modbus-tcp/state
+MemoryMax=128M
+TasksMax=32
+CPUQuota=50%
+Restart=no
+TimeoutStartSec=15
+TimeoutStopSec=5
+KillMode=control-group
+

@@ -1,0 +1,57 @@
+{
+  "date": "2026-10-18",
+  "product": "SolarMiner Gateway",
+  "version": "0.4.0",
+  "workstream": "CODE 01",
+  "status": "PARTIALLY_VALIDATED",
+  "environment": {
+    "os": "Debian GNU/Linux 13.3 (Trixie)",
+    "architecture": "amd64",
+    "python": "3.13.5",
+    "pid1": "supervisord",
+    "systemd_manager_active": false,
+    "host_package_install_performed": false,
+    "hardware_validation": false
+  },
+  "tests": {
+    "make_test": {
+      "status": "PASS",
+      "passed": 10,
+      "failed": 0
+    },
+    "make_deb": {
+      "status": "PASS",
+      "repeated_build_hashes_match": true
+    },
+    "dpkg_deb_info": "PASS",
+    "dpkg_deb_contents": "PASS",
+    "systemd_analyze_verify": "PASS",
+    "live_local_tls_trusted_cert": "PASS",
+    "untrusted_tls_cert_rejected": "PASS",
+    "prova0_extracted_app_health_and_sqlite_roundtrip": "PASS",
+    "systemd_service_lifecycle": "NOT_EXECUTED",
+    "package_install_remove_purge": "NOT_EXECUTED",
+    "hardware": "NOT_VALIDATED_ON_HARDWARE"
+  },
+  "code01_package": {
+    "path": "dist/solarminer-gateway_0.4.0_amd64.deb",
+    "sha256": "975eda1d05e756a3685697f716b8998fc7bd351122e97c4a04cb36cbcbdb152a"
+  },
+  "prova0": {
+    "original_package_sha256_before_and_after": "8716677481e91dd3b95f3de3ca84c9d0076cc708996a21d0211da858edad7fa6",
+    "source_zip_sha256_before_and_after": "e40c462bc3ae638ad73ce48218a81079a9da62b1194dfdc87fa70218092ba4bc",
+    "isolated_rebuild_hash_matches_original": false,
+    "isolated_rebuild_extracted_payload_and_control_bytes_match": true,
+    "isolated_runtime_test": "PASS"
+  },
+  "blocked_or_incomplete": [
+    "secure local recovery workflow",
+    "password-change endpoint and session invalidation",
+    "complete role matrix and role-change workflow",
+    "full multi-device association management API",
+    "complete PWA/browser device-signing client",
+    "independent MAC verification",
+    "installed systemd lifecycle and reboot validation",
+    "physical Gateway validation"
+  ]
+}

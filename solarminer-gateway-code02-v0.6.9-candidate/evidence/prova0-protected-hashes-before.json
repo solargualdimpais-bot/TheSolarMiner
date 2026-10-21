@@ -1,0 +1,8 @@
+{
+  "artifacts": [
+    {"path": "/mnt/data/solarminer-prova0_0.1.0_amd64.deb", "sha256": "8716677481e91dd3b95f3de3ca84c9d0076cc708996a21d0211da858edad7fa6"},
+    {"path": "/mnt/data/solarminer-prova0-source.zip", "sha256": "e40c462bc3ae638ad73ce48218a81079a9da62b1194dfdc87fa70218092ba4bc"},
+    {"path": "/mnt/data/solarminer-prova0-REPORT.md", "sha256": "94a510a941bf831191ee6e025cce6a327ed70fac36ee32755a85c18179617f6e"},
+    {"path": "/mnt/data/solarminer-prova0-FINAL-VALIDATION-2026-10-18-revised.md", "sha256": "d8b503d9a54abff492278837849af030d2c9fe10dd94d3608246050e02cd3e0d"}
+  ]
+}

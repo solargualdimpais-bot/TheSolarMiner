@@ -1,0 +1,4 @@
+2026-10-18 18:58:30,523 INFO SolarMiner Prova 0 0.1.0 listening on 127.0.0.1:38761; database=/mnt/data/solarminer-code01-work/prova0-runtime-test.db
+2026-10-18 18:58:30,592 INFO 127.0.0.1 - "GET /health HTTP/1.1" 200 -
+2026-10-18 18:58:30,602 INFO 127.0.0.1 - "POST /test-data HTTP/1.1" 201 -
+2026-10-18 18:58:30,609 INFO 127.0.0.1 - "GET /test-data HTTP/1.1" 200 -

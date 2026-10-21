@@ -1,0 +1,3 @@
+PYTHONPATH=src python3 -m pytest -q
+..........                                                               [100%]
+10 passed in 2.66s

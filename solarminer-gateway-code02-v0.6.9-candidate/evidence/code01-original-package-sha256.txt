@@ -1,0 +1,1 @@
+975eda1d05e756a3685697f716b8998fc7bd351122e97c4a04cb36cbcbdb152a  dist/solarminer-gateway_0.4.0_amd64.deb

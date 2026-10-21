@@ -1,0 +1,2 @@
+8716677481e91dd3b95f3de3ca84c9d0076cc708996a21d0211da858edad7fa6  /mnt/data/solarminer-prova0_0.1.0_amd64.deb
+e40c462bc3ae638ad73ce48218a81079a9da62b1194dfdc87fa70218092ba4bc  /mnt/data/solarminer-prova0-source.zip
