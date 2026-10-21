@@ -568,9 +568,11 @@ async function refreshGatewayUpdateStatus() {
       repository_url: result.details?.repository_url, sha256: result.details?.package_sha256
     });
   } else if (result.status === "CURRENT" && result.target_version) {
-    setGatewayUpdateDetails({status: "current", installed_version: result.installed_version,
+    setGatewayUpdateDetails({
+      status: "current", installed_version: result.installed_version,
       latest_version: result.target_version, signature_valid: true, compatible: true,
-      activation_available: false, repository_url: result.details?.repository_url});
+      activation_available: false, repository_url: result.details?.repository_url
+    });
   } else {
     setGatewayUpdateDetails(null);
   }
