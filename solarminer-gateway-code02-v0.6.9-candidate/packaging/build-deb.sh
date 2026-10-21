@@ -45,6 +45,7 @@ cp "$ROOT/docs/CODE02_V069_IMPLEMENTATION.md" "$STAGE/usr/share/doc/solarminer-g
 cp "$ROOT/docs/CHANGELOG_V069.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V069.md"
 cp "$ROOT/docs/DATABASE_BACKUP_AND_RESTORE.md" "$STAGE/usr/share/doc/solarminer-gateway/DATABASE_BACKUP_AND_RESTORE.md"
 cp "$ROOT/docs/UPDATE_AND_ROLLBACK.md" "$STAGE/usr/share/doc/solarminer-gateway/UPDATE_AND_ROLLBACK.md"
+cp "$ROOT/docs/INSTALL_DEBIAN_AMD64.md" "$STAGE/usr/share/doc/solarminer-gateway/INSTALL_DEBIAN_AMD64.md"
 cp "$ROOT/docs/ACCEPTANCE_MATRIX_V069.md" "$STAGE/usr/share/doc/solarminer-gateway/ACCEPTANCE_MATRIX_V069.md"
 cp "$ROOT/docs/TEST_REPORT_V069.md" "$STAGE/usr/share/doc/solarminer-gateway/TEST_REPORT_V069.md"
 cp "$ROOT/docs/V069_LIMITATIONS.md" "$STAGE/usr/share/doc/solarminer-gateway/V069_LIMITATIONS.md"
