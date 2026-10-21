@@ -4,8 +4,8 @@ set -eu
 
 [ "$(id -u)" -eq 0 ] || { echo "Executa como root: sh repair-existing-from-usb.sh" >&2; exit 1; }
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-VERSION=0.6.14
-PACKAGE="$HERE/solarminer-gateway_${VERSION}_amd64.deb"
+TARGET_VERSION=0.6.15
+PACKAGE="$HERE/solarminer-gateway_${TARGET_VERSION}_amd64.deb"
 MANIFEST="$HERE/solarminer-release.json"
 PUBLIC_KEY="$HERE/release-pubkey.pem"
 LOG=/var/log/solarminer-usb-repair.log
@@ -21,11 +21,11 @@ for file in "$PACKAGE" "$MANIFEST" "$PUBLIC_KEY" /etc/solarminer/release-pubkey.
   [ -s "$file" ] && [ ! -L "$file" ] || fail "Ficheiro necessário ausente/inseguro: $(basename "$file")"
 done
 [ "$(dpkg-deb -f "$PACKAGE" Package)" = solarminer-gateway ] || fail "Pacote inesperado."
-[ "$(dpkg-deb -f "$PACKAGE" Version)" = "$VERSION" ] || fail "Versão do pacote não corresponde."
+[ "$(dpkg-deb -f "$PACKAGE" Version)" = "$TARGET_VERSION" ] || fail "Versão do pacote não corresponde ao destino esperado ($TARGET_VERSION)."
 [ "$(dpkg-deb -f "$PACKAGE" Architecture)" = amd64 ] || fail "Arquitetura não corresponde."
 
 log "A validar assinatura Ed25519, chave confiada e SHA-256."
-python3 - "$MANIFEST" "$PUBLIC_KEY" /etc/solarminer/release-pubkey.pem "$PACKAGE" "$VERSION" <<'PY' || fail "Assinatura/integridade recusada; sistema não alterado."
+python3 - "$MANIFEST" "$PUBLIC_KEY" /etc/solarminer/release-pubkey.pem "$PACKAGE" "$TARGET_VERSION" <<'PY' || fail "Assinatura/integridade recusada; sistema não alterado."
 import hashlib, json, pathlib, sys
 from cryptography.hazmat.primitives import serialization
 
@@ -57,7 +57,7 @@ except Exception as exc:
 PY
 
 OLD_VERSION=$(dpkg-query -W -f='${Version}' solarminer-gateway)
-dpkg --compare-versions "$OLD_VERSION" lt "$VERSION" || fail "Gateway já está na correção ou numa versão posterior."
+dpkg --compare-versions "$OLD_VERSION" lt "$TARGET_VERSION" || fail "Gateway já está na correção ou numa versão posterior."
 OLD_PACKAGE="$HERE/solarminer-gateway_${OLD_VERSION}_amd64.deb"
 OLD_MANIFEST="$HERE/solarminer-release-${OLD_VERSION}.json"
 [ -s "$OLD_PACKAGE" ] && [ ! -L "$OLD_PACKAGE" ] && [ -s "$OLD_MANIFEST" ] && [ ! -L "$OLD_MANIFEST" ] || fail "A pen não contém o pacote assinado da versão instalada ($OLD_VERSION), necessário para rollback seguro."
@@ -152,16 +152,16 @@ trap 'exit 143' TERM
 log "A instalar o pacote assinado da pen; o updater online não será usado."
 DEBIAN_FRONTEND=noninteractive apt-get install -y "$PACKAGE" >>"$LOG" 2>&1 || fail "Instalação Debian falhou. Consulta $LOG; o rollback será tentado."
 systemctl stop solarminer-gateway.service || fail "Não foi possível parar o serviço antes da ativação."
-NEW_RELEASE="$BASE/$VERSION"
+NEW_RELEASE="$BASE/$TARGET_VERSION"
 [ -d "$NEW_RELEASE" ] && [ ! -L "$NEW_RELEASE" ] || fail "Pacote não criou uma release segura em $NEW_RELEASE."
 case "$(readlink -f "$NEW_RELEASE")" in "$BASE"/*) ;; *) fail "A release nova aponta para fora da pasta autorizada." ;; esac
-ln -s "releases/$VERSION" /opt/solarminer/.current-usb-new
+ln -s "releases/$TARGET_VERSION" /opt/solarminer/.current-usb-new
 mv -Tf /opt/solarminer/.current-usb-new "$CURRENT"
 systemctl start solarminer-gateway.service || fail "Serviço não iniciou; rollback será executado."
 
 attempt=0
 while [ "$attempt" -lt 30 ]; do
-  if python3 - "$VERSION" <<'PY' >/dev/null 2>&1
+  if python3 - "$TARGET_VERSION" <<'PY' >/dev/null 2>&1
 import json, ssl, sys, urllib.request
 context = ssl.create_default_context(cafile="/var/lib/solarminer/server.crt")
 with urllib.request.urlopen("https://127.0.0.1:8443/api/v1/health", context=context, timeout=3) as response:
@@ -170,10 +170,10 @@ if response.status != 200 or data.get("package_version") != sys.argv[1]: raise S
 PY
   then
     SUCCESS=1
-    log "Instalação, ativação e health check de $VERSION concluídos."
+    log "Instalação, ativação e health check de $TARGET_VERSION concluídos."
     log "A release anterior $OLD_RELEASE_NAME e o backup $BACKUP foram preservados."
     exit 0
   fi
   attempt=$((attempt + 1)); sleep 2
 done
-fail "Health check não confirmou $VERSION; rollback será tentado. Consulta $LOG."
+fail "Health check não confirmou $TARGET_VERSION; rollback será tentado. Consulta $LOG."

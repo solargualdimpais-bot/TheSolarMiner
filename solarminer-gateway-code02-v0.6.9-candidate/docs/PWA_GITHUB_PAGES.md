@@ -42,9 +42,9 @@ Uma sessão Owner pode consultar os dados disponíveis no Gateway, gerir convite
 
 O Gateway disponibiliza APIs de leitura/identidade, administração e atualização, mas não há ainda uma API de comandos físicos para todos os equipamentos, regras de automatização, meteorologia ou histórico energético. A interface não afirma que esses elementos funcionam como controlos reais. A integração física exige perfil e validação específica de cada inversor, bateria, carregador ou dispositivo.
 
-## Recuperar um Gateway 0.6.10–0.6.13 antes da primeira conta Owner
+## Recuperar um Gateway 0.6.10–0.6.14 antes da primeira conta Owner
 
-O Gateway que ainda não tem Owner e apresenta `recovery required` não deve ser atualizado pelo fluxo online enquanto o estado de recuperação da instalação anterior estiver bloqueado. A atualização remota 0.6.12 já demonstrou falha nesse estado. Usa o pacote assinado da release 0.6.14 por USB para fazer a reparação local: o instalador valida o manifesto Ed25519 com a chave que já está confiada no Gateway, verifica pacote/hash/versão/arquitetura, cria backup SQLite, ativa a release e tenta reinstalar o pacote e release anteriores, restaurando a base de dados se o health check falhar.
+O Gateway que ainda não tem Owner e apresenta `recovery required` não deve ser atualizado pelo fluxo online enquanto o estado de recuperação da instalação anterior estiver bloqueado. A atualização remota 0.6.12 falhou porque o nome do asset `.deb` publicado não coincidia com o nome assinado no manifesto; por isso o pacote não foi aplicado e o Gateway permaneceu na 0.6.10. A versão 0.6.14 do script USB também tinha um defeito: `/etc/os-release` substituía a variável `VERSION` destinada ao pacote Debian, fazendo a validação recusar um pacote que era realmente 0.6.14. A 0.6.15 separa esses valores e inclui uma verificação no workflow para impedir regressão.
 
 No Debian 13 amd64, inicia sessão como `root`, monta a pen em `/mnt/solarminer-usb` e executa `sh /mnt/solarminer-usb/repair-existing-from-usb.sh`. Depois de confirmar que o script terminou com health check válido, emite o token local de bootstrap, um comando de cada vez:
 
@@ -54,4 +54,4 @@ solarminer-gateway bootstrap-token
 systemctl start solarminer-gateway.service
 ```
 
-Escreve a confirmação `ISSUE-OWNER-BOOTSTRAP-TOKEN` quando solicitada; compara a fingerprint local com a PWA e conclui a criação do Owner em 15 minutos. Se a assinatura, a origem, a instalação ou o health check falhar, não repitas a atualização online: conserva `/var/log/solarminer-usb-repair.log` e `/var/lib/solarminer/backups/` e resolve a mensagem indicada. A instalação USB é uma reparação específica da versão 0.6.14, não substitui o mecanismo autenticado de atualização em operação normal.
+Escreve a confirmação `ISSUE-OWNER-BOOTSTRAP-TOKEN` quando solicitada; compara a fingerprint local com a PWA e conclui a criação do Owner em 15 minutos. A versão 0.6.15 inclui o comando `bootstrap-token` no wrapper instalado e mantém o origin oficial do GitHub Pages permitido. O iPhone continua a exigir confiança explícita num certificado válido para o IP/hostname usado; a PWA não pode ignorar nem instalar essa confiança silenciosamente. Se a assinatura, a origem, a instalação ou o health check falhar, conserva `/var/log/solarminer-usb-repair.log` e `/var/lib/solarminer/backups/`.

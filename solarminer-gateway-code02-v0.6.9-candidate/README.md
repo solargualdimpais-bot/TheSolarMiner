@@ -9,7 +9,7 @@ make test
 make deb
 ```
 
-For the signed install/repair USB workflow and first Owner bootstrap, see [`docs/INSTALL_DEBIAN_AMD64.md`](docs/INSTALL_DEBIAN_AMD64.md), [`packaging/USB_INSTALL_README.txt`](packaging/USB_INSTALL_README.txt), and [`packaging/USB_REPAIR_README.txt`](packaging/USB_REPAIR_README.txt). The repair tool is for a previously installed Gateway; it is not an unattended USB autorun feature. Release notes for the current repair are in [`docs/CHANGELOG_V0614.md`](docs/CHANGELOG_V0614.md).
+For the signed install/repair USB workflow and first Owner bootstrap, see [`docs/INSTALL_DEBIAN_AMD64.md`](docs/INSTALL_DEBIAN_AMD64.md), [`packaging/USB_INSTALL_README.txt`](packaging/USB_INSTALL_README.txt), and [`packaging/USB_REPAIR_README.txt`](packaging/USB_REPAIR_README.txt). The repair tool is for a previously installed Gateway; it is not an unattended USB autorun feature. Release notes for the current repair are in [`docs/CHANGELOG_V0615.md`](docs/CHANGELOG_V0615.md).
 
 The supported deployment target is Debian 13 (Trixie) or later on `amd64`, with Python 3.13 or later. Runtime dependencies include `sudo`, `dpkg`, `python3-pydantic (>= 2)`, `python3-fastapi (>= 0.115.11)`, `python3-uvicorn`, `python3-argon2`, `python3-cryptography`, `python3-qrcode`, `openssl`, and `adduser`. The Debian package creates a dedicated `solarminer` service identity and a self-signed TLS certificate. Review `docs/TLS_TRUST.md` before LAN exposure.
 
