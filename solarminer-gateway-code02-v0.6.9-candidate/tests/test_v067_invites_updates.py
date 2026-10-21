@@ -89,6 +89,9 @@ def test_update_manifest_signature_verification():
     assert verify_manifest(manifest,pub,"0.6.7")["signature_valid"] is True
     tampered=dict(manifest); tampered["version"]="9.9.9"
     with pytest.raises(UpdateValidationError): verify_manifest(tampered,pub,"0.6.7")
+    malformed_version=dict(manifest); malformed_version["version"]="0.6.8;touch /tmp/no"
+    with pytest.raises(UpdateValidationError, match="manifest_version_invalid"):
+        verify_manifest(malformed_version,pub,"0.6.7")
 
 
 def test_gateway_identity_challenge_proves_key_possession(client):
