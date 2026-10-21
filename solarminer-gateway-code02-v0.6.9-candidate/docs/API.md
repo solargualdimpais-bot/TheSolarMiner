@@ -57,6 +57,31 @@ Each command requires a TTY, root privileges, and a provably stopped `solarminer
 
 A successful recovery invalidates all prior owner sessions and increments `credential_version`. A role removal from owner or account deactivation consumes any active recovery key. The new recovery key is displayed only after commit. If the commit succeeds but terminal delivery fails, the plaintext key cannot be reconstructed from the stored verifier; the operator must use the emergency procedure to rotate it again. Audit success events are in the same transaction as the protected mutation; failed attempts are recorded separately without secret material.
 
+## CODE 02 v0.6.9 — verificação de atualização por repositório
+
+| Método | Caminho | Acesso |
+|---|---|---|
+| POST | `/api/v1/system/update/check` | Sessão autenticada, papel Owner; recebe exatamente `{"repository_url":"https://github.com/owner/repository"}` |
+| GET | `/api/v1/system/update/check` | Sessão autenticada com `manage_gateway`; verifica a origem fixa configurada pelo administrador (compatibilidade) |
+| GET | `/api/v1/system/update/status` | Sessão autenticada com `read`; estado da operação |
+| POST | `/api/v1/system/update/apply` | Owner, confirmação explícita e versão coincidente; inicia preflight/backup/staging/ativação/health check/rollback |
+
+O POST valida URL canónico HTTPS de raiz `github.com/{owner}/{repository}` e procura uma correspondência exata no ficheiro administrativo root-owned `/etc/solarminer/update-sources.json` (ou no caminho definido por `SOLARMINER_UPDATE_SOURCE_ALLOWLIST`). Não aceita credenciais, query, fragmento, subcaminhos, hosts alternativos nem repositórios privados. O ficheiro tem o formato:
+
+```json
+{
+  "repositories": {
+    "https://github.com/owner/repository": {
+      "manifest_url": "https://github.com/owner/repository/releases/latest/download/solarminer-release.json",
+      "manifest_origins": ["https://github.com", "https://release-assets.githubusercontent.com"],
+      "package_origins": ["https://github.com", "https://release-assets.githubusercontent.com"]
+    }
+  }
+}
+```
+
+A lista de origens é configurada pelo administrador, contém apenas origens HTTPS e tem limites de tamanho/quantidade. Redirecionamentos do manifesto e pacote só são seguidos se o destino permanecer numa origem respetiva permitida. O manifesto tem de passar a validação Ed25519 com a chave já provisionada no Gateway; o pacote é validado por hash, tamanho, versão, arquitetura, dependências e preflight antes de ficar `VERIFIED`. Não há clone/pull, execução de scripts do repositório ou instalação de dependências arbitrárias. A PWA não recebe segredos de GitHub. A verificação não instala a atualização: a aplicação continua a exigir POST Owner separado e confirmação explícita. URL/origem/manifesto/assinatura inválidos são rejeitados antes de qualquer alteração do sistema e ficam refletidos no estado/auditoria sem credenciais.
+
 ## CODE 02 — Connector Manager v0.6.0
 
 The CODE 02 routes are authenticated with existing Gateway sessions and RBAC. See `CODE02_CONNECTOR_MANAGER.md` for payload examples, signature trust, bounded discovery and limitations.
