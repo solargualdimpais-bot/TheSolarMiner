@@ -44,16 +44,16 @@ O Gateway disponibiliza APIs de leitura/identidade, administração e atualizaç
 
 ## Compatibilidade do Gateway instalado
 
-O fluxo remoto de bootstrap e a identidade por dispositivo são introduzidos no pacote 0.6.11. Um Gateway 0.6.10 já instalado tem de receber uma atualização assinada para 0.6.11 antes de a PWA publicada poder criar o Owner remotamente. A publicação Pages, por si só, não atualiza o pacote do Gateway.
+O fluxo remoto de bootstrap e a identidade por dispositivo são introduzidos no pacote 0.6.12. Um Gateway 0.6.10 já instalado tem de receber uma atualização assinada para 0.6.12 antes de a PWA publicada poder criar o Owner remotamente. O pacote 0.6.11 não deve ser usado para este upgrade: o respetivo `postinst` não corre no pipeline que ativa a release por symlink. Na versão 0.6.12, o comando local de emissão do token também cria ou valida a identidade, preservando chaves já existentes. A publicação Pages, por si só, não atualiza o pacote do Gateway.
 
 ### Atualizar o Gateway 0.6.10 já instalado
 
-Depois de o release assinado `gateway-v0.6.11` estar publicado, inicia sessão no Gateway como `root` e executa estes comandos, um de cada vez. O primeiro corre a verificação configurada no próprio Gateway; não instala nada. O segundo procura uma operação `VERIFIED` para a versão 0.6.11. Só continua se encontrar essa operação:
+Depois de o release assinado `gateway-v0.6.12` estar publicado, inicia sessão no Gateway como `root` e executa estes comandos, um de cada vez. O primeiro corre a verificação configurada no próprio Gateway; não instala nada. O segundo procura uma operação `VERIFIED` para a versão 0.6.12. Só continua se encontrar essa operação:
 
 ```sh
 systemctl start solarminer-update-check-daily.service
-OP_ID=$(/usr/bin/python3 -c 'import sqlite3; c=sqlite3.connect("/var/lib/solarminer/gateway.db"); r=c.execute("SELECT id FROM update_operations WHERE state=? AND target_version=? ORDER BY updated_at DESC LIMIT 1", ("VERIFIED", "0.6.11")).fetchone(); print(r[0] if r else "")')
-test -n "$OP_ID" || { echo "Não existe pacote 0.6.11 validado; não foi aplicada nenhuma atualização."; exit 1; }
+OP_ID=$(/usr/bin/python3 -c 'import sqlite3; c=sqlite3.connect("/var/lib/solarminer/gateway.db"); r=c.execute("SELECT id FROM update_operations WHERE state=? AND target_version=? ORDER BY updated_at DESC LIMIT 1", ("VERIFIED", "0.6.12")).fetchone(); print(r[0] if r else "")')
+test -n "$OP_ID" || { echo "Não existe pacote 0.6.12 validado; não foi aplicada nenhuma atualização."; exit 1; }
 /usr/sbin/solarminer-update-apply --enqueue "$OP_ID"
 ```
 

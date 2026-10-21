@@ -14,6 +14,8 @@ from pathlib import Path
 from . import recovery
 
 SERVICE_NAME = "solarminer-gateway.service"
+GATEWAY_PRIVATE_IDENTITY_PATH = Path("/var/lib/solarminer/gateway-identity.key")
+GATEWAY_PUBLIC_IDENTITY_PATH = Path("/etc/solarminer/gateway-identity.pub.pem")
 
 
 def _require_root() -> None:
@@ -72,6 +74,17 @@ def _new_password() -> str:
     if not 12 <= len(first) <= 1024:
         raise recovery.RecoveryError("new_password_must_be_12_to_1024_characters")
     return first
+
+
+def provision_gateway_identity() -> str:
+    """Ensure the Gateway identity exists and has service-safe ownership/modes."""
+    from .identity import identity_fingerprint, provision_identity
+    provision_identity(GATEWAY_PRIVATE_IDENTITY_PATH, GATEWAY_PUBLIC_IDENTITY_PATH)
+    shutil.chown(GATEWAY_PRIVATE_IDENTITY_PATH, user="solarminer", group="solarminer")
+    os.chmod(GATEWAY_PRIVATE_IDENTITY_PATH, 0o600)
+    shutil.chown(GATEWAY_PUBLIC_IDENTITY_PATH, user="root", group="root")
+    os.chmod(GATEWAY_PUBLIC_IDENTITY_PATH, 0o644)
+    return identity_fingerprint(GATEWAY_PRIVATE_IDENTITY_PATH, GATEWAY_PUBLIC_IDENTITY_PATH)
 
 
 def _display_recovery_key_once(key: str, completion_lines: tuple[str, ...] = ()) -> None:
@@ -163,6 +176,10 @@ def run_bootstrap_token() -> None:
             raise recovery.RecoveryError("bootstrap_was_already_consumed; owner recovery is required")
         if input("Type ISSUE-OWNER-BOOTSTRAP-TOKEN to rotate and display a one-time token: ") != "ISSUE-OWNER-BOOTSTRAP-TOKEN":
             raise recovery.RecoveryError("bootstrap_token_rotation_cancelled")
+        # Signed package updates activate an extracted release tree and do not
+        # execute dpkg maintainer scripts. Provision the identity here as well
+        # so an upgraded Gateway can complete remote Owner bootstrap safely.
+        fingerprint = provision_gateway_identity()
         raw = secrets.token_urlsafe(32)
         now = int(time.time())
         expires = now + gateway_app.BOOTSTRAP_TTL
@@ -181,8 +198,6 @@ def run_bootstrap_token() -> None:
     os.chmod(gateway_app.BOOTSTRAP_PATH, 0o600)
     print("Use este token uma única vez na PWA oficial. Expira em 15 minutos; não o partilhes nem o guardes em logs:")
     print(raw)
-    from .identity import identity_fingerprint
-    fingerprint = identity_fingerprint(Path("/var/lib/solarminer/gateway-identity.key"), Path("/etc/solarminer/gateway-identity.pub.pem"))
     print(f"Gateway identity SHA-256: {fingerprint}")
 
 

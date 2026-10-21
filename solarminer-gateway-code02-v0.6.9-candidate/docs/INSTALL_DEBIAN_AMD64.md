@@ -20,7 +20,7 @@ A execução de software automaticamente ao inserir uma pen USB está desativada
 sh /media/<utilizador>/<PEN>/install-from-usb.sh
 ```
 
-O pacote de entrega oficial solarminer-gateway-usb-installer_0.6.11_amd64.zip inclui o script, o pacote Debian AMD64, o manifesto Ed25519 e a chave pública de release derivada no workflow da chave privada mantida como segredo de GitHub Actions. Não copies a chave privada para a pen ou Gateway.
+O pacote de entrega oficial solarminer-gateway-usb-installer_0.6.12_amd64.zip inclui o script, o pacote Debian AMD64, o manifesto Ed25519 e a chave pública de release derivada no workflow da chave privada mantida como segredo de GitHub Actions. Não copies a chave privada para a pen ou Gateway.
 
 O instalador não pede URLs, hashes nem impressão digital: usa o repositório oficial `https://github.com/solargualdimpais-bot/TheSolarMiner`. Antes de instalar o SolarMiner, valida no Gateway Debian 13 ou posterior, AMD64 e Python 3.13 ou posterior, o esquema/versão/origem do manifesto, a assinatura Ed25519, o tamanho e SHA-256 do pacote e a arquitetura Debian. Se a assinatura ou qualquer validação falhar, termina sem instalar o SolarMiner. Depois instala o pacote e dependências apenas dos repositórios Debian, provisiona a chave pública e a allowlist oficial, ativa o serviço e o timer diário e verifica o health endpoint local. Em falha, tenta remover o pacote e restaurar a configuração inicial; consulta `/var/log/solarminer-first-install.log`.
 
@@ -34,7 +34,7 @@ O workflow pwa-pages.yml publica a cópia integrada com a API em https://solargu
 
 Depois de o serviço estar instalado, se o token inicial tiver expirado, inicia sessão como root e executa, um por vez: systemctl stop solarminer-gateway.service; solarminer-gateway bootstrap-token; systemctl start solarminer-gateway.service. O comando imprime um token de utilização única e a fingerprint da identidade Ed25519 do Gateway. Abre a PWA, introduz o endpoint HTTPS com SAN válido, confirma a fingerprint, usa o token e cria o Owner. O procedimento completo, incluindo confiança TLS e limites da API física, está em PWA_GITHUB_PAGES.md.
 
-Um Gateway 0.6.10 instalado anteriormente precisa de receber o pacote assinado 0.6.11 antes de suportar este bootstrap remoto e a geração automática da identidade Gateway. Não uses curl | sh, git pull, nem código fonte como atualizador; os pacotes de release são validados por assinatura Ed25519 e hash antes de staging/ativação.
+Um Gateway 0.6.10 instalado anteriormente precisa de receber o pacote assinado 0.6.12 antes de suportar este bootstrap remoto. A versão 0.6.11 não deve ser usada para este upgrade: o seu hook de instalação não é executado pelo pipeline de ativação de releases. A 0.6.12 também provisiona e valida a identidade no comando local de emissão do token, pelo que funciona em instalação inicial e em atualização assinada. Não uses curl | sh, git pull, nem código fonte como atualizador; os pacotes de release são validados por assinatura Ed25519 e hash antes de staging/ativação.
 
 ## Limite da validação
 

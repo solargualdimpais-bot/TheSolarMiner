@@ -1,4 +1,4 @@
-SolarMiner Gateway CODE02 0.6.11 — instalador inicial USB
+SolarMiner Gateway CODE02 0.6.12 — instalador inicial USB
 ==========================================================
 
 Requisitos: Gateway Lenovo AMD64, Debian 13 (Trixie) ou posterior, Python 3.13 ou posterior e acesso à Internet para os repositórios oficiais Debian.

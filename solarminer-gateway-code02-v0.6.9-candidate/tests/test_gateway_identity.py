@@ -6,6 +6,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from solarminer_gateway.identity import identity_fingerprint, provision_identity
+from solarminer_gateway import cli
 
 
 def test_identity_is_created_once_and_kept_stable(tmp_path):
@@ -53,3 +54,17 @@ def test_fingerprint_requires_matching_ed25519_pair(tmp_path):
     public = tmp_path / "gateway-identity.pub.pem"
     provision_identity(private, public)
     assert identity_fingerprint(Path(private), Path(public)) == identity_fingerprint(private, public)
+
+
+def test_owner_bootstrap_cli_provisions_stable_service_identity(tmp_path, monkeypatch):
+    private = tmp_path / "gateway-identity.key"
+    public = tmp_path / "gateway-identity.pub.pem"
+    monkeypatch.setattr(cli, "GATEWAY_PRIVATE_IDENTITY_PATH", private)
+    monkeypatch.setattr(cli, "GATEWAY_PUBLIC_IDENTITY_PATH", public)
+    monkeypatch.setattr(cli.shutil, "chown", lambda *_args, **_kwargs: None)
+
+    first = cli.provision_gateway_identity()
+    second = cli.provision_gateway_identity()
+
+    assert first == second
+    assert identity_fingerprint(private, public) == first
