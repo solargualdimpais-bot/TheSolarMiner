@@ -14,22 +14,19 @@ O resultado de arquitetura tem de ser `amd64`. Não usar pacotes ARM64.
 
 ## Instalação inicial através de pen USB
 
-A pen deve conter, na mesma pasta:
-
-- `install-from-usb.sh` (este repositório: `packaging/install-from-usb.sh`);
-- exatamente um pacote oficial `solarminer-gateway_*_amd64.deb`;
-- `release-pubkey.pem`, a chave pública Ed25519 de release obtida por uma origem confiável;
-- o SHA-256 do pacote e a impressão SHA-256 do ficheiro da chave, ambos obtidos por canais independentes.
-
-Depois de instalar Debian minimal/netinst e iniciar sessão como `root`, monta a pen e executa o script diretamente como root:
+A execução de software automaticamente ao inserir uma pen USB está desativada pelo Debian. A imagem oficial do release contém um instalador não interativo; após copiar a pasta extraída para a pen, inicia sessão no Gateway como `root`, monta a pen e executa **um comando**:
 
 ```sh
 sh /media/<utilizador>/<PEN>/install-from-usb.sh
 ```
 
-O script verifica Debian, Python, AMD64, o hash do pacote e a impressão da chave. Pede o URL GitHub inicial e permite registar outros repositórios aprovados. Esses URLs ficam numa allowlist root-owned; a PWA Owner pode selecionar e guardar apenas uma dessas origens. O script usa `apt-get` para obter dependências Debian. Não é necessário executar o comando `sudo`; o pacote instala a dependência `sudo` usada pelo serviço para invocar somente o helper privilegiado autorizado.
+O pacote de entrega oficial `solarminer-gateway-usb-installer_0.6.9_amd64.zip` inclui o script, o pacote Debian AMD64, o manifesto Ed25519 e a chave pública de release derivada no workflow da chave privada mantida como segredo de GitHub Actions. Não copies a chave privada para a pen ou Gateway.
 
-A instalação do pacote configura o serviço e o timer diário de verificação. A verificação usa a origem Owner guardada (ou a primeira origem aprovada no arranque inicial), exige a chave pública provisionada e verifica manifesto Ed25519, hash, tamanho, versão, arquitetura e dependências. Não executa código do repositório. A aplicação de um pacote continua a exigir confirmação Owner pela PWA.
+O instalador não pede URLs, hashes nem impressão digital: usa o repositório oficial `https://github.com/solargualdimpais-bot/TheSolarMiner`. Antes de instalar o SolarMiner, valida no Gateway Debian 13 ou posterior, AMD64 e Python 3.13 ou posterior, o esquema/versão/origem do manifesto, a assinatura Ed25519, o tamanho e SHA-256 do pacote e a arquitetura Debian. Se a assinatura ou qualquer validação falhar, termina sem instalar o SolarMiner. Depois instala o pacote e dependências apenas dos repositórios Debian, provisiona a chave pública e a allowlist oficial, ativa o serviço e o timer diário e verifica o health endpoint local. Em falha, tenta remover o pacote e restaurar a configuração inicial; consulta `/var/log/solarminer-first-install.log`.
+
+É necessária ligação à Internet durante a instalação para atualizar o APT e instalar dependências Debian. O primeiro arranque do serviço não cria automaticamente a conta Owner: conclui o bootstrap inicial e o emparelhamento seguindo `A2_OWNER_RECOVERY.md` e `TLS_TRUST.md`. A instalação não atualiza firmware no ato da inserção da pen; atualizações futuras são verificadas diariamente, mas continuam a exigir ação explícita do Owner para aplicação.
+
+O instalador destina-se à instalação inicial num Debian limpo. Não o uses para atualizar um Gateway existente; nesse caso usa o fluxo de atualização assinado da PWA e o rollback documentado.
 
 ## Instalação sem pen USB
 
