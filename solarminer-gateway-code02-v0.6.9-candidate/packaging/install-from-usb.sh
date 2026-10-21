@@ -166,7 +166,7 @@ while [ "$attempt" -lt 30 ]; do
      python3 - <<'PY' >/dev/null 2>&1
 import json, ssl, urllib.request
 ctx = ssl.create_default_context(cafile="/var/lib/solarminer/server.crt")
-with urllib.request.urlopen("https://127.0.0.1:8443/api/v1/health", context=ctx, timeout=3) as response:
+with urllib.request.urlopen("https://127.0.0.1:8443/api/v1/health", context=ctx, timeout=1) as response:
     if response.status != 200:
         raise SystemExit(1)
     json.load(response)
@@ -176,7 +176,7 @@ PY
     break
   fi
   attempt=$((attempt + 1))
-  sleep 2
+  sleep 1
 done
 [ "$attempt" -lt 30 ] || fail "Health check não passou dentro de 60 segundos."
 log "Instalação inicial SolarMiner Gateway 0.6.10 concluída."
