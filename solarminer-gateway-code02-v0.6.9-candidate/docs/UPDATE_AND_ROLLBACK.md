@@ -1,5 +1,27 @@
 # Pipeline de atualização e recuperação — CODE02 v0.6.9 candidate
 
+## Origem de release escolhida pelo Owner
+
+A PWA oferece a sessão Owner um campo de URL de repositório e o botão **Verificar atualização**. O Gateway aceita apenas a raiz HTTPS `https://github.com/{owner}/{repository}`, confere uma correspondência exata na allowlist administrativa root-owned e valida o URL também no servidor. Não há `git pull`, checkout, execução de scripts ou instalação de dependências obtidas do repositório.
+
+Configure `/etc/solarminer/update-sources.json` como root (ficheiro regular, root-owned, sem permissão de escrita por grupo/outros, JSON até 64 KiB), por exemplo:
+
+```json
+{
+  "repositories": {
+    "https://github.com/owner/repository": {
+      "manifest_url": "https://github.com/owner/repository/releases/latest/download/solarminer-release.json",
+      "manifest_origins": ["https://github.com", "https://release-assets.githubusercontent.com"],
+      "package_origins": ["https://github.com", "https://release-assets.githubusercontent.com"]
+    }
+  }
+}
+```
+
+Ajuste as origens permitidas às origens HTTPS de manifesto/pacote usadas pelo serviço de release; redirecionamentos para qualquer outra origem são recusados. A configuração não contém tokens ou credenciais. Repositórios têm de ser públicos. Sem correspondência administrativa, a verificação termina em rejeição e não altera o sistema.
+
+O Gateway verifica Ed25519 com a chave de release provisionada localmente, hash e tamanho do pacote, versão, arquitetura e dependências Debian, espaço disponível e preflight do helper. Apenas um pacote validado é guardado em staging. O resultado mostra a versão e o estado; a verificação nunca ativa o pacote. A aplicação continua a exigir uma ação separada do Owner e percorre os estados de backup SQLite, staging, ativação, health check e rollback descritos abaixo.
+
 ## Modelo de ativação
 
 O endpoint `POST /api/v1/system/update/apply` só aceita uma operação `VERIFIED`, com versão de destino coincidente, sessão Owner e helper privilegiado instalado. A API não reinicia o próprio serviço: enfileira a operação numa unidade systemd independente e responde `202 APPLY_QUEUED`. O progresso pode ser consultado em `GET /api/v1/system/update/status`.
