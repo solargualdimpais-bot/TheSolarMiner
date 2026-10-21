@@ -78,7 +78,7 @@ try:
         f.write("\n")
         f.flush()
         os.fsync(f.fileno())
-    os.chmod(tmp, 0o600)
+    os.chmod(tmp, 0o640)
     os.replace(tmp, path)
 finally:
     try: os.unlink(tmp)
@@ -88,6 +88,8 @@ PY
 printf 'A instalar pacote amd64 e dependências Debian…\n'
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y "$DEB"
+chown root:solarminer /etc/solarminer/update-sources.json
+chmod 0640 /etc/solarminer/update-sources.json
 printf '\nInstalação concluída. O timer verifica diariamente a origem aprovada.\n'
 printf 'A PWA Owner permite verificar e selecionar apenas URLs presentes na allowlist root.\n'
 printf 'A aplicação continua a exigir confirmação explícita do Owner.\n'
