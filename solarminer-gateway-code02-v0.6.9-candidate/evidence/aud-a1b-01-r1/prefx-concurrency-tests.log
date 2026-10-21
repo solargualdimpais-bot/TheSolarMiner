@@ -1,0 +1,234 @@
+FFFFF                                                                    [100%]
+=================================== FAILURES ===================================
+_ test_aud_a1b01_create_user_rejected_if_admin_demoted_after_initial_authorization _
+
+client = <starlette.testclient.TestClient object at 0x7f8c98e367b0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f8c98ddbbb0>
+
+    def test_aud_a1b01_create_user_rejected_if_admin_demoted_after_initial_authorization(client, monkeypatch):
+        from concurrent.futures import ThreadPoolExecutor
+    
+        owner, private, _ = create_owner(client)
+        admin, _ = _create_member(client, owner, private, role="admin", username="raceadmin1",
+                                  password="race-admin-password-01")
+        admin_login = login(client, owner, private, username=admin["username"],
+                            password="race-admin-password-01", nonce="race-admin-login-01")
+        assert admin_login.status_code == 200
+        admin_headers = {"Authorization": f"Bearer {admin_login.json()['access_token']}"}
+        owner_headers, _ = _owner_headers(client, owner, private, nonce="race-owner-login-01")
+        reached, release, dependency = _pause_after_initial_permission_check(monkeypatch, "/api/v1/users", "POST")
+        try:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                pending = pool.submit(client.post, "/api/v1/users", headers=admin_headers, json={
+                    "username": "mustnotexist1", "password": "new-user-password-01", "role": "operator",
+                    "device_id": owner["device_id"]})
+                assert reached.wait(timeout=5), "request did not reach the post-authorization pause"
+                demote = client.patch(f"/api/v1/users/{admin['id']}/role", headers=owner_headers,
+                                      json={"role": "viewer", "current_password": "a-long-passphrase-01"})
+                assert demote.status_code == 200, demote.text
+                release.set()
+                response = pending.result(timeout=10)
+>           assert response.status_code == 401, response.text
+E           AssertionError: {"id":"3f3eaeb0-7c36-4b04-9055-4be13220fffd","username":"mustnotexist1","role":"operator","device_id":"69146268-66bc-4926-add6-a6063eb1d00d"}
+E           assert 201 == 401
+E            +  where 201 = <Response [201 Created]>.status_code
+
+tests/test_gateway.py:703: AssertionError
+------------------------------ Captured log setup ------------------------------
+WARNING  solarminer.gateway:app.py:261 Secure owner bootstrap is pending; token expires in 15 minutes and is available only to the local operator
+_______ test_aud_a1b01_device_write_rejected_after_admin_demoted[create] _______
+
+client = <starlette.testclient.TestClient object at 0x7f8c98c3b9d0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f8c98ddbe10>
+endpoint_kind = 'create'
+
+    @pytest.mark.parametrize("endpoint_kind", ["create", "revoke"])
+    def test_aud_a1b01_device_write_rejected_after_admin_demoted(client, monkeypatch, endpoint_kind):
+        from concurrent.futures import ThreadPoolExecutor
+    
+        owner, private, _ = create_owner(client)
+        admin, _ = _create_member(client, owner, private, role="admin", username=f"deviceadmin{endpoint_kind}",
+                                  password="device-admin-password-01")
+        logged = login(client, owner, private, username=admin["username"], password="device-admin-password-01",
+                       nonce=f"device-admin-login-{endpoint_kind}-01")
+        assert logged.status_code == 200
+        admin_headers = {"Authorization": f"Bearer {logged.json()['access_token']}"}
+        owner_headers, _ = _owner_headers(client, owner, private, nonce=f"device-owner-login-{endpoint_kind}-01")
+        target_device = client.post("/api/v1/devices", headers=owner_headers, json=_make_device_payload()).json()
+        if endpoint_kind == "create":
+            path, route_path, method, payload = "/api/v1/devices", "/api/v1/devices", "POST", _make_device_payload("AA:BB:CC:DD:EE:23")
+        else:
+            path, route_path, method, payload = f"/api/v1/devices/{target_device['id']}/revoke", "/api/v1/devices/{device_id}/revoke", "POST", None
+        reached, release, dependency = _pause_after_initial_permission_check(monkeypatch, route_path, method)
+        try:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                if payload is None:
+                    pending = pool.submit(client.post, path, headers=admin_headers)
+                else:
+                    pending = pool.submit(client.post, path, headers=admin_headers, json=payload)
+                assert reached.wait(timeout=5), "device request did not reach post-authorization pause"
+                demote = client.patch(f"/api/v1/users/{admin['id']}/role", headers=owner_headers,
+                                      json={"role": "viewer", "current_password": "a-long-passphrase-01"})
+                assert demote.status_code == 200, demote.text
+                release.set()
+                response = pending.result(timeout=10)
+>           assert response.status_code == 401, response.text
+E           AssertionError: {"id":"5a94f784-2ffd-4a8c-a8bd-0b808a6d956b","mac":"AA:BB:CC:DD:EE:23","mac_status":"declared","status":"active","public_key_sha256":"7488b839ee8bff8cea21a51abc9c15b7ca67c8283659aa11d64ac1f7522168ea"}
+E           assert 201 == 401
+E            +  where 201 = <Response [201 Created]>.status_code
+
+tests/test_gateway.py:798: AssertionError
+------------------------------ Captured log setup ------------------------------
+WARNING  solarminer.gateway:app.py:261 Secure owner bootstrap is pending; token expires in 15 minutes and is available only to the local operator
+_______ test_aud_a1b01_device_write_rejected_after_admin_demoted[revoke] _______
+
+client = <starlette.testclient.TestClient object at 0x7f8c98599950>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f8c98e25250>
+endpoint_kind = 'revoke'
+
+    @pytest.mark.parametrize("endpoint_kind", ["create", "revoke"])
+    def test_aud_a1b01_device_write_rejected_after_admin_demoted(client, monkeypatch, endpoint_kind):
+        from concurrent.futures import ThreadPoolExecutor
+    
+        owner, private, _ = create_owner(client)
+        admin, _ = _create_member(client, owner, private, role="admin", username=f"deviceadmin{endpoint_kind}",
+                                  password="device-admin-password-01")
+        logged = login(client, owner, private, username=admin["username"], password="device-admin-password-01",
+                       nonce=f"device-admin-login-{endpoint_kind}-01")
+        assert logged.status_code == 200
+        admin_headers = {"Authorization": f"Bearer {logged.json()['access_token']}"}
+        owner_headers, _ = _owner_headers(client, owner, private, nonce=f"device-owner-login-{endpoint_kind}-01")
+        target_device = client.post("/api/v1/devices", headers=owner_headers, json=_make_device_payload()).json()
+        if endpoint_kind == "create":
+            path, route_path, method, payload = "/api/v1/devices", "/api/v1/devices", "POST", _make_device_payload("AA:BB:CC:DD:EE:23")
+        else:
+            path, route_path, method, payload = f"/api/v1/devices/{target_device['id']}/revoke", "/api/v1/devices/{device_id}/revoke", "POST", None
+        reached, release, dependency = _pause_after_initial_permission_check(monkeypatch, route_path, method)
+        try:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                if payload is None:
+                    pending = pool.submit(client.post, path, headers=admin_headers)
+                else:
+                    pending = pool.submit(client.post, path, headers=admin_headers, json=payload)
+                assert reached.wait(timeout=5), "device request did not reach post-authorization pause"
+                demote = client.patch(f"/api/v1/users/{admin['id']}/role", headers=owner_headers,
+                                      json={"role": "viewer", "current_password": "a-long-passphrase-01"})
+                assert demote.status_code == 200, demote.text
+                release.set()
+                response = pending.result(timeout=10)
+>           assert response.status_code == 401, response.text
+E           AssertionError: {"status":"revoked"}
+E           assert 200 == 401
+E            +  where 200 = <Response [200 OK]>.status_code
+
+tests/test_gateway.py:798: AssertionError
+------------------------------ Captured log setup ------------------------------
+WARNING  solarminer.gateway:app.py:261 Secure owner bootstrap is pending; token expires in 15 minutes and is available only to the local operator
+__________ test_aud_a1b01_login_rechecks_after_completed_deactivation __________
+
+client = <starlette.testclient.TestClient object at 0x7f8c9853e520>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f8c985a1e10>
+
+    def test_aud_a1b01_login_rechecks_after_completed_deactivation(client, monkeypatch):
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+    
+        owner, private, _ = create_owner(client)
+        member, owner_headers = _create_member(client, owner, private, username="loginraceinactive",
+                                               password="login-race-password-01")
+        reached = threading.Event()
+        release = threading.Event()
+        original_verify = gateway.verify_signature
+    
+        def paused_verify(pem, message, signature):
+            original_verify(pem, message, signature)
+            if message.startswith(b"LOGIN\nloginraceinactive\n"):
+                reached.set()
+                if not release.wait(timeout=10):
+                    raise RuntimeError("test synchronization timed out")
+    
+        monkeypatch.setattr(gateway, "verify_signature", paused_verify)
+        try:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                pending = pool.submit(login, client, owner, private, "login-race-password-01",
+                                      "login-race-member-nonce-01", "loginraceinactive")
+                assert reached.wait(timeout=5), "login did not pass initial password/signature checks"
+                response = client.patch(f"/api/v1/users/{member['id']}/status", headers=owner_headers,
+                                        json={"status": "revoked", "current_password": "a-long-passphrase-01"})
+                assert response.status_code == 200, response.text
+                release.set()
+                login_response = pending.result(timeout=10)
+>           assert login_response.status_code == 401, login_response.text
+E           AssertionError: {"access_token":"-1EM3C6MjOzsI091bE_k35ZDYN2Dqy6azRmqHb1Vh-Fh3PB2PZbXDP_bEmcMuNVn","token_type":"Bearer","expires_in":28800,"user":{"id":"1f87b5f3-f3eb-422d-8f0c-cb7a9528302d","username":"loginraceinactive","role":"operator"}}
+E           assert 200 == 401
+E            +  where 200 = <Response [200 OK]>.status_code
+
+tests/test_gateway.py:857: AssertionError
+------------------------------ Captured log setup ------------------------------
+WARNING  solarminer.gateway:app.py:261 Secure owner bootstrap is pending; token expires in 15 minutes and is available only to the local operator
+_________ test_aud_a1b01_login_cannot_cross_deactivation_reactivation __________
+
+client = <starlette.testclient.TestClient object at 0x7f8c9853f5c0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f8c985a2e00>
+
+    def test_aud_a1b01_login_cannot_cross_deactivation_reactivation(client, monkeypatch):
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+    
+        owner, private, _ = create_owner(client)
+        member, owner_headers = _create_member(client, owner, private, username="loginracereactivate",
+                                               password="login-race-password-02")
+        old_login = login(client, owner, private, username=member["username"], password="login-race-password-02",
+                          nonce="login-race-old-session-01")
+        assert old_login.status_code == 200
+        old_token = old_login.json()["access_token"]
+        reached = threading.Event()
+        release = threading.Event()
+        original_verify = gateway.verify_signature
+    
+        def paused_verify(pem, message, signature):
+            original_verify(pem, message, signature)
+            if message.startswith(b"LOGIN\nloginracereactivate\n"):
+                reached.set()
+                if not release.wait(timeout=10):
+                    raise RuntimeError("test synchronization timed out")
+    
+        monkeypatch.setattr(gateway, "verify_signature", paused_verify)
+        try:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                pending = pool.submit(login, client, owner, private, "login-race-password-02",
+                                      "login-race-member-nonce-02", "loginracereactivate")
+                assert reached.wait(timeout=5), "login did not pass initial password/signature checks"
+                deactivated = client.patch(f"/api/v1/users/{member['id']}/status", headers=owner_headers,
+                                           json={"status": "revoked", "current_password": "a-long-passphrase-01"})
+                assert deactivated.status_code == 200, deactivated.text
+                reactivated = client.patch(f"/api/v1/users/{member['id']}/status", headers=owner_headers,
+                                           json={"status": "active", "current_password": "a-long-passphrase-01"})
+                assert reactivated.status_code == 200, reactivated.text
+                release.set()
+                login_response = pending.result(timeout=10)
+>           assert login_response.status_code == 401, login_response.text
+E           AssertionError: {"access_token":"Yh4MtWd-eg0oIHpQi1UNqhitAuWAK04xj2OQtKjX6jku1x33K91guZVR9uCzrTwj","token_type":"Bearer","expires_in":28800,"user":{"id":"c7478239-92b6-4147-b495-1b01f357d535","username":"loginracereactivate","role":"operator"}}
+E           assert 200 == 401
+E            +  where 200 = <Response [200 OK]>.status_code
+
+tests/test_gateway.py:907: AssertionError
+------------------------------ Captured log setup ------------------------------
+WARNING  solarminer.gateway:app.py:261 Secure owner bootstrap is pending; token expires in 15 minutes and is available only to the local operator
+=========================== short test summary info ============================
+FAILED tests/test_gateway.py::test_aud_a1b01_create_user_rejected_if_admin_demoted_after_initial_authorization - AssertionError: {"id":"3f3eaeb0-7c36-4b04-9055-4be13220fffd","username":"mustnotexist1","role":"operator","device_id":"69146268-66bc-4926-add6-a6063eb1d00d"}
+assert 201 == 401
+ +  where 201 = <Response [201 Created]>.status_code
+FAILED tests/test_gateway.py::test_aud_a1b01_device_write_rejected_after_admin_demoted[create] - AssertionError: {"id":"5a94f784-2ffd-4a8c-a8bd-0b808a6d956b","mac":"AA:BB:CC:DD:EE:23","mac_status":"declared","status":"active","public_key_sha256":"7488b839ee8bff8cea21a51abc9c15b7ca67c8283659aa11d64ac1f7522168ea"}
+assert 201 == 401
+ +  where 201 = <Response [201 Created]>.status_code
+FAILED tests/test_gateway.py::test_aud_a1b01_device_write_rejected_after_admin_demoted[revoke] - AssertionError: {"status":"revoked"}
+assert 200 == 401
+ +  where 200 = <Response [200 OK]>.status_code
+FAILED tests/test_gateway.py::test_aud_a1b01_login_rechecks_after_completed_deactivation - AssertionError: {"access_token":"-1EM3C6MjOzsI091bE_k35ZDYN2Dqy6azRmqHb1Vh-Fh3PB2PZbXDP_bEmcMuNVn","token_type":"Bearer","expires_in":28800,"user":{"id":"1f87b5f3-f3eb-422d-8f0c-cb7a9528302d","username":"loginraceinactive","role":"operator"}}
+assert 200 == 401
+ +  where 200 = <Response [200 OK]>.status_code
+FAILED tests/test_gateway.py::test_aud_a1b01_login_cannot_cross_deactivation_reactivation - AssertionError: {"access_token":"Yh4MtWd-eg0oIHpQi1UNqhitAuWAK04xj2OQtKjX6jku1x33K91guZVR9uCzrTwj","token_type":"Bearer","expires_in":28800,"user":{"id":"c7478239-92b6-4147-b495-1b01f357d535","username":"loginracereactivate","role":"operator"}}
+assert 200 == 401
+ +  where 200 = <Response [200 OK]>.status_code
+5 failed in 3.72s

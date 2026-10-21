@@ -1,0 +1,13 @@
+solarminer-gateway-code01-v0.4.0.zip: OK
+solarminer-gateway-code01-a1b-aud-a1b-01-r1.zip: OK
+solarminer-gateway-code01-a1b-aud-a1b-01-r1_0.4.2_amd64.deb: OK
+solarminer-gateway-code01-a2-v0.5.0.zip: OK
+solarminer-gateway-code01-a2_0.5.0_amd64.deb: OK
+solarminer-code01-a2-v0.5.0-implementation-report.md: OK
+solarminer-prova0-source.zip: OK
+solarminer-gateway-code02-v0.6.0.zip: OK
+solarminer-gateway-code02_0.6.0_amd64.deb: OK
+CODE02_IMPLEMENTATION_REPORT_v0.6.0.md: OK
+solarminer-gateway-code02-v0.6.1.zip: OK
+solarminer-gateway-code02_0.6.1_amd64.deb: OK
+CODE02_IMPLEMENTATION_REPORT.md: OK

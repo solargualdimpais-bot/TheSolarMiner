@@ -1,0 +1,2 @@
+catalog_signature_verified=PASS
+builtin_artifact_sha256_verified=PASS

@@ -1,0 +1,86 @@
+
+> the-solar-miner-pwa@0.1.0 test
+> node --test tests/*.test.js
+
+TAP version 13
+# Subtest: API client attaches bearer token, uses no-store and omits credentials
+ok 1 - API client attaches bearer token, uses no-store and omits credentials
+  ---
+  duration_ms: 2.182485
+  type: 'test'
+  ...
+# Subtest: API client distinguishes expired session and forbidden access
+ok 2 - API client distinguishes expired session and forbidden access
+  ---
+  duration_ms: 0.673837
+  type: 'test'
+  ...
+# Subtest: API client reports timeout and network errors
+ok 3 - API client reports timeout and network errors
+  ---
+  duration_ms: 0.477401
+  type: 'test'
+  ...
+# Subtest: API client refuses non-HTTPS remote origins
+ok 4 - API client refuses non-HTTPS remote origins
+  ---
+  duration_ms: 0.171359
+  type: 'test'
+  ...
+# Subtest: all six required categories exist and have unique IDs
+ok 5 - all six required categories exist and have unique IDs
+  ---
+  duration_ms: 2.392682
+  type: 'test'
+  ...
+# Subtest: demo fixtures are always marked SIMULATED
+ok 6 - demo fixtures are always marked SIMULATED
+  ---
+  duration_ms: 0.175465
+  type: 'test'
+  ...
+# Subtest: simulated data cannot be classified as connected
+ok 7 - simulated data cannot be classified as connected
+  ---
+  duration_ms: 0.203888
+  type: 'test'
+  ...
+# Subtest: reading formatter distinguishes absent data from numeric zero
+ok 8 - reading formatter distinguishes absent data from numeric zero
+  ---
+  duration_ms: 12.003993
+  type: 'test'
+  ...
+# Subtest: real Gateway URLs require HTTPS except loopback development
+ok 9 - real Gateway URLs require HTTPS except loopback development
+  ---
+  duration_ms: 0.606406
+  type: 'test'
+  ...
+# Subtest: stale real readings are not presented as fresh; demo is explicitly simulated
+ok 10 - stale real readings are not presented as fresh; demo is explicitly simulated
+  ---
+  duration_ms: 0.577442
+  type: 'test'
+  ...
+# Subtest: static PWA files exclude API response caching and demo controls
+ok 11 - static PWA files exclude API response caching and demo controls
+  ---
+  duration_ms: 8.862168
+  type: 'test'
+  ...
+# Subtest: freshness uses equipment/readings timestamps, not HTTP fetch time
+ok 12 - freshness uses equipment/readings timestamps, not HTTP fetch time
+  ---
+  duration_ms: 0.273993
+  type: 'test'
+  ...
+1..12
+# tests 12
+# suites 0
+# pass 12
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 147.539612

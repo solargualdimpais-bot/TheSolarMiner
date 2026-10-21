@@ -1,0 +1,17 @@
+Modified:
+- Makefile — A2 package output version 0.5.0.
+- README.md — A2 scope and recovery operating instructions.
+- docs/API.md — bootstrap key disclosure and local-only recovery documentation; no recovery HTTP endpoint.
+- src/solarminer_gateway/app.py — version 0.5.0, additive SQLite migration v3/recovery-key table, one-time key issuance during existing bootstrap, and recovery-key invalidation on owner role/status loss.
+- tests/test_gateway.py — version expectation and additive migration v3 expectations; original regression cases retained.
+- packaging/build-deb.sh — installs the local CLI and A2 recovery runbook.
+- packaging/control — Debian package version 0.5.0.
+- packaging/solarminer-gateway.service — version label only.
+
+Added:
+- src/solarminer_gateway/recovery.py — key verifier, proof verification, transactional recovery, recovery-key rotation, protected emergency backup/reset.
+- src/solarminer_gateway/cli.py — interactive root-only local recovery commands; no secrets accepted in argv/env.
+- tests/test_recovery.py — A2 security, transaction, concurrency, backup, secret-handling and persistence tests.
+- docs/A2_OWNER_RECOVERY.md — recovery runbook and failure handling.
+- packaging/solarminer-gateway — command wrapper installed as /usr/bin/solarminer-gateway.
+- evidence/a2/* — local test, package, byte-comparison and preservation evidence.

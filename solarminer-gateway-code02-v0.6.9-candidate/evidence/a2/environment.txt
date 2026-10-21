@@ -1,0 +1,23 @@
+UTC timestamp: 2026-10-18T22:41:09Z
+
+OS release:
+PRETTY_NAME="Debian GNU/Linux 13 (trixie)"
+NAME="Debian GNU/Linux"
+VERSION_ID="13"
+VERSION="13 (trixie)"
+VERSION_CODENAME=trixie
+DEBIAN_VERSION_FULL=13.3
+ID=debian
+HOME_URL="https://www.debian.org/"
+SUPPORT_URL="https://www.debian.org/support"
+BUG_REPORT_URL="https://bugs.debian.org/"
+
+Kernel and container identity:
+Linux 8ee07469c3c8 6.18.55 #1 SMP Wed Oct 14 19:45:18 UTC 2026 x86_64 GNU/Linux
+
+Architecture: amd64
+Python: Python 3.13.5
+Python executable: /opt/pyvenv/bin/python3
+systemd manager state: offline
+
+Environment classification: isolated build/test container; not a Debian VM with active systemd and not physical hardware.

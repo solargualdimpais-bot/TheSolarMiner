@@ -1,0 +1,1 @@
+systemd-analyze verify: syntax/static verification passed for Gateway unit and rendered worker unit. This does not prove runtime enforcement.

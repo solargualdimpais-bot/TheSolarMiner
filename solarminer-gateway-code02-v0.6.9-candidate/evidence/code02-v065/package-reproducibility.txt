@@ -1,0 +1,5 @@
+Build A SHA-256: c7dd8aa37bc0dda4ed3019073f290e65e8248c4bc5327bb94efbee695da389c2
+Build B SHA-256: c7dd8aa37bc0dda4ed3019073f290e65e8248c4bc5327bb94efbee695da389c2
+Byte-for-byte comparison (cmp): PASS
+Final Debian artifact SHA-256: c7dd8aa37bc0dda4ed3019073f290e65e8248c4bc5327bb94efbee695da389c2
+Package content was inspected and extracted for tests only; not installed.

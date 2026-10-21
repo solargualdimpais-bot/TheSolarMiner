@@ -1,0 +1,11 @@
+# v0.6.2 baseline artifacts checked before source changes
+8860e7e30089d61d34afe79e40484c5f70630603e76873cf07c74b27e33f1ece  /mnt/data/solarminer-gateway-code02-v0.6.2.zip (251326 bytes)
+c58ea0043581515e114c10a6e6385aaf81fd5aff0ef7e8807be844b05c830216  /mnt/data/solarminer-gateway-code02_0.6.2_amd64.deb (50016 bytes)
+81fa04aa76eaf4d7df3f8daa29743e804c8005cb36fd7c326645a199443ce3aa  /mnt/data/CODE02_V062_IMPLEMENTATION_REPORT.md (5430 bytes)
+0a852e2316dff39dc56348ed3b99a439accac5fae29812a9120f35ea3d541dab  /mnt/data/CODE02_V062_TEST_REPORT.md (2505 bytes)
+36244419ea385b5c968df67d5b0977f09196ed48a6ae8266b1ab472a86b1b757  /mnt/data/SOLARMINER_CODE02_V062_ARTIFACT_MANIFEST.sha256 (1010 bytes)
+# Historical reference hashes retained without modification
+b027ce480c17992ed30c47d413fc3e5a5b3069b937e892a25605ce8f35ca3785  /mnt/data/solarminer-gateway-code02-v0.6.1.zip (206238 bytes)
+9a94ffa1e008e9c65b9ada3b41c09adcb742c99476d99b00284afddb8ae78f66  /mnt/data/solarminer-gateway-code02_0.6.1_amd64.deb (40496 bytes)
+478654c20024e925d5c00a3ae14579e4719f848bc241731dd9dcb99268ac4701  /mnt/data/solarminer-gateway-code02-v0.6.0.zip (142193 bytes)
+# The earlier supplied v0.6.0 ZIP value ending ...99218ac4701 remains documented as a discrepancy.

@@ -1,0 +1,3 @@
+CODE02 v0.6.0 ZIP expected from prompt: 478654c20024e925d5c00a3ae14579e4719f848bc241731dd9dcb99218ac4701
+CODE02 v0.6.0 Debian expected from prompt: 3878482ea137ce331fb3e069a728ca64477c1ac936ac528e29f36791d0bbd2a3
+CODE02 v0.6.0 report expected from prompt: c60b1e98a13921f8e7e4b077f4b01b1a95bbf600ef581cfbf88f56afb465bd2f

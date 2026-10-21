@@ -1,0 +1,16 @@
+{
+  "status": "PARTIALLY_VALIDATED",
+  "source_version": "A1",
+  "release_version": "0.4.1",
+  "make_test": {"status": "PASS", "passed": 32, "failed": 0},
+  "concurrent_owner_role_demotion": {"status": "PASS", "independent_trials": 5, "threads_per_trial": 2, "expected_outcome_each_trial": "one success, one denial, at least one active owner remains"},
+  "audit_failure_atomicity": {"status": "PASS", "http_status": 503, "privilege_change_rolled_back": true, "false_success_event": false},
+  "debian_builds": {"status": "PASS", "count": 2, "sha256_equal": true, "sha256": "760a19a3f9d3a257eb1139c05761118c41bc5bcc1e10cc6844833aebecb9292f"},
+  "dpkg_deb_info": "PASS",
+  "dpkg_deb_contents": "PASS",
+  "package_payload_matches_tested_source": "PASS",
+  "target_system_install_and_systemd_lifecycle": "BLOCKED",
+  "physical_hardware": "BLOCKED",
+  "github_publication": "NOT_APPLICABLE",
+  "a2_and_code02": "NOT_APPLICABLE"
+}

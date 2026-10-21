@@ -1,0 +1,1 @@
+PASS: two independent Debian builds are byte-identical

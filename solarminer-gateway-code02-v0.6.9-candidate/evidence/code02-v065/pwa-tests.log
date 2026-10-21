@@ -1,0 +1,128 @@
+
+> the-solar-miner-pwa@0.2.0 test
+> node --test tests/*.test.js
+
+TAP version 13
+# Subtest: API client attaches bearer token, uses no-store and omits credentials
+ok 1 - API client attaches bearer token, uses no-store and omits credentials
+  ---
+  duration_ms: 2.614788
+  type: 'test'
+  ...
+# Subtest: API client distinguishes expired session and forbidden access
+ok 2 - API client distinguishes expired session and forbidden access
+  ---
+  duration_ms: 0.633757
+  type: 'test'
+  ...
+# Subtest: API client reports timeout and network errors
+ok 3 - API client reports timeout and network errors
+  ---
+  duration_ms: 0.44324
+  type: 'test'
+  ...
+# Subtest: API client refuses non-HTTPS remote origins
+ok 4 - API client refuses non-HTTPS remote origins
+  ---
+  duration_ms: 0.21139
+  type: 'test'
+  ...
+# Subtest: all six required categories exist and have unique IDs
+ok 5 - all six required categories exist and have unique IDs
+  ---
+  duration_ms: 2.053741
+  type: 'test'
+  ...
+# Subtest: demo fixtures are always marked SIMULATED
+ok 6 - demo fixtures are always marked SIMULATED
+  ---
+  duration_ms: 0.182225
+  type: 'test'
+  ...
+# Subtest: simulated data cannot be classified as connected
+ok 7 - simulated data cannot be classified as connected
+  ---
+  duration_ms: 0.177357
+  type: 'test'
+  ...
+# Subtest: reading formatter distinguishes absent data from numeric zero
+ok 8 - reading formatter distinguishes absent data from numeric zero
+  ---
+  duration_ms: 12.454056
+  type: 'test'
+  ...
+# Subtest: real Gateway URLs require HTTPS except loopback development
+ok 9 - real Gateway URLs require HTTPS except loopback development
+  ---
+  duration_ms: 0.54978
+  type: 'test'
+  ...
+# Subtest: stale real readings are not presented as fresh; demo is explicitly simulated
+ok 10 - stale real readings are not presented as fresh; demo is explicitly simulated
+  ---
+  duration_ms: 0.41064
+  type: 'test'
+  ...
+# Subtest: static PWA files exclude API response caching and demo controls
+ok 11 - static PWA files exclude API response caching and demo controls
+  ---
+  duration_ms: 10.461352
+  type: 'test'
+  ...
+# Subtest: freshness uses equipment/readings timestamps, not HTTP fetch time
+ok 12 - freshness uses equipment/readings timestamps, not HTTP fetch time
+  ---
+  duration_ms: 0.307985
+  type: 'test'
+  ...
+# Subtest: device identity uses a non-exportable Ed25519 private key and valid SPKI public PEM
+ok 13 - device identity uses a non-exportable Ed25519 private key and valid SPKI public PEM
+  ---
+  duration_ms: 7.964085
+  type: 'test'
+  ...
+# Subtest: browser Ed25519 signing verifies against the exported public key
+ok 14 - browser Ed25519 signing verifies against the exported public key
+  ---
+  duration_ms: 4.904165
+  type: 'test'
+  ...
+# Subtest: pairDevice signs the exact canonical fields and never sends private key material
+ok 15 - pairDevice signs the exact canonical fields and never sends private key material
+  ---
+  duration_ms: 23.279043
+  type: 'test'
+  ...
+# Subtest: pairing rejects missing code and malformed MAC before network access
+ok 16 - pairing rejects missing code and malformed MAC before network access
+  ---
+  duration_ms: 0.992509
+  type: 'test'
+  ...
+# Subtest: login signs the established LOGIN canonical string and returns only the server session
+ok 17 - login signs the established LOGIN canonical string and returns only the server session
+  ---
+  duration_ms: 3.063386
+  type: 'test'
+  ...
+# Subtest: admin pairing-code issuance uses a bearer session and bounded lifetime
+ok 18 - admin pairing-code issuance uses a bearer session and bounded lifetime
+  ---
+  duration_ms: 1.097257
+  type: 'test'
+  ...
+# Subtest: logout sends a server-side revocation request; identity storage refuses exportable private keys
+ok 19 - logout sends a server-side revocation request; identity storage refuses exportable private keys
+  ---
+  duration_ms: 0.829693
+  type: 'test'
+  ...
+1..19
+# tests 19
+# suites 0
+# pass 19
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 239.939321

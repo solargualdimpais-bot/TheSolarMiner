@@ -1,0 +1,6 @@
+Historical manifest entries: 145
+Files present and matching historical SHA-256: 38
+Files referenced by historical manifest but unavailable at their recorded paths: 107
+Files present with SHA-256 mismatch: 0
+Conclusion: no mismatch among files available for comparison. Full historical-manifest verification is BLOCKED because unavailable paths cannot be independently verified.
+A2 implementation was performed in a new work copy; protected source ZIPs and Debian packages were not overwritten.

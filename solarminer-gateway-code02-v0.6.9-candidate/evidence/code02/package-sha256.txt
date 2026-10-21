@@ -1,0 +1,1 @@
+3878482ea137ce331fb3e069a728ca64477c1ac936ac528e29f36791d0bbd2a3  /mnt/data/solarminer-gateway-code02_0.6.0_amd64.deb

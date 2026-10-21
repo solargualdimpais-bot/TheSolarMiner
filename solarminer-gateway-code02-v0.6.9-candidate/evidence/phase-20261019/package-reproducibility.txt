@@ -1,0 +1,8 @@
+CODE02 v0.6.4 Debian reproducibility check
+Build method: packaging/build-deb.sh
+SOURCE_DATE_EPOCH=0
+Build A SHA-256: 88a9562a3e654fd8570efa273f6faa713d58c4c4a5310d02da4cbd942696d749
+Build B SHA-256: 88a9562a3e654fd8570efa273f6faa713d58c4c4a5310d02da4cbd942696d749
+Byte comparison: PASS (cmp returned 0)
+Package contents include The Solar Miner PWA at /usr/share/solarminer/pwa.
+Runtime installation: NOT PERFORMED

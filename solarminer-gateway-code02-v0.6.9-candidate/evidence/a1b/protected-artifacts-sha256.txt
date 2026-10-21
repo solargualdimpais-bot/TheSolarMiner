@@ -1,0 +1,6 @@
+975eda1d05e756a3685697f716b8998fc7bd351122e97c4a04cb36cbcbdb152a  CODE 01 original Debian package extracted from original source ZIP
+07fb3570cf7d0ea6a14cbd4b9f86a1dae003ed6ef1dd0615ea7e6d24c836eb5e  solarminer-gateway-code01-v0.4.0.zip
+50d3e9ce3b9dfd8a5343a2abd3bb168b44558a18a274a18b62b8ebda493c55ad  solarminer-gateway-code01-a1-partially-validated.zip
+2d60a9e79cdae4671cadf78c6eba5a08b3581ee242670cc46375736c3ae49f9e  solarminer-code01-a1-work/solarminer-gateway/dist-a1/solarminer-gateway_0.4.0_amd64.deb
+e40c462bc3ae638ad73ce48218a81079a9da62b1194dfdc87fa70218092ba4bc  solarminer-prova0-source.zip
+8716677481e91dd3b95f3de3ca84c9d0076cc708996a21d0211da858edad7fa6  solarminer-prova0_0.1.0_amd64.deb

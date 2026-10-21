@@ -1,0 +1,1 @@
+systemd-analyze verify exit=0; static unit check only, no service installed or started

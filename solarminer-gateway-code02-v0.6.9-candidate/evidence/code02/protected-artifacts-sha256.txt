@@ -1,0 +1,9 @@
+f445b2a37ba93e95664e3b38726d5f9635396ec9d0c47ba73669115994498c59  /mnt/data/solarminer-gateway-code01-a2-v0.5.0.zip
+3af9388966a4cfedf1026d38981375c8a57e1569db3489f4fa9ca4abc2ccf4b8  /mnt/data/solarminer-gateway-code01-a2_0.5.0_amd64.deb
+40f014d9f86a2e3a3e3a8ffd650fac1f777a21bd3ec84f30917c9f07826e0c13  /mnt/data/solarminer-code01-a2-v0.5.0-implementation-report.md
+2632f4e328911adaa8a4127e4481d6c88ff0b591b56d41f8633ac091a6fc50b5  /mnt/data/solarminer-gateway-code01-a1b-aud-a1b-01-r1.zip
+b06d662c7fc2539b014d1dcecb1a75d3e59123b255fc43a9a866b50dcf23435c  /mnt/data/solarminer-gateway-code01-a1b-aud-a1b-01-r1_0.4.2_amd64.deb
+07fb3570cf7d0ea6a14cbd4b9f86a1dae003ed6ef1dd0615ea7e6d24c836eb5e  /mnt/data/solarminer-gateway-code01-v0.4.0.zip
+50d3e9ce3b9dfd8a5343a2abd3bb168b44558a18a274a18b62b8ebda493c55ad  /mnt/data/solarminer-gateway-code01-a1-partially-validated.zip
+e40c462bc3ae638ad73ce48218a81079a9da62b1194dfdc87fa70218092ba4bc  /mnt/data/solarminer-prova0-source.zip
+8716677481e91dd3b95f3de3ca84c9d0076cc708996a21d0211da858edad7fa6  /mnt/data/solarminer-prova0_0.1.0_amd64.deb

@@ -1,0 +1,7 @@
+$ systemd-analyze verify packaging/solarminer-gateway.service
+PASS (exit 0)
+$ systemd-analyze verify evidence/code02-v062-worker-test.service
+PASS (exit 0), using /usr/bin/python3 as the executable path for syntax validation.
+$ systemctl is-system-running
+offline
+Interpretation: static unit syntax only; no operational systemd manager, cgroups, network filtering or filesystem isolation was validated.

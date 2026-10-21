@@ -1,0 +1,1 @@
+PASS: all packaged Python modules are byte-identical to source tree

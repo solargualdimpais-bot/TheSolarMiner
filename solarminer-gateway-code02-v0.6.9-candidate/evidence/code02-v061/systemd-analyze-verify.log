@@ -1,0 +1,3 @@
+PASS: packaged Gateway unit static verification
+PASS: rendered connector unit static verification using an existing interpreter path and IPv6 /128 allow rule
+Scope: static syntax validation only; no active systemd/cgroup/network enforcement was tested.

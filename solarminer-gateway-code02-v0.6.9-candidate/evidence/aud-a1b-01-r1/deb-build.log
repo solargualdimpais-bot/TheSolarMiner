@@ -1,0 +1,2 @@
+./packaging/build-deb.sh "/mnt/data/solarminer-code01-a1b-aud-a1b-01-r1/solarminer-gateway/dist-aud-a1b-01"
+dpkg-deb: building package 'solarminer-gateway' in '/mnt/data/solarminer-code01-a1b-aud-a1b-01-r1/solarminer-gateway/dist-aud-a1b-01/solarminer-gateway_0.4.2_amd64.deb'.

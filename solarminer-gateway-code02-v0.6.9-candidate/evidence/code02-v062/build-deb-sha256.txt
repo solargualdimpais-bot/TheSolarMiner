@@ -1,0 +1,2 @@
+c58ea0043581515e114c10a6e6385aaf81fd5aff0ef7e8807be844b05c830216  /mnt/data/solarminer-code02-v062-build-check/a/solarminer-gateway_0.6.2_amd64.deb
+c58ea0043581515e114c10a6e6385aaf81fd5aff0ef7e8807be844b05c830216  /mnt/data/solarminer-code02-v062-build-check/b/solarminer-gateway_0.6.2_amd64.deb

@@ -1,0 +1,2 @@
+9a94ffa1e008e9c65b9ada3b41c09adcb742c99476d99b00284afddb8ae78f66  /tmp/tmp.oX0jbAKeDo/run1/solarminer-gateway_0.6.1_amd64.deb
+9a94ffa1e008e9c65b9ada3b41c09adcb742c99476d99b00284afddb8ae78f66  /tmp/tmp.oX0jbAKeDo/run2/solarminer-gateway_0.6.1_amd64.deb

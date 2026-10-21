@@ -1,0 +1,1 @@
+PASS: independently rebuilt Debian package is byte-identical

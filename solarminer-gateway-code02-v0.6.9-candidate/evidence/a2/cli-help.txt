@@ -1,0 +1,15 @@
+usage: solarminer-gateway [-h] {recovery,recovery-setup,emergency-reset} ...
+
+Local SolarMiner Gateway recovery tools
+
+positional arguments:
+  {recovery,recovery-setup,emergency-reset}
+    recovery            recover an owner using the offline one-time recovery
+                        key
+    recovery-setup      create or rotate a recovery key while owner access
+                        still works
+    emergency-reset     recover an owner using OS-root authority and a
+                        protected backup
+
+options:
+  -h, --help            show this help message and exit
