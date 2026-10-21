@@ -184,3 +184,77 @@ def test_apply_queues_verified_operation_through_privileged_helper(client, monke
     assert response.json()["status"] == "APPLY_QUEUED"
     assert response.json()["health_check_seconds"] == 60
     assert captured and captured[0][-2:] == ["--enqueue", op]
+
+
+def test_repository_update_check_is_owner_only_and_passes_allowlisted_source(client, monkeypatch):
+    token = owner_session(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    seen = {}
+    source = {"repository_url": "https://github.com/solarminer/releases",
+              "manifest_url": "https://github.com/solarminer/releases/latest/manifest.json",
+              "manifest_origins": {"https://github.com"},
+              "package_origins": {"https://github.com"}}
+    def load_source(url, path):
+        seen["url"] = url
+        return source
+    def check_manifest(url, session, **kwargs):
+        seen["manifest_url"] = url
+        seen["kwargs"] = kwargs
+        return {"status": "verified_staged", "available_version": "0.6.9",
+                "signature_valid": True, "activation_available": True}
+    monkeypatch.setattr(gateway.update_manager, "load_update_source", load_source)
+    monkeypatch.setattr(gateway, "_check_system_update_manifest", check_manifest)
+
+    response = client.post("/api/v1/system/update/check", headers=headers,
+                           json={"repository_url": "https://github.com/solarminer/releases"})
+    assert response.status_code == 200, response.text
+    assert response.json()["available_version"] == "0.6.9"
+    assert seen["url"] == source["repository_url"]
+    assert seen["manifest_url"] == source["manifest_url"]
+    assert seen["kwargs"]["repository_url"] == source["repository_url"]
+
+
+def test_repository_update_check_rejects_non_owner_roles(client):
+    owner_session(client)
+    roles = ["admin", "operator", "viewer"]
+    with gateway.db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for role in roles:
+            uid, did = f"update-{role}-user", f"update-{role}-device"
+            _, dpub = keypair()
+            der = serialization.load_pem_public_key(dpub.encode()).public_bytes(
+                serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+            conn.execute("INSERT INTO users(id,account_id,username,password_hash,role,status,created_at) VALUES(?,?,?,?,?,'active',?)",
+                         (uid, uid, uid, gateway.PASSWORDS.hash("update-role-password-" + role), role, gateway.utcnow()))
+            conn.execute("INSERT INTO devices(id,public_key_pem,public_key_sha256,mac_declared,mac_status,status,created_at) VALUES(?,?,?,?,'declared','active',?)",
+                         (did, dpub, hashlib.sha256(der).hexdigest(), "AA:BB:CC:DD:EE:" + {"admin":"21","operator":"22","viewer":"23"}[role], gateway.utcnow()))
+            conn.execute("INSERT INTO user_devices(user_id,device_id,status,created_at) VALUES(?,?,'active',?)",
+                         (uid, did, gateway.utcnow()))
+            raw = "update-session-token-" + role
+            conn.execute("INSERT INTO sessions(token_sha256,user_id,device_id,created_at,expires_at,credential_version) VALUES(?,?,?,?,?,1)",
+                         (gateway.token_hash(raw), uid, did, int(time.time()), int(time.time()) + 3600))
+        conn.commit()
+    for role in roles:
+        response = client.post("/api/v1/system/update/check",
+            headers={"Authorization": f"Bearer update-session-token-{role}"},
+            json={"repository_url": "https://github.com/solarminer/releases"})
+        assert response.status_code == 403, (role, response.text)
+
+
+def test_repository_update_check_rejects_invalid_and_unconfigured_urls(client, monkeypatch):
+    token = owner_session(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    invalid = client.post("/api/v1/system/update/check", headers=headers,
+                          json={"repository_url": "https://github.com/solarminer/releases/tree/main"})
+    assert invalid.status_code == 200
+    assert invalid.json()["status"] == "rejected"
+    assert invalid.json()["signature_valid"] is False
+
+    def reject_source(url, path):
+        raise UpdateValidationError("repository_not_allowlisted")
+    monkeypatch.setattr(gateway.update_manager, "load_update_source", reject_source)
+    rejected = client.post("/api/v1/system/update/check", headers=headers,
+                           json={"repository_url": "https://github.com/solarminer/releases"})
+    assert rejected.status_code == 200
+    assert rejected.json()["status"] == "rejected"
+    assert rejected.json()["message"] == "repository_not_allowlisted"
