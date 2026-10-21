@@ -3,7 +3,7 @@ import { DEMO_CONTROL_CONFIG, createDemoControlState, updateDemoControl, toggleD
 import { renderWorkspacePage, renderHomePreferenceLinks, renderHouseSearch, handleWorkspaceAction, handleWorkspaceChange, applyPreferences, getWorkspacePageLabel, workspace, getEditableEntity, saveEditableEntity, saveDemoWorkspace, hydrateWorkspacePhotos } from "./workspace-ui.js";
 import { renderAutomationsPage, renderSolarProductionPage, renderDemoAdminPanel, handleFeatureAction, saveAutomationForm, addDemoUser, saveDemoUserEdit, saveSolarWeather, demoFeatures } from "./features-v053.js";
 import { GatewayConnectionManager, CONNECTION_STATES, parsePairingQr, parseInviteQr, probeGateway, validateGatewayUrl, PRESENCE_API_STATUS } from "./gateway-connection.js";
-import { bootstrapGatewayOwner, redeemGatewayInvite, loginGateway, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, logoutGateway, readGatewayEnergy, presenceInfo, checkGatewayUpdate, readGatewayUpdateStatus, applyGatewayUpdate } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, redeemGatewayInvite, loginGateway, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, logoutGateway, readGatewayEnergy, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate } from "./gateway-auth.js";
 
 let automationEditingId = "";
 const state = { page: "inicio", mode: "SIMULATED", dataStatus: "DEMO", dataError: null, equipment: DEMO_EQUIPMENT, lastUpdated: null, lastMeasurementAt: null, refreshing: false, propertyPhoto: "", demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [{id:"luz_sala",name:"Luz teto",room:"Sala de estar",floor:"RDC",pct:78},{id:"estor_sala",name:"Estore",room:"Sala de estar",floor:"RDC",pct:60},{id:"luz_coz",name:"Luz teto",room:"Cozinha",floor:"RDC",pct:0},{id:"estor_coz",name:"Estore",room:"Cozinha",floor:"RDC",pct:0}] };
@@ -444,7 +444,11 @@ function updateSessionUi() {
     if (info.user.role === "owner") refreshInviteList().catch(error => { $("#gateway-invite-list").textContent = `Não foi possível consultar convites: ${error.message}`; });
     if (updatePanel) {
       updatePanel.hidden = info.user.role !== "owner";
-      if (info.user.role === "owner") refreshGatewayUpdateStatus().catch(error => showGatewayUpdateMessage(`Não foi possível consultar o estado: ${error.message}`));
+      if (info.user.role === "owner") {
+        readGatewayUpdateSource().then(source => { const input = $("#gateway-update-repository"); if (input && source.repository_url) input.value = source.repository_url; })
+          .catch(error => showGatewayUpdateMessage(`Não foi possível consultar a origem: ${error.message}`));
+        refreshGatewayUpdateStatus().catch(error => showGatewayUpdateMessage(`Não foi possível consultar o estado: ${error.message}`));
+      }
     }
   } else {
     status.textContent = "Sem sessão autenticada nesta aba. O token não é persistido entre recarregamentos.";
@@ -536,10 +540,10 @@ function setGatewayUpdateDetails(result) {
   const apply = $("#gateway-update-apply");
   if (!details || !apply) return;
   details.textContent = "";
-  if (result?.available_version) {
+  if (result?.available_version || result?.latest_version) {
     const rows = [
       `Versão instalada: ${result.installed_version || "desconhecida"}`,
-      `Versão disponível: ${result.available_version}`,
+      result.available_version ? `Versão disponível: ${result.available_version}` : `Versão no GitHub: ${result.latest_version}`,
       `Assinatura: ${result.signature_valid ? "válida" : "não validada"}`,
       `Hash SHA-256: ${result.sha256 || "não disponível"}`,
       result.repository_url ? `Repositório: ${result.repository_url}` : ""
@@ -563,10 +567,17 @@ async function refreshGatewayUpdateStatus() {
       activation_available: result.activation_available,
       repository_url: result.details?.repository_url, sha256: result.details?.package_sha256
     });
+  } else if (result.status === "CURRENT" && result.target_version) {
+    setGatewayUpdateDetails({status: "current", installed_version: result.installed_version,
+      latest_version: result.target_version, signature_valid: true, compatible: true,
+      activation_available: false, repository_url: result.details?.repository_url});
   } else {
     setGatewayUpdateDetails(null);
   }
-  showGatewayUpdateMessage(result.status === "VERIFIED" && !result.activation_available ? "Pacote verificado; a aplicação está bloqueada pelo preflight de recuperação." : `Estado da atualização: ${result.status || "desconhecido"}${result.target_version ? ` · destino ${result.target_version}` : ""}.`);
+  showGatewayUpdateMessage(result.status === "VERIFIED" && !result.activation_available
+    ? "Pacote verificado; a aplicação está bloqueada pelo preflight de recuperação."
+    : result.status === "CURRENT" ? `O Gateway já está atualizado. Versão verificada: ${result.target_version}.`
+    : `Estado da atualização: ${result.status || "desconhecido"}${result.target_version ? ` · destino ${result.target_version}` : ""}.`);
   return result;
 }
 $("#gateway-update-check").addEventListener("click", async () => {
@@ -584,6 +595,8 @@ $("#gateway-update-check").addEventListener("click", async () => {
       showGatewayUpdateMessage(result.activation_available
         ? "Pacote verificado e pronto. Revê a versão e confirma explicitamente para aplicar."
         : "Pacote assinado e transferido, mas o preflight de recuperação bloqueou a aplicação.");
+    } else if (result.status === "current") {
+      showGatewayUpdateMessage(`O Gateway já está atualizado. Versão verificada: ${result.latest_version}.`);
     } else {
       showGatewayUpdateMessage(`Atualização bloqueada: ${gatewayUpdateFailureText(result.message)}`);
     }
