@@ -71,7 +71,6 @@ jobs:
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
           SIGNING_KEY: ${{ secrets.SOLARMINER_RELEASE_SIGNING_KEY }}
           REPOSITORY: ${{ github.repository }}
-          GITHUB_OUTPUT: ${{ github.output }}
         run: |
           set -eu
           test -n "$SIGNING_KEY" || { echo "Missing SOLARMINER_RELEASE_SIGNING_KEY Actions secret" >&2; exit 1; }
