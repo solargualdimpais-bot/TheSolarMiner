@@ -48,7 +48,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y dpkg-dev python3-pytest python3-fastapi python3-uvicorn python3-argon2 python3-cryptography python3-qrcode python3-httpx python3-pip openssl adduser
-          python3 -m pip install --break-system-packages 'pydantic==2.10.6'
+          python3 -m pip install --break-system-packages 'pydantic==2.10.6' 'fastapi==0.115.11'
 
       - name: Run Gateway tests
         working-directory: solarminer-gateway-code02-v0.6.9-candidate
