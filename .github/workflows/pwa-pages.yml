@@ -43,7 +43,10 @@ jobs:
       - name: Upload the Gateway-integrated PWA
         uses: actions/upload-pages-artifact@v4
         with:
+          name: github-pages-${{ github.run_attempt }}
           path: solarminer-gateway-code02-v0.6.9-candidate/web/pwa
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+        with:
+          artifact_name: github-pages-${{ github.run_attempt }}
