@@ -1,0 +1,442 @@
+TAP version 13
+# Subtest: v0.5.1 includes read-only Gateway diagnostics but no authentication or pairing client
+ok 1 - v0.5.1 includes read-only Gateway diagnostics but no authentication or pairing client
+  ---
+  duration_ms: 3.195302
+  type: 'test'
+  ...
+# Subtest: all six areas remain navigable in desktop and mobile navigation
+ok 2 - all six areas remain navigable in desktop and mobile navigation
+  ---
+  duration_ms: 1.389723
+  type: 'test'
+  ...
+# Subtest: v0.5.4 shows AUTOMATISMOS directly in mobile navigation and migrates old saved preferences
+ok 3 - v0.5.4 shows AUTOMATISMOS directly in mobile navigation and migrates old saved preferences
+  ---
+  duration_ms: 0.86979
+  type: 'test'
+  ...
+# Subtest: v0.5.4 keeps image data out of localStorage and restores photos from IndexedDB
+ok 4 - v0.5.4 keeps image data out of localStorage and restores photos from IndexedDB
+  ---
+  duration_ms: 0.71021
+  type: 'test'
+  ...
+# Subtest: DEMO mode and simulated fixtures are explicit
+ok 5 - DEMO mode and simulated fixtures are explicit
+  ---
+  duration_ms: 0.700355
+  type: 'test'
+  ...
+# Subtest: property image controls only use browser-local storage and are removable
+ok 6 - property image controls only use browser-local storage and are removable
+  ---
+  duration_ms: 2.898606
+  type: 'test'
+  ...
+# Subtest: responsive breakpoints and safe-area bottom navigation are present
+ok 7 - responsive breakpoints and safe-area bottom navigation are present
+  ---
+  duration_ms: 0.474695
+  type: 'test'
+  ...
+# Subtest: service worker caches only static demo assets and excludes API paths
+ok 8 - service worker caches only static demo assets and excludes API paths
+  ---
+  duration_ms: 0.185169
+  type: 'test'
+  ...
+# Subtest: Meta reference visual elements and basic interactions are present
+ok 9 - Meta reference visual elements and basic interactions are present
+  ---
+  duration_ms: 2.159863
+  type: 'test'
+  ...
+# Subtest: reference-inspired weather, chart and device controls remain local-only
+ok 10 - reference-inspired weather, chart and device controls remain local-only
+  ---
+  duration_ms: 1.362341
+  type: 'test'
+  ...
+# Subtest: the demo exposes exactly the six required areas and local controls
+ok 11 - the demo exposes exactly the six required areas and local controls
+  ---
+  duration_ms: 2.228166
+  type: 'test'
+  ...
+# Subtest: numeric demo controls change only local state when mode is SIMULATED
+ok 12 - numeric demo controls change only local state when mode is SIMULATED
+  ---
+  duration_ms: 0.194193
+  type: 'test'
+  ...
+# Subtest: demo controls reject real mode, invalid keys, non-finite values and invalid steps
+ok 13 - demo controls reject real mode, invalid keys, non-finite values and invalid steps
+  ---
+  duration_ms: 0.154823
+  type: 'test'
+  ...
+# Subtest: EV demo toggle is local-only and cannot change outside SIMULATED
+ok 14 - EV demo toggle is local-only and cannot change outside SIMULATED
+  ---
+  duration_ms: 0.210978
+  type: 'test'
+  ...
+# Subtest: demo module has no network, Gateway or physical-command dependencies
+ok 15 - demo module has no network, Gateway or physical-command dependencies
+  ---
+  duration_ms: 5.6572
+  type: 'test'
+  ...
+# Subtest: demo UI labels controls as local and does not expose command endpoints
+ok 16 - demo UI labels controls as local and does not expose command endpoints
+  ---
+  duration_ms: 0.904612
+  type: 'test'
+  ...
+# Subtest: property image is configured locally and only image data URLs are restored
+ok 17 - property image is configured locally and only image data URLs are restored
+  ---
+  duration_ms: 0.807506
+  type: 'test'
+  ...
+# Subtest: static cache includes demo module but never caches API responses
+ok 18 - static cache includes demo module but never caches API responses
+  ---
+  duration_ms: 1.265326
+  type: 'test'
+  ...
+# Subtest: device private key is re-imported non-extractable and bearer is memory-only
+ok 19 - device private key is re-imported non-extractable and bearer is memory-only
+  ---
+  duration_ms: 1.043551
+  type: 'test'
+  ...
+# Subtest: invite flow validates signed Gateway identity before redeeming and exposes owner management
+ok 20 - invite flow validates signed Gateway identity before redeeming and exposes owner management
+  ---
+  duration_ms: 0.340794
+  type: 'test'
+  ...
+# Subtest: service worker only caches allowlisted static resources and versions cache explicitly
+ok 21 - service worker only caches allowlisted static resources and versions cache explicitly
+  ---
+  duration_ms: 0.123546
+  type: 'test'
+  ...
+# Subtest: real API failure states do not relabel demo readings as LIVE
+ok 22 - real API failure states do not relabel demo readings as LIVE
+  ---
+  duration_ms: 0.129425
+  type: 'test'
+  ...
+# Subtest: 1. demo mode stays explicitly simulated and disconnected
+ok 23 - 1. demo mode stays explicitly simulated and disconnected
+  ---
+  duration_ms: 1.020407
+  type: 'test'
+  ...
+# Subtest: 2. remote user without an associated Gateway is clearly unassociated
+ok 24 - 2. remote user without an associated Gateway is clearly unassociated
+  ---
+  duration_ms: 0.191588
+  type: 'test'
+  ...
+# Subtest: 3. valid local pairing QR is parsed as a candidate, not automatically paired
+ok 25 - 3. valid local pairing QR is parsed as a candidate, not automatically paired
+  ---
+  duration_ms: 0.411409
+  type: 'test'
+  ...
+# Subtest: 4. expired pairing QR is rejected
+ok 26 - 4. expired pairing QR is rejected
+  ---
+  duration_ms: 0.532312
+  type: 'test'
+  ...
+# Subtest: 5. re-reading the same QR in one session is rejected locally
+ok 27 - 5. re-reading the same QR in one session is rejected locally
+  ---
+  duration_ms: 0.287073
+  type: 'test'
+  ...
+# Subtest: 6. unavailable Gateway is not treated as connected
+ok 28 - 6. unavailable Gateway is not treated as connected
+  ---
+  duration_ms: 0.537369
+  type: 'test'
+  ...
+# Subtest: 7. a valid HTTP response does not validate Gateway cryptographic identity
+ok 29 - 7. a valid HTTP response does not validate Gateway cryptographic identity
+  ---
+  duration_ms: 0.97563
+  type: 'test'
+  ...
+# Subtest: 8. HTTP 401 means authentication is required, not connected
+ok 30 - 8. HTTP 401 means authentication is required, not connected
+  ---
+  duration_ms: 0.248504
+  type: 'test'
+  ...
+# Subtest: 9. expired-session status is not inferred without an authenticated API response
+ok 31 - 9. expired-session status is not inferred without an authenticated API response
+  ---
+  duration_ms: 0.23865
+  type: 'test'
+  ...
+# Subtest: 10. private IP endpoint is only a LAN candidate, not confirmed LAN
+ok 32 - 10. private IP endpoint is only a LAN candidate, not confirmed LAN
+  ---
+  duration_ms: 0.442297
+  type: 'test'
+  ...
+# Subtest: 11. public hostname endpoint is not automatically classified as remote
+ok 33 - 11. public hostname endpoint is not automatically classified as remote
+  ---
+  duration_ms: 0.191899
+  type: 'test'
+  ...
+# Subtest: 12. loss of connection resets reachability and does not delete prior state silently
+ok 34 - 12. loss of connection resets reachability and does not delete prior state silently
+  ---
+  duration_ms: 0.907567
+  type: 'test'
+  ...
+# Subtest: 13. browser does not need or pretend to read SSID
+ok 35 - 13. browser does not need or pretend to read SSID
+  ---
+  duration_ms: 0.076846
+  type: 'test'
+  ...
+# Subtest: 14. retry backoff is bounded and progresses after failures
+ok 36 - 14. retry backoff is bounded and progresses after failures
+  ---
+  duration_ms: 0.376457
+  type: 'test'
+  ...
+# Subtest: 15. presence heartbeat is explicitly scoped to authenticated sessions
+ok 37 - 15. presence heartbeat is explicitly scoped to authenticated sessions
+  ---
+  duration_ms: 0.067591
+  type: 'test'
+  ...
+# Subtest: 16. no presence expiry is falsely claimed by the client
+ok 38 - 16. no presence expiry is falsely claimed by the client
+  ---
+  duration_ms: 0.049504
+  type: 'test'
+  ...
+# Subtest: 17. presence does not claim physical presence or LAN/remote path
+ok 39 - 17. presence does not claim physical presence or LAN/remote path
+  ---
+  duration_ms: 0.160812
+  type: 'test'
+  ...
+# Subtest: 18. presence API has a defined endpoint but requires bearer authentication
+ok 40 - 18. presence API has a defined endpoint but requires bearer authentication
+  ---
+  duration_ms: 0.149255
+  type: 'test'
+  ...
+# Subtest: 19. user identity cannot be supplied as a presence target by this module
+ok 41 - 19. user identity cannot be supplied as a presence target by this module
+  ---
+  duration_ms: 0.063836
+  type: 'test'
+  ...
+# Subtest: 20. connection module contains no physical command routes or writes
+ok 42 - 20. connection module contains no physical command routes or writes
+  ---
+  duration_ms: 0.722649
+  type: 'test'
+  ...
+# Subtest: 21. TLS failure is reported as unavailable; no insecure fallback is attempted
+ok 43 - 21. TLS failure is reported as unavailable; no insecure fallback is attempted
+  ---
+  duration_ms: 0.287483
+  type: 'test'
+  ...
+# Subtest: 22. URL validation requires HTTPS and rejects embedded credentials
+ok 44 - 22. URL validation requires HTTPS and rejects embedded credentials
+  ---
+  duration_ms: 0.181243
+  type: 'test'
+  ...
+# Subtest: identity validation cannot be inferred from product name or version alone
+ok 45 - identity validation cannot be inferred from product name or version alone
+  ---
+  duration_ms: 0.322956
+  type: 'test'
+  ...
+# Subtest: probe refuses an unexpected product response
+ok 46 - probe refuses an unexpected product response
+  ---
+  duration_ms: 0.346903
+  type: 'test'
+  ...
+# Subtest: QR parser rejects malformed or oversized payloads
+ok 47 - QR parser rejects malformed or oversized payloads
+  ---
+  duration_ms: 0.129806
+  type: 'test'
+  ...
+# Subtest: QR parser refuses non-HTTPS arbitrary endpoints
+ok 48 - QR parser refuses non-HTTPS arbitrary endpoints
+  ---
+  duration_ms: 0.141714
+  type: 'test'
+  ...
+# Subtest: manager coalesces concurrent checks to one probe
+ok 49 - manager coalesces concurrent checks to one probe
+  ---
+  duration_ms: 0.160241
+  type: 'test'
+  ...
+# Subtest: v0.6.7 invite QR requires full fingerprint and HTTPS
+ok 50 - v0.6.7 invite QR requires full fingerprint and HTTPS
+  ---
+  duration_ms: 0.502006
+  type: 'test'
+  ...
+# Subtest: v0.6.7 Gateway identity challenge verifies fingerprint and Ed25519 proof
+ok 51 - v0.6.7 Gateway identity challenge verifies fingerprint and Ed25519 proof
+  ---
+  duration_ms: 26.560453
+  type: 'test'
+  ...
+# Subtest: Home production button opens a focused dialog with only the four KPI cards and detailed graph
+ok 52 - Home production button opens a focused dialog with only the four KPI cards and detailed graph
+  ---
+  duration_ms: 0.792414
+  type: 'test'
+  ...
+# Subtest: Profile font selector applies live scale on input and change
+ok 53 - Profile font selector applies live scale on input and change
+  ---
+  duration_ms: 0.190807
+  type: 'test'
+  ...
+# Subtest: Home favorites expose local device controls and responsive typography
+ok 54 - Home favorites expose local device controls and responsive typography
+  ---
+  duration_ms: 0.245871
+  type: 'test'
+  ...
+# Subtest: v0.5.2 CASA shows all configured rooms in Todos os pisos, with their own room identifiers and images
+ok 55 - v0.5.2 CASA shows all configured rooms in Todos os pisos, with their own room identifiers and images
+  ---
+  duration_ms: 1.147017
+  type: 'test'
+  ...
+# Subtest: v0.5.2 ENERGY provides all seven horizontal tabs on summary and equipment pages
+ok 56 - v0.5.2 ENERGY provides all seven horizontal tabs on summary and equipment pages
+  ---
+  duration_ms: 20.418462
+  type: 'test'
+  ...
+# Subtest: v0.5.2 DEVICES is a compact horizontal room selector and equipment list
+ok 57 - v0.5.2 DEVICES is a compact horizontal room selector and equipment list
+  ---
+  duration_ms: 0.936691
+  type: 'test'
+  ...
+# Subtest: v0.5.2 contextual editor has one local-save path for house, room and device
+ok 58 - v0.5.2 contextual editor has one local-save path for house, room and device
+  ---
+  duration_ms: 0.765043
+  type: 'test'
+  ...
+# Subtest: v0.5.2 still does not pretend local editing is Gateway persistence or add physical command APIs
+ok 59 - v0.5.2 still does not pretend local editing is Gateway persistence or add physical command APIs
+  ---
+  duration_ms: 1.008039
+  type: 'test'
+  ...
+# Subtest: v0.5.3 persists demo profile, users, rules and weather in browser storage
+ok 60 - v0.5.3 persists demo profile, users, rules and weather in browser storage
+  ---
+  duration_ms: 1.484296
+  type: 'test'
+  ...
+# Subtest: device conditions adapt to declared device type and do not offer motion for a breaker/light
+ok 61 - device conditions adapt to declared device type and do not offer motion for a breaker/light
+  ---
+  duration_ms: 1.082821
+  type: 'test'
+  ...
+# Subtest: automation builder and solar view clearly identify simulated data and absent Gateway automation API
+ok 62 - automation builder and solar view clearly identify simulated data and absent Gateway automation API
+  ---
+  duration_ms: 13.377417
+  type: 'test'
+  ...
+# Subtest: demo user management renders OWNER/ADMIN without asserting real Gateway authority
+ok 63 - demo user management renders OWNER/ADMIN without asserting real Gateway authority
+  ---
+  duration_ms: 0.379232
+  type: 'test'
+  ...
+# Subtest: feature module has no fetch, network API or physical command endpoint
+ok 64 - feature module has no fetch, network API or physical command endpoint
+  ---
+  duration_ms: 6.080478
+  type: 'test'
+  ...
+# Subtest: PROFILE preferences are persisted separately under the demo user key
+ok 65 - PROFILE preferences are persisted separately under the demo user key
+  ---
+  duration_ms: 3.028041
+  type: 'test'
+  ...
+# Subtest: v0.5.0 exposes seven independent energy areas
+ok 66 - v0.5.0 exposes seven independent energy areas
+  ---
+  duration_ms: 12.379955
+  type: 'test'
+  ...
+# Subtest: initial photovoltaic configuration matches 8.94 kWp without claiming live production
+ok 67 - initial photovoltaic configuration matches 8.94 kWp without claiming live production
+  ---
+  duration_ms: 0.582327
+  type: 'test'
+  ...
+# Subtest: battery view distinguishes configuration from unavailable telemetry
+ok 68 - battery view distinguishes configuration from unavailable telemetry
+  ---
+  duration_ms: 0.434194
+  type: 'test'
+  ...
+# Subtest: house has a configurable floor-room-device hierarchy and simulated states
+ok 69 - house has a configurable floor-room-device hierarchy and simulated states
+  ---
+  duration_ms: 0.440073
+  type: 'test'
+  ...
+# Subtest: profile keeps role and administration unconfirmed without Gateway support
+ok 70 - profile keeps role and administration unconfirmed without Gateway support
+  ---
+  duration_ms: 1.031504
+  type: 'test'
+  ...
+# Subtest: Engine offers distinct X/Y/Z scenarios but no real Gateway claims
+ok 71 - Engine offers distinct X/Y/Z scenarios but no real Gateway claims
+  ---
+  duration_ms: 0.347203
+  type: 'test'
+  ...
+# Subtest: workspace module contains no network, auth or physical command implementation
+ok 72 - workspace module contains no network, auth or physical command implementation
+  ---
+  duration_ms: 1.194098
+  type: 'test'
+  ...
+1..72
+# tests 72
+# suites 0
+# pass 72
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 559.791185
