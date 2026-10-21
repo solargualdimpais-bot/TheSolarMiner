@@ -3,13 +3,13 @@
 # Run as root: sh install-from-usb.sh
 set -eu
 
+[ "$(id -u)" -eq 0 ] || { echo "Inicia sessão como root e executa: sh install-from-usb.sh" >&2; exit 1; }
 LOG=/var/log/solarminer-first-install.log
 mkdir -p /var/log
 touch "$LOG"
 chmod 0600 "$LOG"
 log() { printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" | tee -a "$LOG"; }
 fail() { log "ERROR: $*"; exit 1; }
-[ "$(id -u)" -eq 0 ] || fail "Inicia sessão como root e executa: sh install-from-usb.sh"
 command -v dpkg >/dev/null 2>&1 || fail "Debian/dpkg não encontrado."
 command -v dpkg-deb >/dev/null 2>&1 || fail "dpkg-deb não encontrado."
 command -v apt-get >/dev/null 2>&1 || fail "apt-get não encontrado."
@@ -66,7 +66,10 @@ cleanup() {
   rm -rf "$WORK"
   exit "$status"
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 log "A validar manifesto, assinatura Ed25519 e pacote antes de instalar."
 python3 - "$MANIFEST" "$PUBLIC_KEY" "$PACKAGE" "$WORK" <<'PY'
