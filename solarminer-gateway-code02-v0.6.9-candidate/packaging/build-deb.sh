@@ -60,4 +60,9 @@ chmod 0755 "$STAGE/usr/sbin/solarminer-update-apply" "$STAGE/usr/bin/solarminer-
 chmod 0644 "$STAGE/usr/lib/solarminer-gateway/solarminer_gateway/"*.py "$STAGE/lib/systemd/system/solarminer-gateway.service" "$STAGE/lib/systemd/system/solarminer-recovery.service" "$STAGE/lib/systemd/system/solarminer-recovery.timer" "$STAGE/lib/systemd/system/solarminer-update-apply@.service" "$STAGE/lib/systemd/system/solarminer-update-check-daily.service" "$STAGE/lib/systemd/system/solarminer-update-check-daily.timer" "$STAGE/usr/share/solarminer/catalog.json" "$STAGE/usr/share/solarminer/catalog.sig" "$STAGE/usr/share/solarminer/catalog.pub"
 find "$STAGE/usr/share/solarminer/pwa" -type d -exec chmod 0755 {} +
 find "$STAGE/usr/share/solarminer/pwa" -type f -exec chmod 0644 {} +
-SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-0} dpkg-deb --root-owner-group --build "$STAGE" "$OUT/solarminer-gateway_0.6.9_amd64.deb"
+PACKAGE_VERSION=$(sed -n 's/^Version: //p' "$ROOT/packaging/control")
+case "$PACKAGE_VERSION" in
+  ''|*[!0-9A-Za-z.+:~_-]*) echo "Invalid package version in packaging/control" >&2; exit 1 ;;
+esac
+OUTPUT="$OUT/solarminer-gateway_${PACKAGE_VERSION}_amd64.deb"
+SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-0} dpkg-deb --root-owner-group --build "$STAGE" "$OUTPUT"
