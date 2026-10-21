@@ -13,11 +13,17 @@ def main() -> int:
         row = conn.execute(
             "SELECT value FROM system_state WHERE key='update_repository_url'"
         ).fetchone()
-    if not row or not row["value"]:
-        print(json.dumps({"status": "not_configured"}, separators=(",", ":")))
+    try:
+        if row and row["value"]:
+            source = updates.load_update_source(row["value"])
+        else:
+            # The USB installer provisions the root-owned allowlist before the
+            # first Owner session exists; its first approved entry is the initial source.
+            source = updates.list_update_sources()[0]
+    except updates.UpdateValidationError as exc:
+        print(json.dumps({"status": "not_configured", "reason": str(exc)}, separators=(",", ":")))
         return 0
     try:
-        source = updates.load_update_source(row["value"])
         result = gateway._check_system_update_manifest(
             source["manifest_url"],
             {"user_id": None},
@@ -26,7 +32,7 @@ def main() -> int:
             repository_url=source["repository_url"],
         )
         print(json.dumps(result, separators=(",", ":")))
-        return 0 if result.get("status") in {"verified_staged"} else 1
+        return 0 if result.get("status") in {"current", "verified_staged"} else 1
     except Exception as exc:
         # Do not emit manifest content, URLs with query strings, or credentials.
         print(json.dumps({"status": "failed", "reason": type(exc).__name__}, separators=(",", ":")))
