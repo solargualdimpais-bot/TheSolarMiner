@@ -26,7 +26,7 @@ def main() -> int:
             repository_url=source["repository_url"],
         )
         print(json.dumps(result, separators=(",", ":")))
-        return 0 if result.get("status") in {"current", "update_available", "verified"} else 1
+        return 0 if result.get("status") in {"verified_staged"} else 1
     except Exception as exc:
         # Do not emit manifest content, URLs with query strings, or credentials.
         print(json.dumps({"status": "failed", "reason": type(exc).__name__}, separators=(",", ":")))
