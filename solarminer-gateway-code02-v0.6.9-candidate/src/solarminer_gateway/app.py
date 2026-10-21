@@ -1465,6 +1465,16 @@ def check_system_update(session: dict[str, Any] = Depends(require_permission("re
     return _check_system_update_manifest(manifest_url, session)
 
 
+@app.get("/api/v1/system/update/source")
+def read_system_update_source(session: dict[str, Any] = Depends(current_session)) -> dict[str, Any]:
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_only")
+        row = conn.execute("SELECT value FROM system_state WHERE key='update_repository_url'").fetchone()
+    return {"repository_url": row["value"] if row else "", "policy": "administrative_allowlist"}
+
+
 @app.post("/api/v1/system/update/check")
 def check_system_update_from_repository(payload: dict[str, Any], session: dict[str, Any] = Depends(current_session)) -> dict[str, Any]:
     if payload != {"repository_url": payload.get("repository_url")} or not isinstance(payload.get("repository_url"), str):
@@ -1476,6 +1486,17 @@ def check_system_update_from_repository(payload: dict[str, Any], session: dict[s
     allowlist_path = os.environ.get("SOLARMINER_UPDATE_SOURCE_ALLOWLIST", update_manager.DEFAULT_UPDATE_SOURCES_PATH)
     try:
         source = update_manager.load_update_source(payload["repository_url"], allowlist_path)
+        with db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            actor = _revalidate_actor(conn, session, "manage_gateway")
+            if actor["role"] != "owner":
+                conn.rollback()
+                raise HTTPException(403, "owner_only")
+            conn.execute("INSERT INTO system_state(key,value) VALUES('update_repository_url',?) "
+                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                         (source["repository_url"],))
+            audit(conn, actor["user_id"], "system.update.source_changed", source["repository_url"], "success")
+            conn.commit()
     except update_manager.UpdateValidationError as exc:
         reason = str(exc)
         with db() as conn:
