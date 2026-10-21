@@ -39,6 +39,8 @@ Total aritmético backend sem sobreposição: **206 passed**, zero falhas/ignora
 
 ## Verificações não executadas
 
+> Nota de revisão: este relatório antecede as alterações de persistência da origem Owner, verificação diária, serviço/timer systemd e instalador inicial Debian amd64. Os resultados acima não testam essas alterações; executar novamente os testes unitários, testes do pacote e validação num Debian amd64 limpo antes de instalar no Gateway.
+
 - Não foi instalado o `.deb` em Debian/systemd real; `sudoers`, timer, units e helper privilegiado ainda precisam de validação no host de ensaio.
 - Não houve reboot real, corte de energia, SIGKILL em todas as fronteiras do novo pipeline, upgrade com a base real ou health-check durante 60 segundos contra Gateway instalado.
 - Não houve Safari/iPhone/QR nativo/IndexedDB real nem instalação física.
