@@ -44,6 +44,7 @@ cp "$ROOT/docs/CODE02_V065_AUTH.md" "$STAGE/usr/share/doc/solarminer-gateway/COD
 cp "$ROOT/docs/CODE02_V069_IMPLEMENTATION.md" "$STAGE/usr/share/doc/solarminer-gateway/CODE02_V069_IMPLEMENTATION.md"
 cp "$ROOT/docs/CHANGELOG_V069.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V069.md"
 cp "$ROOT/docs/CHANGELOG_V0613.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0613.md"
+cp "$ROOT/docs/CHANGELOG_V0614.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0614.md"
 cp "$ROOT/docs/DATABASE_BACKUP_AND_RESTORE.md" "$STAGE/usr/share/doc/solarminer-gateway/DATABASE_BACKUP_AND_RESTORE.md"
 cp "$ROOT/docs/UPDATE_AND_ROLLBACK.md" "$STAGE/usr/share/doc/solarminer-gateway/UPDATE_AND_ROLLBACK.md"
 cp "$ROOT/docs/INSTALL_DEBIAN_AMD64.md" "$STAGE/usr/share/doc/solarminer-gateway/INSTALL_DEBIAN_AMD64.md"

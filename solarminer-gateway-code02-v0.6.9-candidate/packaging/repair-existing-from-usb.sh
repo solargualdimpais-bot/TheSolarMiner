@@ -4,7 +4,7 @@ set -eu
 
 [ "$(id -u)" -eq 0 ] || { echo "Executa como root: sh repair-existing-from-usb.sh" >&2; exit 1; }
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-VERSION=0.6.13
+VERSION=0.6.14
 PACKAGE="$HERE/solarminer-gateway_${VERSION}_amd64.deb"
 MANIFEST="$HERE/solarminer-release.json"
 PUBLIC_KEY="$HERE/release-pubkey.pem"
@@ -87,13 +87,14 @@ except Exception as exc:
 PY
 CURRENT=/opt/solarminer/current
 BASE=/opt/solarminer/releases
-[ -L "$CURRENT" ] && [ -d "$BASE" ] && [ ! -L "$BASE" ] || fail "Layout de releases não é seguro para reparação."
-OLD_RELEASE=$(readlink -f "$CURRENT")
-case "$OLD_RELEASE" in "$BASE"/*) ;; *) fail "A release ativa está fora da pasta autorizada." ;; esac
-[ -d "$OLD_RELEASE" ] && [ ! -L "$OLD_RELEASE" ] || fail "A release anterior não é segura para rollback."
-OLD_RELEASE_NAME=${OLD_RELEASE#"$BASE"/}
-case "$OLD_RELEASE_NAME" in */*|'') fail "Identificador da release anterior inválido." ;; esac
-case "$OLD_RELEASE_NAME" in "$OLD_VERSION") ;; *) fail "A versão ativa ($OLD_RELEASE_NAME) difere do pacote instalado ($OLD_VERSION)." ;; esac
+[ -d /opt/solarminer ] && [ ! -L /opt/solarminer ] && [ -d "$BASE" ] && [ ! -L "$BASE" ] || fail "Layout de releases não é seguro para reparação."
+[ ! -e "$CURRENT" ] || [ -L "$CURRENT" ] || fail "O caminho da release ativa não é uma ligação simbólica segura."
+# In RECOVERY_BLOCKED the active pointer may be broken or point at the failed
+# candidate. The package recorded by dpkg is the known rollback version.
+OLD_RELEASE="$BASE/$OLD_VERSION"
+OLD_RELEASE_NAME=$OLD_VERSION
+[ -d "$OLD_RELEASE" ] && [ ! -L "$OLD_RELEASE" ] || fail "A release instalada $OLD_VERSION não está disponível para rollback."
+[ -f "$OLD_RELEASE/usr/lib/solarminer-gateway/solarminer_gateway/app.py" ] && [ -f "$OLD_RELEASE/usr/share/solarminer/pwa/index.html" ] || fail "A release instalada está incompleta; sistema não alterado."
 
 BACKUP_DIR=/var/lib/solarminer/backups
 install -d -o root -g root -m 0700 "$BACKUP_DIR"
