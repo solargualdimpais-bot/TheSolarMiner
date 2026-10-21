@@ -27,6 +27,14 @@ if [ -z "$DEB" ]; then
 fi
 [ -f "$DEB" ] || fail "Pacote Debian não encontrado: $DEB"
 [ "$(dpkg-deb -f "$DEB" Architecture)" = "amd64" ] || fail "O pacote não é amd64."
+printf 'SHA-256 esperado do pacote .deb (obtido por canal independente): '
+IFS= read -r EXPECTED_DEB_SHA256 || fail "Não foi lido o hash do pacote."
+case "$EXPECTED_DEB_SHA256" in
+  *[!0-9a-fA-F]*|'') fail "O hash do pacote deve conter 64 caracteres hexadecimais." ;;
+esac
+[ "${#EXPECTED_DEB_SHA256}" -eq 64 ] || fail "O hash do pacote deve conter 64 caracteres hexadecimais."
+ACTUAL_DEB_SHA256=$(sha256sum "$DEB" | cut -d ' ' -f 1)
+[ "$(printf '%s' "$ACTUAL_DEB_SHA256" | tr 'A-F' 'a-f')" = "$(printf '%s' "$EXPECTED_DEB_SHA256" | tr 'A-F' 'a-f')" ] || fail "O hash do pacote não corresponde."
 
 canonical_github_url() {
   python3 - "$1" <<'PY'
