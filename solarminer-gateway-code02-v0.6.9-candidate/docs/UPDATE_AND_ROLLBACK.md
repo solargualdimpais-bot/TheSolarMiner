@@ -20,6 +20,10 @@ Configure `/etc/solarminer/update-sources.json` como root (ficheiro regular, roo
 
 Ajuste as origens permitidas às origens HTTPS de manifesto/pacote usadas pelo serviço de release; redirecionamentos para qualquer outra origem são recusados. A configuração não contém tokens ou credenciais. Repositórios têm de ser públicos. Sem correspondência administrativa, a verificação termina em rejeição e não altera o sistema.
 
+A instalação inicial pode criar esta allowlist através de `packaging/install-from-usb.sh`, executado como `root`. O script valida Debian, Python 3.11+, arquitetura `amd64`, o pacote e a impressão SHA-256 da chave pública Ed25519 fornecida por canal independente. O operador pode aprovar várias raízes GitHub; a PWA Owner pode guardar e escolher apenas URLs exatos dessa allowlist. O URL escolhido é persistido em `system_state`.
+
+`solarminer-update-check-daily.timer` executa uma verificação diária como a conta de serviço `solarminer`. Usa a escolha guardada ou, antes da primeira sessão Owner, a primeira entrada da allowlist inicial. A verificação valida e prepara o pacote assinado, sem o ativar. Se não houver chave, origem aprovada ou release válido, a operação falha de forma fechada. A ativação exige a ação separada do Owner e continua a usar o helper privilegiado, backup SQLite, staging, health check e rollback.
+
 O Gateway verifica Ed25519 com a chave de release provisionada localmente, hash e tamanho do pacote, versão, arquitetura e dependências Debian, espaço disponível e preflight do helper. Apenas um pacote validado é guardado em staging. O resultado mostra a versão e o estado; a verificação nunca ativa o pacote. A aplicação continua a exigir uma ação separada do Owner e percorre os estados de backup SQLite, staging, ativação, health check e rollback descritos abaixo.
 
 ## Modelo de ativação
