@@ -1400,10 +1400,18 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
             ["/usr/bin/dpkg", "--compare-versions", manifest["version"], "gt", PACKAGE_VERSION],
             capture_output=True, timeout=3, check=False)
         if comparison.returncode == 1:
-            return {"status": "current", "installed_version": PACKAGE_VERSION,
-                    "latest_version": manifest["version"], "signature_valid": True,
-                    "compatible": True, "activation_available": False,
-                    "message": "gateway_already_at_or_newer_than_release",
+            with db() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                op = _update_state_write(conn, "CURRENT", manifest["version"],
+                    {"latest_version": manifest["version"], "signature_valid": True,
+                     "repository_url": repository_url})
+                audit(conn, session["user_id"], "system.update.check_current", op, "success",
+                      {"latest_version": manifest["version"], "repository_url": repository_url})
+                conn.commit()
+            return {"status": "current", "operation_id": op,
+                    "installed_version": PACKAGE_VERSION, "latest_version": manifest["version"],
+                    "signature_valid": True, "compatible": True,
+                    "activation_available": False, "message": "gateway_already_at_or_newer_than_release",
                     **({"repository_url": repository_url} if repository_url else {})}
         if comparison.returncode != 0:
             raise update_manager.UpdateValidationError("release_version_comparison_failed")
