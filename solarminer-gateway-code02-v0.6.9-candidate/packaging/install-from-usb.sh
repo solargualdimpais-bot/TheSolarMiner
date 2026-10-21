@@ -48,6 +48,7 @@ CREATED_TRUST=0
 INSTALLED_PACKAGE=0
 cleanup() {
   status=$?
+  trap - EXIT HUP INT TERM
   if [ "$status" -ne 0 ]; then
     log "Falha; a reverter a instalação inicial."
     if [ "$INSTALLED_PACKAGE" -eq 1 ]; then
@@ -114,6 +115,7 @@ log "Assinatura e hash válidos."
 if [ -e /etc/solarminer/release-pubkey.pem ] || [ -e /etc/solarminer/update-sources.json ]; then
   fail "Já existem configurações SolarMiner; a instalação inicial não irá sobrescrevê-las."
 fi
+CREATED_TRUST=1
 install -d -o root -g root -m 0755 /etc/solarminer
 install -o root -g root -m 0644 "$PUBLIC_KEY" /etc/solarminer/release-pubkey.pem
 python3 - <<'PY'
@@ -143,8 +145,8 @@ CREATED_TRUST=1
 
 log "A instalar pacote e dependências assinados."
 apt-get update >>"$LOG" 2>&1 || fail "apt-get update falhou. Consulta $LOG"
-DEBIAN_FRONTEND=noninteractive apt-get install -y "$PACKAGE" >>"$LOG" 2>&1 || fail "Instalação do pacote falhou. Consulta $LOG"
 INSTALLED_PACKAGE=1
+DEBIAN_FRONTEND=noninteractive apt-get install -y "$PACKAGE" >>"$LOG" 2>&1 || fail "Instalação do pacote falhou. Consulta $LOG"
 chown root:solarminer /etc/solarminer/update-sources.json
 chmod 0640 /etc/solarminer/update-sources.json
 
