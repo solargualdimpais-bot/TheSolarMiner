@@ -163,6 +163,17 @@ export async function gatewayApi(path, options = {}) {
   if (!currentGateway) throw new Error("Não existe Gateway autenticado nesta sessão.");
   return gatewayRequest(currentGateway, path, { ...options, authenticated: true });
 }
+export async function checkGatewayUpdate(repositoryUrl) {
+  if (typeof repositoryUrl !== "string" || !repositoryUrl.trim()) throw new Error("Indica o URL do repositório GitHub.");
+  return gatewayApi("/api/v1/system/update/check", { method: "POST", body: { repository_url: repositoryUrl.trim() } });
+}
+export async function readGatewayUpdateStatus() {
+  return gatewayApi("/api/v1/system/update/status");
+}
+export async function applyGatewayUpdate(version) {
+  if (typeof version !== "string" || !version) throw new Error("Versão de atualização inválida.");
+  return gatewayApi("/api/v1/system/update/apply", { method: "POST", body: { version, confirm: true } });
+}
 export async function createGatewayInvite({ role, label }) {
   const result = await gatewayApi("/api/v1/invites", { method: "POST", body: { role, label } });
   return result;
