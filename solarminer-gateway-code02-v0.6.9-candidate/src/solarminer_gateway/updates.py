@@ -172,6 +172,8 @@ def verify_manifest(manifest: dict[str, Any], public_key: Ed25519PublicKey, inst
         raise UpdateValidationError("manifest_schema_or_algorithm_unsupported")
     if not all(isinstance(manifest[k], str) and manifest[k] for k in ("release_id", "version", "min_compatible_version", "package_name", "package_url", "sha256")):
         raise UpdateValidationError("manifest_field_type_invalid")
+    if len(manifest["version"]) > 128 or not re.fullmatch(r"[0-9][A-Za-z0-9.+:~_-]*", manifest["version"]):
+        raise UpdateValidationError("manifest_version_invalid")
     if not isinstance(manifest["package_name"], str) or Path(manifest["package_name"]).name != manifest["package_name"] or not manifest["package_name"].endswith(".deb"):
         raise UpdateValidationError("package_name_invalid")
     if not isinstance(manifest["package_size"], int) or not 1 <= manifest["package_size"] <= MAX_PACKAGE_BYTES:
