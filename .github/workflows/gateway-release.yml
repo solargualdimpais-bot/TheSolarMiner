@@ -1,10 +1,16 @@
 name: Build and sign Gateway Debian release
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/gateway-release.yml"
+      - "solarminer-gateway-code02-v0.6.9-candidate/**"
+      - "the-solar-miner-pwa-v0.5.7-candidate/**"
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Release tag to create, e.g. gateway-v0.6.9"
+        description: "Release tag to create, e.g. gateway-v0.6.10"
         required: true
         type: string
 
@@ -31,6 +37,10 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -eu
+          if [ -z "$RELEASE_TAG" ]; then
+            PACKAGE_VERSION="$(sed -n 's/^Version: //p' solarminer-gateway-code02-v0.6.9-candidate/packaging/control)"
+            RELEASE_TAG="gateway-v$PACKAGE_VERSION"
+          fi
           case "$RELEASE_TAG" in
             gateway-v*) ;;
             *) echo "Release tag must begin with gateway-v" >&2; exit 1 ;;
@@ -47,8 +57,12 @@ jobs:
       - name: Install build and test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y dpkg-dev python3-pytest python3-fastapi python3-uvicorn python3-argon2 python3-cryptography python3-qrcode python3-httpx python3-pip openssl adduser
+          sudo apt-get install -y dpkg-dev python3-pytest python3-fastapi python3-uvicorn python3-argon2 python3-cryptography python3-qrcode python3-httpx python3-pip openssl adduser zip
           python3 -m pip install --break-system-packages 'pydantic==2.10.6' 'fastapi==0.115.11'
+
+      - name: Check USB installer shell syntax
+        working-directory: solarminer-gateway-code02-v0.6.9-candidate
+        run: sh -n packaging/install-from-usb.sh
 
       - name: Run Gateway tests
         working-directory: solarminer-gateway-code02-v0.6.9-candidate
@@ -73,6 +87,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          MIN_COMPATIBLE_VERSION: "0.6.9"
           SIGNING_KEY: ${{ secrets.SOLARMINER_RELEASE_SIGNING_KEY }}
           REPOSITORY: ${{ github.repository }}
         run: |
@@ -134,7 +149,7 @@ jobs:
               "schema_version": 1,
               "release_id": tag,
               "version": version,
-              "min_compatible_version": version,
+              "min_compatible_version": os.environ["MIN_COMPATIBLE_VERSION"],
               "changelog": [f"SolarMiner Gateway CODE02 {version}"],
               "package_name": package_name,
               "package_url": url,
@@ -153,10 +168,39 @@ jobs:
           manifest["signature"] = key.sign(canonical).hex()
           output = package.parent / "solarminer-release.json"
           output.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n", encoding="utf-8")
+          public_key = key.public_key()
+          public_output = package.parent / "release-pubkey.pem"
+          public_output.write_bytes(public_key.public_bytes(
+              serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+          ))
+          public_output.chmod(0o644)
+          fingerprint = hashlib.sha256(public_key.public_bytes(
+              serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+          )).hexdigest()
           print(f"Manifest created for {package_name}; SHA-256 {unsigned['sha256']}; {unsigned['package_size']} bytes")
+          print(f"Public release-key SHA-256 fingerprint: {fingerprint}")
           PY
           echo "package=$PACKAGE" >> "$GITHUB_OUTPUT"
           echo "manifest=${PACKAGE%/*}/solarminer-release.json" >> "$GITHUB_OUTPUT"
+          echo "public_key=${PACKAGE%/*}/release-pubkey.pem" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble verified USB installer
+        id: usb
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          PACKAGE: ${{ steps.manifest.outputs.package }}
+          MANIFEST: ${{ steps.manifest.outputs.manifest }}
+          PUBLIC_KEY: ${{ steps.manifest.outputs.public_key }}
+        run: |
+          set -eu
+          BUNDLE="$RUNNER_TEMP/solarminer-usb-installer"
+          mkdir -p "$BUNDLE"
+          cp "$PACKAGE" "$MANIFEST" "$PUBLIC_KEY" "$BUNDLE/"
+          cp solarminer-gateway-code02-v0.6.9-candidate/packaging/install-from-usb.sh "$BUNDLE/"
+          cp solarminer-gateway-code02-v0.6.9-candidate/packaging/USB_INSTALL_README.txt "$BUNDLE/README.txt"
+          OUTPUT="$GITHUB_WORKSPACE/solarminer-gateway-code02-v0.6.9-candidate/dist/solarminer-gateway-usb-installer_${RELEASE_VERSION}_amd64.zip"
+          (cd "$BUNDLE" && zip -q -r "$OUTPUT" .)
+          echo "bundle=$OUTPUT" >> "$GITHUB_OUTPUT"
 
       - name: Create draft GitHub release
         env:
@@ -165,6 +209,18 @@ jobs:
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
           PACKAGE: ${{ steps.manifest.outputs.package }}
           MANIFEST: ${{ steps.manifest.outputs.manifest }}
+          USB_BUNDLE: ${{ steps.usb.outputs.bundle }}
         run: |
           set -eu
-          gh release create "$RELEASE_TAG" "$PACKAGE" "$MANIFEST"             --repo "$GITHUB_REPOSITORY"             --target "$GITHUB_SHA"             --draft             --title "SolarMiner Gateway ${RELEASE_VERSION}"             --notes "Signed amd64 Debian package and Ed25519 release manifest. Review workflow results and publish this draft when ready."
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            IS_DRAFT="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)"
+            [ "$IS_DRAFT" = "true" ] || { echo "Refusing to replace assets of a published release" >&2; exit 1; }
+            gh release upload "$RELEASE_TAG" "$PACKAGE" "$MANIFEST" "$USB_BUNDLE" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$RELEASE_TAG" "$PACKAGE" "$MANIFEST" "$USB_BUNDLE" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --draft \
+              --title "SolarMiner Gateway ${RELEASE_VERSION}" \
+              --notes "Signed amd64 Debian package, Ed25519 release manifest and verified first-install USB bundle. Review workflow results and package details before publishing."
+          fi
