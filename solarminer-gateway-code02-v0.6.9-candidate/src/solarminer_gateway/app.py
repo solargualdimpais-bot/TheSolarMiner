@@ -1472,7 +1472,15 @@ def read_system_update_source(session: dict[str, Any] = Depends(current_session)
         if actor["role"] != "owner":
             raise HTTPException(403, "owner_only")
         row = conn.execute("SELECT value FROM system_state WHERE key='update_repository_url'").fetchone()
-    return {"repository_url": row["value"] if row else "", "policy": "administrative_allowlist"}
+    allowlist_path = os.environ.get("SOLARMINER_UPDATE_SOURCE_ALLOWLIST", update_manager.DEFAULT_UPDATE_SOURCES_PATH)
+    try:
+        sources = update_manager.list_update_sources(allowlist_path)
+    except update_manager.UpdateValidationError:
+        sources = []
+    allowed = [item["repository_url"] for item in sources]
+    selected = row["value"] if row and row["value"] in allowed else (allowed[0] if allowed else "")
+    return {"repository_url": selected, "allowed_repositories": allowed,
+            "policy": "administrative_allowlist"}
 
 
 @app.post("/api/v1/system/update/check")
