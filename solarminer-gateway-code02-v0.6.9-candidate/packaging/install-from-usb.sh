@@ -14,8 +14,13 @@ else
   fail "Não foi possível identificar o sistema operativo."
 fi
 [ "${ID:-}" = "debian" ] || fail "Este instalador exige Debian."
-python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,11) else 1)' \
-  || fail "O Gateway exige Python 3.11 ou superior (Debian 12 ou posterior)."
+case "${VERSION_ID:-}" in
+  ''|*[!0-9.]*|.*|*.) fail "Não foi possível validar a versão Debian." ;;
+esac
+DEBIAN_MAJOR=${VERSION_ID%%.*}
+[ "$DEBIAN_MAJOR" -ge 13 ] || fail "Este instalador exige Debian 13 (Trixie) ou posterior."
+python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,13) else 1)' \
+  || fail "O Gateway exige Python 3.13 ou superior."
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 DEB=${SOLARMINER_DEB:-}
