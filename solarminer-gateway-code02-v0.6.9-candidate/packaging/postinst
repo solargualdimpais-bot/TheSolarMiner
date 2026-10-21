@@ -1,0 +1,81 @@
+#!/bin/sh
+set -eu
+case "${1:-}" in
+  configure)
+    if ! getent group solarminer >/dev/null 2>&1; then addgroup --system solarminer; fi
+    if ! getent passwd solarminer >/dev/null 2>&1; then adduser --system --ingroup solarminer --home /var/lib/solarminer --no-create-home --shell /usr/sbin/nologin solarminer; fi
+    install -d -o solarminer -g solarminer -m 0700 /var/lib/solarminer
+    if [ ! -s /var/lib/solarminer/server.key ] || [ ! -s /var/lib/solarminer/server.crt ]; then
+      tmpdir=$(mktemp -d)
+      trap 'rm -rf "$tmpdir"' EXIT HUP INT TERM
+      hostname_value=$(hostname -f 2>/dev/null || hostname)
+      openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 365 \
+        -keyout "$tmpdir/server.key" -out "$tmpdir/server.crt" \
+        -subj "/CN=$hostname_value" \
+        -addext "subjectAltName=DNS:localhost,DNS:$hostname_value,IP:127.0.0.1" \
+        >/dev/null 2>&1
+      install -o solarminer -g solarminer -m 0600 "$tmpdir/server.key" /var/lib/solarminer/server.key
+      install -o root -g solarminer -m 0644 "$tmpdir/server.crt" /var/lib/solarminer/server.crt
+    fi
+    # Establish the release layout without following or overwriting untrusted paths.
+    for path in /opt/solarminer /opt/solarminer/releases /opt/solarminer/backups /opt/solarminer/current; do
+      if [ -L "$path" ] && [ "$path" != /opt/solarminer/current ]; then
+        echo "Refusing symlink deployment directory: $path" >&2; exit 1
+      fi
+    done
+    if [ -L /opt/solarminer ] || [ -L /opt/solarminer/releases ] || [ -L /opt/solarminer/backups ]; then
+      echo "Refusing symlink deployment root/releases/backups" >&2; exit 1
+    fi
+    install -d -o root -g root -m 0755 /opt/solarminer /opt/solarminer/releases /opt/solarminer/backups
+    safe_root_dir() {
+      [ -d "$1" ] && [ ! -L "$1" ] || return 1
+      [ "$(stat -c %u "$1")" = 0 ] || return 1
+      mode=$(stat -c %a "$1")
+      [ $((0$mode & 022)) -eq 0 ]
+    }
+    safe_root_dir /opt/solarminer || { echo "Unsafe deployment root" >&2; exit 1; }
+    safe_root_dir /opt/solarminer/releases || { echo "Unsafe releases directory" >&2; exit 1; }
+    safe_root_dir /opt/solarminer/backups || { echo "Unsafe backups directory" >&2; exit 1; }
+    version=$(dpkg-query -W -f='${Version}' solarminer-gateway)
+    release="/opt/solarminer/releases/$version"
+    if [ -L "$release" ]; then echo "Refusing symlink release: $release" >&2; exit 1; fi
+    if [ -e "$release" ]; then
+      if [ ! -f "$release/usr/lib/solarminer-gateway/solarminer_gateway/app.py" ] ||          [ ! -f "$release/usr/share/solarminer/pwa/index.html" ] ||          [ ! -f "$release/usr/share/solarminer/catalog.json" ]; then
+        echo "Existing release directory is incomplete; refusing to overwrite: $release" >&2; exit 1
+      fi
+    else
+      mkdir -p "$release/usr/lib/solarminer-gateway" "$release/usr/share/solarminer"
+      cp -a /usr/lib/solarminer-gateway/solarminer_gateway "$release/usr/lib/solarminer-gateway/"
+      cp -a /usr/share/solarminer/. "$release/usr/share/solarminer/"
+      chown -R root:root "$release"
+      find "$release" -type d -exec chmod 0755 {} +
+      find "$release" -type f -exec chmod 0644 {} +
+    fi
+    if [ ! -L /opt/solarminer/current ]; then
+      if [ -e /opt/solarminer/current ]; then echo "Refusing non-symlink /opt/solarminer/current" >&2; exit 1; fi
+      ln -s "releases/$version" /opt/solarminer/.current-initial
+      mv -T /opt/solarminer/.current-initial /opt/solarminer/current
+    else
+      current_target=$(readlink -f /opt/solarminer/current)
+      case "$current_target" in
+        /opt/solarminer/releases/*) ;;
+        *) echo "Refusing current symlink outside releases" >&2; exit 1 ;;
+      esac
+      safe_root_dir "$current_target" || { echo "Unsafe current release directory" >&2; exit 1; }
+      if [ ! -f "$current_target/usr/lib/solarminer-gateway/solarminer_gateway/app.py" ]; then
+        echo "Current release backend is missing" >&2; exit 1
+      fi
+    fi
+    if [ -f /etc/sudoers.d/solarminer-update-apply ]; then
+      chmod 0440 /etc/sudoers.d/solarminer-update-apply
+      if command -v visudo >/dev/null 2>&1; then visudo -cf /etc/sudoers.d/solarminer-update-apply >/dev/null; fi
+    fi
+    if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+      systemctl daemon-reload
+      systemctl enable solarminer-gateway.service
+      systemctl enable --now solarminer-recovery.timer
+      systemctl restart solarminer-gateway.service || systemctl start solarminer-gateway.service
+    fi
+    ;;
+esac
+exit 0

@@ -1,0 +1,28 @@
+{
+  "status": "DRAFT_NOT_SIGNED_NOT_ACTIVATABLE",
+  "schema_version": 1,
+  "catalog_version": "0.6.1-draft",
+  "connector": {
+    "id": "deye-modbus-tcp",
+    "version": "0.6.1",
+    "name": "Deye Modbus TCP raw read-only transport",
+    "artifact_type": "builtin",
+    "sha256": "REPLACE_WITH_BUILD_VERIFIED_SHA256",
+    "protocols": ["Modbus TCP FC03 only"],
+    "capabilities": {
+      "read": ["raw_holding_registers_unmapped"],
+      "control": [],
+      "claims_device_capabilities": false
+    },
+    "dependencies": [],
+    "read_only": true,
+    "model_compatibility": "NOT_VERIFIED",
+    "hardware_validation": "NOT_VALIDATED_ON_HARDWARE",
+    "activation_blockers": [
+      "model-specific register map not verified",
+      "catalog requires owner-controlled trusted signature",
+      "systemd isolation not operationally validated",
+      "connector manager dispatch not yet wired to sandbox worker"
+    ]
+  }
+}

@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+export PYTHONPATH="/usr/lib/solarminer-gateway${PYTHONPATH:+:$PYTHONPATH}"
+exec /usr/bin/python3 -m solarminer_gateway.system_update_pipeline "$@"

@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#060608">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Solar Miner">
+  <meta name="description" content="The Solar Miner — demonstração com diagnóstico seguro e associação ao Gateway pendente de validação de identidade.">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+  <title>The Solar Miner</title>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#inicio" aria-label="The Solar Miner, início">
+        <img src="assets/icon.svg" alt="" width="42" height="42">
+        <span><strong>The Solar Miner</strong><small>ENERGY GATEWAY</small></span>
+      </a>
+      <div class="side-label">A SUA PROPRIEDADE</div>
+      <div id="connection-summary" class="connection-card"><span class="pulse"></span><div><strong id="connection-title">Modo demonstração</strong><small id="connection-detail">Dados simulados · sem ligação física</small></div></div>
+      <nav id="primary-nav" class="primary-nav" aria-label="Navegação principal">
+        <button class="nav-item active" data-page="inicio"><span class="nav-icon">⌂</span>Visão geral</button>
+        <button class="nav-item" data-page="energia"><span class="nav-icon">◉</span>Energia · resumo</button>
+        <button class="nav-item" data-page="casa"><span class="nav-icon">⌂</span>Casa</button>
+        <button class="nav-item" data-page="engine"><span class="nav-icon">⌘</span>Engine</button>
+        <button class="nav-item" data-page="profile"><span class="nav-icon">○</span>Profile</button>
+        <button class="nav-item" data-page="automatismos"><span class="nav-icon">⟳</span>Automatismos</button>
+        <button class="nav-item" data-page="inversores"><span class="nav-icon">ϟ</span>Inversores</button>
+        <button class="nav-item" data-page="baterias"><span class="nav-icon">▤</span>Baterias</button>
+        <button class="nav-item" data-page="paineis-solares"><span class="nav-icon">☼</span>Painéis solares</button>
+        <button class="nav-item" data-page="mineradoras"><span class="nav-icon">▦</span>Mineradoras</button>
+        <button class="nav-item" data-page="ev"><span class="nav-icon">↗</span>EV</button>
+        <button class="nav-item" data-page="aqs"><span class="nav-icon">♨</span>AQS</button>
+        <button class="nav-item" data-page="soalho-radiante"><span class="nav-icon">⌁</span>Soalho radiante</button>
+      </nav>
+      <div class="sidebar-bottom"><button id="open-settings" class="settings-button">⚙ <span>Personalizar demonstração</span></button><div class="privacy-note"><span class="lock-icon">▣</span><span>O Gateway local é a autoridade dos dados e das decisões.</span></div></div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar"><div class="mobile-brand"><img src="assets/icon.svg" alt="" width="34" height="34"><strong>The Solar Miner</strong></div><div class="breadcrumb" id="breadcrumb">A SUA CASA / VISÃO GERAL</div><div class="top-actions"><span id="mode-chip" class="mode-chip simulated">DEMO · SIMULATED</span><button id="refresh-button" class="icon-button" title="Atualizar demonstração" aria-label="Atualizar demonstração">↻</button></div></header>
+      <section id="gateway-status-strip" class="gateway-status-strip" aria-live="polite">
+        <div class="gateway-status-dot" aria-hidden="true"></div>
+        <div class="gateway-status-copy"><strong id="gateway-status-label">DEMONSTRAÇÃO — SEM LIGAÇÃO AO GATEWAY</strong><small id="gateway-status-detail">Os dados e dispositivos apresentados continuam simulados.</small></div>
+        <button id="open-gateway-dialog" class="button secondary gateway-manage" type="button">Gateway · detalhes</button>
+      </section>
+      <div id="notice" class="notice" role="status" hidden></div>
+      <section id="page-content" aria-live="polite"></section>
+      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">PWA DEMO 0.5.6</span></span><span id="freshness-label">Dados de demonstração · não são leituras reais</span></footer>
+    </main>
+  </div>
+
+  <nav class="mobile-nav" id="mobile-nav" aria-label="Navegação móvel">
+    <button class="active" data-action="home"><span>⌂</span>Home</button>
+    <button data-action="profile"><span>○</span>Profile</button>
+    <button data-action="energy"><span>◍</span>Energy</button>
+    <button data-action="house"><span>◫</span>Casa</button>
+    <button data-action="devices"><span>⚙</span>Devices</button>
+    <button data-action="automations"><span>⟳</span>Automatismos</button>
+  </nav>
+
+  <dialog id="settings-dialog" class="settings-dialog">
+    <form method="dialog" class="dialog-header"><div><p class="eyebrow">DEMO · CONFIGURAÇÃO LOCAL</p><h2>Personalizar demonstração</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></form>
+    <div class="dialog-body">
+      <div class="status-banner demo-banner"><span class="demo-stamp">DEMO</span><span><strong>Demonstração com diagnóstico limitado.</strong> A aplicação pode consultar os endpoints públicos de saúde e identificação depois de uma ação explícita. Não inclui sessão autenticada nem conclui emparelhamento; a identidade do Gateway continua por validar.</span></div>
+      <section class="photo-settings" aria-labelledby="photo-settings-title">
+        <p class="eyebrow" id="photo-settings-title">PERSONALIZAÇÃO VISUAL</p>
+        <p class="field-note">Escolhe uma fotografia da propriedade. A imagem é redimensionada e guardada apenas neste browser; não é enviada para nenhum servidor.</p>
+        <label for="property-photo-file">Fotografia da propriedade</label><input id="property-photo-file" type="file" accept="image/*">
+        <button id="remove-property-photo" class="button secondary" type="button">Remover fotografia</button>
+        <div id="photo-result" class="field-note" role="status" aria-live="polite"></div>
+        <p class="eyebrow weather-setting-label">CONDIÇÃO DO CÉU · SIMULADA</p>
+        <div class="weather-options settings-weather-options" role="group" aria-label="Condição do céu simulada"><button type="button" data-sky="limpo">☀️ <span>Limpo</span></button><button type="button" data-sky="pouco nublado" class="selected">⛅ <span>Pouco nublado</span></button><button type="button" data-sky="muito nublado">☁️ <span>Muito nublado</span></button><button type="button" data-sky="tempestade">⛈️ <span>Trovoada</span></button></div>
+      </section>
+      <div class="security-callout"><strong>SIMULATED · LOCAL ONLY.</strong> Os valores e controlos energéticos são fictícios e alteram apenas a interface. O diagnóstico do Gateway é uma operação de leitura separada; não há autenticação, escritas Modbus nem comandos físicos.</div>
+      <div class="dialog-actions"><button class="button primary" type="button" id="close-demo-settings">Fechar</button></div>
+    </div>
+  </dialog>
+
+  <dialog id="weather-dialog" class="settings-dialog compact-dialog">
+    <form method="dialog" class="dialog-header"><div><p class="eyebrow">CLIMA · SIMULADO</p><h2>Condição do céu</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></form>
+    <div class="dialog-body"><p class="field-note">Estas condições são fictícias e servem apenas para experimentar a interface.</p><div class="weather-options" role="group" aria-label="Escolher condição simulada"><button type="button" data-sky="limpo">☀️ <span>Limpo</span></button><button type="button" data-sky="pouco nublado" class="selected">⛅ <span>Pouco nublado</span></button><button type="button" data-sky="muito nublado">☁️ <span>Muito nublado</span></button><button type="button" data-sky="tempestade">⛈️ <span>Trovoada</span></button></div><div class="security-callout">SIMULATED · LOCAL ONLY. Não existe ligação a um serviço meteorológico.</div></div>
+  </dialog>
+  <dialog id="production-dialog" class="settings-dialog compact-dialog">
+    <form method="dialog" class="dialog-header"><div><p class="eyebrow">PRODUÇÃO · SIMULATED</p><h2>Últimas 3h + previsão visual</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></form>
+    <div class="dialog-body"><div class="production-summary"><div><span>AGORA</span><strong>4,2 kW</strong></div><div><span>PICO</span><strong>5,1 kW</strong></div><div><span>+6H</span><strong>0,8 kW</strong></div></div><svg class="chart detail-chart" viewBox="0 0 620 220" role="img" aria-label="Curva ilustrativa de produção e previsão simulada"><defs><linearGradient id="detailFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#dcc99c" stop-opacity=".24"/><stop offset="100%" stop-color="#dcc99c" stop-opacity="0"/></linearGradient></defs><path class="chart-grid" d="M38 35H602 M38 80H602 M38 125H602 M38 170H602"/><path d="M38 160 C90 145 120 120 180 100 S260 55 330 60 L330 170 L38 170Z" fill="url(#detailFill)"/><path class="chart-line" d="M38 160 C90 145 120 120 180 100 S260 55 330 60"/><path d="M330 60 C390 72 430 105 480 132 S550 156 602 176" fill="none" stroke="#dcc99c" stroke-dasharray="8 6" stroke-width="2"/><g class="chart-label"><text x="38" y="198">−3h</text><text x="180" y="198">−1h</text><text x="320" y="198">Agora</text><text x="450" y="198">+3h</text><text x="580" y="198">+6h</text></g></svg><p class="field-note">Curva ilustrativa, não é uma previsão meteorológica nem uma medição energética real.</p></div>
+  </dialog>
+  <dialog id="more-dialog" class="settings-dialog compact-dialog"><form method="dialog" class="dialog-header"><div><p class="eyebrow">NAVEGAÇÃO</p><h2>Áreas</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></form><div class="more-links" id="more-links"></div></dialog>
+  <dialog id="gateway-dialog" class="settings-dialog">
+    <form method="dialog" class="dialog-header"><div><p class="eyebrow">LIGAÇÃO SEGURA</p><h2>SolarMiner Gateway</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></form>
+    <div class="dialog-body">
+      <div class="status-banner"><span class="demo-stamp">SEGURANÇA</span><span>Uma resposta HTTP não prova a identidade do Gateway. Esta versão nunca declara LAN/REMOTO como ligado sem identidade criptográfica validada.</span></div>
+      <p class="field-note">Insere um endpoint HTTPS já conhecido ou lê um QR Code SolarMiner. O endereço fica apenas nesta sessão até existir um método suportado para validar e fixar a identidade do Gateway.</p>
+      <label for="gateway-endpoint">Endpoint HTTPS do Gateway</label><input id="gateway-endpoint" type="url" inputmode="url" placeholder="gateway.exemplo" autocomplete="off" spellcheck="false">
+      <div class="dialog-actions"><button id="gateway-check" class="button primary" type="button">Testar endpoint</button><button id="gateway-clear" class="button secondary" type="button">Desassociado / limpar</button></div>
+      <label for="gateway-qr-file">Ler QR Code (se o browser suportar a leitura)</label><input id="gateway-qr-file" type="file" accept="image/*" capture="environment">
+      <label for="gateway-qr-text">Ou colar o conteúdo do QR Code</label><textarea id="gateway-qr-text" rows="3" placeholder="Conteúdo do convite SolarMiner" autocomplete="off" spellcheck="false"></textarea>
+      <div class="dialog-actions"><button id="gateway-qr-parse" class="button secondary" type="button">Validar formato do QR</button></div>
+      <div id="gateway-result" class="connection-result" role="status" aria-live="polite">Nenhum endpoint foi testado. A PWA permanece em modo demonstração.</div>
+      <section class="panel gateway-auth-panel" id="gateway-bootstrap-panel" hidden>
+        <div class="panel-header"><div><p class="eyebrow">PRIMEIRA CONFIGURAÇÃO LOCAL</p><h3>Criar o primeiro Owner</h3></div><span class="source-tag">SÓ LOOPBACK</span></div>
+        <p class="field-note">Disponível apenas quando esta PWA está aberta num browser local no próprio Gateway. Obtém o token no ficheiro local de bootstrap. A API rejeita tentativas remotas. A chave de identidade do Gateway tem de estar previamente provisionada.</p>
+        <form id="gateway-bootstrap-form" class="gateway-form-grid">
+          <label>Token de bootstrap local<input id="gateway-bootstrap-token" type="password" autocomplete="off" minlength="32" required></label>
+          <label>Nome do Owner<input id="gateway-bootstrap-username" autocomplete="username" minlength="3" maxlength="128" pattern="[A-Za-z0-9_.-]+" required></label>
+          <label>Palavra-passe (mín. 12 caracteres)<input id="gateway-bootstrap-password" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required></label>
+          <label>MAC declarado<input id="gateway-bootstrap-mac" placeholder="AA:BB:CC:DD:EE:FF" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" required></label>
+          <button class="button primary" type="submit">Criar Owner localmente</button>
+        </form>
+        <div id="gateway-bootstrap-recovery" hidden class="invite-created"><strong>Chave de recuperação — guardar offline agora</strong><p class="field-note">Esta chave é apresentada uma única vez e não é guardada na PWA.</p><textarea id="gateway-bootstrap-recovery-key" rows="3" readonly></textarea><button class="button secondary" type="button" id="gateway-copy-recovery-key">Copiar chave de recuperação</button></div>
+      </section>
+      <section class="panel gateway-auth-panel">
+        <div class="panel-header"><div><p class="eyebrow">IDENTIDADE DO DISPOSITIVO</p><h3>Iniciar sessão</h3></div><span class="source-tag">TOKEN SÓ EM MEMÓRIA</span></div>
+        <p class="field-note">A chave privada do dispositivo é guardada como CryptoKey não exportável no armazenamento do browser. O token de sessão nunca é guardado em localStorage nem no cache offline.</p>
+        <form id="gateway-login-form" class="gateway-form-grid">
+          <label>Utilizador<input id="gateway-login-username" autocomplete="username" minlength="3" maxlength="128" required></label>
+          <label>Palavra-passe<input id="gateway-login-password" type="password" autocomplete="current-password" minlength="12" required></label>
+          <button class="button primary" type="submit">Autenticar neste dispositivo</button>
+          <button class="button secondary" type="button" id="gateway-logout" disabled>Terminar sessão</button>
+        </form>
+        <div id="gateway-session-status" class="connection-result" role="status" aria-live="polite">Sem sessão autenticada nesta aba.</div>
+      </section>
+      <section class="panel gateway-auth-panel">
+        <div class="panel-header"><div><p class="eyebrow">FAZER PARTE DA INSTALAÇÃO</p><h3>Resgatar convite QR</h3></div></div>
+        <form id="gateway-redeem-form" class="gateway-form-grid">
+          <label>Utilizador novo<input id="gateway-redeem-username" autocomplete="username" minlength="3" maxlength="128" pattern="[A-Za-z0-9_.-]+" required></label>
+          <label>Palavra-passe (mín. 12 caracteres)<input id="gateway-redeem-password" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required></label>
+          <label>MAC declarado deste dispositivo<input id="gateway-redeem-mac" inputmode="text" placeholder="AA:BB:CC:DD:EE:FF" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" required></label>
+          <button class="button primary" type="submit">Validar identidade e resgatar convite</button>
+        </form>
+        <p class="field-note">A fingerprint completa do Gateway e a assinatura Ed25519 são verificadas antes de consumir o convite. O MAC é apenas declarado, não prova presença física.</p>
+      </section>
+      <section class="panel gateway-auth-panel" id="gateway-invite-management" hidden>
+        <div class="panel-header"><div><p class="eyebrow">ADMINISTRAÇÃO DO GATEWAY</p><h3>Convites de utilização única</h3></div><span class="source-tag">OWNER</span></div>
+        <form id="gateway-create-invite-form" class="gateway-form-grid">
+          <label>Etiqueta do convite<input id="gateway-invite-label" maxlength="120" required placeholder="Ex.: Telemóvel da família"></label>
+          <label>Papel<select id="gateway-invite-role"><option value="viewer">Viewer — só leitura</option><option value="operator">Operator — operações autorizadas</option></select></label>
+          <button class="button primary" type="submit">Criar convite assinado pelo Gateway</button>
+          <button class="button secondary" type="button" id="gateway-refresh-invites">Atualizar lista</button>
+        </form>
+        <div id="gateway-invite-created" hidden class="invite-created"><p class="field-note">QR de convite. Mostra-o apenas à pessoa autorizada; contém um segredo de utilização única.</p><img id="gateway-invite-qr" alt="QR Code do convite SolarMiner" width="240" height="240"><p id="gateway-invite-expiry" class="field-note"></p><textarea id="gateway-invite-payload" rows="4" readonly aria-label="Conteúdo de reserva do QR"></textarea><button class="button secondary" type="button" id="gateway-copy-invite">Copiar conteúdo do convite</button></div>
+        <div id="gateway-invite-list" class="invite-list" aria-live="polite">A lista só é carregada numa sessão Owner autenticada.</div>
+      </section>
+      <div class="security-callout"><strong>Estado de confiança:</strong> uma resposta HTTP não confirma identidade; só uma assinatura válida e a fingerprint completa o fazem. Estados DEMO locais não são apresentados como comandos LIVE. O endpoint de aplicação de atualizações continua bloqueado até existir recuperação independente comprovada.</div>
+      <div class="dialog-actions"><button class="button primary" type="button" id="close-gateway-dialog">Fechar</button></div>
+    </div>
+  </dialog>
+  <dialog id="context-editor" class="settings-dialog context-editor" aria-labelledby="context-editor-title">
+    <form method="dialog" class="dialog-header"><div><p class="eyebrow">PERSONALIZAÇÃO · DEMO LOCAL</p><h2 id="context-editor-title">Editar elemento</h2></div><button class="icon-button" value="cancel" aria-label="Cancelar e fechar">×</button></form>
+    <form id="context-editor-form" class="dialog-body">
+      <p class="field-note">Pré-visualiza e confirma antes de guardar. As alterações ficam apenas neste browser/instalação PWA; não são enviadas ao Gateway.</p>
+      <div id="context-editor-fields"></div>
+      <div id="context-editor-preview" class="context-editor-preview" hidden><img id="context-editor-preview-image" alt="Pré-visualização da imagem selecionada"></div>
+      <div id="context-editor-status" class="field-note" role="status" aria-live="polite"></div>
+      <div class="dialog-actions"><button class="button secondary" id="context-editor-cancel" type="button">Cancelar</button><button class="button primary" type="submit">Guardar localmente</button></div>
+    </form>
+  </dialog>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,186 @@
+import hashlib, json, os, time
+from pathlib import Path
+from fastapi.testclient import TestClient
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from solarminer_gateway import app as gateway
+from solarminer_gateway.updates import canonical_manifest, verify_manifest, UpdateValidationError
+import pytest
+
+
+def keypair():
+    private = Ed25519PrivateKey.generate()
+    public = private.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+    return private, public
+
+def sig(private, text): return private.sign(text.encode()).hex()
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway, "DB_PATH", tmp_path / "gateway.db")
+    monkeypatch.setattr(gateway, "BOOTSTRAP_PATH", tmp_path / "bootstrap.token")
+    monkeypatch.setattr(gateway, "INSTANCE_MARKER", tmp_path / "initialized.marker")
+    gwpriv, gwpub = keypair()
+    privpath, pubpath = tmp_path / "gw.key", tmp_path / "gw.pub"
+    privpath.write_bytes(gwpriv.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    privpath.chmod(0o600)
+    pubpath.write_text(gwpub)
+    monkeypatch.setenv("SOLARMINER_GATEWAY_IDENTITY_PRIVATE_KEY", str(privpath))
+    monkeypatch.setenv("SOLARMINER_GATEWAY_IDENTITY_PUBLIC_KEY", str(pubpath))
+    monkeypatch.setenv("SOLARMINER_PUBLIC_URL", "https://gateway.example.test")
+    with TestClient(gateway.app) as c:
+        yield c
+
+def owner_session(client):
+    token = gateway.BOOTSTRAP_PATH.read_text().strip()
+    priv, pub = keypair(); ts=int(time.time()); nonce="bootstrap-v067-owner-nonce"
+    canonical=f"BOOTSTRAP\nowner-v067\nAA:BB:CC:DD:EE:01\n{ts}\n{nonce}"
+    r=client.post("/api/v1/bootstrap/owner",json={"bootstrap_token":token,"username":"owner-v067","password":"owner-password-v067-long","mac":"AA:BB:CC:DD:EE:01","public_key_pem":pub,"signature":sig(priv,canonical),"timestamp":ts,"nonce":nonce})
+    assert r.status_code == 201, r.text
+    ts=int(time.time()); nonce="login-v067-owner-nonce"
+    canonical=f"LOGIN\nowner-v067\n{r.json()['device_id']}\n{ts}\n{nonce}"
+    login=client.post("/api/v1/auth/login",json={"username":"owner-v067","password":"owner-password-v067-long","device_id":r.json()['device_id'],"timestamp":ts,"nonce":nonce,"signature":sig(priv,canonical)})
+    assert login.status_code == 200, login.text
+    return login.json()["access_token"]
+
+def test_owner_invite_create_list_and_revoke(client):
+    token=owner_session(client); h={"Authorization":f"Bearer {token}"}
+    created=client.post("/api/v1/invites",headers=h,json={"role":"viewer","label":"phone test"})
+    assert created.status_code == 201, created.text
+    body=created.json(); assert len(body["qr_payload"]["fp"]) == 64
+    assert body["qr_svg"].startswith("<svg") and "<path" in body["qr_svg"]
+    assert body["token"] not in body["qr_svg"]
+    listed=client.get("/api/v1/invites",headers=h).json()["invites"]
+    assert listed[0]["state"] == "pending"
+    assert "token" not in listed[0] and "token_hash" not in listed[0]
+    revoked=client.post(f"/api/v1/invites/{body['invite_id']}/revoke",headers=h)
+    assert revoked.status_code == 200
+    assert client.post(f"/api/v1/invites/{body['invite_id']}/revoke",headers=h).status_code == 409
+
+def test_invite_redeem_atomic_and_single_use(client):
+    token=owner_session(client); h={"Authorization":f"Bearer {token}"}
+    invite=client.post("/api/v1/invites",headers=h,json={"role":"operator","label":"new operator"}).json()
+    priv,pub=keypair(); ts=int(time.time()); nonce="invite-redeem-nonce-0001"; username="operator-v067"
+    mac="AA:BB:CC:DD:EE:44"; password="operator-password-v067-long"
+    token_hash=hashlib.sha256(invite["token"].encode()).hexdigest()
+    pub_der=serialization.load_pem_public_key(pub.encode()).public_bytes(serialization.Encoding.DER,serialization.PublicFormat.SubjectPublicKeyInfo)
+    pub_hash=hashlib.sha256(pub_der).hexdigest()
+    canonical="\n".join(["POST","/api/v1/invites/redeem",str(ts),nonce,token_hash,username,hashlib.sha256(password.encode()).hexdigest(),mac,pub_hash])
+    body={"invite_token":invite["token"],"username":username,"password":password,"mac":mac,"client_pubkey_pem":pub,"signature":sig(priv,canonical),"timestamp":ts,"nonce":nonce}
+    response=client.post("/api/v1/invites/redeem",json=body)
+    assert response.status_code == 201, response.text
+    assert response.json()["user"]["role"] == "operator"
+    again=client.post("/api/v1/invites/redeem",json=body)
+    assert again.status_code in (400,409)
+    with gateway.db() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM users WHERE username=?",(username,)).fetchone()[0] == 1
+        assert conn.execute("SELECT used_at FROM invites WHERE id=?",(invite["invite_id"],)).fetchone()[0] is not None
+
+def test_invite_role_privilege_and_gateway_identity_fail_closed(client, monkeypatch):
+    token=owner_session(client); h={"Authorization":f"Bearer {token}"}
+    assert client.post("/api/v1/invites",headers=h,json={"role":"owner","label":"bad"}).status_code == 422
+    monkeypatch.setenv("SOLARMINER_GATEWAY_IDENTITY_PUBLIC_KEY", "/no/such/key")
+    assert client.post("/api/v1/invites",headers=h,json={"role":"viewer","label":"blocked"}).status_code == 503
+
+def test_update_manifest_signature_verification():
+    priv,pem=keypair(); pub=serialization.load_pem_public_key(pem.encode())
+    manifest={"schema_version":1,"release_id":"r-1","version":"0.6.8","min_compatible_version":"0.6.7","changelog":["fix"],"package_name":"solarminer.deb","package_url":"https://releases.example.test/solarminer.deb","package_size":10,"sha256":"a"*64,"signature_algorithm":"Ed25519","compatibility":{},"migration_requirements":[]}
+    manifest["signature"]=priv.sign(canonical_manifest(manifest)).hex()
+    assert verify_manifest(manifest,pub,"0.6.7")["signature_valid"] is True
+    tampered=dict(manifest); tampered["version"]="9.9.9"
+    with pytest.raises(UpdateValidationError): verify_manifest(tampered,pub,"0.6.7")
+
+
+def test_gateway_identity_challenge_proves_key_possession(client):
+    ts=int(time.time()); nonce="gateway-identity-test-nonce"
+    response=client.get("/api/v1/gateway/identity",params={"timestamp":ts,"nonce":nonce})
+    assert response.status_code == 200, response.text
+    data=response.json(); pub=serialization.load_pem_public_key(data["public_key_pem"].encode())
+    pub.verify(bytes.fromhex(data["signature"]),f"GET\n/api/v1/gateway/identity\n{ts}\n{nonce}".encode())
+    assert len(data["fingerprint_sha256"]) == 64
+
+def test_invite_management_is_owner_only_for_admin_operator_viewer(client):
+    owner_token=owner_session(client); headers={"Authorization":f"Bearer {owner_token}"}
+    roles=["admin","operator","viewer"]
+    with gateway.db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for role in roles:
+            uid, did = f"test-{role}-user", f"test-{role}-device"
+            dpriv, dpub=keypair()
+            der=serialization.load_pem_public_key(dpub.encode()).public_bytes(serialization.Encoding.DER,serialization.PublicFormat.SubjectPublicKeyInfo)
+            conn.execute("INSERT INTO users(id,account_id,username,password_hash,role,status,created_at) VALUES(?,?,?,?,?,'active',?)",(uid,uid,uid,gateway.PASSWORDS.hash("a-long-test-password-"+role),role,gateway.utcnow()))
+            conn.execute("INSERT INTO devices(id,public_key_pem,public_key_sha256,mac_declared,mac_status,status,created_at) VALUES(?,?,?,?,'declared','active',?)",(did,dpub,hashlib.sha256(der).hexdigest(),"AA:BB:CC:DD:EE:"+{"admin":"11","operator":"12","viewer":"13"}[role],gateway.utcnow()))
+            conn.execute("INSERT INTO user_devices(user_id,device_id,status,created_at) VALUES(?,?,'active',?)",(uid,did,gateway.utcnow()))
+            raw="session-token-for-"+role
+            conn.execute("INSERT INTO sessions(token_sha256,user_id,device_id,created_at,expires_at,credential_version) VALUES(?,?,?,?,?,1)",(gateway.token_hash(raw),uid,did,int(time.time()),int(time.time())+3600))
+        conn.commit()
+    for role in roles:
+        h={"Authorization":f"Bearer session-token-for-{role}"}
+        assert client.post("/api/v1/invites",headers=h,json={"role":"viewer","label":"should fail"}).status_code == 403
+        assert client.get("/api/v1/invites",headers=h).status_code == 403
+
+def test_two_concurrent_invite_redemptions_only_create_one_account(client):
+    from concurrent.futures import ThreadPoolExecutor
+    token=owner_session(client); h={"Authorization":f"Bearer {token}"}
+    invite=client.post("/api/v1/invites",headers=h,json={"role":"viewer","label":"race"}).json()
+    priv,pub=keypair(); username="race-v067"; mac="AA:BB:CC:DD:EE:55"; password="race-password-v067-long"
+    pub_der=serialization.load_pem_public_key(pub.encode()).public_bytes(serialization.Encoding.DER,serialization.PublicFormat.SubjectPublicKeyInfo)
+    pub_hash=hashlib.sha256(pub_der).hexdigest(); token_digest=hashlib.sha256(invite["token"].encode()).hexdigest()
+    def redeem(nonce):
+        ts=int(time.time())
+        canonical="\n".join(["POST","/api/v1/invites/redeem",str(ts),nonce,token_digest,username,hashlib.sha256(password.encode()).hexdigest(),mac,pub_hash])
+        body={"invite_token":invite["token"],"username":username,"password":password,"mac":mac,"client_pubkey_pem":pub,"signature":sig(priv,canonical),"timestamp":ts,"nonce":nonce}
+        return client.post("/api/v1/invites/redeem",json=body).status_code
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        statuses=list(pool.map(redeem,["race-invite-nonce-0001","race-invite-nonce-0002"]))
+    assert statuses.count(201) == 1, statuses
+    assert len([x for x in statuses if x in (400,409)]) == 1, statuses
+    with gateway.db() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM users WHERE username=?",(username,)).fetchone()[0] == 1
+
+def test_update_check_reports_not_configured_and_apply_stays_disabled(client, monkeypatch):
+    monkeypatch.delenv("SOLARMINER_RELEASE_MANIFEST_URL", raising=False)
+    token=owner_session(client); headers={"Authorization":f"Bearer {token}"}
+    check=client.get("/api/v1/system/update/check",headers=headers)
+    assert check.status_code == 200
+    assert check.json()["status"] == "not_configured"
+    assert check.json()["activation_available"] is False
+    status=client.get("/api/v1/system/update/status",headers=headers)
+    assert status.status_code == 200 and status.json()["status"] == "IDLE"
+    apply=client.post("/api/v1/system/update/apply",headers=headers,json={"version":"0.6.8","confirm":True})
+    assert apply.status_code == 503
+    assert "independent_recovery_deployment" in apply.json()["detail"]
+
+
+def test_energy_categories_report_embedded_pwa_version(client):
+    token=owner_session(client)
+    response=client.get("/api/v1/energy/categories",headers={"Authorization":f"Bearer {token}"})
+    assert response.status_code == 200
+    assert response.json()["pwa_source_available"] is True
+    assert response.json()["integration_state"] == "API_READY_PWA_V0_5_7_SAME_ORIGIN"
+
+
+def test_apply_queues_verified_operation_through_privileged_helper(client, monkeypatch):
+    import subprocess
+    token = owner_session(client)
+    with gateway.db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        op = gateway._update_state_write(conn, "VERIFIED", "0.6.9", {
+            "package_path": "/var/lib/solarminer/releases/verified/test.deb.verified",
+            "manifest_path": "/var/lib/solarminer/releases/verified/test.deb.verified.manifest.json",
+            "activation_available": True,
+        })
+        conn.commit()
+    captured = []
+    def fake_run(args, **kwargs):
+        captured.append(args)
+        return subprocess.CompletedProcess(args, 0,
+            json.dumps({"status": "APPLY_QUEUED", "operation_id": op, "target_version": "0.6.9",
+                        "status_url": "/api/v1/system/update/status", "health_check_seconds": 60}), "")
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+    response = client.post("/api/v1/system/update/apply",
+        headers={"Authorization": f"Bearer {token}"}, json={"version": "0.6.9", "confirm": True})
+    assert response.status_code == 202, response.text
+    assert response.json()["status"] == "APPLY_QUEUED"
+    assert response.json()["health_check_seconds"] == 60
+    assert captured and captured[0][-2:] == ["--enqueue", op]

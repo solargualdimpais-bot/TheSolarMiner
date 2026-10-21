@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+case "${1:-}" in
+  remove|deconfigure)
+    if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+      systemctl stop solarminer-gateway.service || true
+      systemctl disable solarminer-gateway.service || true
+    fi
+    ;;
+esac
+exit 0

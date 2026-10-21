@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic offline recovery check for SolarMiner staged releases
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+AccuracySec=5s
+Persistent=true
+Unit=solarminer-recovery.service
+
+[Install]
+WantedBy=timers.target

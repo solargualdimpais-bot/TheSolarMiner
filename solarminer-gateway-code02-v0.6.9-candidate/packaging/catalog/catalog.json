@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "catalog_version": "0.6.0",
+  "product": "SolarMiner Gateway Connector Catalog",
+  "generated_at": "2026-10-18T00:00:00Z",
+  "connectors": [
+    {
+      "id": "tcp-readonly-probe",
+      "version": "0.6.0",
+      "name": "TCP Read-only Probe",
+      "vendor": "SolarMiner Gateway",
+      "description": "Checks TCP transport reachability on an explicitly selected private/local IP and port; sends no application payload.",
+      "artifact_type": "builtin",
+      "artifact_uri": "package://solarminer-gateway/solarminer_gateway/connector_plugins.py",
+      "sha256": "d2f46d0377bf9c93fc3be020812e0e47f1c689840d8b9811e13b6b91e4fd36c9",
+      "gateway_min": "0.6.0",
+      "python_compatibility": {
+        "min": "3.11",
+        "runtime": "system Python from Debian"
+      },
+      "protocols": [
+        "TCP transport only; application protocol not identified"
+      ],
+      "capabilities": {
+        "read": [
+          "tcp_reachable"
+        ],
+        "control": [],
+        "claims_device_capabilities": false
+      },
+      "dependencies": [],
+      "installation": {
+        "kind": "built-in allowlisted module",
+        "requires_confirmation": true,
+        "third_party_code_executed": false
+      },
+      "validation_tests": [
+        "catalog signature verification",
+        "source SHA-256 match",
+        "TCP connection attempt with no payload",
+        "private/link-local IP restriction"
+      ],
+      "read_only": true,
+      "hardware_validation": "NOT_VALIDATED_ON_HARDWARE"
+    }
+  ]
+}

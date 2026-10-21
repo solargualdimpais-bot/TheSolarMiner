@@ -1,0 +1,178 @@
+"""Local, interactive recovery commands. No recovery secret is accepted as argv/env."""
+from __future__ import annotations
+
+import getpass
+import os
+import secrets
+import shutil
+import sqlite3
+import subprocess
+import sys
+
+from . import recovery
+
+SERVICE_NAME = "solarminer-gateway.service"
+
+
+def _require_root() -> None:
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        raise PermissionError("run this local command with real OS administrator privileges (root)")
+
+
+def _require_tty() -> None:
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        raise recovery.RecoveryError("interactive_terminal_required_secrets_will_not_be_read_from_pipes")
+
+
+def _require_service_stopped() -> None:
+    systemctl = shutil.which("systemctl")
+    if not systemctl:
+        raise recovery.RecoveryError("cannot_prove_service_is_stopped_systemctl_unavailable")
+    result = subprocess.run([systemctl, "is-active", SERVICE_NAME], capture_output=True, text=True, check=False)
+    state = result.stdout.strip()
+    if result.returncode == 0 or state == "active":
+        raise recovery.RecoveryError("stop_solarminer_gateway_service_before_local_recovery")
+    if state not in {"inactive", "failed"}:
+        raise recovery.RecoveryError("cannot_prove_service_is_stopped")
+
+
+def _read_pem() -> str:
+    print("Paste the Ed25519 public-key PEM. Finish with an empty line:")
+    lines: list[str] = []
+    while True:
+        line = input()
+        if not line:
+            break
+        lines.append(line)
+        if len(lines) > 64:
+            raise recovery.RecoveryError("public_key_input_too_long")
+    pem = "\n".join(lines) + "\n"
+    if not pem.strip():
+        raise recovery.RecoveryError("public_key_required")
+    return pem
+
+
+def _challenge(purpose: str, owner_id: str, device_id: str | None = None) -> tuple[str, str]:
+    challenge = secrets.token_hex(32)
+    message = recovery.device_proof_message(purpose, owner_id, challenge, device_id)
+    print("\nSign the following exact UTF-8 message with the device's Ed25519 private key.")
+    print("The private key must remain on the device and must never be pasted here:")
+    print(message.decode("utf-8"))
+    signature = input("Device signature (hex): ").strip()
+    return challenge, signature
+
+
+def _new_password() -> str:
+    first = getpass.getpass("New owner password (12–1024 characters): ")
+    second = getpass.getpass("Repeat new owner password: ")
+    if first != second:
+        raise recovery.RecoveryError("passwords_do_not_match")
+    if not 12 <= len(first) <= 1024:
+        raise recovery.RecoveryError("new_password_must_be_12_to_1024_characters")
+    return first
+
+
+def _display_recovery_key_once(key: str, completion_lines: tuple[str, ...] = ()) -> None:
+    try:
+        for line in completion_lines:
+            print(line)
+        print("\nRECOVERY KEY — DISPLAYED ONCE. STORE IT OFFLINE; IT WILL NOT BE SHOWN AGAIN.")
+        print(key)
+        print("Do not photograph, email, paste into tickets, or save this output in logs.")
+        sys.stdout.flush()
+    except (BrokenPipeError, OSError) as exc:
+        raise recovery.RecoveryError(
+            "operation_committed_but_replacement_key_delivery_failed_use_emergency_reset"
+        ) from exc
+
+
+def run_recovery() -> None:
+    _require_root()
+    _require_tty()
+    _require_service_stopped()
+    username = input("Owner username: ").strip()
+    owner = recovery.lookup_active_owner(username)
+    recovery_key = getpass.getpass("Offline recovery key (input hidden): ")
+    recovery.precheck_recovery_key(owner["id"], recovery_key)
+    print("This changes the owner password, invalidates old sessions, and revokes old device associations.")
+    if input("Type RECOVER-OWNER to continue: ") != "RECOVER-OWNER":
+        raise recovery.RecoveryError("owner_recovery_cancelled")
+    public_key_pem = _read_pem()
+    mac = input("New device MAC metadata (not an identity factor): ").strip()
+    challenge, signature = _challenge("recovery", owner["id"])
+    new_password = _new_password()
+    result = recovery.recover_owner(owner["id"], recovery_key, new_password, public_key_pem, mac, challenge, signature)
+    _display_recovery_key_once(result["recovery_key"], (f"Owner recovery completed. New device ID: {result['device_id']}",))
+
+
+def run_recovery_setup() -> None:
+    _require_root()
+    _require_tty()
+    _require_service_stopped()
+    username = input("Active owner username: ").strip()
+    owner = recovery.lookup_active_owner(username)
+    device_id = input("ID of an active device already associated with this owner: ").strip()
+    recovery.lookup_active_device(owner["id"], device_id)
+    print("This creates or rotates the offline recovery key; any previous key becomes invalid.")
+    if input("Type SETUP-OR-ROTATE to continue: ") != "SETUP-OR-ROTATE":
+        raise recovery.RecoveryError("recovery_key_setup_cancelled")
+    current_password = getpass.getpass("Current owner password (input hidden): ")
+    challenge, signature = _challenge("setup", owner["id"], device_id)
+    key = recovery.setup_recovery_key(owner["id"], current_password, device_id, challenge, signature)
+    _display_recovery_key_once(key, (f"Recovery key configured for owner {owner['username']}.",))
+
+
+def run_emergency_reset() -> None:
+    _require_root()
+    _require_tty()
+    _require_service_stopped()
+    print("EMERGENCY OWNER RECOVERY: preserves existing data but replaces the owner's password and device association.")
+    print("A protected database backup will be created before any mutation.")
+    confirmation = input("Type EMERGENCY-RESET to continue: ")
+    if confirmation != "EMERGENCY-RESET":
+        raise recovery.RecoveryError("emergency_recovery_cancelled")
+    username = input("Active owner username to recover: ").strip()
+    owner = recovery.lookup_active_owner(username)
+    public_key_pem = _read_pem()
+    mac = input("New device MAC metadata (not an identity factor): ").strip()
+    challenge, signature = _challenge("emergency", owner["id"])
+    new_password = _new_password()
+    result = recovery.emergency_reset(owner["id"], new_password, public_key_pem, mac, challenge, signature)
+    _display_recovery_key_once(result["recovery_key"], (
+        f"Emergency recovery completed. New device ID: {result['device_id']}",
+        f"Protected pre-operation backup: {result['backup_path']}",
+    ))
+
+
+def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="solarminer-gateway", description="Local SolarMiner Gateway recovery tools")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser("recovery", help="recover an owner using the offline one-time recovery key")
+    subparsers.add_parser("recovery-setup", help="create or rotate a recovery key while owner access still works")
+    subparsers.add_parser("emergency-reset", help="recover an owner using OS-root authority and a protected backup")
+    args = parser.parse_args()
+    handlers = {
+        "recovery": run_recovery,
+        "recovery-setup": run_recovery_setup,
+        "emergency-reset": run_emergency_reset,
+    }
+    try:
+        handlers[args.command]()
+    except sqlite3.Error:
+        print("Recovery not completed: a database operation failed; no success is claimed.", file=sys.stderr)
+        raise SystemExit(2) from None
+    except recovery.RecoveryError as exc:
+        if "operation_committed_but_replacement_key_delivery_failed" in str(exc):
+            print("Recovery committed but the replacement key could not be delivered. Use emergency-reset to rotate it again.", file=sys.stderr)
+        else:
+            print(f"Recovery not completed: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+    except (PermissionError, OSError) as exc:
+        print(f"Recovery not completed: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+
+
+if __name__ == "__main__":
+    main()

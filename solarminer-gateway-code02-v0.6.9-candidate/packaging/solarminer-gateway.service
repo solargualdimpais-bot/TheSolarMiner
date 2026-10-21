@@ -1,0 +1,33 @@
+[Unit]
+Description=SolarMiner Gateway CODE 02 v0.6.9 (core contracts retained)
+After=network.target solarminer-recovery.service
+Requires=solarminer-recovery.service
+
+[Service]
+Type=simple
+User=solarminer
+Group=solarminer
+Environment=PYTHONPATH=/opt/solarminer/current/usr/lib/solarminer-gateway
+Environment=SOLARMINER_DATA_DIR=/var/lib/solarminer
+Environment=SOLARMINER_PWA_DIR=/opt/solarminer/current/usr/share/solarminer/pwa
+Environment=SOLARMINER_CATALOG_DIR=/opt/solarminer/current/usr/share/solarminer
+Environment=SOLARMINER_HOST=0.0.0.0
+Environment=SOLARMINER_PORT=8443
+ExecStart=/usr/bin/python3 -m solarminer_gateway.app
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/solarminer
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
