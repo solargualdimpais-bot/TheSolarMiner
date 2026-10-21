@@ -1456,7 +1456,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if repository_url:
             result["repository_url"] = repository_url
         return result
-    except (update_manager.UpdateValidationError, ValueError, OSError, sqlite3.Error, TimeoutError) as exc:
+    except (update_manager.UpdateValidationError, ValueError, OSError, sqlite3.Error, TimeoutError, subprocess.TimeoutExpired) as exc:
         reason = str(exc) if isinstance(exc, update_manager.UpdateValidationError) else type(exc).__name__
         with db() as conn:
             op = _update_state_write(conn, "FAILED", None, {"reason": reason})
