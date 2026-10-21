@@ -76,6 +76,8 @@ The Gateway identity attestation endpoint is still not implemented. The presence
 
 ## v0.6.9 — pipeline de atualização ponta-a-ponta
 
+A instalação inicial Debian amd64 está documentada em `docs/INSTALL_DEBIAN_AMD64.md`. A rotina de verificação assinada é agendada diariamente após configuração da allowlist; consulta e prepara releases, mas a aplicação requer confirmação do Owner na PWA.
+
 Esta árvore contém a implementação incremental CODE02 v0.6.9 com PWA v0.5.7 incorporada e pipeline de atualização/recuperação. Consultar `docs/CODE02_V069_IMPLEMENTATION.md`, `docs/DATABASE_BACKUP_AND_RESTORE.md`, `docs/UPDATE_AND_ROLLBACK.md`, `docs/ACCEPTANCE_MATRIX_V069.md`, `docs/TEST_REPORT_V069.md` e `docs/V069_LIMITATIONS.md` para âmbito, evidências e limitações.
 
 O endpoint de aplicação só responde HTTP 202 quando a assinatura, o helper root, o symlink de release, a chave pública, o certificado TLS, a base SQLite e o timer de recuperação passam o pré-voo; caso contrário permanece bloqueado com HTTP 503. O pipeline tem testes automatizados com `.deb` descartável, mas ainda requer instalação/upgrade em host Debian de ensaio, reboot e falhas reais antes de aprovar instalação no Gateway físico ou produção.
