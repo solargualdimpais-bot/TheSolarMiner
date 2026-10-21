@@ -61,12 +61,15 @@ A successful recovery invalidates all prior owner sessions and increments `crede
 
 | Método | Caminho | Acesso |
 |---|---|---|
-| POST | `/api/v1/system/update/check` | Sessão autenticada, papel Owner; recebe exatamente `{"repository_url":"https://github.com/owner/repository"}` |
+| GET | `/api/v1/system/update/source` | Owner; devolve a origem guardada e as origens exatas da allowlist administrativa |
+| POST | `/api/v1/system/update/check` | Sessão autenticada, papel Owner; recebe exatamente `{"repository_url":"https://github.com/owner/repository"}`; guarda a escolha apenas depois da validação da allowlist |
 | GET | `/api/v1/system/update/check` | Sessão autenticada com `manage_gateway`; verifica a origem fixa configurada pelo administrador (compatibilidade) |
 | GET | `/api/v1/system/update/status` | Sessão autenticada com `read`; estado da operação |
 | POST | `/api/v1/system/update/apply` | Owner, confirmação explícita e versão coincidente; inicia preflight/backup/staging/ativação/health check/rollback |
 
-O POST valida URL canónico HTTPS de raiz `github.com/{owner}/{repository}` e procura uma correspondência exata no ficheiro administrativo root-owned `/etc/solarminer/update-sources.json` (ou no caminho definido por `SOLARMINER_UPDATE_SOURCE_ALLOWLIST`). Não aceita credenciais, query, fragmento, subcaminhos, hosts alternativos nem repositórios privados. O ficheiro tem o formato:
+O POST valida URL canónico HTTPS de raiz `github.com/{owner}/{repository}` e procura uma correspondência exata no ficheiro administrativo root-owned `/etc/solarminer/update-sources.json` (ou no caminho definido por `SOLARMINER_UPDATE_SOURCE_ALLOWLIST`). Não aceita credenciais, query, fragmento, subcaminhos, hosts alternativos nem repositórios privados. Depois de uma verificação Owner válida, o URL selecionado fica persistido em `system_state`. A PWA carrega essa seleção e permite mudá-la apenas para outra entrada já aprovada na mesma allowlist root-owned. O serviço `solarminer-update-check-daily.timer` usa a seleção persistida (ou a primeira entrada aprovada durante a instalação inicial) para verificar diariamente; valida manifesto, assinatura, compatibilidade e pacote, mas nunca aplica a atualização. O Owner continua a confirmar a aplicação pela rota `POST /api/v1/system/update/apply`.
+
+O ficheiro tem o formato:
 
 ```json
 {
