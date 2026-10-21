@@ -1,6 +1,6 @@
-# SolarMiner Gateway — CODE 02 v0.6.6 presence increment (API contract v0.6.0)
+# SolarMiner Gateway — CODE 02 v0.6.9 candidate (API contract v0.6.0)
 
-Standalone foundation for local identity, bootstrap, authentication, authorization, device identity and audit. This directory is deliberately separate from the archived Prova 0 v0.3.0 artifacts; its package build writes `dist/solarminer-gateway_0.6.5_amd64.deb`; the API-reported version remains `0.6.0` for compatibility.
+Standalone foundation for local identity, bootstrap, authentication, authorization, device identity and audit. This directory is deliberately separate from the archived Prova 0 v0.3.0 artifacts; its package build writes `dist/solarminer-gateway_0.6.9_amd64.deb`; the API-reported version remains `0.6.0` for compatibility.
 
 ## Build and test
 
@@ -9,7 +9,7 @@ make test
 make deb
 ```
 
-Runtime dependencies are Debian packages `python3-fastapi`, `python3-uvicorn`, `python3-argon2`, `python3-cryptography`, `openssl`, and `adduser`. The Debian package creates a dedicated `solarminer` service identity and a self-signed TLS certificate. Review `docs/TLS_TRUST.md` before LAN exposure.
+Runtime dependencies are Debian packages `sudo`, `dpkg`, `python3 (>= 3.11)`, `python3-fastapi`, `python3-uvicorn`, `python3-argon2`, `python3-cryptography`, `python3-qrcode`, `openssl`, and `adduser`. The Debian package creates a dedicated `solarminer` service identity and a self-signed TLS certificate. Review `docs/TLS_TRUST.md` before LAN exposure.
 
 ## Bootstrap
 
