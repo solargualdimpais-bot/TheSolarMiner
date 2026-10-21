@@ -99,3 +99,20 @@ def test_load_update_source_rejects_untrusted_manifest_origins(tmp_path: Path, m
 
     with pytest.raises(updates.UpdateValidationError, match="update_origin_must_be_https_origin"):
         updates.load_update_source("https://github.com/solarminer/releases", config)
+
+
+def test_redirect_handler_rejects_unapproved_destination_before_following() -> None:
+    handler = updates._AllowedHTTPSRedirectHandler({"https://github.com"})
+    request = updates.urllib.request.Request("https://github.com/manifest.json")
+    with pytest.raises(updates.UpdateValidationError, match="redirect_origin_not_authorized"):
+        handler.redirect_request(request, object(), 302, "Found", {}, "https://evil.example/payload.deb")
+
+
+def test_redirect_handler_allows_configured_https_origin() -> None:
+    handler = updates._AllowedHTTPSRedirectHandler({
+        "https://github.com", "https://release-assets.githubusercontent.com"
+    })
+    request = updates.urllib.request.Request("https://github.com/manifest.json")
+    redirected = handler.redirect_request(request, object(), 302, "Found", {},
+                                          "https://release-assets.githubusercontent.com/package.deb")
+    assert redirected.full_url == "https://release-assets.githubusercontent.com/package.deb"
