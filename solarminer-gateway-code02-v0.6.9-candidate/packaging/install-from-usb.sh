@@ -11,14 +11,9 @@ log() { printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" | tee -a "$LOG"
 fail() { log "ERROR: $*"; exit 1; }
 [ "$(id -u)" -eq 0 ] || fail "Inicia sessão como root e executa: sh install-from-usb.sh"
 command -v dpkg >/dev/null 2>&1 || fail "Debian/dpkg não encontrado."
+command -v dpkg-deb >/dev/null 2>&1 || fail "dpkg-deb não encontrado."
 command -v apt-get >/dev/null 2>&1 || fail "apt-get não encontrado."
 command -v python3 >/dev/null 2>&1 || fail "Python 3 não encontrado."
-command -v openssl >/dev/null 2>&1 || {
-  log "A instalar OpenSSL a partir dos repositórios Debian oficiais."
-  apt-get update >>"$LOG" 2>&1 || fail "apt-get update falhou. Consulta $LOG"
-  DEBIAN_FRONTEND=noninteractive apt-get install -y openssl ca-certificates >>"$LOG" 2>&1 || fail "Não foi possível instalar OpenSSL. Consulta $LOG"
-}
-
 [ "$(dpkg --print-architecture)" = "amd64" ] || fail "Este pacote destina-se apenas a AMD64."
 [ -r /etc/os-release ] || fail "Não foi possível identificar Debian."
 . /etc/os-release
@@ -28,6 +23,11 @@ case "${VERSION_ID:-}" in
 esac
 [ "${VERSION_ID%%.*}" -ge 13 ] || fail "Este instalador exige Debian 13 (Trixie) ou posterior."
 python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,13) else 1)' || fail "É necessário Python 3.13 ou posterior."
+command -v openssl >/dev/null 2>&1 || {
+  log "A instalar OpenSSL a partir dos repositórios Debian oficiais."
+  apt-get update >>"$LOG" 2>&1 || fail "apt-get update falhou. Consulta $LOG"
+  DEBIAN_FRONTEND=noninteractive apt-get install -y openssl ca-certificates >>"$LOG" 2>&1 || fail "Não foi possível instalar OpenSSL. Consulta $LOG"
+}
 if dpkg-query -W -f='${db:Status-Status}' solarminer-gateway 2>/dev/null | grep -qx installed; then
   fail "SolarMiner Gateway já está instalado; este é apenas o instalador inicial."
 fi
@@ -39,9 +39,11 @@ MANIFEST="$HERE/solarminer-release.json"
 PUBLIC_KEY="$HERE/release-pubkey.pem"
 for file in "$PACKAGE" "$MANIFEST" "$PUBLIC_KEY"; do
   [ -s "$file" ] || fail "Ficheiro necessário em falta na pen: $(basename "$file")"
+  [ ! -L "$file" ] || fail "Não são aceites ficheiros simbólicos: $(basename "$file")"
 done
 [ "$(dpkg-deb -f "$PACKAGE" Architecture)" = amd64 ] || fail "Pacote não é amd64."
 [ "$(dpkg-deb -f "$PACKAGE" Package)" = solarminer-gateway ] || fail "Pacote inesperado."
+[ "$(dpkg-deb -f "$PACKAGE" Version)" = 0.6.10 ] || fail "Versão do pacote não corresponde ao instalador."
 
 WORK=$(mktemp -d /tmp/solarminer-bootstrap.XXXXXX)
 CREATED_TRUST=0
@@ -82,7 +84,10 @@ try:
         raise ValueError("esquema ou algoritmo não suportado")
     if m["version"] != version or m["release_id"] != "gateway-v" + version:
         raise ValueError("versão/release não corresponde a este instalador")
-    if m["min_compatible_version"] != version:
+    minimum = m["min_compatible_version"]
+    if not isinstance(minimum, str) or not __import__("re").fullmatch(r"[0-9]+(?:\\.[0-9]+){1,3}", minimum):
+        raise ValueError("versão mínima de compatibilidade inválida")
+    if tuple(map(int, minimum.split("."))) > tuple(map(int, version.split("."))):
         raise ValueError("versão mínima incompatível")
     if m["package_name"] != package_path.name or pathlib.Path(m["package_name"]).name != m["package_name"]:
         raise ValueError("nome de pacote inválido")
