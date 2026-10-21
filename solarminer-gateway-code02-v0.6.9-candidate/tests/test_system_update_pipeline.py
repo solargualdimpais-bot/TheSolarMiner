@@ -8,12 +8,13 @@ import sqlite3
 import subprocess
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from solarminer_gateway.system_update_pipeline import PipelineError, SystemUpdatePipeline
+from solarminer_gateway.system_update_pipeline import PipelineError, SystemUpdatePipeline, _validate_deployment_root_permissions
 from solarminer_gateway.updates import canonical_manifest
 
 
@@ -35,6 +36,20 @@ def _make_package(tmp_path: Path, version: str = "0.6.9") -> Path:
     subprocess.run(["dpkg-deb", "--build", str(tree), str(out)], check=True, capture_output=True)
     return out
 
+
+
+def test_deployment_root_requires_root_ownership():
+    with pytest.raises(PipelineError, match="deployment_root_permissions_invalid"):
+        _validate_deployment_root_permissions(SimpleNamespace(st_uid=12345, st_mode=0o40750))
+
+
+def test_deployment_root_rejects_group_or_world_writable_permissions():
+    with pytest.raises(PipelineError, match="deployment_root_permissions_invalid"):
+        _validate_deployment_root_permissions(SimpleNamespace(st_uid=0, st_mode=0o40770))
+
+
+def test_deployment_root_accepts_private_root_owned_permissions():
+    _validate_deployment_root_permissions(SimpleNamespace(st_uid=0, st_mode=0o40750))
 
 def _pipeline_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, version: str = "0.6.9"):
     root = tmp_path / "opt/solarminer"
@@ -94,6 +109,8 @@ def _pipeline_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, versio
         return subprocess.CompletedProcess(args, 0, "", "")
     (data / "server.crt").write_text("test-certificate-placeholder")
     pipeline = SystemUpdatePipeline(root=root, data_dir=data, db_path=db, public_key=key_path, runner=runner)
+    # These transaction tests focus on apply/rollback; permission policy is tested above.
+    monkeypatch.setattr(pipeline, "_check_deployment_root_permissions", lambda: None)
     monkeypatch.setattr(pipeline, "preflight", lambda: {"status": "ready"})
     monkeypatch.setattr("solarminer_gateway.system_update_pipeline.os.geteuid", lambda: 0)
     return pipeline, root, previous, db, op_id
