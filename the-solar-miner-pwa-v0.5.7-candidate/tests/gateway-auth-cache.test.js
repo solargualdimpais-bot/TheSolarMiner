@@ -1,0 +1,49 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+
+const auth = readFileSync(new URL("../gateway-auth.js", import.meta.url), "utf8");
+const app = readFileSync(new URL("../app.js", import.meta.url), "utf8");
+const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const sw = readFileSync(new URL("../service-worker.js", import.meta.url), "utf8");
+const connection = readFileSync(new URL("../gateway-connection.js", import.meta.url), "utf8");
+
+test("device private key is re-imported non-extractable and bearer is memory-only", () => {
+  assert.match(auth, /importKey\("pkcs8", privateDer, \{ name: "Ed25519" \}, false, \["sign"\]\)/);
+  assert.match(auth, /privateDer\.fill\(0\)/);
+  assert.match(auth, /let bearerToken = null/);
+  assert.doesNotMatch(auth, /localStorage\.setItem\([^\n]*(?:token|bearer|authorization)/i);
+  assert.match(auth, /cache: "no-store"/);
+  assert.match(auth, /credentials: "omit"/);
+});
+
+test("invite flow validates signed Gateway identity before redeeming and exposes owner management", () => {
+  assert.match(auth, /verifyGatewayIdentityChallenge\(invite, challenge\)/);
+  assert.match(auth, /bootstrapGatewayOwner/);
+  assert.match(auth, /bootstrap_requires_local_access|browser local no próprio Gateway/i);
+  assert.match(auth, /\/api\/v1\/invites\/redeem/);
+  assert.match(auth, /\/api\/v1\/auth\/login/);
+  assert.match(app, /gateway-create-invite-form/);
+  assert.match(app, /refreshInviteList/);
+  assert.match(app, /revokeGatewayInvite/);
+  assert.match(html, /gateway-invite-qr/);
+  assert.match(html, /gateway-redeem-form/);
+  assert.match(connection, /signGatewayLogin/);
+});
+
+test("service worker only caches allowlisted static resources and versions cache explicitly", () => {
+  assert.match(sw, /the-solar-miner-static-v0\.5\.7/);
+  assert.match(sw, /url\.pathname\.includes\("\/api\/v1\/"\)/);
+  assert.match(sw, /request\.headers\.has\("Authorization"\)/);
+  assert.match(sw, /request\.headers\.has\("Cookie"\)/);
+  assert.match(sw, /!STATIC_PATHS\.has\(url\.pathname\)/);
+  assert.match(sw, /CACHE_PREFIXES/);
+  assert.match(sw, /503/);
+  assert.doesNotMatch(sw, /caches\.match\("\.\/index\.html"\)/);
+});
+
+test("real API failure states do not relabel demo readings as LIVE", () => {
+  assert.match(app, /mode: "SIMULATED"/);
+  assert.match(app, /Dados de demonstração · não são leituras reais/);
+  assert.match(app, /A identidade não foi validada|Identidade não validada/);
+});
