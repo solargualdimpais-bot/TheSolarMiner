@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily SolarMiner signed release check
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=20m
+Persistent=true
+Unit=solarminer-update-check-daily.service
+
+[Install]
+WantedBy=timers.target
