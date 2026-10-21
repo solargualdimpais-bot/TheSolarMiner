@@ -30,7 +30,11 @@ def normalize_github_repository_url(value: Any) -> str:
     if (parsed.scheme != "https" or parsed.hostname != "github.com" or port is not None
             or parsed.username or parsed.password or parsed.query or parsed.fragment):
         raise UpdateValidationError("repository_url_not_allowed")
-    parts = parsed.path.strip("/").split("/")
+    if not parsed.path.startswith("/") or parsed.path.startswith("//") or parsed.path.endswith("//"):
+        raise UpdateValidationError("repository_url_must_be_public_github_repository")
+    parts = parsed.path[1:].split("/")
+    if parts and parts[-1] == "":
+        parts.pop()
     if len(parts) != 2 or not re.fullmatch(r"[A-Za-z0-9-]{1,39}", parts[0]) or not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", parts[1]):
         raise UpdateValidationError("repository_url_must_be_public_github_repository")
     return f"https://github.com/{parts[0].lower()}/{parts[1].lower()}"
@@ -90,7 +94,7 @@ def load_update_source(repository_url: str, path: str | Path = DEFAULT_UPDATE_SO
             raise UpdateValidationError("update_origins_invalid")
         return result
     manifest_origins = origins("manifest_origins")
-    package_origins = origins("package_origins)
+    package_origins = origins("package_origins")
     if manifest_origin not in manifest_origins:
         raise UpdateValidationError("manifest_origin_not_allowlisted")
     return {"repository_url": repository, "manifest_url": manifest_url,
