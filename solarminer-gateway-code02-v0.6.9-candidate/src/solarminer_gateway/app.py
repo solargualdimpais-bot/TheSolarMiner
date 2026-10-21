@@ -19,7 +19,14 @@ from pathlib import Path
 from typing import Any
 
 from argon2 import PasswordHasher
-from argon2.exceptions import InvalidHashError, VerifyMismatchError, VerificationError
+from argon2.exceptions import VerifyMismatchError, VerificationError
+
+# argon2-cffi renamed InvalidHash to InvalidHashError in newer releases.
+# Debian stable packages may still expose the older class name.
+try:
+    from argon2.exceptions import InvalidHashError
+except ImportError:
+    from argon2.exceptions import InvalidHash as InvalidHashError
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
