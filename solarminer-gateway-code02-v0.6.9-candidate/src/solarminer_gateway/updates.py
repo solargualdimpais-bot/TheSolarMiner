@@ -164,6 +164,13 @@ def load_release_key(path: str | Path) -> Ed25519PublicKey:
         raise UpdateValidationError("release_ed25519_key_required")
     return key
 
+def _release_version_tuple(value: Any) -> tuple[int, ...]:
+    """Parse the numeric dotted release versions used by the Gateway package."""
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]+(?:\\.[0-9]+){1,3}", value):
+        raise UpdateValidationError("manifest_compatibility_version_invalid")
+    return tuple(int(part) for part in value.split("."))
+
+
 def verify_manifest(manifest: dict[str, Any], public_key: Ed25519PublicKey, installed_version: str) -> dict[str, Any]:
     required = {"schema_version", "release_id", "version", "min_compatible_version", "changelog", "package_name", "package_url", "package_size", "sha256", "signature_algorithm", "signature", "compatibility", "migration_requirements"}
     if not isinstance(manifest, dict) or not required.issubset(manifest):
@@ -187,9 +194,16 @@ def verify_manifest(manifest: dict[str, Any], public_key: Ed25519PublicKey, inst
         public_key.verify(signature, canonical_manifest(manifest))
     except (ValueError, InvalidSignature, TypeError) as exc:
         raise UpdateValidationError("manifest_signature_invalid") from exc
-    # Do not compare arbitrary version strings lexically. Require an explicit compatibility assertion.
-    if manifest["min_compatible_version"] != installed_version:
+    # Compatibility versions use numeric dotted releases, never lexical string ordering.
+    minimum = _release_version_tuple(manifest["min_compatible_version"])
+    installed = _release_version_tuple(installed_version)
+    target = _release_version_tuple(manifest["version"])
+    width = max(len(minimum), len(installed), len(target))
+    pad = lambda parts: parts + (0,) * (width - len(parts))
+    if pad(installed) < pad(minimum):
         raise UpdateValidationError("installed_version_not_compatible")
+    if pad(target) < pad(installed):
+        raise UpdateValidationError("release_version_is_older")
     url = urllib.parse.urlparse(manifest["package_url"])
     if url.scheme != "https" or not url.hostname or url.username or url.password or url.fragment:
         raise UpdateValidationError("package_url_not_authorized_https")
