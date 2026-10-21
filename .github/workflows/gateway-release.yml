@@ -54,12 +54,15 @@ jobs:
         working-directory: solarminer-gateway-code02-v0.6.9-candidate
         run: make test
 
-      - name: Run packaged PWA checks
+      - name: Check packaged PWA syntax
         working-directory: solarminer-gateway-code02-v0.6.9-candidate/web/pwa
         run: |
           node --check app.js
           node --check gateway-auth.js
-          node --test tests/*.test.js
+
+      - name: Run PWA candidate tests
+        working-directory: the-solar-miner-pwa-v0.5.7-candidate
+        run: npm test
 
       - name: Build Debian package
         working-directory: solarminer-gateway-code02-v0.6.9-candidate
