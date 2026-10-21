@@ -24,7 +24,8 @@ export function validateGatewayUrl(value, { allowLocalHttp = false } = {}) {
   let url;
   try { url = new URL(value.trim()); } catch { throw new Error("O endereço do Gateway não é válido."); }
   if (url.username || url.password || url.search || url.hash) throw new Error("O endereço não pode conter credenciais, parâmetros ou fragmentos.");
-  const local = ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
+  const hostname = url.hostname.toLowerCase().replace(/^\\[|\\]$/g, "");
+  const local = ["localhost", "127.0.0.1", "::1"].includes(hostname);
   if (url.protocol !== "https:" && !(allowLocalHttp && local && url.protocol === "http:")) throw new Error("É obrigatório HTTPS. A validação TLS nunca é desativada.");
   if (url.port && !/^\d{1,5}$/.test(url.port)) throw new Error("Porta inválida.");
   url.pathname = url.pathname.replace(/\/$/, "");
