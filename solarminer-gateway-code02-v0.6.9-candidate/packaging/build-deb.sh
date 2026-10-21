@@ -57,7 +57,7 @@ cp "$ROOT/packaging/catalog/catalog.pub" "$STAGE/usr/share/solarminer/catalog.pu
 cp -R "$ROOT/web/pwa/." "$STAGE/usr/share/solarminer/pwa/"
 chmod 0440 "$STAGE/etc/sudoers.d/solarminer-update-apply"
 chmod 0755 "$STAGE/usr/sbin/solarminer-update-apply" "$STAGE/usr/bin/solarminer-update-check-daily" "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/prerm" "$STAGE/DEBIAN/postrm" "$STAGE/usr/bin/solarminer-gateway" "$STAGE/usr/bin/solarminer-recovery"
-chmod 0644 "$STAGE/usr/lib/solarminer-gateway/solarminer_gateway/"*.py "$STAGE/lib/systemd/system/solarminer-gateway.service" "$STAGE/lib/systemd/system/solarminer-recovery.service" "$STAGE/lib/systemd/system/solarminer-recovery.timer" "$STAGE/lib/systemd/system/solarminer-update-apply@.service" "$STAGE/lib/systemd/system/solarminer-update-check-daily.service" "$STAGE/lib/systemd/system/solarminer-update-check-daily.timer" "$STAGE/usr/share/solarminer/"*
+chmod 0644 "$STAGE/usr/lib/solarminer-gateway/solarminer_gateway/"*.py "$STAGE/lib/systemd/system/solarminer-gateway.service" "$STAGE/lib/systemd/system/solarminer-recovery.service" "$STAGE/lib/systemd/system/solarminer-recovery.timer" "$STAGE/lib/systemd/system/solarminer-update-apply@.service" "$STAGE/lib/systemd/system/solarminer-update-check-daily.service" "$STAGE/lib/systemd/system/solarminer-update-check-daily.timer" "$STAGE/usr/share/solarminer/catalog.json" "$STAGE/usr/share/solarminer/catalog.sig" "$STAGE/usr/share/solarminer/catalog.pub"
 find "$STAGE/usr/share/solarminer/pwa" -type d -exec chmod 0755 {} +
 find "$STAGE/usr/share/solarminer/pwa" -type f -exec chmod 0644 {} +
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-0} dpkg-deb --root-owner-group --build "$STAGE" "$OUT/solarminer-gateway_0.6.9_amd64.deb"
