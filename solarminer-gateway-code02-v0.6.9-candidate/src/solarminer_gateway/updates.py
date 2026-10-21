@@ -124,6 +124,29 @@ def load_update_source(repository_url: str, path: str | Path = DEFAULT_UPDATE_SO
     return {"repository_url": repository, "manifest_url": manifest_url,
             "manifest_origins": manifest_origins, "package_origins": package_origins}
 
+def list_update_sources(path: str | Path = DEFAULT_UPDATE_SOURCES_PATH) -> list[dict[str, Any]]:
+    """Return only entries that pass the same root-owned allowlist validation as checks."""
+    config_path = Path(path)
+    try:
+        info = config_path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022
+                or info.st_size > MAX_UPDATE_SOURCES_BYTES):
+            raise UpdateValidationError("update_source_configuration_unsafe")
+        document = json.loads(config_path.read_text(encoding="utf-8"))
+    except UpdateValidationError:
+        raise
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise UpdateValidationError("update_source_configuration_unavailable") from exc
+    if not isinstance(document, dict) or set(document) != {"repositories"} or not isinstance(document["repositories"], dict):
+        raise UpdateValidationError("update_source_configuration_invalid")
+    result = []
+    for repository in document["repositories"]:
+        result.append(load_update_source(repository, config_path))
+    if not result:
+        raise UpdateValidationError("repository_not_allowlisted")
+    return result
+
+
 class UpdateValidationError(ValueError):
     pass
 
