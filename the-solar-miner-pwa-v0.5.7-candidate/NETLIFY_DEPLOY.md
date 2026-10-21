@@ -1,11 +1,16 @@
-# Publicar The Solar Miner PWA v0.5.4 no Netlify
+# Publicar The Solar Miner PWA v0.5.7 no Netlify
 
-1. Descarregar `the-solar-miner-pwa-v0.5.4-netlify.zip`.
-2. Extrair o ZIP.
-3. Publicar o conteúdo extraído (a pasta que contém `index.html`) como site estático no Netlify.
-4. Abrir o URL HTTPS no iPhone.
-5. Fechar/reabrir a PWA para permitir a atualização do service worker v0.5.4.
-6. Confirmar que AUTOMATISMOS aparece como sexto botão na navegação inferior.
-7. Em PROFILE/Personalização visual, testar a ordem dos menus; em CASA, testar uma imagem personalizada de casa/divisão/dispositivo; atualizar e reabrir o site.
+## Publicação
 
-As imagens são guardadas localmente via IndexedDB neste browser e não sincronizam com outro dispositivo. A demonstração não envia comandos físicos nem cria contas reais.
+1. Obter a árvore `the-solar-miner-pwa-v0.5.7-candidate` da branch aprovada do repositório.
+2. Publicar o conteúdo dessa pasta como site estático, selecionando como diretório de publicação a pasta que contém `index.html`. Não usar o ZIP v0.5.4 citado em instruções antigas.
+3. Confirmar que o site está em HTTPS. A PWA usa Web Crypto, IndexedDB e service worker, que requerem contexto seguro.
+4. Abrir o URL no iPhone, recarregar e instalar no ecrã inicial. Fechar e reabrir para permitir que o service worker `the-solar-miner-static-v0.5.7` atualize os recursos.
+5. Confirmar os refinamentos descritos no README v0.5.7: diálogo de produção, seletor de lettering, título “A Minha Casa” e controlos locais de favoritos.
+6. Validar separadamente a ligação ao Gateway. O Gateway tem de ser alcançável por HTTPS, com certificado e nome/IP confiáveis pelo browser e SAN correspondente. O browser não permite ignorar erros de certificado.
+
+## Limites
+
+A PWA pode mostrar valores sintéticos e funcionalidades DEMO. Os controlos de equipamentos não enviam comandos físicos; automatismos, administração, favoritos e preferências locais não representam estado sincronizado do Gateway. Fotos e preferências ficam no armazenamento local do browser. Safari/iPhone real e instalação PWA física ainda não foram validados para esta candidata.
+
+Consulte `API_CONTRACTS.md`, `BACKEND_DEPENDENCIES.md` e `INVITE_IDENTITY_V067.md` para dependências e fluxo de identidade/convites.
