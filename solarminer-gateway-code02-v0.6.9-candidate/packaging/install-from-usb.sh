@@ -33,7 +33,7 @@ if dpkg-query -W -f='${db:Status-Status}' solarminer-gateway 2>/dev/null | grep 
 fi
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-PACKAGE_NAME=solarminer-gateway_0.6.9_amd64.deb
+PACKAGE_NAME=solarminer-gateway_0.6.10_amd64.deb
 PACKAGE="$HERE/$PACKAGE_NAME"
 MANIFEST="$HERE/solarminer-release.json"
 PUBLIC_KEY="$HERE/release-pubkey.pem"
@@ -77,7 +77,7 @@ try:
                 "signature_algorithm", "signature", "compatibility", "migration_requirements"}
     if not isinstance(m, dict) or not required.issubset(m):
         raise ValueError("campos obrigatórios do manifesto em falta")
-    version = "0.6.9"
+    version = "0.6.10"
     if m["schema_version"] != 1 or m["signature_algorithm"] != "Ed25519":
         raise ValueError("esquema ou algoritmo não suportado")
     if m["version"] != version or m["release_id"] != "gateway-v" + version:
@@ -171,7 +171,7 @@ PY
   sleep 2
 done
 [ "$attempt" -lt 30 ] || fail "Health check não passou dentro de 60 segundos."
-log "Instalação inicial SolarMiner Gateway 0.6.9 concluída."
+log "Instalação inicial SolarMiner Gateway 0.6.10 concluída."
 log "O Gateway está configurado para verificar diariamente o repositório oficial; aplicar uma atualização continua a exigir ação Owner na PWA."
 trap - EXIT HUP INT TERM
 rm -rf "$WORK"
