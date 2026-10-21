@@ -163,6 +163,9 @@ export async function gatewayApi(path, options = {}) {
   if (!currentGateway) throw new Error("Não existe Gateway autenticado nesta sessão.");
   return gatewayRequest(currentGateway, path, { ...options, authenticated: true });
 }
+export async function readGatewayUpdateSource() {
+  return gatewayApi("/api/v1/system/update/source");
+}
 export async function checkGatewayUpdate(repositoryUrl) {
   if (typeof repositoryUrl !== "string" || !repositoryUrl.trim()) throw new Error("Indica o URL do repositório GitHub.");
   return gatewayApi("/api/v1/system/update/check", { method: "POST", body: { repository_url: repositoryUrl.trim() } });
