@@ -49,6 +49,11 @@ class PipelineError(RuntimeError):
     pass
 
 
+def _validate_deployment_root_permissions(root_stat: os.stat_result) -> None:
+    if root_stat.st_uid != 0 or root_stat.st_mode & 0o022:
+        raise PipelineError("deployment_root_permissions_invalid")
+
+
 class SystemUpdatePipeline:
     def __init__(self, *, root: str | Path = "/opt/solarminer", data_dir: str | Path | None = None,
                  db_path: str | Path | None = None, public_key: str | Path = "/etc/solarminer/release-pubkey.pem",
@@ -72,14 +77,15 @@ class SystemUpdatePipeline:
         self.releases = self.root / "releases"
         self.current = self.root / "current"
 
+    def _check_deployment_root_permissions(self) -> None:
+        _validate_deployment_root_permissions(self.root.stat())
+
     @contextmanager
     def _locked(self):
         if self.root.is_symlink():
             raise PipelineError("deployment_root_must_not_be_symlink")
         self.root.mkdir(parents=True, exist_ok=True, mode=0o750)
-        root_stat = self.root.stat()
-        if root_stat.st_uid != 0 or root_stat.st_mode & 0o022:
-            raise PipelineError("deployment_root_permissions_invalid")
+        self._check_deployment_root_permissions()
         lock_path = self.root / ".update-pipeline.lock"
         if lock_path.is_symlink():
             raise PipelineError("update_pipeline_lock_must_not_be_symlink")
