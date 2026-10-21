@@ -1,124 +1,175 @@
 #!/bin/sh
+# SolarMiner Gateway first-install USB bootstrap for Debian 13 amd64.
+# Run as root: sh install-from-usb.sh
 set -eu
 
-fail() { printf 'ERRO: %s\n' "$*" >&2; exit 1; }
-[ "$(id -u)" -eq 0 ] || fail "Executa este instalador como root; não uses sudo."
-command -v dpkg >/dev/null 2>&1 || fail "dpkg não está instalado."
-command -v dpkg-deb >/dev/null 2>&1 || fail "dpkg-deb não está instalado."
-command -v apt-get >/dev/null 2>&1 || fail "apt-get não está disponível."
-[ "$(dpkg --print-architecture)" = "amd64" ] || fail "Arquitetura incompatível: este pacote é apenas amd64."
-
-if [ -r /etc/os-release ]; then
-  . /etc/os-release
-else
-  fail "Não foi possível identificar o sistema operativo."
-fi
-[ "${ID:-}" = "debian" ] || fail "Este instalador exige Debian."
-case "${VERSION_ID:-}" in
-  ''|*[!0-9.]*|.*|*.) fail "Não foi possível validar a versão Debian." ;;
-esac
-DEBIAN_MAJOR=${VERSION_ID%%.*}
-[ "$DEBIAN_MAJOR" -ge 13 ] || fail "Este instalador exige Debian 13 (Trixie) ou posterior."
-python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,13) else 1)' \
-  || fail "O Gateway exige Python 3.13 ou superior."
-
-HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-DEB=${SOLARMINER_DEB:-}
-if [ -z "$DEB" ]; then
-  set -- "$HERE"/solarminer-gateway_*_amd64.deb
-  [ -f "$1" ] || fail "Não encontrei solarminer-gateway_*_amd64.deb na pen."
-  [ "$#" -eq 1 ] || fail "A pen contém mais do que um pacote; define SOLARMINER_DEB."
-  DEB=$1
-fi
-[ -f "$DEB" ] || fail "Pacote Debian não encontrado: $DEB"
-[ "$(dpkg-deb -f "$DEB" Architecture)" = "amd64" ] || fail "O pacote não é amd64."
-printf 'SHA-256 esperado do pacote .deb (obtido por canal independente): '
-IFS= read -r EXPECTED_DEB_SHA256 || fail "Não foi lido o hash do pacote."
-case "$EXPECTED_DEB_SHA256" in
-  *[!0-9a-fA-F]*|'') fail "O hash do pacote deve conter 64 caracteres hexadecimais." ;;
-esac
-[ "${#EXPECTED_DEB_SHA256}" -eq 64 ] || fail "O hash do pacote deve conter 64 caracteres hexadecimais."
-ACTUAL_DEB_SHA256=$(sha256sum "$DEB" | cut -d ' ' -f 1)
-[ "$(printf '%s' "$ACTUAL_DEB_SHA256" | tr 'A-F' 'a-f')" = "$(printf '%s' "$EXPECTED_DEB_SHA256" | tr 'A-F' 'a-f')" ] || fail "O hash do pacote não corresponde."
-
-canonical_github_url() {
-  python3 - "$1" <<'PY'
-import re, sys
-from urllib.parse import urlsplit
-try:
-    u = urlsplit(sys.argv[1].strip())
-    port = u.port
-except ValueError:
-    raise SystemExit(2)
-if (u.scheme != "https" or u.hostname != "github.com" or port is not None
-        or u.username or u.password or u.query or u.fragment):
-    raise SystemExit(2)
-parts = u.path.strip("/").split("/")
-if len(parts) != 2 or not re.fullmatch(r"[A-Za-z0-9-]{1,39}", parts[0]) or not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", parts[1]):
-    raise SystemExit(2)
-print("https://github.com/" + parts[0].lower() + "/" + parts[1].lower())
-PY
+LOG=/var/log/solarminer-first-install.log
+mkdir -p /var/log
+touch "$LOG"
+chmod 0600 "$LOG"
+log() { printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" | tee -a "$LOG"; }
+fail() { log "ERROR: $*"; exit 1; }
+[ "$(id -u)" -eq 0 ] || fail "Inicia sessão como root e executa: sh install-from-usb.sh"
+command -v dpkg >/dev/null 2>&1 || fail "Debian/dpkg não encontrado."
+command -v apt-get >/dev/null 2>&1 || fail "apt-get não encontrado."
+command -v python3 >/dev/null 2>&1 || fail "Python 3 não encontrado."
+command -v openssl >/dev/null 2>&1 || {
+  log "A instalar OpenSSL a partir dos repositórios Debian oficiais."
+  apt-get update >>"$LOG" 2>&1 || fail "apt-get update falhou. Consulta $LOG"
+  DEBIAN_FRONTEND=noninteractive apt-get install -y openssl ca-certificates >>"$LOG" 2>&1 || fail "Não foi possível instalar OpenSSL. Consulta $LOG"
 }
 
-printf 'URL HTTPS do repositório GitHub autorizado: '
-IFS= read -r REPOSITORY_URL || fail "Não foi lido o URL."
-CANONICAL_URL=$(canonical_github_url "$REPOSITORY_URL") || fail "O URL deve ser a raiz https://github.com/owner/repository."
-SOURCES_TMP=$(mktemp)
-trap 'rm -f "$SOURCES_TMP"' EXIT HUP INT TERM
-printf '%s\n' "$CANONICAL_URL" > "$SOURCES_TMP"
-while :; do
-  printf 'Outro repositório GitHub aprovado para seleção futura na PWA (Enter para terminar): '
-  IFS= read -r EXTRA_URL || fail "Não foi lido o URL."
-  [ -n "$EXTRA_URL" ] || break
-  EXTRA_CANONICAL=$(canonical_github_url "$EXTRA_URL") || fail "URL adicional inválido."
-  if ! grep -Fxq "$EXTRA_CANONICAL" "$SOURCES_TMP"; then
-    printf '%s\n' "$EXTRA_CANONICAL" >> "$SOURCES_TMP"
-  fi
-done
-
-KEY_SOURCE="$HERE/release-pubkey.pem"
-[ -s "$KEY_SOURCE" ] || fail "Falta release-pubkey.pem na pen. Usa apenas a chave pública de release obtida por uma origem de confiança."
-printf 'SHA-256 esperado do ficheiro da chave pública (obtido por canal independente): '
-IFS= read -r EXPECTED_KEY_SHA256 || fail "Não foi lida a impressão digital."
-case "$EXPECTED_KEY_SHA256" in
-  *[!0-9a-fA-F]*|'') fail "A impressão digital deve conter 64 caracteres hexadecimais." ;;
+[ "$(dpkg --print-architecture)" = "amd64" ] || fail "Este pacote destina-se apenas a AMD64."
+[ -r /etc/os-release ] || fail "Não foi possível identificar Debian."
+. /etc/os-release
+[ "${ID:-}" = "debian" ] || fail "Este instalador exige Debian."
+case "${VERSION_ID:-}" in
+  ''|*[!0-9.]*|.*|*.) fail "Versão Debian inválida." ;;
 esac
-[ "${#EXPECTED_KEY_SHA256}" -eq 64 ] || fail "A impressão digital deve conter 64 caracteres hexadecimais."
-ACTUAL_KEY_SHA256=$(sha256sum "$KEY_SOURCE" | cut -d ' ' -f 1)
-[ "$(printf '%s' "$ACTUAL_KEY_SHA256" | tr 'A-F' 'a-f')" = "$(printf '%s' "$EXPECTED_KEY_SHA256" | tr 'A-F' 'a-f')" ] || fail "A impressão digital da chave não corresponde."
+[ "${VERSION_ID%%.*}" -ge 13 ] || fail "Este instalador exige Debian 13 (Trixie) ou posterior."
+python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,13) else 1)' || fail "É necessário Python 3.13 ou posterior."
+if dpkg-query -W -f='${db:Status-Status}' solarminer-gateway 2>/dev/null | grep -qx installed; then
+  fail "SolarMiner Gateway já está instalado; este é apenas o instalador inicial."
+fi
 
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PACKAGE_NAME=solarminer-gateway_0.6.9_amd64.deb
+PACKAGE="$HERE/$PACKAGE_NAME"
+MANIFEST="$HERE/solarminer-release.json"
+PUBLIC_KEY="$HERE/release-pubkey.pem"
+for file in "$PACKAGE" "$MANIFEST" "$PUBLIC_KEY"; do
+  [ -s "$file" ] || fail "Ficheiro necessário em falta na pen: $(basename "$file")"
+done
+[ "$(dpkg-deb -f "$PACKAGE" Architecture)" = amd64 ] || fail "Pacote não é amd64."
+[ "$(dpkg-deb -f "$PACKAGE" Package)" = solarminer-gateway ] || fail "Pacote inesperado."
+
+WORK=$(mktemp -d /tmp/solarminer-bootstrap.XXXXXX)
+CREATED_TRUST=0
+INSTALLED_PACKAGE=0
+cleanup() {
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    log "Falha; a reverter a instalação inicial."
+    if [ "$INSTALLED_PACKAGE" -eq 1 ]; then
+      systemctl stop solarminer-gateway.service >/dev/null 2>&1 || true
+      dpkg --purge solarminer-gateway >>"$LOG" 2>&1 || true
+    fi
+    if [ "$CREATED_TRUST" -eq 1 ]; then
+      rm -f /etc/solarminer/release-pubkey.pem /etc/solarminer/update-sources.json
+      rmdir /etc/solarminer 2>/dev/null || true
+    fi
+    log "Rollback terminado. Consulta $LOG"
+  fi
+  rm -rf "$WORK"
+  exit "$status"
+}
+trap cleanup EXIT HUP INT TERM
+
+log "A validar manifesto, assinatura Ed25519 e pacote antes de instalar."
+python3 - "$MANIFEST" "$PUBLIC_KEY" "$PACKAGE" "$WORK" <<'PY'
+import hashlib, json, os, pathlib, sys
+manifest_path, key_path, package_path, work_dir = map(pathlib.Path, sys.argv[1:])
+try:
+    m = json.loads(manifest_path.read_text(encoding="utf-8"))
+    required = {"schema_version", "release_id", "version", "min_compatible_version",
+                "changelog", "package_name", "package_url", "package_size", "sha256",
+                "signature_algorithm", "signature", "compatibility", "migration_requirements"}
+    if not isinstance(m, dict) or not required.issubset(m):
+        raise ValueError("campos obrigatórios do manifesto em falta")
+    version = "0.6.9"
+    if m["schema_version"] != 1 or m["signature_algorithm"] != "Ed25519":
+        raise ValueError("esquema ou algoritmo não suportado")
+    if m["version"] != version or m["release_id"] != "gateway-v" + version:
+        raise ValueError("versão/release não corresponde a este instalador")
+    if m["min_compatible_version"] != version:
+        raise ValueError("versão mínima incompatível")
+    if m["package_name"] != package_path.name or pathlib.Path(m["package_name"]).name != m["package_name"]:
+        raise ValueError("nome de pacote inválido")
+    if not isinstance(m["package_size"], int) or m["package_size"] != package_path.stat().st_size:
+        raise ValueError("tamanho do pacote não corresponde")
+    digest = hashlib.sha256(package_path.read_bytes()).hexdigest()
+    if not isinstance(m["sha256"], str) or digest.lower() != m["sha256"].lower():
+        raise ValueError("SHA-256 do pacote não corresponde")
+    compat = m["compatibility"]
+    if not isinstance(compat, dict) or compat.get("architecture") != "amd64" or compat.get("debian_min") != "13" or compat.get("python_min") != "3.13":
+        raise ValueError("compatibilidade do manifesto não corresponde ao Gateway")
+    import urllib.parse
+    u = urllib.parse.urlsplit(m["package_url"])
+    expected_path = f"/solargualdimpais-bot/TheSolarMiner/releases/download/{m['release_id']}/{m['package_name']}"
+    if u.scheme != "https" or u.hostname != "github.com" or u.port is not None or u.path != expected_path or u.query or u.fragment or u.username or u.password:
+        raise ValueError("origem do pacote não autorizada")
+    signature = bytes.fromhex(m["signature"])
+    unsigned = {k: v for k, v in m.items() if k != "signature"}
+    canonical = json.dumps(unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    (work_dir / "manifest.canonical").write_bytes(canonical)
+    (work_dir / "manifest.signature").write_bytes(signature)
+except (OSError, ValueError, TypeError, KeyError) as exc:
+    print(f"Validação recusada: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+openssl pkey -pubin -in "$PUBLIC_KEY" -noout >/dev/null 2>&1 || fail "Chave pública Ed25519 inválida."
+openssl pkeyutl -verify -pubin -inkey "$PUBLIC_KEY" -rawin -in "$WORK/manifest.canonical" -sigfile "$WORK/manifest.signature" >/dev/null 2>&1 || fail "Assinatura Ed25519 inválida; nada foi instalado."
+log "Assinatura e hash válidos."
+
+if [ -e /etc/solarminer/release-pubkey.pem ] || [ -e /etc/solarminer/update-sources.json ]; then
+  fail "Já existem configurações SolarMiner; a instalação inicial não irá sobrescrevê-las."
+fi
 install -d -o root -g root -m 0755 /etc/solarminer
-install -o root -g root -m 0644 "$KEY_SOURCE" /etc/solarminer/release-pubkey.pem
-python3 - "$SOURCES_TMP" <<'PY'
-import json, os, sys, tempfile
-repositories = {}
-for repo in open(sys.argv[1], encoding="utf-8").read().splitlines():
-    repositories[repo] = {
-        "manifest_url": repo + "/releases/latest/download/solarminer-release.json",
-        "manifest_origins": ["https://github.com", "https://release-assets.githubusercontent.com"],
-        "package_origins": ["https://github.com", "https://release-assets.githubusercontent.com"]
-    }
-doc = {"repositories": repositories}
+install -o root -g root -m 0644 "$PUBLIC_KEY" /etc/solarminer/release-pubkey.pem
+python3 - <<'PY'
+import json, os, tempfile
 path = "/etc/solarminer/update-sources.json"
+repo = "https://github.com/solargualdimpais-bot/TheSolarMiner"
+doc = {"repositories": {repo: {
+    "manifest_url": repo + "/releases/latest/download/solarminer-release.json",
+    "manifest_origins": ["https://github.com", "https://release-assets.githubusercontent.com"],
+    "package_origins": ["https://github.com", "https://release-assets.githubusercontent.com"]
+}}}
 fd, tmp = tempfile.mkstemp(prefix=".update-sources.", dir="/etc/solarminer")
 try:
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(doc, f, sort_keys=True, separators=(",", ":"))
-        f.write("\n")
-        f.flush()
-        os.fsync(f.fileno())
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump(doc, stream, sort_keys=True, separators=(",", ":"))
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.chown(tmp, 0, 0)
     os.chmod(tmp, 0o640)
     os.replace(tmp, path)
 finally:
     try: os.unlink(tmp)
     except FileNotFoundError: pass
 PY
+CREATED_TRUST=1
 
-printf 'A instalar pacote amd64 e dependências Debian…\n'
-apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y "$DEB"
+log "A instalar pacote e dependências assinados."
+apt-get update >>"$LOG" 2>&1 || fail "apt-get update falhou. Consulta $LOG"
+DEBIAN_FRONTEND=noninteractive apt-get install -y "$PACKAGE" >>"$LOG" 2>&1 || fail "Instalação do pacote falhou. Consulta $LOG"
+INSTALLED_PACKAGE=1
 chown root:solarminer /etc/solarminer/update-sources.json
 chmod 0640 /etc/solarminer/update-sources.json
-printf '\nInstalação concluída. O timer verifica diariamente a origem aprovada.\n'
-printf 'A PWA Owner permite verificar e selecionar apenas URLs presentes na allowlist root.\n'
-printf 'A aplicação continua a exigir confirmação explícita do Owner.\n'
+
+log "A aguardar o serviço e a validar o health check local."
+systemctl is-enabled --quiet solarminer-gateway.service || fail "O serviço não ficou ativo no arranque."
+attempt=0
+while [ "$attempt" -lt 30 ]; do
+  if systemctl is-active --quiet solarminer-gateway.service &&
+     python3 - <<'PY' >/dev/null 2>&1
+import json, ssl, urllib.request
+ctx = ssl.create_default_context(cafile="/var/lib/solarminer/server.crt")
+with urllib.request.urlopen("https://127.0.0.1:8443/api/v1/health", context=ctx, timeout=3) as response:
+    if response.status != 200:
+        raise SystemExit(1)
+    json.load(response)
+PY
+  then
+    log "Health check concluído com sucesso."
+    break
+  fi
+  attempt=$((attempt + 1))
+  sleep 2
+done
+[ "$attempt" -lt 30 ] || fail "Health check não passou dentro de 60 segundos."
+log "Instalação inicial SolarMiner Gateway 0.6.9 concluída."
+log "O Gateway está configurado para verificar diariamente o repositório oficial; aplicar uma atualização continua a exigir ação Owner na PWA."
+trap - EXIT HUP INT TERM
+rm -rf "$WORK"
