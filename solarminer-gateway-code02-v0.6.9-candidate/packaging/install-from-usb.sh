@@ -85,7 +85,7 @@ try:
     if m["version"] != version or m["release_id"] != "gateway-v" + version:
         raise ValueError("versão/release não corresponde a este instalador")
     minimum = m["min_compatible_version"]
-    if not isinstance(minimum, str) or not __import__("re").fullmatch(r"[0-9]+(?:\\.[0-9]+){1,3}", minimum):
+    if not isinstance(minimum, str) or not __import__("re").fullmatch(r"[0-9]+(?:\.[0-9]+){1,3}", minimum):
         raise ValueError("versão mínima de compatibilidade inválida")
     if tuple(map(int, minimum.split("."))) > tuple(map(int, version.split("."))):
         raise ValueError("versão mínima incompatível")
