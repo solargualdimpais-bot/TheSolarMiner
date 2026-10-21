@@ -2,7 +2,7 @@ PYTHON ?= python3
 OUT ?= dist
 PACKAGE = $(OUT)/solarminer-gateway_0.6.9_amd64.deb
 
-.PHONY: test deb clean
+.PHONY: test deb test-package clean
 
 test:
 	PYTHONPATH=src $(PYTHON) -m pytest -q
