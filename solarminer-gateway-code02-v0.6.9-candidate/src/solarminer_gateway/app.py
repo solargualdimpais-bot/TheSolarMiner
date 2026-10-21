@@ -1367,23 +1367,28 @@ def _update_state_write(conn: sqlite3.Connection, state: str, target_version: st
     return op
 
 
-@app.get("/api/v1/system/update/check")
-def check_system_update(session: dict[str, Any] = Depends(require_permission("read"))) -> dict[str, Any]:
-    manifest_url = os.environ.get("SOLARMINER_RELEASE_MANIFEST_URL", "").strip()
+def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
+                                  manifest_origins: set[str] | None = None,
+                                  package_origins: set[str] | None = None,
+                                  repository_url: str | None = None) -> dict[str, Any]:
     key_path = os.environ.get("SOLARMINER_RELEASE_PUBLIC_KEY", "/etc/solarminer/release-pubkey.pem")
-    if not manifest_url:
-        return {"status": "not_configured", "installed_version": PACKAGE_VERSION, "available_version": None,
-                "signature_valid": False, "compatible": False, "message": "release_origin_not_configured", "activation_available": False}
-    parsed = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(manifest_url)
-    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
-        return {"status": "rejected", "installed_version": PACKAGE_VERSION, "signature_valid": False,
-                "compatible": False, "message": "manifest_url_not_authorized_https", "activation_available": False}
     try:
-        import urllib.request
-        request = urllib.request.Request(manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.7"})
-        with urllib.request.urlopen(request, timeout=8) as response:
+        parsed = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(manifest_url)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
+            raise update_manager.UpdateValidationError("manifest_url_not_authorized_https")
+        manifest_origin = update_manager.normalize_https_origin(
+            f"https://{parsed.hostname}" + (f":{parsed.port}" if parsed.port else ""))
+        allowed_manifest_origins = manifest_origins or {manifest_origin}
+        if manifest_origin not in allowed_manifest_origins:
+            raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
+        request = __import__("urllib.request", fromlist=["Request"]).Request(
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.10"})
+        with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
-            if final.scheme != "https" or final.hostname != parsed.hostname or final.port != parsed.port:
+            final_origin = (update_manager.normalize_https_origin(
+                f"https://{final.hostname}" + (f":{final.port}" if final.port else ""))
+                if final.scheme == "https" and final.hostname else "")
+            if final_origin not in allowed_manifest_origins:
                 raise update_manager.UpdateValidationError("manifest_redirect_origin_changed")
             raw = response.read(1024 * 1024 + 1)
         if len(raw) > 1024 * 1024:
@@ -1392,7 +1397,10 @@ def check_system_update(session: dict[str, Any] = Depends(require_permission("re
         key = update_manager.load_release_key(key_path)
         checked = update_manager.verify_manifest(manifest, key, PACKAGE_VERSION)
         package_origin = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(manifest["package_url"])
-        if package_origin.hostname != parsed.hostname or package_origin.port != parsed.port:
+        package_origin_value = update_manager.normalize_https_origin(
+            f"https://{package_origin.hostname}" + (f":{package_origin.port}" if package_origin.port else "")) if package_origin.hostname else ""
+        allowed_package_origins = package_origins or {manifest_origin}
+        if package_origin_value not in allowed_package_origins:
             raise update_manager.UpdateValidationError("package_origin_not_authorized")
         data_dir = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
         free = shutil.disk_usage(data_dir if data_dir.exists() else data_dir.parent).free
@@ -1400,9 +1408,7 @@ def check_system_update(session: dict[str, Any] = Depends(require_permission("re
         if free < needed:
             raise update_manager.UpdateValidationError("insufficient_disk_space")
         package_dir = data_dir / "releases" / "verified"
-        package_path = update_manager.download_and_verify_package(manifest, package_dir)
-        # The root updater re-verifies this signed manifest independently. The
-        # sidecar is untrusted storage; authenticity comes from its Ed25519 signature.
+        package_path = update_manager.download_and_verify_package(manifest, package_dir, allowed_package_origins)
         manifest_path = package_path.with_suffix(package_path.suffix + ".manifest.json")
         manifest_tmp = manifest_path.with_suffix(manifest_path.suffix + ".tmp")
         manifest_tmp.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
@@ -1417,24 +1423,72 @@ def check_system_update(session: dict[str, Any] = Depends(require_permission("re
             activation_available = preflight.returncode == 0
         except (OSError, subprocess.TimeoutExpired):
             activation_available = False
+        details = {"manifest_signature": "valid", "package_sha256": checked["sha256"],
+                   "package_path": str(package_path), "manifest_path": str(manifest_path),
+                   "space_required": needed, "activation_available": activation_available}
+        if repository_url:
+            details["repository_url"] = repository_url
         with db() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            op = _update_state_write(conn, "VERIFIED", manifest["version"], {"manifest_signature": "valid", "package_sha256": checked["sha256"], "package_path": str(package_path), "manifest_path": str(manifest_path), "space_required": needed, "activation_available": activation_available})
-            audit(conn, session["user_id"], "system.update.package_verified", op, "success", {"version": manifest["version"], "sha256": checked["sha256"], "activation_available": activation_available})
+            op = _update_state_write(conn, "VERIFIED", manifest["version"], details)
+            audit(conn, session["user_id"], "system.update.package_verified", op, "success",
+                  {"version": manifest["version"], "sha256": checked["sha256"],
+                   "activation_available": activation_available, "repository_url": repository_url})
             conn.commit()
-        return {"status": "verified_staged", "operation_id": op, "installed_version": PACKAGE_VERSION,
-                "available_version": manifest["version"], "changelog": manifest["changelog"], "size": checked["package_size"],
-                "sha256": checked["sha256"], "signature_valid": True, "compatible": True,
-                "space_required": needed, "migration_requirements": manifest["migration_requirements"],
-                "package_path": str(package_path), "activation_available": activation_available,
-                "message": "signed_package_ready_for_apply" if activation_available else "package_verified_but_independent_recovery_preflight_failed"}
+        result = {"status": "verified_staged", "operation_id": op, "installed_version": PACKAGE_VERSION,
+                  "available_version": manifest["version"], "changelog": manifest["changelog"],
+                  "size": checked["package_size"], "sha256": checked["sha256"],
+                  "signature_valid": True, "compatible": True, "space_required": needed,
+                  "migration_requirements": manifest["migration_requirements"],
+                  "activation_available": activation_available,
+                  "message": "signed_package_ready_for_apply" if activation_available else "package_verified_but_independent_recovery_preflight_failed"}
+        if repository_url:
+            result["repository_url"] = repository_url
+        return result
     except (update_manager.UpdateValidationError, ValueError, OSError, sqlite3.Error, TimeoutError) as exc:
         reason = str(exc) if isinstance(exc, update_manager.UpdateValidationError) else type(exc).__name__
         with db() as conn:
             op = _update_state_write(conn, "FAILED", None, {"reason": reason})
-            audit(conn, session["user_id"], "system.update.manifest_rejected", op, "denied", {"reason": reason[:120]})
+            audit(conn, session["user_id"], "system.update.manifest_rejected", op, "denied",
+                  {"reason": reason[:120], "repository_url": repository_url})
+        return {"status": "rejected", "installed_version": PACKAGE_VERSION, "signature_valid": False,
+                "compatible": False, "message": reason, "activation_available": False,
+                **({"repository_url": repository_url} if repository_url else {})}
+
+
+@app.get("/api/v1/system/update/check")
+def check_system_update(session: dict[str, Any] = Depends(require_permission("read"))) -> dict[str, Any]:
+    manifest_url = os.environ.get("SOLARMINER_RELEASE_MANIFEST_URL", "").strip()
+    if not manifest_url:
+        return {"status": "not_configured", "installed_version": PACKAGE_VERSION, "available_version": None,
+                "signature_valid": False, "compatible": False, "message": "release_origin_not_configured", "activation_available": False}
+    return _check_system_update_manifest(manifest_url, session)
+
+
+@app.post("/api/v1/system/update/check")
+def check_system_update_from_repository(payload: dict[str, Any], session: dict[str, Any] = Depends(current_session)) -> dict[str, Any]:
+    if payload != {"repository_url": payload.get("repository_url")} or not isinstance(payload.get("repository_url"), str):
+        raise HTTPException(422, "invalid_update_source_request")
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_only")
+    allowlist_path = os.environ.get("SOLARMINER_UPDATE_SOURCE_ALLOWLIST", update_manager.DEFAULT_UPDATE_SOURCES_PATH)
+    try:
+        source = update_manager.load_update_source(payload["repository_url"], allowlist_path)
+    except update_manager.UpdateValidationError as exc:
+        reason = str(exc)
+        with db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            op = _update_state_write(conn, "FAILED", None, {"reason": reason})
+            audit(conn, session["user_id"], "system.update.source_rejected", op, "denied",
+                  {"reason": reason[:120]})
+            conn.commit()
         return {"status": "rejected", "installed_version": PACKAGE_VERSION, "signature_valid": False,
                 "compatible": False, "message": reason, "activation_available": False}
+    return _check_system_update_manifest(source["manifest_url"], session,
+        manifest_origins=source["manifest_origins"], package_origins=source["package_origins"],
+        repository_url=source["repository_url"])
 
 
 @app.get("/api/v1/system/update/status")

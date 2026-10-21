@@ -145,7 +145,17 @@
         <div id="gateway-invite-created" hidden class="invite-created"><p class="field-note">QR de convite. Mostra-o apenas à pessoa autorizada; contém um segredo de utilização única.</p><img id="gateway-invite-qr" alt="QR Code do convite SolarMiner" width="240" height="240"><p id="gateway-invite-expiry" class="field-note"></p><textarea id="gateway-invite-payload" rows="4" readonly aria-label="Conteúdo de reserva do QR"></textarea><button class="button secondary" type="button" id="gateway-copy-invite">Copiar conteúdo do convite</button></div>
         <div id="gateway-invite-list" class="invite-list" aria-live="polite">A lista só é carregada numa sessão Owner autenticada.</div>
       </section>
-      <div class="security-callout"><strong>Estado de confiança:</strong> uma resposta HTTP não confirma identidade; só uma assinatura válida e a fingerprint completa o fazem. Estados DEMO locais não são apresentados como comandos LIVE. O endpoint de aplicação de atualizações continua bloqueado até existir recuperação independente comprovada.</div>
+      <section class="panel gateway-auth-panel" id="gateway-update-management" hidden>
+        <div class="panel-header"><div><p class="eyebrow">SOFTWARE DO GATEWAY</p><h3>Atualizações assinadas</h3></div><span class="source-tag">OWNER</span></div>
+        <p class="field-note">Indica um repositório público HTTPS autorizado pelo administrador do dispositivo. O Gateway consulta apenas o manifesto e o pacote de lançamento, valida a assinatura Ed25519 e não executa código-fonte do repositório.</p>
+        <label for="gateway-update-repository">URL HTTPS do repositório GitHub</label>
+        <input id="gateway-update-repository" type="url" inputmode="url" autocomplete="url" spellcheck="false" placeholder="https://github.com/owner/repository" maxlength="512">
+        <div class="dialog-actions"><button id="gateway-update-check" class="button primary" type="button">Verificar atualização</button><button id="gateway-update-refresh" class="button secondary" type="button">Atualizar estado</button></div>
+        <div id="gateway-update-message" class="connection-result" role="status" aria-live="polite">A verificação só começa após ação explícita do Owner.</div>
+        <div id="gateway-update-details" class="field-note" aria-live="polite"></div>
+        <button id="gateway-update-apply" class="button primary" type="button" hidden disabled>Aplicar atualização verificada</button>
+      </section>
+      <div class="security-callout"><strong>Estado de confiança:</strong> uma resposta HTTP não confirma identidade; só uma assinatura válida e a fingerprint completa o fazem. Estados DEMO locais não são apresentados como comandos LIVE. A aplicação de uma atualização exige versão validada, preflight de recuperação independente e confirmação explícita de um Owner.</div>
       <div class="dialog-actions"><button class="button primary" type="button" id="close-gateway-dialog">Fechar</button></div>
     </div>
   </dialog>
