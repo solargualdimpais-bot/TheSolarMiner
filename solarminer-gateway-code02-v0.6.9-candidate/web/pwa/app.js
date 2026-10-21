@@ -506,6 +506,27 @@ $("#gateway-redeem-form").addEventListener("submit", async event => {
     await refreshGatewayReadings();
   } catch (error) { passwordField.value = ""; gatewayResult(`Resgate não concluído: ${error.message}. O convite pode ter expirado ou já ter sido consumido.`); }
 });
+function gatewayUpdateFailureText(code) {
+  const messages = {
+    repository_url_invalid: "O URL do repositório é inválido.",
+    repository_url_not_allowed: "Só são aceites URLs HTTPS de repositórios públicos no github.com.",
+    repository_url_must_be_public_github_repository: "Indica a raiz de um repositório público, sem subpáginas.",
+    repository_not_allowlisted: "Este repositório não foi autorizado pelo administrador do Gateway.",
+    update_source_configuration_unavailable: "O Gateway não tem uma lista de repositórios autorizados disponível.",
+    update_source_configuration_unsafe: "A configuração administrativa das origens não tem permissões seguras.",
+    manifest_signature_invalid: "A assinatura Ed25519 do manifesto não é válida.",
+    manifest_structure_invalid: "O manifesto de lançamento está malformado.",
+    package_sha256_mismatch: "O hash do pacote não corresponde ao manifesto assinado.",
+    package_size_mismatch: "O tamanho do pacote não corresponde ao manifesto assinado.",
+    package_origin_not_authorized: "A origem do pacote não está autorizada pelo administrador.",
+    manifest_origin_not_allowlisted: "A origem do manifesto não está autorizada pelo administrador.",
+    redirect_origin_not_authorized: "O lançamento redireciona para uma origem HTTPS não autorizada.",
+    package_redirect_origin_changed: "O pacote redirecionou para uma origem não autorizada.",
+    installed_version_not_compatible: "Esta versão não é compatível com o Gateway instalado.",
+    insufficient_disk_space: "Não existe espaço livre suficiente para preparar a atualização."
+  };
+  return messages[code] || "O Gateway rejeitou a verificação. Confirma a configuração da origem e consulta o estado operacional.";
+}
 function showGatewayUpdateMessage(message) {
   const target = $("#gateway-update-message");
   if (target) target.textContent = message;
@@ -545,7 +566,7 @@ async function refreshGatewayUpdateStatus() {
   } else {
     setGatewayUpdateDetails(null);
   }
-  showGatewayUpdateMessage(`Estado da atualização: ${result.status || "desconhecido"}${result.target_version ? ` · destino ${result.target_version}` : ""}.`);
+  showGatewayUpdateMessage(result.status === "VERIFIED" && !result.activation_available ? "Pacote verificado; a aplicação está bloqueada pelo preflight de recuperação." : `Estado da atualização: ${result.status || "desconhecido"}${result.target_version ? ` · destino ${result.target_version}` : ""}.`);
   return result;
 }
 $("#gateway-update-check").addEventListener("click", async () => {
@@ -564,7 +585,7 @@ $("#gateway-update-check").addEventListener("click", async () => {
         ? "Pacote verificado e pronto. Revê a versão e confirma explicitamente para aplicar."
         : "Pacote assinado e transferido, mas o preflight de recuperação bloqueou a aplicação.");
     } else {
-      showGatewayUpdateMessage(`Atualização bloqueada: ${result.message || result.status || "origem rejeitada"}.`);
+      showGatewayUpdateMessage(`Atualização bloqueada: ${gatewayUpdateFailureText(result.message)}`);
     }
   } catch (error) {
     showGatewayUpdateMessage(`Não foi possível verificar a atualização: ${error.message}`);
