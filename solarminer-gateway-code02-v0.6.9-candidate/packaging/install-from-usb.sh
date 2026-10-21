@@ -28,14 +28,12 @@ fi
 [ -f "$DEB" ] || fail "Pacote Debian não encontrado: $DEB"
 [ "$(dpkg-deb -f "$DEB" Architecture)" = "amd64" ] || fail "O pacote não é amd64."
 
-printf 'URL HTTPS do repositório GitHub autorizado: '
-IFS= read -r REPOSITORY_URL || fail "Não foi lido o URL."
-CANONICAL_URL=$(python3 - "$REPOSITORY_URL" <<'PY'
+canonical_github_url() {
+  python3 - "$1" <<'PY'
 import re, sys
 from urllib.parse import urlsplit
-value = sys.argv[1].strip()
 try:
-    u = urlsplit(value)
+    u = urlsplit(sys.argv[1].strip())
     port = u.port
 except ValueError:
     raise SystemExit(2)
@@ -47,7 +45,23 @@ if len(parts) != 2 or not re.fullmatch(r"[A-Za-z0-9-]{1,39}", parts[0]) or not r
     raise SystemExit(2)
 print("https://github.com/" + parts[0].lower() + "/" + parts[1].lower())
 PY
-) || fail "O URL deve ser a raiz https://github.com/owner/repository."
+}
+
+printf 'URL HTTPS do repositório GitHub autorizado: '
+IFS= read -r REPOSITORY_URL || fail "Não foi lido o URL."
+CANONICAL_URL=$(canonical_github_url "$REPOSITORY_URL") || fail "O URL deve ser a raiz https://github.com/owner/repository."
+SOURCES_TMP=$(mktemp)
+trap 'rm -f "$SOURCES_TMP"' EXIT HUP INT TERM
+printf '%s\n' "$CANONICAL_URL" > "$SOURCES_TMP"
+while :; do
+  printf 'Outro repositório GitHub aprovado para seleção futura na PWA (Enter para terminar): '
+  IFS= read -r EXTRA_URL || fail "Não foi lido o URL."
+  [ -n "$EXTRA_URL" ] || break
+  EXTRA_CANONICAL=$(canonical_github_url "$EXTRA_URL") || fail "URL adicional inválido."
+  if ! grep -Fxq "$EXTRA_CANONICAL" "$SOURCES_TMP"; then
+    printf '%s\n' "$EXTRA_CANONICAL" >> "$SOURCES_TMP"
+  fi
+done
 
 KEY_SOURCE="$HERE/release-pubkey.pem"
 [ -s "$KEY_SOURCE" ] || fail "Falta release-pubkey.pem na pen. Usa apenas a chave pública de release obtida por uma origem de confiança."
@@ -62,14 +76,16 @@ ACTUAL_KEY_SHA256=$(sha256sum "$KEY_SOURCE" | cut -d ' ' -f 1)
 
 install -d -o root -g root -m 0755 /etc/solarminer
 install -o root -g root -m 0644 "$KEY_SOURCE" /etc/solarminer/release-pubkey.pem
-python3 - "$CANONICAL_URL" <<'PY'
+python3 - "$SOURCES_TMP" <<'PY'
 import json, os, sys, tempfile
-repo = sys.argv[1]
-doc = {"repositories": {repo: {
-    "manifest_url": repo + "/releases/latest/download/solarminer-release.json",
-    "manifest_origins": ["https://github.com", "https://release-assets.githubusercontent.com"],
-    "package_origins": ["https://github.com", "https://release-assets.githubusercontent.com"]
-}}}
+repositories = {}
+for repo in open(sys.argv[1], encoding="utf-8").read().splitlines():
+    repositories[repo] = {
+        "manifest_url": repo + "/releases/latest/download/solarminer-release.json",
+        "manifest_origins": ["https://github.com", "https://release-assets.githubusercontent.com"],
+        "package_origins": ["https://github.com", "https://release-assets.githubusercontent.com"]
+    }
+doc = {"repositories": repositories}
 path = "/etc/solarminer/update-sources.json"
 fd, tmp = tempfile.mkstemp(prefix=".update-sources.", dir="/etc/solarminer")
 try:
