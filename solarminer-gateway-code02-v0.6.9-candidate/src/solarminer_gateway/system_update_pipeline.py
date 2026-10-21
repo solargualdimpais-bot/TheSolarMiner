@@ -49,9 +49,13 @@ class PipelineError(RuntimeError):
     pass
 
 
+def _validate_root_owned_not_writable(path_stat: os.stat_result, error_code: str) -> None:
+    if path_stat.st_uid != 0 or path_stat.st_mode & 0o022:
+        raise PipelineError(error_code)
+
+
 def _validate_deployment_root_permissions(root_stat: os.stat_result) -> None:
-    if root_stat.st_uid != 0 or root_stat.st_mode & 0o022:
-        raise PipelineError("deployment_root_permissions_invalid")
+    _validate_root_owned_not_writable(root_stat, "deployment_root_permissions_invalid")
 
 
 class SystemUpdatePipeline:
@@ -141,13 +145,9 @@ class SystemUpdatePipeline:
             raise PipelineError("update_journal_must_not_be_symlink")
         if not self.state_path.exists():
             return None
-        state_stat = self.state_path.stat()
-        if state_stat.st_uid != 0 or state_stat.st_mode & 0o022:
-            raise PipelineError("update_state_permissions_invalid")
+        _validate_root_owned_not_writable(self.state_path.stat(), "update_state_permissions_invalid")
         if self.journal_path.exists():
-            journal_stat = self.journal_path.stat()
-            if journal_stat.st_uid != 0 or journal_stat.st_mode & 0o022:
-                raise PipelineError("update_journal_permissions_invalid")
+            _validate_root_owned_not_writable(self.journal_path.stat(), "update_journal_permissions_invalid")
         try:
             value = json.loads(self.state_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
