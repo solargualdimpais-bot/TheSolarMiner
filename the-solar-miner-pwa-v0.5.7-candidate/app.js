@@ -3,7 +3,7 @@ import { DEMO_CONTROL_CONFIG, createDemoControlState, updateDemoControl, toggleD
 import { renderWorkspacePage, renderHomePreferenceLinks, renderHouseSearch, handleWorkspaceAction, handleWorkspaceChange, applyPreferences, getWorkspacePageLabel, workspace, getEditableEntity, saveEditableEntity, saveDemoWorkspace, hydrateWorkspacePhotos } from "./workspace-ui.js";
 import { renderAutomationsPage, renderSolarProductionPage, renderDemoAdminPanel, handleFeatureAction, saveAutomationForm, addDemoUser, saveDemoUserEdit, saveSolarWeather, demoFeatures } from "./features-v053.js";
 import { GatewayConnectionManager, CONNECTION_STATES, parsePairingQr, parseInviteQr, probeGateway, validateGatewayUrl, PRESENCE_API_STATUS } from "./gateway-connection.js";
-import { bootstrapGatewayOwner, redeemGatewayInvite, loginGateway, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, logoutGateway, readGatewayEnergy, presenceInfo } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, redeemGatewayInvite, loginGateway, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, logoutGateway, readGatewayEnergy, presenceInfo, checkGatewayUpdate, readGatewayUpdateStatus, applyGatewayUpdate } from "./gateway-auth.js";
 
 let automationEditingId = "";
 const state = { page: "inicio", mode: "SIMULATED", dataStatus: "DEMO", dataError: null, equipment: DEMO_EQUIPMENT, lastUpdated: null, lastMeasurementAt: null, refreshing: false, propertyPhoto: "", demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [{id:"luz_sala",name:"Luz teto",room:"Sala de estar",floor:"RDC",pct:78},{id:"estor_sala",name:"Estore",room:"Sala de estar",floor:"RDC",pct:60},{id:"luz_coz",name:"Luz teto",room:"Cozinha",floor:"RDC",pct:0},{id:"estor_coz",name:"Estore",room:"Cozinha",floor:"RDC",pct:0}] };
@@ -421,6 +421,8 @@ $("#gateway-qr-file").addEventListener("change",async event=>{
 });
 const invitePanel = $("#gateway-invite-management");
 const bootstrapPanel = $("#gateway-bootstrap-panel");
+const updatePanel = $("#gateway-update-management");
+let verifiedGatewayUpdate = null;
 bootstrapPanel.hidden = !["localhost", "127.0.0.1", "::1"].includes(location.hostname.replace(/^\[|\]$/g, ""));
 let inviteQrObjectUrl = null;
 function markGatewayAuthenticated() {
@@ -440,10 +442,16 @@ function updateSessionUi() {
     logout.disabled = false;
     invitePanel.hidden = info.user.role !== "owner";
     if (info.user.role === "owner") refreshInviteList().catch(error => { $("#gateway-invite-list").textContent = `Não foi possível consultar convites: ${error.message}`; });
+    if (updatePanel) {
+      updatePanel.hidden = info.user.role !== "owner";
+      if (info.user.role === "owner") refreshGatewayUpdateStatus().catch(error => showGatewayUpdateMessage(`Não foi possível consultar o estado: ${error.message}`));
+    }
   } else {
     status.textContent = "Sem sessão autenticada nesta aba. O token não é persistido entre recarregamentos.";
     logout.disabled = true;
     invitePanel.hidden = true;
+    if (updatePanel) updatePanel.hidden = true;
+    verifiedGatewayUpdate = null;
   }
 }
 $("#gateway-bootstrap-form").addEventListener("submit", async event => {
@@ -498,6 +506,92 @@ $("#gateway-redeem-form").addEventListener("submit", async event => {
     await refreshGatewayReadings();
   } catch (error) { passwordField.value = ""; gatewayResult(`Resgate não concluído: ${error.message}. O convite pode ter expirado ou já ter sido consumido.`); }
 });
+function showGatewayUpdateMessage(message) {
+  const target = $("#gateway-update-message");
+  if (target) target.textContent = message;
+}
+function setGatewayUpdateDetails(result) {
+  const details = $("#gateway-update-details");
+  const apply = $("#gateway-update-apply");
+  if (!details || !apply) return;
+  details.textContent = "";
+  if (result?.available_version) {
+    const rows = [
+      `Versão instalada: ${result.installed_version || "desconhecida"}`,
+      `Versão disponível: ${result.available_version}`,
+      `Assinatura: ${result.signature_valid ? "válida" : "não validada"}`,
+      `Hash SHA-256: ${result.sha256 || "não disponível"}`,
+      result.repository_url ? `Repositório: ${result.repository_url}` : ""
+    ].filter(Boolean);
+    details.textContent = rows.join("\\n");
+  }
+  const canApply = result?.status === "verified_staged" && result.signature_valid === true &&
+    result.compatible === true && result.activation_available === true && Boolean(result.available_version);
+  verifiedGatewayUpdate = canApply ? result : null;
+  apply.disabled = !canApply;
+  apply.hidden = !canApply;
+}
+async function refreshGatewayUpdateStatus() {
+  const info = sessionInfo();
+  if (!info.authenticated || info.user.role !== "owner") throw new Error("Apenas o Owner pode consultar atualizações.");
+  const result = await readGatewayUpdateStatus();
+  if (result.status === "VERIFIED" && result.target_version) {
+    setGatewayUpdateDetails({
+      status: "verified_staged", installed_version: result.installed_version,
+      available_version: result.target_version, signature_valid: true, compatible: true,
+      activation_available: result.activation_available,
+      repository_url: result.details?.repository_url, sha256: result.details?.package_sha256
+    });
+  } else {
+    setGatewayUpdateDetails(null);
+  }
+  showGatewayUpdateMessage(`Estado da atualização: ${result.status || "desconhecido"}${result.target_version ? ` · destino ${result.target_version}` : ""}.`);
+  return result;
+}
+$("#gateway-update-check").addEventListener("click", async () => {
+  const info = sessionInfo();
+  if (!info.authenticated || info.user.role !== "owner") { showGatewayUpdateMessage("Só o Owner autenticado pode verificar atualizações."); return; }
+  const button = $("#gateway-update-check");
+  button.disabled = true;
+  verifiedGatewayUpdate = null;
+  setGatewayUpdateDetails(null);
+  showGatewayUpdateMessage("A validar repositório permitido, manifesto, assinatura e pacote…");
+  try {
+    const result = await checkGatewayUpdate($("#gateway-update-repository").value.trim());
+    setGatewayUpdateDetails(result);
+    if (result.status === "verified_staged") {
+      showGatewayUpdateMessage(result.activation_available
+        ? "Pacote verificado e pronto. Revê a versão e confirma explicitamente para aplicar."
+        : "Pacote assinado e transferido, mas o preflight de recuperação bloqueou a aplicação.");
+    } else {
+      showGatewayUpdateMessage(`Atualização bloqueada: ${result.message || result.status || "origem rejeitada"}.`);
+    }
+  } catch (error) {
+    showGatewayUpdateMessage(`Não foi possível verificar a atualização: ${error.message}`);
+  } finally { button.disabled = false; }
+});
+$("#gateway-update-refresh").addEventListener("click", () => refreshGatewayUpdateStatus()
+  .catch(error => showGatewayUpdateMessage(`Não foi possível consultar o estado: ${error.message}`)));
+$("#gateway-update-apply").addEventListener("click", async () => {
+  const info = sessionInfo(), update = verifiedGatewayUpdate;
+  if (!info.authenticated || info.user.role !== "owner" || !update?.available_version || !update.activation_available) {
+    showGatewayUpdateMessage("Não há pacote verificado e aplicável nesta sessão Owner.");
+    return;
+  }
+  if (!confirm(`Aplicar a versão ${update.available_version}? O Gateway fará backup, ativação e health check, com rollback se falhar.`)) return;
+  const button = $("#gateway-update-apply");
+  button.disabled = true;
+  showGatewayUpdateMessage(`A enfileirar a atualização ${update.available_version}…`);
+  try {
+    const result = await applyGatewayUpdate(update.available_version);
+    verifiedGatewayUpdate = null;
+    showGatewayUpdateMessage(`Atualização aceite pelo Gateway: ${result.status || "APPLY_QUEUED"} · operação ${result.operation_id || "sem identificador"}. Usa “Atualizar estado” para acompanhar.`);
+    await refreshGatewayUpdateStatus();
+  } catch (error) {
+    showGatewayUpdateMessage(`A aplicação foi bloqueada ou falhou: ${error.message}`);
+  } finally { button.disabled = false; }
+});
+
 async function refreshInviteList() {
   const target = $("#gateway-invite-list");
   target.textContent = "A consultar convites…";
