@@ -1383,7 +1383,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
             manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.10"})
-        with __import__("urllib.request", fromlist=["urlopen"]).urlopen(request, timeout=8) as response:
+        with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(
                 f"https://{final.hostname}" + (f":{final.port}" if final.port else ""))
