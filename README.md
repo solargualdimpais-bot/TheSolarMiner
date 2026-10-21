@@ -1,2 +1,81 @@
-# TheSolarMiner
-TheSolarMiner
+# SolarMiner Gateway — CODE 02 v0.6.6 presence increment (API contract v0.6.0)
+
+Standalone foundation for local identity, bootstrap, authentication, authorization, device identity and audit. This directory is deliberately separate from the archived Prova 0 v0.3.0 artifacts; its package build writes `dist/solarminer-gateway_0.6.5_amd64.deb`; the API-reported version remains `0.6.0` for compatibility.
+
+## Build and test
+
+```sh
+make test
+make deb
+```
+
+Runtime dependencies are Debian packages `python3-fastapi`, `python3-uvicorn`, `python3-argon2`, `python3-cryptography`, `openssl`, and `adduser`. The Debian package creates a dedicated `solarminer` service identity and a self-signed TLS certificate. Review `docs/TLS_TRUST.md` before LAN exposure.
+
+## Bootstrap
+
+The service creates `/var/lib/solarminer/bootstrap.token` on the first startup with mode `0600`, under `/var/lib/solarminer` mode `0700`. Read it only through local privileged access. The token expires after 15 minutes; expiry does not trigger automatic re-issuance. The bootstrap API is loopback-only and does not return the token. The first owner setup requires a client Ed25519 key pair and a signature over the canonical message described in `docs/API.md`. The private key must remain with the client.
+
+## MAC and cryptographic identity
+
+Every account must be linked to an active device. MAC addresses are normalized and stored as `declared`; they are not an authentication factor and the current code deliberately refuses to mark a MAC `verified` because no independent verification process is implemented. Device identity is bound to an Ed25519 public key. Private keys are not stored by the gateway.
+
+## Scope and status
+
+This is a partial CODE 01 implementation, not a hardware-verified release. See `A1B_VALIDATION_REPORT.md` and `docs/A1B_SECURITY.md` for exact test results, security limitations and unimplemented flows. Prova 0 is not rebuilt or modified by this project.
+
+
+## A2 owner recovery
+
+The first successful, loopback-only owner bootstrap response includes a one-time `recovery_key`. The bootstrap client must display it once to the owner and must not persist it in logs, telemetry, shell history, or support records. Store it offline. The Gateway stores only a domain-separated SHA-256 verifier because the key is generated from 32 random bytes (256 bits of entropy); Argon2 is reserved for human-chosen passwords.
+
+For an existing A1b owner, configure or rotate the key while the owner password and an associated active Ed25519 device are still available: stop the service and run `sudo solarminer-gateway recovery-setup`. To recover using the offline key, stop the service and run `sudo solarminer-gateway recovery`. The command requests the key through hidden interactive input and requires a new device public key plus a signature over a fresh random challenge. The private key never enters the Gateway.
+
+If the offline recovery key is also lost, `sudo solarminer-gateway emergency-reset` is a separate OS-root-only procedure. It requires the service to be stopped, explicit confirmation, a fresh device proof, and a protected SQLite backup under the database directory's `backup/` subdirectory. It preserves users and unrelated data; it does not reset the database. A pre-commit failure rolls back the operation. If a replacement recovery key is committed but cannot be displayed after commit, it cannot be retrieved from storage; use the documented emergency procedure to rotate it again.
+
+All local recovery commands require a real interactive terminal and root privileges, and refuse to proceed if they cannot establish that the systemd service is stopped. No HTTP recovery endpoint was added. Recovery, backup and audit contain no plaintext passwords, recovery keys, bearer tokens, or private device keys; the protected backup necessarily contains sensitive credential verifiers and session hashes and must remain access-controlled.
+
+
+## CODE 02 — Connector Manager v0.6.0
+
+The Connector Manager adds a signed Ed25519 connector catalog, a built-in read-only TCP reachability probe, bounded private-network discovery, connector lifecycle API endpoints, and persistent audit/operation state. See `docs/CODE02_CONNECTOR_MANAGER.md`. The initial release does not execute third-party connector code, does not send device-control commands, and does not claim protocol or hardware validation.
+
+## CODE 02 v0.6.1 — incremental hardening
+
+This source tree preserves the v0.6.0 CODE 01/A2 and Connector Manager regression suite. The Debian package version is 0.6.1; the inherited Gateway `/api/v1/info` version remains 0.6.0 to preserve the established API contract asserted by the prior tests.
+
+Added in this iteration:
+
+- Hash-verified offline per-connector wheel installation into independent virtual environments (`connector_dependencies.py`).
+- A restrictive systemd sandbox policy renderer (`isolated_runtime.py`) with dedicated-user, filesystem, process/resource, and network restrictions.
+- A Modbus TCP FC03-only raw read client (`deye_modbus.py`) with strict response validation and explicit unknown scaling/model status.
+- Additional tests for protocol framing, malformed/exception responses, timeouts, safe targets, dependency hashes, and sandbox policy.
+
+Important limits: the Deye connector is not yet activated by the signed catalog or dispatched by Connector Manager. The available official manufacturer documents do not establish a register map for the exact requested model/firmware, and the catalog signing key is intentionally absent. No register addresses or conversions have been guessed. The sandbox policy is rendered and unit-tested, but systemd/cgroup enforcement is not operationally tested in this container. See `docs/deye/README.md`, `docs/dependencies/README.md`, and `docs/isolated-connectors.md`.
+
+## CODE 02 v0.6.2 — incremental equipment registry and IPC
+
+This package adds an additive Energy equipment API and trust/evidence data model, a standalone allowlisted connector worker with Unix-socket IPC, and a fail-closed signed activation journal. The 119 reference tests are preserved; additional tests cover the new primitives. The worker's local process/IPC tests do not establish systemd/cgroup isolation. The original PWA source is not present in the v0.6.1 source archive, so the existing PWA menu has not been claimed as integrated. The worker activation flow is not yet end-to-end wired into the Connector Manager, and atomic systemd/filesystem rollback remains blocked pending operational Debian VM validation. See `docs/CODE02_V062_ENERGY_AND_WORKERS.md`, `docs/CODE02_V062_PHYSICAL_VALIDATION.md`, and `docs/CODE02_V062_DEYE_PROFILE.md`.
+
+## CODE 02 v0.6.4 — worker transport integration and local recovery primitive
+
+This incremental candidate routes TCP connector tests and bounded network discovery through the supervised worker process. It serves the independent The Solar Miner PWA from the Gateway HTTPS origin and packages its static assets under `/usr/share/solarminer/pwa`. It adds a conservative `AtomicReleaseStore.recover_interrupted()` helper for a process restart that leaves an uncommitted active pointer. The helper is not wired into startup or a full update orchestrator; it only reconciles the filesystem pointer/journal and does not coordinate SQLite or systemd. See `docs/CODE02_V064_IMPLEMENTATION.md` and `docs/CODE02_V064_TESTING.md`.
+
+
+## CODE 02 v0.6.5 — browser pairing and authenticated read-only PWA
+
+Adds an administrator-authorized, single-use pairing code scoped to an active username, Ed25519 proof of possession from the browser, and a non-exportable Web Crypto private key stored as a CryptoKey in IndexedDB. The browser then uses the established `LOGIN` canonical signature format, keeps the 8-hour bearer session in memory only, reads the existing `/api/v1/energy/*` endpoints, and calls the existing logout/revocation API. No refresh token, device-control endpoint, or write operation was added. See `docs/CODE02_V065_AUTH.md` and `web/pwa/README.md`.
+
+The backend's original 163-test regression baseline is retained; new tests cover one-time/expired pairing codes, signature and timestamp failures, read authorization, logout, and Node WebCrypto interoperability with the Python Gateway verifier. The PWA includes automated crypto/auth-client tests. Local integration tests do not validate Safari/iOS, production TLS/DNS, Tailscale, Debian systemd enforcement, or physical equipment.
+
+
+## CODE 02 v0.6.6 — additive user presence API
+
+This source increment adds `POST /api/v1/presence/heartbeat` and `GET /api/v1/presence/me`, backed by a new SQLite table/migration. Identity is derived from the existing authenticated session and active user-device association; the client cannot declare another user/device or claim LAN/REMOTE. Presence expires after 120 seconds without a successful heartbeat, and logout deletes the current session's user/device presence. Heartbeat writes are throttled to one persisted update per five seconds and transitions are audited.
+
+The Gateway identity attestation endpoint is still not implemented. The presence method therefore remains `unknown`; online is not proof of physical presence at home. This source archive is not installed on a physical Gateway.
+
+## v0.6.9 — pipeline de atualização ponta-a-ponta
+
+Esta árvore contém a implementação incremental CODE02 v0.6.9 com PWA v0.5.7 incorporada e pipeline de atualização/recuperação. Consultar `docs/CODE02_V069_IMPLEMENTATION.md`, `docs/DATABASE_BACKUP_AND_RESTORE.md`, `docs/UPDATE_AND_ROLLBACK.md`, `docs/ACCEPTANCE_MATRIX_V069.md`, `docs/TEST_REPORT_V069.md` e `docs/V069_LIMITATIONS.md` para âmbito, evidências e limitações.
+
+O endpoint de aplicação só responde HTTP 202 quando a assinatura, o helper root, o symlink de release, a chave pública, o certificado TLS, a base SQLite e o timer de recuperação passam o pré-voo; caso contrário permanece bloqueado com HTTP 503. O pipeline tem testes automatizados com `.deb` descartável, mas ainda requer instalação/upgrade em host Debian de ensaio, reboot e falhas reais antes de aprovar instalação no Gateway físico ou produção.
