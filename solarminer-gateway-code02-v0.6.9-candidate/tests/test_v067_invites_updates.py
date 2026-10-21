@@ -94,6 +94,39 @@ def test_update_manifest_signature_verification():
         verify_manifest(malformed_version,pub,"0.6.7")
 
 
+def test_update_manifest_compatibility_accepts_current_and_older_supported_release():
+    private, pem = keypair()
+    public = serialization.load_pem_public_key(pem.encode())
+    manifest = {
+        "schema_version": 1, "release_id": "gateway-v0.6.10", "version": "0.6.10",
+        "min_compatible_version": "0.6.9", "changelog": ["fix"],
+        "package_name": "solarminer-gateway_0.6.10_amd64.deb",
+        "package_url": "https://github.com/solarminer/releases/download/gateway-v0.6.10/package.deb",
+        "package_size": 10, "sha256": "a" * 64, "signature_algorithm": "Ed25519",
+        "compatibility": {}, "migration_requirements": [],
+    }
+    manifest["signature"] = private.sign(canonical_manifest(manifest)).hex()
+    assert verify_manifest(manifest, public, "0.6.9")["compatible"] is True
+    assert verify_manifest(manifest, public, "0.6.10")["compatible"] is True
+    with pytest.raises(UpdateValidationError, match="installed_version_not_compatible"):
+        verify_manifest(manifest, public, "0.6.8")
+
+
+def test_update_manifest_rejects_downgrade():
+    private, pem = keypair()
+    public = serialization.load_pem_public_key(pem.encode())
+    manifest = {
+        "schema_version": 1, "release_id": "gateway-v0.6.8", "version": "0.6.8",
+        "min_compatible_version": "0.6.7", "changelog": ["old"],
+        "package_name": "solarminer.deb", "package_url": "https://releases.example.test/solarminer.deb",
+        "package_size": 10, "sha256": "a" * 64, "signature_algorithm": "Ed25519",
+        "compatibility": {}, "migration_requirements": [],
+    }
+    manifest["signature"] = private.sign(canonical_manifest(manifest)).hex()
+    with pytest.raises(UpdateValidationError, match="release_version_is_older"):
+        verify_manifest(manifest, public, "0.6.9")
+
+
 def test_gateway_identity_challenge_proves_key_possession(client):
     ts=int(time.time()); nonce="gateway-identity-test-nonce"
     response=client.get("/api/v1/gateway/identity",params={"timestamp":ts,"nonce":nonce})
