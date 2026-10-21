@@ -166,7 +166,7 @@ def load_release_key(path: str | Path) -> Ed25519PublicKey:
 
 def _release_version_tuple(value: Any) -> tuple[int, ...]:
     """Parse the numeric dotted release versions used by the Gateway package."""
-    if not isinstance(value, str) or not re.fullmatch(r"[0-9]+(?:\\.[0-9]+){1,3}", value):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,3}", value):
         raise UpdateValidationError("manifest_compatibility_version_invalid")
     return tuple(int(part) for part in value.split("."))
 
