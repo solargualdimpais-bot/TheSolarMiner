@@ -2,6 +2,7 @@
 Description=Daily SolarMiner signed release check
 
 [Timer]
+OnBootSec=5m
 OnCalendar=daily
 RandomizedDelaySec=20m
 Persistent=true
