@@ -1,5 +1,5 @@
-SolarMiner Gateway CODE02 0.6.10 — instalador inicial USB
-=========================================================
+SolarMiner Gateway CODE02 0.6.11 — instalador inicial USB
+==========================================================
 
 Requisitos: Gateway Lenovo AMD64, Debian 13 (Trixie) ou posterior, Python 3.13 ou posterior e acesso à Internet para os repositórios oficiais Debian.
 
@@ -7,8 +7,8 @@ Requisitos: Gateway Lenovo AMD64, Debian 13 (Trixie) ou posterior, Python 3.13 o
 2. No Gateway, inicia sessão como root e monta a pen.
 3. Executa: sh /media/<utilizador>/<PEN>/install-from-usb.sh
 
-O script não pede URL ou hashes. Verifica primeiro o manifesto assinado, a assinatura Ed25519, o hash, o tamanho, a versão, a origem autorizada e a arquitetura. Depois instala o pacote SolarMiner e dependências Debian, configura a origem oficial de atualizações e executa o health check. O progresso fica em /var/log/solarminer-first-install.log.
+O script valida manifesto, assinatura Ed25519, hash, tamanho, versão e arquitetura antes de instalar. O pacote provisiona uma identidade Ed25519 própria do Gateway e ativa a API com TLS. O progresso fica em /var/log/solarminer-first-install.log.
 
-A pen não executa programas automaticamente ao ser inserida. Executa o comando acima uma vez. Não uses este instalador para atualizar um Gateway já configurado. A chave pública é pública; a chave privada nunca é incluída neste ZIP.
+A pen não executa programas automaticamente ao ser inserida. Executa o comando acima uma vez. Este ZIP destina-se à instalação inicial; para um Gateway já instalado usa o fluxo autenticado de atualização assinada. A chave privada de release não é incluída neste ZIP.
 
-Se a instalação falhar, não repitas às cegas: consulta o log como root. A conta Owner e a confiança TLS são configuradas no primeiro acesso à PWA, conforme a documentação instalada em /usr/share/doc/solarminer-gateway/.
+Depois de ativar o Gateway, segue a secção “Configuração inicial Owner e GitHub Pages” no guia Debian instalado em /usr/share/doc/solarminer-gateway/INSTALL_DEBIAN_AMD64.md.

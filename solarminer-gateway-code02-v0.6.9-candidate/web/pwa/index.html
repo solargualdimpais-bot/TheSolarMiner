@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Solar Miner">
-  <meta name="description" content="The Solar Miner — demonstração com diagnóstico seguro e associação ao Gateway pendente de validação de identidade.">
+  <meta name="description" content="The Solar Miner — interface segura de administração Owner e consulta de dados reais do SolarMiner Gateway.">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="assets/icon-192.png">
@@ -22,7 +22,7 @@
         <span><strong>The Solar Miner</strong><small>ENERGY GATEWAY</small></span>
       </a>
       <div class="side-label">A SUA PROPRIEDADE</div>
-      <div id="connection-summary" class="connection-card"><span class="pulse"></span><div><strong id="connection-title">Modo demonstração</strong><small id="connection-detail">Dados simulados · sem ligação física</small></div></div>
+      <div id="connection-summary" class="connection-card"><span class="pulse"></span><div><strong id="connection-title">Gateway não ligado</strong><small id="connection-detail">Configura o endpoint e inicia sessão Owner</small></div></div>
       <nav id="primary-nav" class="primary-nav" aria-label="Navegação principal">
         <button class="nav-item active" data-page="inicio"><span class="nav-icon">⌂</span>Visão geral</button>
         <button class="nav-item" data-page="energia"><span class="nav-icon">◉</span>Energia · resumo</button>
@@ -42,15 +42,15 @@
     </aside>
 
     <main class="main-content">
-      <header class="topbar"><div class="mobile-brand"><img src="assets/icon.svg" alt="" width="34" height="34"><strong>The Solar Miner</strong></div><div class="breadcrumb" id="breadcrumb">A SUA CASA / VISÃO GERAL</div><div class="top-actions"><span id="mode-chip" class="mode-chip simulated">DEMO · SIMULATED</span><button id="refresh-button" class="icon-button" title="Atualizar demonstração" aria-label="Atualizar demonstração">↻</button></div></header>
+      <header class="topbar"><div class="mobile-brand"><img src="assets/icon.svg" alt="" width="34" height="34"><strong>The Solar Miner</strong></div><div class="breadcrumb" id="breadcrumb">A SUA CASA / VISÃO GERAL</div><div class="top-actions"><span id="mode-chip" class="mode-chip off">SEM SESSÃO</span><button id="refresh-button" class="icon-button" title="Consultar o Gateway" aria-label="Consultar o Gateway">↻</button></div></header>
       <section id="gateway-status-strip" class="gateway-status-strip" aria-live="polite">
         <div class="gateway-status-dot" aria-hidden="true"></div>
-        <div class="gateway-status-copy"><strong id="gateway-status-label">DEMONSTRAÇÃO — SEM LIGAÇÃO AO GATEWAY</strong><small id="gateway-status-detail">Os dados e dispositivos apresentados continuam simulados.</small></div>
+        <div class="gateway-status-copy"><strong id="gateway-status-label">GATEWAY NÃO CONFIGURADO</strong><small id="gateway-status-detail">Configura o endpoint HTTPS do Gateway e inicia sessão.</small></div>
         <button id="open-gateway-dialog" class="button secondary gateway-manage" type="button">Gateway · detalhes</button>
       </section>
       <div id="notice" class="notice" role="status" hidden></div>
       <section id="page-content" aria-live="polite"></section>
-      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">PWA DEMO 0.5.6</span></span><span id="freshness-label">Dados de demonstração · não são leituras reais</span></footer>
+      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.6.11</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
     </main>
   </div>
 
@@ -102,14 +102,15 @@
       <div class="dialog-actions"><button id="gateway-qr-parse" class="button secondary" type="button">Validar formato do QR</button></div>
       <div id="gateway-result" class="connection-result" role="status" aria-live="polite">Nenhum endpoint foi testado. A PWA permanece em modo demonstração.</div>
       <section class="panel gateway-auth-panel" id="gateway-bootstrap-panel" hidden>
-        <div class="panel-header"><div><p class="eyebrow">PRIMEIRA CONFIGURAÇÃO LOCAL</p><h3>Criar o primeiro Owner</h3></div><span class="source-tag">SÓ LOOPBACK</span></div>
-        <p class="field-note">Disponível apenas quando esta PWA está aberta num browser local no próprio Gateway. Obtém o token no ficheiro local de bootstrap. A API rejeita tentativas remotas. A chave de identidade do Gateway tem de estar previamente provisionada.</p>
+        <div class="panel-header"><div><p class="eyebrow">PRIMEIRA CONFIGURAÇÃO</p><h3>Criar o primeiro Owner</h3></div><span class="source-tag">TOKEN ÚNICO + ED25519</span></div>
+        <p class="field-note">O Gateway só aceita este passo enquanto não existir Owner. No terminal do Gateway, executa <code>solarminer-gateway bootstrap-token</code> e lê a fingerprint impressa pelo mesmo comando. Confirma que a fingerprint coincide antes de enviar credenciais. O token expira em 15 minutos.</p>
         <form id="gateway-bootstrap-form" class="gateway-form-grid">
           <label>Token de bootstrap local<input id="gateway-bootstrap-token" type="password" autocomplete="off" minlength="32" required></label>
+          <label>Fingerprint SHA-256 Ed25519 do Gateway<input id="gateway-bootstrap-fingerprint" inputmode="text" autocomplete="off" minlength="64" maxlength="64" pattern="[0-9A-Fa-f]{64}" placeholder="64 caracteres hexadecimais" required></label>
           <label>Nome do Owner<input id="gateway-bootstrap-username" autocomplete="username" minlength="3" maxlength="128" pattern="[A-Za-z0-9_.-]+" required></label>
           <label>Palavra-passe (mín. 12 caracteres)<input id="gateway-bootstrap-password" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required></label>
           <label>MAC declarado<input id="gateway-bootstrap-mac" placeholder="AA:BB:CC:DD:EE:FF" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" required></label>
-          <button class="button primary" type="submit">Criar Owner localmente</button>
+            <button class="button primary" type="submit">Criar primeiro Owner</button>
         </form>
         <div id="gateway-bootstrap-recovery" hidden class="invite-created"><strong>Chave de recuperação — guardar offline agora</strong><p class="field-note">Esta chave é apresentada uma única vez e não é guardada na PWA.</p><textarea id="gateway-bootstrap-recovery-key" rows="3" readonly></textarea><button class="button secondary" type="button" id="gateway-copy-recovery-key">Copiar chave de recuperação</button></div>
       </section>

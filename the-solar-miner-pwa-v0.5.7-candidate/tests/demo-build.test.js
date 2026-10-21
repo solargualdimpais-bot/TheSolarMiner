@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-const root = new URL('../', import.meta.url).pathname;
+import { fileURLToPath } from 'node:url';
+const root = fileURLToPath(new URL('../', import.meta.url));
 const read = name => readFileSync(join(root, name), 'utf8');
 
 test('v0.5.1 includes read-only Gateway diagnostics but no authentication or pairing client', () => {

@@ -1,13 +1,13 @@
 # API v1 (CODE 01)
 
-All network use is intended over TLS. Bootstrap is loopback-only and the bootstrap token is never returned by the API.
+All network use is intended over TLS. Bootstrap accepts loopback, a same-origin PWA, or an exact HTTPS origin configured in `SOLARMINER_CORS_ORIGINS`. It still requires the local one-time bootstrap token, a fresh timestamp/nonce, an Ed25519 device proof, and Gateway identity fingerprint verification by the PWA. The bootstrap token is never returned by the API.
 
 | Method | Path | Access |
 |---|---|---|
 | GET | `/api/v1/health` | Public, minimal health and bootstrap state |
 | GET | `/api/v1/info` | Public, product/version only |
 | GET | `/api/v1/bootstrap/status` | Public, state only |
-| POST | `/api/v1/bootstrap/owner` | Loopback only, one-time token + Ed25519 proof + timestamp/nonce |
+| POST | `/api/v1/bootstrap/owner` | Loopback/same-origin/exact allow-listed HTTPS origin, one-time token + Ed25519 proof + timestamp/nonce |
 | POST | `/api/v1/auth/login` | Password + associated device Ed25519 signature |
 | POST | `/api/v1/auth/logout` | Authenticated session |
 | GET | `/api/v1/status` | `read` permission |
@@ -45,7 +45,7 @@ Responses: `200` success; `400` invalid role/status values; `401` reauthenticati
 
 ## A2 owner recovery (local only)
 
-No HTTP endpoint accepts a recovery key or performs owner recovery. During the existing loopback-only `POST /api/v1/bootstrap/owner` operation, the successful one-time response includes `recovery_key`; the bootstrap client must show it once and must not log or persist it. The value is generated from 32 CSPRNG bytes, displayed as `SMR1-` plus grouped Base32, and only a domain-separated SHA-256 verifier is persisted. Because the key has 256 bits of entropy, a slow password KDF is not required for this verifier; human-chosen passwords continue to use Argon2id.
+No HTTP endpoint accepts a recovery key or performs owner recovery. During `POST /api/v1/bootstrap/owner`, the successful one-time response includes `recovery_key`; the bootstrap client must show it once and must not log or persist it. Bootstrap accepts loopback, same-origin, or the exact HTTPS origin configured in `SOLARMINER_CORS_ORIGINS`, and always requires the local one-time token, a fresh timestamp/nonce and an Ed25519 device proof. The value is generated from 32 CSPRNG bytes, displayed as `SMR1-` plus grouped Base32, and only a domain-separated SHA-256 verifier is persisted. Because the key has 256 bits of entropy, a slow password KDF is not required for this verifier; human-chosen passwords continue to use Argon2id.
 
 Local commands are installed as `/usr/bin/solarminer-gateway`:
 

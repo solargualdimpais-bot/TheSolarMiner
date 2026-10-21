@@ -1,0 +1,49 @@
+name: Publish SolarMiner Owner PWA
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "solarminer-gateway-code02-v0.6.9-candidate/web/pwa/**"
+      - ".github/workflows/pwa-pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  validate-and-deploy:
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v5
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Check PWA JavaScript syntax
+        working-directory: solarminer-gateway-code02-v0.6.9-candidate/web/pwa
+        run: |
+          node --check app.js
+          node --check gateway-auth.js
+          node --check gateway-connection.js
+          node --check service-worker.js
+      - name: Test standalone PWA contracts
+        working-directory: the-solar-miner-pwa-v0.5.7-candidate
+        run: node --test tests/*.test.js
+      - name: Upload the Gateway-integrated PWA
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: solarminer-gateway-code02-v0.6.9-candidate/web/pwa
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

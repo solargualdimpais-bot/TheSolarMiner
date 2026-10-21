@@ -3,10 +3,10 @@ import { DEMO_CONTROL_CONFIG, createDemoControlState, updateDemoControl, toggleD
 import { renderWorkspacePage, renderHomePreferenceLinks, renderHouseSearch, handleWorkspaceAction, handleWorkspaceChange, applyPreferences, getWorkspacePageLabel, workspace, getEditableEntity, saveEditableEntity, saveDemoWorkspace, hydrateWorkspacePhotos } from "./workspace-ui.js";
 import { renderAutomationsPage, renderSolarProductionPage, renderDemoAdminPanel, handleFeatureAction, saveAutomationForm, addDemoUser, saveDemoUserEdit, saveSolarWeather, demoFeatures } from "./features-v053.js";
 import { GatewayConnectionManager, CONNECTION_STATES, parsePairingQr, parseInviteQr, probeGateway, validateGatewayUrl, PRESENCE_API_STATUS } from "./gateway-connection.js";
-import { bootstrapGatewayOwner, redeemGatewayInvite, loginGateway, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, logoutGateway, readGatewayEnergy, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, readGatewayBootstrapStatus, redeemGatewayInvite, loginGateway, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, logoutGateway, readGatewayEnergy, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate } from "./gateway-auth.js";
 
 let automationEditingId = "";
-const state = { page: "inicio", mode: "SIMULATED", dataStatus: "DEMO", dataError: null, equipment: DEMO_EQUIPMENT, lastUpdated: null, lastMeasurementAt: null, refreshing: false, propertyPhoto: "", demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [{id:"luz_sala",name:"Luz teto",room:"Sala de estar",floor:"RDC",pct:78},{id:"estor_sala",name:"Estore",room:"Sala de estar",floor:"RDC",pct:60},{id:"luz_coz",name:"Luz teto",room:"Cozinha",floor:"RDC",pct:0},{id:"estor_coz",name:"Estore",room:"Cozinha",floor:"RDC",pct:0}] };
+const state = { page: "inicio", mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], lastUpdated: null, lastMeasurementAt: null, refreshing: false, propertyPhoto: "", demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [] };
 const $ = (selector) => document.querySelector(selector);
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
 const pageLabel = (id) => id === "inicio" ? "Visão geral" : (CATEGORIES.find(c => c.id === id)?.label || getWorkspacePageLabel(id) || "Mais áreas");
@@ -135,8 +135,8 @@ async function refreshGatewayReadings() {
   }
 }
 function resetToDemoAfterLogout() {
-  state.mode = "SIMULATED"; state.dataStatus = "DEMO"; state.dataError = null;
-  state.equipment = DEMO_EQUIPMENT; state.lastUpdated = null; state.lastMeasurementAt = null; render();
+  state.mode = "DISCONNECTED"; state.dataStatus = "UNAVAILABLE"; state.dataError = null;
+  state.equipment = []; state.lastUpdated = null; state.lastMeasurementAt = null; render();
 }
 function card(item) {
   const category = CATEGORIES.find(c => c.id === item.category) || { icon: "•", label: item.category };
@@ -227,6 +227,17 @@ function toggleFavoriteDevice(id){
   return false;
 }
 function renderOverview() {
+  if (state.mode !== "SIMULATED") {
+    const cards = state.equipment.map(card).join("") || `<div class="empty-state">Ainda não há equipamentos ou leituras registados no Gateway. Não são apresentados valores de demonstração nesta PWA.</div>`;
+    const user = sessionInfo().user;
+    const authenticated = sessionInfo().authenticated;
+    const updated = state.lastUpdated ? currentTimeLabel(state.lastUpdated) : "Ainda sem consulta";
+    return `<div class="page-heading"><div><p class="eyebrow">${authenticated ? "SESSÃO AUTENTICADA · GATEWAY" : "SOLARMiner GATEWAY"}</p><h1>SolarMiner Gateway</h1><p>${authenticated ? "Dados obtidos através da API autenticada. Áreas sem integração física são assinaladas como indisponíveis." : "Liga a PWA ao teu Gateway e autentica-te como Owner para administrar o dispositivo. Não são inventados valores nem apresentados equipamentos simulados."}</p></div><div class="date-block"><strong>${esc(user?.username || "Sem sessão")}</strong><br>${esc(user?.role || "")}</div></div>
+      <div class="status-banner"><span class="demo-stamp">${esc(state.dataStatus)}</span><span><strong>${state.dataError ? "Consulta ao Gateway" : authenticated ? "Ligação autenticada" : "É necessária uma sessão Owner"}</strong> · ${esc(state.dataError || (authenticated ? ("Última consulta: " + updated) : "Abre “Gateway · detalhes” para configurar o endpoint e iniciar sessão."))}</span></div>
+      <div class="section-heading"><div><p class="eyebrow">EQUIPAMENTOS REGISTADOS</p><h2>Estado comunicado pelo Gateway</h2></div><button class="button secondary" type="button" id="live-refresh">Consultar novamente</button></div>
+      <div class="equipment-grid">${cards}</div>
+      <section class="panel"><div class="panel-header"><div><p class="eyebrow">ADMINISTRAÇÃO</p><h2>Gestão do Gateway</h2><p>Utilizadores, convites, origem de atualizações e aplicação de firmware requerem o papel Owner.</p></div><button class="button primary" type="button" id="open-owner-management">${authenticated ? "Abrir gestão Owner" : "Configurar / iniciar sessão"}</button></div></section>`;
+  }
   const totals = demoTotals();
   const allCards = state.equipment.map(card).join("") || `<div class="empty-state">Ainda não existem equipamentos configurados no Gateway.</div>`;
   const photoStyle = state.propertyPhoto ? "has-property-photo" : "photo-placeholder";
@@ -258,10 +269,16 @@ function render() {
   freshness();
   $("#breadcrumb").textContent = `A SUA PROPRIEDADE / ${pageLabel(state.page).toUpperCase()}`;
   const workspacePage = renderWorkspacePage(state.page);
-  let pageHtml = state.page === "inicio" ? renderOverview() : (workspacePage || (CATEGORIES.some(c=>c.id===state.page) ? renderCategory(state.page) : renderOverview()));
-  if(state.page === "automatismos") pageHtml = renderAutomationsPage(workspace, automationEditingId);
-  if(state.page === "producao") pageHtml = renderSolarProductionPage();
-  if(state.page === "profile") pageHtml += renderDemoAdminPanel();
+  const gatewayBackedPages = ["inicio", ...CATEGORIES.map(c => c.id)];
+  let pageHtml;
+  if (state.mode !== "SIMULATED" && !gatewayBackedPages.includes(state.page)) {
+    pageHtml = `<div class="page-heading"><div><p class="eyebrow">FUNÇÃO NÃO DISPONÍVEL NO GATEWAY ATUAL</p><h1>${esc(pageLabel(state.page))}</h1><p>Esta área ainda não tem um contrato de dados ou comandos físicos no Gateway. Para evitar confusão, a sessão autenticada não apresenta controlos ou valores de demonstração aqui.</p></div></div><div class="empty-state">Sem dados reais fornecidos pelo Gateway para esta área. A administração do Owner está em “Gateway · detalhes”.</div>`;
+  } else {
+    pageHtml = state.page === "inicio" ? renderOverview() : (workspacePage || (CATEGORIES.some(c=>c.id===state.page) ? renderCategory(state.page) : renderOverview()));
+    if(state.page === "automatismos") pageHtml = renderAutomationsPage(workspace, automationEditingId);
+    if(state.page === "producao") pageHtml = renderSolarProductionPage();
+    if(state.page === "profile") pageHtml += renderDemoAdminPanel();
+  }
   $("#page-content").innerHTML = pageHtml;
   applyPreferences();
   applyLiveFontScale();
@@ -378,7 +395,11 @@ $("#property-photo-file").addEventListener("change",async e=>{
   } catch(error){result.textContent=error.message||"Não foi possível guardar a fotografia.";}
 });
 $("#remove-property-photo").addEventListener("click",()=>{try{state.propertyPhoto="";workspace.house.photo="";try{localStorage.removeItem("solar-miner-demo-property-photo-v1");}catch{}const saved=saveDemoWorkspace();$("#photo-result").textContent=saved?"Fotografia removida deste browser.":"Fotografia removida da sessão; a persistência local não foi confirmada.";render();}catch{$("#photo-result").textContent="O browser não permitiu remover a fotografia.";}});
-$("#page-content").addEventListener("click",e=>{const btn=e.target.closest("[data-page]");if(btn)navigate(btn.dataset.page);});
+$("#page-content").addEventListener("click",e=>{
+  if(e.target.closest("#live-refresh")){refreshGatewayReadings();return;}
+  if(e.target.closest("#open-owner-management")){$("#gateway-dialog").showModal();return;}
+  const btn=e.target.closest("[data-page]");if(btn)navigate(btn.dataset.page);
+});
 $("#page-content").addEventListener("change",e=>handleWorkspaceChange(e));
 state.propertyPhoto=workspace.house.photo || readStoredPhoto(); if(state.propertyPhoto && !workspace.house.photo){workspace.house.photo=state.propertyPhoto;saveDemoWorkspace();}try{localStorage.removeItem("solar-miner-demo-property-photo-v1");}catch{}
 $("#open-gateway-dialog").addEventListener("click",()=>$("#gateway-dialog").showModal());
@@ -389,7 +410,18 @@ $("#gateway-check").addEventListener("click",async()=>{
     const endpoint=validateGatewayUrl(field.value,{allowLocalHttp:location.hostname==="localhost"||location.hostname==="127.0.0.1"});
     gatewayResult("A verificar /api/v1/health e /api/v1/info…");
     const result=await gatewayManager.check(endpoint.origin);
-    if(result.reachable) gatewayResult(`${result.state}. Última resposta: ${currentTimeLabel(result.lastCommunicationAt)}. Método: endpoint HTTPS consultado. Identidade do Gateway: NÃO VALIDADA. O estado LAN/REMOTO não pode ser confirmado pelo contrato atual.`);
+    if(result.reachable) {
+      gatewayResult(`${result.state}. Última resposta: ${currentTimeLabel(result.lastCommunicationAt)}. Confirma a fingerprint Ed25519 no terminal do Gateway antes de criar ou autenticar um Owner.`);
+      try {
+        const bootstrap = await readGatewayBootstrapStatus(endpoint.origin);
+        bootstrapPanel.hidden = !["BOOTSTRAP_PENDING", "OWNER_SETUP_REQUIRED"].includes(bootstrap.state);
+        if (bootstrapPanel.hidden) gatewayResult(`${result.state}. O Gateway não está à espera da criação inicial de Owner (${bootstrap.state}). Usa o início de sessão ou a recuperação autorizada.`);
+        else if (bootstrap.state === "OWNER_SETUP_REQUIRED") gatewayResult(`${result.state}. O Gateway aguarda o primeiro Owner, mas o token expirou ou não está disponível. No Gateway, executa como root: solarminer-gateway bootstrap-token`);
+      } catch (statusError) {
+        bootstrapPanel.hidden = true;
+        gatewayResult(`Gateway respondeu, mas não foi possível consultar o estado de bootstrap: ${statusError.message}`);
+      }
+    }
     else gatewayResult(`${result.state}. Nenhuma identidade ou ligação foi confirmada. Código técnico: ${result.errorCode || "erro de rede"}. Não foram contornados erros TLS.`);
   } catch(error) { gatewayResult(error.message || "Endpoint inválido."); }
 });
@@ -423,7 +455,7 @@ const invitePanel = $("#gateway-invite-management");
 const bootstrapPanel = $("#gateway-bootstrap-panel");
 const updatePanel = $("#gateway-update-management");
 let verifiedGatewayUpdate = null;
-bootstrapPanel.hidden = !["localhost", "127.0.0.1", "::1"].includes(location.hostname.replace(/^\[|\]$/g, ""));
+bootstrapPanel.hidden = true;
 let inviteQrObjectUrl = null;
 function markGatewayAuthenticated() {
   const info = sessionInfo();
@@ -463,14 +495,15 @@ $("#gateway-bootstrap-form").addEventListener("submit", async event => {
   const tokenField = $("#gateway-bootstrap-token"), passwordField = $("#gateway-bootstrap-password");
   try {
     const result = await bootstrapGatewayOwner({ gatewayUrl: $("#gateway-endpoint").value, bootstrapToken: tokenField.value,
-      username: $("#gateway-bootstrap-username").value.trim(), password: passwordField.value, mac: $("#gateway-bootstrap-mac").value.trim() });
+      username: $("#gateway-bootstrap-username").value.trim(), password: passwordField.value, mac: $("#gateway-bootstrap-mac").value.trim(),
+      expectedGatewayFingerprint: $("#gateway-bootstrap-fingerprint").value });
     tokenField.value = ""; passwordField.value = "";
     $("#gateway-bootstrap-recovery-key").value = result.recovery_key;
     $("#gateway-bootstrap-recovery").hidden = false;
     $("#gateway-endpoint").value = result.gatewayUrl;
-    gatewayResult("Owner criado localmente. Guarda a chave de recuperação offline antes de fechar esta janela.");
+    gatewayResult("Owner criado. A fingerprint foi validada, o token foi consumido e a sessão autenticada foi iniciada. Guarda a chave de recuperação offline antes de fechar esta janela.");
     markGatewayAuthenticated(); updateSessionUi(); await refreshGatewayReadings();
-  } catch (error) { tokenField.value = ""; passwordField.value = ""; gatewayResult(`Bootstrap local não concluído: ${error.message}`); }
+  } catch (error) { tokenField.value = ""; passwordField.value = ""; gatewayResult(`Criação inicial do Owner não concluída: ${error.message}`); }
 });
 $("#gateway-copy-recovery-key").addEventListener("click", async () => {
   try { await navigator.clipboard.writeText($("#gateway-bootstrap-recovery-key").value); gatewayResult("Chave de recuperação copiada. Guarda-a num local offline seguro."); }

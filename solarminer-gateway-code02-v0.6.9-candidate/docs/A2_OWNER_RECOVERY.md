@@ -8,13 +8,13 @@ Recovery commands require a real interactive terminal, OS root privileges, and a
 
 ## Initial setup and upgrades
 
-On a fresh instance, the existing loopback-only `POST /api/v1/bootstrap/owner` success response contains a one-time `recovery_key`. The bootstrap client must show it once and must not store it in logs, telemetry, support tickets, shell history, or temporary files. Store the printed key offline. The Gateway persists only a domain-separated SHA-256 verifier. This is appropriate because the key contains 32 CSPRNG bytes (256 bits of entropy); human-chosen passwords continue to use Argon2id.
+On a fresh instance, the `POST /api/v1/bootstrap/owner` success response contains a one-time `recovery_key`. Bootstrap can run from loopback, same-origin, or the exact HTTPS PWA origin configured on the Gateway; it still requires the short-lived local token and fresh Ed25519 proof. The bootstrap client must show the recovery key once and must not store it in logs, telemetry, support tickets, shell history, or temporary files. Store the printed key offline. The Gateway persists only a domain-separated SHA-256 verifier. This is appropriate because the key contains 32 CSPRNG bytes (256 bits of entropy); human-chosen passwords continue to use Argon2id.
 
 An existing A1b database does not have a recoverable key because the old release never displayed one. While the owner still has the current password and an active associated device, stop the service and run:
 
 ```sh
-sudo systemctl stop solarminer-gateway.service
-sudo solarminer-gateway recovery-setup
+systemctl stop solarminer-gateway.service
+solarminer-gateway recovery-setup
 ```
 
 The command asks for the current password without echo, the active device ID, and a signature over a fresh challenge. The associated device's private key stays on that device. This command creates a key or rotates an existing key; it requires explicit confirmation and invalidates the previous key.
@@ -24,8 +24,8 @@ The command asks for the current password without echo, the active device ID, an
 Use when the owner has lost the password or authorized device but still has the offline recovery key:
 
 ```sh
-sudo systemctl stop solarminer-gateway.service
-sudo solarminer-gateway recovery
+systemctl stop solarminer-gateway.service
+solarminer-gateway recovery
 ```
 
 The command requests the recovery key through hidden interactive input, a new password twice, a new Ed25519 public key, a MAC value used only as metadata, and a signature over a fresh challenge. It does not accept the recovery key in arguments or environment variables. The new device signs the exact UTF-8 challenge message displayed by the command; its private key is never sent to or stored by the Gateway.

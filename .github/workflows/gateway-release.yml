@@ -202,7 +202,7 @@ jobs:
           (cd "$BUNDLE" && zip -q -r "$OUTPUT" .)
           echo "bundle=$OUTPUT" >> "$GITHUB_OUTPUT"
 
-      - name: Create draft GitHub release
+      - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
@@ -220,7 +220,6 @@ jobs:
             gh release create "$RELEASE_TAG" "$PACKAGE" "$MANIFEST" "$USB_BUNDLE" \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
-              --draft \
               --title "SolarMiner Gateway ${RELEASE_VERSION}" \
-              --notes "Signed amd64 Debian package, Ed25519 release manifest and verified first-install USB bundle. Review workflow results and package details before publishing."
+              --notes "Signed amd64 Debian package, Ed25519 release manifest and verified first-install USB bundle. Published automatically after the required build, tests, package validation and signing steps pass."
           fi

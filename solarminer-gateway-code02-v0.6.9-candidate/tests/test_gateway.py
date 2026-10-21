@@ -58,7 +58,8 @@ def test_health_info_and_bootstrap_token_permissions(client, caplog):
     assert client.get("/api/v1/info").json()["version"] == "0.6.0"
     token_file = gateway.BOOTSTRAP_PATH
     assert token_file.exists()
-    assert token_file.stat().st_mode & 0o777 == 0o600
+    if os.name == "posix":
+        assert token_file.stat().st_mode & 0o777 == 0o600
     secret = token_file.read_text().strip()
     assert secret not in client.get("/api/v1/bootstrap/status").text
     assert secret not in caplog.text
@@ -92,6 +93,47 @@ def test_bootstrap_single_use(client):
         "timestamp": ts, "nonce": nonce,
     })
     assert response.status_code == 409
+
+
+def test_remote_bootstrap_requires_allowlisted_origin_and_device_signature(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway, "_CORS_ORIGINS", ["https://solargualdimpais-bot.github.io"])
+    monkeypatch.setattr(gateway, "DB_PATH", tmp_path / "gateway.db")
+    monkeypatch.setattr(gateway, "BOOTSTRAP_PATH", tmp_path / "bootstrap.token")
+    monkeypatch.setattr(gateway, "INSTANCE_MARKER", tmp_path / "initialized.marker")
+    with TestClient(gateway.app, client=("203.0.113.23", 54321)) as remote_client:
+        token = gateway.BOOTSTRAP_PATH.read_text().strip()
+        private, public = keypair()
+        ts, nonce = int(time.time()), "remote-bootstrap-nonce-01"
+        canonical = f"BOOTSTRAP\nowner-pages\nAA:BB:CC:DD:EE:23\n{ts}\n{nonce}"
+        payload = {
+            "bootstrap_token": token, "username": "owner-pages", "password": "a-long-pages-passphrase-01",
+            "mac": "AA:BB:CC:DD:EE:23", "public_key_pem": public, "signature": sig(private, canonical),
+            "timestamp": ts, "nonce": nonce,
+        }
+
+        rejected = remote_client.post("/api/v1/bootstrap/owner", json=payload, headers={"Origin": "https://evil.example"})
+        assert rejected.status_code == 403
+        assert rejected.json()["detail"] == "bootstrap_origin_not_allowed"
+
+        accepted = remote_client.post("/api/v1/bootstrap/owner", json=payload, headers={"Origin": "https://solargualdimpais-bot.github.io"})
+        assert accepted.status_code == 201, accepted.text
+        assert accepted.json()["role"] == "owner"
+
+
+def test_same_origin_bootstrap_is_allowed_for_gateway_hosted_pwa(client):
+    client = TestClient(gateway.app, client=("192.0.2.20", 54321))
+    token = gateway.BOOTSTRAP_PATH.read_text().strip()
+    private, public = keypair()
+    ts, nonce = int(time.time()), "same-origin-bootstrap-nonce"
+    canonical = f"BOOTSTRAP\nowner-same-origin\nAA:BB:CC:DD:EE:24\n{ts}\n{nonce}"
+    payload = {
+        "bootstrap_token": token, "username": "owner-same-origin", "password": "a-long-sameorigin-pass-01",
+        "mac": "AA:BB:CC:DD:EE:24", "public_key_pem": public, "signature": sig(private, canonical),
+        "timestamp": ts, "nonce": nonce,
+    }
+    response = client.post("/api/v1/bootstrap/owner", json=payload,
+        headers={"Origin": "http://testserver"})
+    assert response.status_code == 201, response.text
 
 
 def test_role_permissions_and_required_device_association(client):

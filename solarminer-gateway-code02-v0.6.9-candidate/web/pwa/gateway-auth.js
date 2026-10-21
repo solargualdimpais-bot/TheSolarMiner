@@ -78,7 +78,12 @@ async function gatewayRequest(baseUrl, path, { method = "GET", body, authenticat
   }
   if (!response.ok) {
     const detail = typeof data?.detail === "string" ? data.detail : `HTTP_${response.status}`;
-    const error = new Error(detail);
+    const message = ({
+      bootstrap_origin_not_allowed: "A origem desta PWA não está autorizada pelo Gateway.",
+      bootstrap_token_invalid_or_expired: "O token de bootstrap expirou ou é inválido. No Gateway, renova-o localmente como root.",
+      bootstrap_unavailable: "O Gateway já não permite criar o primeiro Owner."
+    })[detail] || detail;
+    const error = new Error(message);
     error.status = response.status;
     throw error;
   }
@@ -100,14 +105,20 @@ async function startPresenceHeartbeat() {
 }
 export function presenceInfo() { return { ...lastPresence }; }
 
-export async function bootstrapGatewayOwner({ gatewayUrl, bootstrapToken, username, password, mac }) {
+export async function readGatewayBootstrapStatus(gatewayUrl) {
+  return gatewayRequest(gatewayUrl, "/api/v1/bootstrap/status");
+}
+
+export async function bootstrapGatewayOwner({ gatewayUrl, bootstrapToken, username, password, mac, expectedGatewayFingerprint }) {
   const base = validateGatewayUrl(gatewayUrl, { allowLocalHttp: ["localhost", "127.0.0.1", "::1"].includes(location.hostname.replace(/^\[|\]$/g, "")) }).origin;
-  const host = new URL(base).hostname.replace(/^\[|\]$/g, "");
-  if (!["localhost", "127.0.0.1", "::1"].includes(host)) throw new Error("A criação inicial do Owner só é permitida num browser local no próprio Gateway; o servidor rejeita pedidos remotos de bootstrap.");
   if (!bootstrapToken || bootstrapToken.length < 32) throw new Error("Token de bootstrap local inválido ou ausente.");
+  const pinnedFingerprint = String(expectedGatewayFingerprint || "").trim().replaceAll(":", "").toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(pinnedFingerprint)) throw new Error("Confirma a fingerprint SHA-256 Ed25519 lida localmente no Gateway.");
+  const bootstrapStatus = await readGatewayBootstrapStatus(base);
+  if (!["BOOTSTRAP_PENDING", "OWNER_SETUP_REQUIRED"].includes(bootstrapStatus.state)) throw new Error("O Gateway não está à espera da criação inicial do Owner.");
   const ts = Math.floor(Date.now() / 1000), challengeNonce = nonce();
   const challenge = await gatewayRequest(base, `/api/v1/gateway/identity?timestamp=${ts}&nonce=${challengeNonce}`);
-  await verifyGatewayIdentityChallenge({ fingerprint: challenge.fingerprint_sha256 }, challenge);
+  await verifyGatewayIdentityChallenge({ fingerprint: pinnedFingerprint }, challenge);
   const identity = await createDeviceIdentity(base, challenge.fingerprint_sha256);
   const timestamp = Math.floor(Date.now() / 1000), requestNonce = nonce(), normalizedMac = mac.toUpperCase();
   const canonical = new TextEncoder().encode(`BOOTSTRAP\n${username}\n${normalizedMac}\n${timestamp}\n${requestNonce}`);
@@ -120,7 +131,7 @@ export async function bootstrapGatewayOwner({ gatewayUrl, bootstrapToken, userna
   identity.deviceId = result.device_id;
   await identityDbRequest("readwrite", store => store.put(identity));
   const login = await loginGateway({ gatewayUrl: base, username, password });
-  return { ...result, login, gatewayUrl: base };
+  return { ...result, login, gatewayUrl: base, identityValidated: true, gatewayFingerprint: pinnedFingerprint };
 }
 
 export async function redeemGatewayInvite({ qrText, username, password, mac }) {

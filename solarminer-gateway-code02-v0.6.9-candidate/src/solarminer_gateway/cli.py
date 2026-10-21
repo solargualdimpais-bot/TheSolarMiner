@@ -8,6 +8,8 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time
+from pathlib import Path
 
 from . import recovery
 
@@ -144,6 +146,52 @@ def run_emergency_reset() -> None:
     ))
 
 
+def run_bootstrap_token() -> None:
+    """Rotate and display a fresh one-time token for first Owner setup."""
+    _require_root()
+    _require_tty()
+    _require_service_stopped()
+    from . import app as gateway_app
+    gateway_app.initialize()
+    with sqlite3.connect(gateway_app.DB_PATH, timeout=10) as conn:
+        conn.row_factory = sqlite3.Row
+        owner = conn.execute("SELECT 1 FROM users WHERE role='owner' AND status='active' LIMIT 1").fetchone()
+        if owner:
+            raise recovery.RecoveryError("an_active_owner_already_exists")
+        row = conn.execute("SELECT consumed_at FROM bootstrap WHERE id=1").fetchone()
+        if row and row["consumed_at"] is not None:
+            raise recovery.RecoveryError("bootstrap_was_already_consumed; owner recovery is required")
+        if input("Type ISSUE-OWNER-BOOTSTRAP-TOKEN to rotate and display a one-time token: ") != "ISSUE-OWNER-BOOTSTRAP-TOKEN":
+            raise recovery.RecoveryError("bootstrap_token_rotation_cancelled")
+        raw = secrets.token_urlsafe(32)
+        now = int(time.time())
+        expires = now + gateway_app.BOOTSTRAP_TTL
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("INSERT OR REPLACE INTO bootstrap(id,token_sha256,expires_at,consumed_at,state) VALUES(1,?,?,NULL,'pending')",
+                     (gateway_app.token_hash(raw), expires))
+        conn.execute("UPDATE system_state SET value='BOOTSTRAP_PENDING' WHERE key='bootstrap_state'")
+        conn.commit()
+    gateway_app.BOOTSTRAP_PATH.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(gateway_app.BOOTSTRAP_PATH, flags, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        stream.write(raw + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.chmod(gateway_app.BOOTSTRAP_PATH, 0o600)
+    print("Use este token uma única vez na PWA oficial. Expira em 15 minutos; não o partilhes nem o guardes em logs:")
+    print(raw)
+    from .identity import identity_fingerprint
+    fingerprint = identity_fingerprint(Path("/var/lib/solarminer/gateway-identity.key"), Path("/etc/solarminer/gateway-identity.pub.pem"))
+    print(f"Gateway identity SHA-256: {fingerprint}")
+
+
+def run_identity_fingerprint() -> None:
+    _require_root()
+    from .identity import identity_fingerprint
+    print(identity_fingerprint(Path("/var/lib/solarminer/gateway-identity.key"), Path("/etc/solarminer/gateway-identity.pub.pem")))
+
+
 def main() -> None:
     import argparse
 
@@ -152,11 +200,15 @@ def main() -> None:
     subparsers.add_parser("recovery", help="recover an owner using the offline one-time recovery key")
     subparsers.add_parser("recovery-setup", help="create or rotate a recovery key while owner access still works")
     subparsers.add_parser("emergency-reset", help="recover an owner using OS-root authority and a protected backup")
+    subparsers.add_parser("bootstrap-token", help="rotate and display a one-time token for initial Owner setup")
+    subparsers.add_parser("identity-fingerprint", help="display the provisioned Gateway Ed25519 identity fingerprint")
     args = parser.parse_args()
     handlers = {
         "recovery": run_recovery,
         "recovery-setup": run_recovery_setup,
         "emergency-reset": run_emergency_reset,
+        "bootstrap-token": run_bootstrap_token,
+        "identity-fingerprint": run_identity_fingerprint,
     }
     try:
         handlers[args.command]()

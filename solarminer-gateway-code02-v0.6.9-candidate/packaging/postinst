@@ -5,18 +5,35 @@ case "${1:-}" in
     if ! getent group solarminer >/dev/null 2>&1; then addgroup --system solarminer; fi
     if ! getent passwd solarminer >/dev/null 2>&1; then adduser --system --ingroup solarminer --home /var/lib/solarminer --no-create-home --shell /usr/sbin/nologin solarminer; fi
     install -d -o solarminer -g solarminer -m 0700 /var/lib/solarminer
+    [ ! -L /etc/solarminer ] || { echo "Refusing symlink identity configuration directory" >&2; exit 1; }
+    install -d -o root -g root -m 0755 /etc/solarminer
     if [ ! -s /var/lib/solarminer/server.key ] || [ ! -s /var/lib/solarminer/server.crt ]; then
       tmpdir=$(mktemp -d)
       trap 'rm -rf "$tmpdir"' EXIT HUP INT TERM
       hostname_value=$(hostname -f 2>/dev/null || hostname)
+      san="DNS:localhost,DNS:$hostname_value,IP:127.0.0.1"
+      for address in $(hostname -I 2>/dev/null || true); do
+        case "$address" in
+          *%*) continue ;;
+          *:*) san="$san,IP:$address" ;;
+          *.*) san="$san,IP:$address" ;;
+        esac
+      done
       openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 365 \
         -keyout "$tmpdir/server.key" -out "$tmpdir/server.crt" \
         -subj "/CN=$hostname_value" \
-        -addext "subjectAltName=DNS:localhost,DNS:$hostname_value,IP:127.0.0.1" \
+        -addext "subjectAltName=$san" \
         >/dev/null 2>&1
       install -o solarminer -g solarminer -m 0600 "$tmpdir/server.key" /var/lib/solarminer/server.key
       install -o root -g solarminer -m 0644 "$tmpdir/server.crt" /var/lib/solarminer/server.crt
     fi
+    # Every device creates one stable Ed25519 identity at install. Existing keys
+    # are validated and preserved; a partial or mismatched pair fails closed.
+    PYTHONPATH=/usr/lib/solarminer-gateway /usr/bin/python3 -m solarminer_gateway.identity provision
+    chown solarminer:solarminer /var/lib/solarminer/gateway-identity.key
+    chmod 0600 /var/lib/solarminer/gateway-identity.key
+    chown root:root /etc/solarminer/gateway-identity.pub.pem
+    chmod 0644 /etc/solarminer/gateway-identity.pub.pem
     # Establish the release layout without following or overwriting untrusted paths.
     for path in /opt/solarminer /opt/solarminer/releases /opt/solarminer/backups /opt/solarminer/current; do
       if [ -L "$path" ] && [ "$path" != /opt/solarminer/current ]; then

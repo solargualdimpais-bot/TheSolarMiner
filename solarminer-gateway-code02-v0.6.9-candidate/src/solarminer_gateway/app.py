@@ -40,7 +40,7 @@ from . import energy_registry
 from . import updates as update_manager
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.10"
+PACKAGE_VERSION = "0.6.11"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -344,9 +344,12 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="SolarMiner Gateway", version=VERSION, docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
-# Cross-origin development is opt-in and exact-origin allow-listed. Production PWA
-# is served by this same origin and does not require CORS.
-_CORS_ORIGINS = [item.strip() for item in os.environ.get("SOLARMINER_CORS_ORIGINS", "").split(",") if item.strip()]
+# Cross-origin PWA access is opt-in and exact-origin allow-listed. The official
+# GitHub Pages origin is enabled by the package; additional origins must be set
+# explicitly by the administrator in SOLARMINER_CORS_ORIGINS.
+_CORS_ORIGINS = [item.strip().rstrip("/") for item in os.environ.get(
+    "SOLARMINER_CORS_ORIGINS", "https://solargualdimpais-bot.github.io"
+).split(",") if item.strip()]
 if _CORS_ORIGINS:
     app.add_middleware(CORSMiddleware, allow_origins=_CORS_ORIGINS, allow_credentials=False,
                        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
@@ -802,10 +805,14 @@ def bootstrap_status() -> dict[str, str]:
 
 @app.post("/api/v1/bootstrap/owner", status_code=201)
 def bootstrap_owner(payload: BootstrapOwner, request: Request) -> dict[str, Any]:
-    # Bootstrap is deliberately loopback-only; the operator must read the token locally.
+    # Local bootstrap remains available. Remote bootstrap is allowed only from
+    # an exact, administratively configured HTTPS origin and still requires the
+    # one-time high-entropy token plus a fresh Ed25519 device proof.
     remote = request.client.host if request.client else ""
-    if remote not in {"127.0.0.1", "::1", "testclient"}:
-        raise HTTPException(403, "bootstrap_requires_local_access")
+    origin = request.headers.get("origin", "").rstrip("/")
+    same_origin = origin == f"{request.url.scheme}://{request.url.netloc}"
+    if remote not in {"127.0.0.1", "::1", "testclient"} and not (same_origin or origin in _CORS_ORIGINS):
+        raise HTTPException(403, "bootstrap_origin_not_allowed")
     mac = normalize_mac(payload.mac)
     verify_fresh(payload.timestamp, payload.nonce)
     key = load_public_key(payload.public_key_pem)
@@ -1389,7 +1396,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.10"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.11"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(
