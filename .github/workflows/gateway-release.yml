@@ -81,15 +81,50 @@ jobs:
           PACKAGE="solarminer-gateway-code02-v0.6.9-candidate/dist/solarminer-gateway_${RELEASE_VERSION}_amd64.deb"
           test -s "$PACKAGE"
           python3 - "$PACKAGE" <<'PY'
-          import hashlib, json, os, sys
+          import base64, hashlib, json, os, re, sys
           from pathlib import Path
           from cryptography.hazmat.primitives import serialization
           from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+          def load_signing_key(secret):
+              # GitHub secrets are sometimes pasted as escaped PEM, OpenSSH, or
+              # base64/hex raw Ed25519 seed. Normalize without ever logging it.
+              text = secret.strip().replace("\\r\\n", "\\n").replace("\\n", "\n")
+              if len(text) >= 2 and text[0] == text[-1] and text[0] in "\\\"'":
+                  text = text[1:-1].strip()
+              data = text.encode("utf-8")
+              candidates = [data]
+              try:
+                  decoded = base64.b64decode(text, validate=True)
+                  if decoded and decoded != data:
+                      candidates.append(decoded)
+              except (ValueError, base64.binascii.Error):
+                  pass
+              if re.fullmatch(r"[0-9a-fA-F]{64}", text):
+                  candidates.append(bytes.fromhex(text))
+              for candidate in candidates:
+                  for loader in (serialization.load_pem_private_key,
+                                 serialization.load_ssh_private_key,
+                                 serialization.load_der_private_key):
+                      try:
+                          key = loader(candidate, password=None)
+                          if isinstance(key, Ed25519PrivateKey):
+                              return key
+                      except (ValueError, TypeError):
+                          continue
+                  if len(candidate) == 32:
+                      try:
+                          return Ed25519PrivateKey.from_private_bytes(candidate)
+                      except ValueError:
+                          pass
+              raise SystemExit(
+                  "SOLARMINER_RELEASE_SIGNING_KEY is not a supported Ed25519 private key. "
+                  "Store the complete unencrypted PEM/OpenSSH private key, or a base64/hex "
+                  "32-byte Ed25519 seed. Never store the public key in this secret."
+              )
+
           package = Path(sys.argv[1])
-          key_data = os.environ["SIGNING_KEY"].encode("utf-8")
-          key = serialization.load_pem_private_key(key_data, password=None)
-          if not isinstance(key, Ed25519PrivateKey):
-              raise SystemExit("The Actions secret is not an Ed25519 private key")
+          key = load_signing_key(os.environ["SIGNING_KEY"])
           version = os.environ["RELEASE_VERSION"]
           tag = os.environ["RELEASE_TAG"]
           repo = os.environ["REPOSITORY"]
