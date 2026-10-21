@@ -108,8 +108,8 @@ jobs:
               "signature_algorithm": "Ed25519",
               "compatibility": {
                   "architecture": "amd64",
-                  "debian_min": "12",
-                  "python_min": "3.11"
+                  "debian_min": "13",
+                  "python_min": "3.13"
               },
               "migration_requirements": []
           }
