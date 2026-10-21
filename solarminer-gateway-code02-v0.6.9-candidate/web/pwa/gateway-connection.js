@@ -1,7 +1,7 @@
 /**
- * SolarMiner PWA v0.5.1 connection safety layer.
- * This module intentionally does not authenticate, pair, store tokens, or claim
- * Gateway identity. CODE 02 v0.6.5 has no Gateway identity endpoint/presence API.
+ * SolarMiner PWA v0.5.7 Gateway connection, invite parsing, and identity verification.
+ * This module validates endpoint input and Gateway identity proofs; session
+ * authentication and bearer-token handling live in gateway-auth.js.
  */
 export const CONNECTION_STATES = Object.freeze({
   DEMO: "DEMONSTRAÇÃO — SEM LIGAÇÃO AO GATEWAY",
