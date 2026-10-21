@@ -157,6 +157,8 @@ def test_apply_rolls_back_pointer_when_new_release_fails_health(tmp_path: Path, 
     monkeypatch.setattr(pipeline, "_health", lambda expected, seconds: next(answers))
     monkeypatch.setattr(pipeline, "_uid", lambda _name: 0)
     monkeypatch.setattr(pipeline, "_gid", lambda _name: 0)
+    # The hosted runner is unprivileged; ownership transfer is mocked in this rollback test.
+    monkeypatch.setattr("solarminer_gateway.system_update_pipeline.os.chown", lambda *_args: None)
     result = pipeline.apply(op_id)
     assert result["status"] == "ROLLED_BACK"
     assert os.readlink(root / "current") == "releases/0.6.8"
@@ -184,6 +186,8 @@ def test_recovery_reconciles_interrupted_switch_and_restores_database(tmp_path: 
                      backup_path=backup["backup_path"])
     monkeypatch.setattr(pipeline, "_uid", lambda _name: 0)
     monkeypatch.setattr(pipeline, "_gid", lambda _name: 0)
+    # Recovery logic is exercised without requiring chown privileges on the CI runner.
+    monkeypatch.setattr("solarminer_gateway.system_update_pipeline.os.chown", lambda *_args: None)
     result = pipeline.recover()
     assert result["status"] == "recovered"
     assert os.readlink(root / "current") == "releases/0.6.8"
