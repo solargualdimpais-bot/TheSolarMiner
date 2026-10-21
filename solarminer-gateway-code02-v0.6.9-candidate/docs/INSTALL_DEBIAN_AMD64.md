@@ -2,7 +2,7 @@
 
 ## Destino e pré-requisitos
 
-O pacote CODE02 é `amd64`, adequado ao Intel Core i5-8400. A árvore exige Debian com Python 3.11 ou posterior; Debian 12 (Bookworm) é a primeira versão Debian estável que satisfaz esse requisito, e Debian posterior também pode satisfazê-lo. Confirma no Gateway com:
+O pacote CODE02 é `amd64`, adequado ao Intel Core i5-8400. O alvo suportado é Debian 13 (Trixie) ou posterior, com Python 3.13 ou posterior; o runtime requer Pydantic 2 e FastAPI 0.115.11 ou posterior. Debian 12 (Bookworm) não satisfaz estes requisitos do pacote. Confirma no Gateway com:
 
 ```sh
 cat /etc/os-release
