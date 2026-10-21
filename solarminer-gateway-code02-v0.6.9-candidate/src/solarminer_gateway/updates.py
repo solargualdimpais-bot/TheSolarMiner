@@ -55,6 +55,30 @@ def normalize_https_origin(value: Any) -> str:
     return f"https://{host}" + (f":{port}" if port and port != 443 else "")
 
 
+class _AllowedHTTPSRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def __init__(self, allowed_origins: set[str]):
+        super().__init__()
+        self.allowed_origins = allowed_origins
+
+    def redirect_request(self, request, response, code, message, headers, newurl):
+        try:
+            parsed = urllib.parse.urlsplit(newurl)
+            origin = normalize_https_origin(
+                f"https://{parsed.hostname}" + (f":{parsed.port}" if parsed.port else "")
+            ) if parsed.scheme == "https" and parsed.hostname else ""
+        except (ValueError, UpdateValidationError):
+            origin = ""
+        if origin not in self.allowed_origins:
+            raise UpdateValidationError("redirect_origin_not_authorized")
+        return super().redirect_request(request, response, code, message, headers, newurl)
+
+
+def open_allowed_https_url(request: urllib.request.Request, allowed_origins: set[str], timeout: int):
+    """Follow redirects only when every next HTTPS origin is explicitly allowed."""
+    opener = urllib.request.build_opener(_AllowedHTTPSRedirectHandler(allowed_origins))
+    return opener.open(request, timeout=timeout)
+
+
 def load_update_source(repository_url: str, path: str | Path = DEFAULT_UPDATE_SOURCES_PATH) -> dict[str, Any]:
     """Resolve a user-selected repo only through a root-owned, non-writable allowlist."""
     repository = normalize_github_repository_url(repository_url)
@@ -167,7 +191,7 @@ def download_and_verify_package(manifest: dict[str, Any], destination_dir: str |
     digest, size = hashlib.sha256(), 0
     try:
         request = urllib.request.Request(manifest["package_url"], headers={"Accept": "application/octet-stream", "User-Agent": "SolarMiner-CODE02/0.6.9"})
-        with os.fdopen(fd, "wb") as out, urllib.request.urlopen(request, timeout=20) as response:
+        with os.fdopen(fd, "wb") as out, open_allowed_https_url(request, allowed, timeout=20) as response:
             final = urllib.parse.urlparse(response.geturl())
             final_origin = normalize_https_origin(f"https://{final.hostname}" + (f":{final.port}" if final.port else "")) if final.scheme == "https" and final.hostname else ""
             if final_origin not in allowed:
