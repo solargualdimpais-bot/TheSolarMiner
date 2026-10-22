@@ -29,6 +29,7 @@ def test_update_broker_is_root_owned_and_socket_is_private_to_service_account():
     assert "SocketUser=solarminer" in socket_unit
     assert "SocketMode=0600" in socket_unit
     assert "Accept=yes" in socket_unit
+    assert "Service=" not in socket_unit
     assert "User=root" in service_unit
     assert "NoNewPrivileges=true" in service_unit
     assert "RestrictSUIDSGID=true" in service_unit
