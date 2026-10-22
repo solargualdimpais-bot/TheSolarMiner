@@ -85,6 +85,7 @@ cp "$ROOT/docs/CHANGELOG_V0636.md" "$STAGE/usr/share/doc/solarminer-gateway/CHAN
 cp "$ROOT/docs/CHANGELOG_V0637.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0637.md"
 cp "$ROOT/docs/CHANGELOG_V0639.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0639.md"
 cp "$ROOT/docs/CHANGELOG_V0640.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0640.md"
+cp "$ROOT/docs/CHANGELOG_V0641.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0641.md"
 cp "$ROOT/docs/ENERGY_ENGINE.md" "$STAGE/usr/share/doc/solarminer-gateway/ENERGY_ENGINE.md"
 cp "$ROOT/docs/ERROR_REPORTING.md" "$STAGE/usr/share/doc/solarminer-gateway/ERROR_REPORTING.md"
 cp "$ROOT/docs/LAN_PWA_ACCESS.md" "$STAGE/usr/share/doc/solarminer-gateway/LAN_PWA_ACCESS.md"

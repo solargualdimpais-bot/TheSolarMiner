@@ -57,6 +57,28 @@ def test_root_broker_accepts_only_allowlisted_actions_and_validated_enqueue(monk
     assert len(calls) == 1
 
 
+def test_root_broker_console_reads_only_fixed_service_logs_and_redacts_secrets():
+    calls = []
+    raw_logs = ("2026-10-22T10:00:00+00:00 gateway INFO password=visible-secret Bearer abc.def.ghi\n"
+                "-----BEGIN ED25519 PRIVATE KEY-----\nsecret-key-material\n-----END ED25519 PRIVATE KEY-----\n")
+
+    def runner(args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=0, stdout=raw_logs, stderr="must-not-leak")
+
+    response = update_broker.handle_request(b'{"action":"diagnostics"}\n', runner)
+    assert calls[0][0][0] == "/usr/bin/journalctl"
+    assert "--no-pager" in calls[0][0]
+    assert "--lines=160" in calls[0][0]
+    assert calls[0][1]["timeout"] == 12
+    assert response["status"] == "ok"
+    assert "visible-secret" not in response["logs"]
+    assert "abc.def.ghi" not in response["logs"]
+    assert "secret-key-material" not in response["logs"]
+    assert "must-not-leak" not in response["logs"]
+    assert response["scope"] == "allowlisted_services_last_2_hours"
+
+
 @pytest.mark.parametrize(("action", "helper", "payload"), [
     ("tailscale_status", "/usr/sbin/solarminer-tailscale-info",
      {"installed": True, "connected": True, "dns_name": "solarminer.tailnet.ts.net"}),
@@ -79,6 +101,8 @@ def test_root_broker_runs_fixed_tailscale_helpers_and_returns_only_sanitized_dat
             "installed": True, "connected": True,
             "dns_name": "solarminer.tailnet.ts.net",
             "https_url": "https://solarminer.tailnet.ts.net",
+            "certificate_valid": False, "nginx_config_valid": False,
+            "nginx_active": False, "gateway_active": False,
         }
     else:
         assert response == payload

@@ -44,10 +44,11 @@
     <main class="main-content">
       <header class="topbar"><div class="mobile-brand"><img src="assets/icon.svg" alt="" width="34" height="34"><strong>The Solar Miner</strong></div><div class="breadcrumb" id="breadcrumb">A SUA CASA / VISÃO GERAL</div><div class="top-actions"><button id="mode-chip" class="mode-chip simulated" type="button" title="Abrir ligação ao Gateway">GATEWAY NÃO CONFIGURADO</button><button id="refresh-button" class="icon-button" title="Consultar o Gateway" aria-label="Consultar o Gateway">↻</button></div></header>
       <div id="notice" class="notice" role="status" hidden></div>
+      <div id="property-hero-host"></div>
       <section id="page-content" aria-live="polite"></section>
       <section id="gateway-owner-page" class="owner-admin-page" hidden aria-labelledby="owner-page-title">
         <div class="page-heading"><div><p class="eyebrow">ADMINISTRAÇÃO PRIVADA</p><h1 id="owner-page-title">Owner</h1><p>Escolhe uma área para configurar.</p></div></div>
-        <nav class="owner-tabs" aria-label="Secções Owner" role="tablist"><button type="button" class="selected" data-owner-tab="access" role="tab" aria-selected="true">Acessos</button><button type="button" data-owner-tab="updates" role="tab" aria-selected="false">Atualizações</button><button type="button" data-owner-tab="tailscale" role="tab" aria-selected="false">Tailscale</button><button type="button" data-owner-tab="gateway" role="tab" aria-selected="false">Gateway</button><button type="button" data-owner-tab="equipment" role="tab" aria-selected="false">Equipamentos</button></nav>
+        <nav class="owner-tabs" aria-label="Secções Owner" role="tablist"><button type="button" class="selected" data-owner-tab="access" role="tab" aria-selected="true">Acessos</button><button type="button" data-owner-tab="updates" role="tab" aria-selected="false">Atualizações</button><button type="button" data-owner-tab="tailscale" role="tab" aria-selected="false">Tailscale</button><button type="button" data-owner-tab="console" role="tab" aria-selected="false">Consola</button><button type="button" data-owner-tab="gateway" role="tab" aria-selected="false">Gateway</button><button type="button" data-owner-tab="equipment" role="tab" aria-selected="false">Equipamentos</button></nav>
         <div class="owner-tab-panel" data-owner-panel="gateway" hidden><div class="panel"><div class="panel-header"><div><p class="eyebrow">LIGAÇÃO SEGURA</p><h3>Ligação ao Gateway</h3></div></div><p class="field-note">Configura o endereço e inicia sessão no Gateway.</p><button id="owner-open-gateway" class="button primary" type="button">Configurar ligação</button><div id="owner-gateway-status" class="connection-result" role="status" aria-live="polite"></div></div></div>
         <section class="panel gateway-auth-panel owner-tab-panel" data-owner-panel="access" id="gateway-invite-management" hidden>
         <div class="panel-header"><div><p class="eyebrow">ADMINISTRAÇÃO DO GATEWAY</p><h3>Convites de utilização única</h3></div><span class="source-tag">OWNER</span></div>
@@ -84,6 +85,13 @@
         <div class="dialog-actions"><button id="gateway-tailscale-connect" class="button primary" type="button">Ligar Gateway ao Tailscale</button><button id="gateway-tailscale-refresh" class="button secondary" type="button">Detetar estado</button><button id="gateway-tailscale-save" class="button primary" type="button">Guardar no Gateway</button><button id="gateway-tailscale-use" class="button secondary" type="button">Usar para ligar</button></div>
         <div id="gateway-tailscale-status" class="connection-result" role="status" aria-live="polite">O estado Tailscale só é mostrado ao Owner autenticado.</div>
       </section>
+      <section class="panel gateway-auth-panel owner-tab-panel" data-owner-panel="console" id="gateway-console-management" hidden>
+        <div class="panel-header"><div><p class="eyebrow">OPERAÇÃO DO GATEWAY</p><h3>Consola do Gateway</h3></div><span class="source-tag">OWNER · LEITURA</span></div>
+        <p class="field-note">Mostra os registos recentes dos serviços SolarMiner, atualização assinada, Tailscale e Nginx. As ações disponíveis são limitadas e registadas; não existe execução de comandos de shell nesta página.</p>
+        <div class="dialog-actions"><button id="gateway-console-refresh" class="button secondary" type="button">Atualizar consola</button><button id="gateway-console-update-check" class="button primary" type="button">Verificar release assinado</button></div>
+        <div id="gateway-console-status" class="connection-result" role="status" aria-live="polite">A consola só está disponível numa sessão Owner autenticada.</div>
+        <pre id="gateway-console-output" class="integration-result gateway-console-output" aria-label="Registos recentes do Gateway">Seleciona “Atualizar consola” para obter os registos autorizados.</pre>
+      </section>
       <section class="panel gateway-auth-panel owner-tab-panel" data-owner-panel="equipment" id="gateway-hardware-management" hidden>
         <div class="panel-header"><div><p class="eyebrow">EQUIPAMENTO FÍSICO</p><h3>Equipamentos</h3></div><span class="source-tag">OWNER</span></div>
         <p class="field-note">Cada equipamento tem configuração, leitura e estado próprios. Guardar ou ler um equipamento não altera nem consulta os outros. Segredos ficam apenas no Gateway.</p>
@@ -96,7 +104,7 @@
       </section>
       </section>
 
-      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.5.9</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
+      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.5.11</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
     </main>
   </div>
 
@@ -114,12 +122,7 @@
     <form method="dialog" class="dialog-header"><div><p class="eyebrow">DEMO · CONFIGURAÇÃO LOCAL</p><h2>Personalizar demonstração</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></form>
     <div class="dialog-body">
       <div class="status-banner demo-banner"><span class="demo-stamp">DEMO</span><span><strong>Demonstração com diagnóstico limitado.</strong> A aplicação pode consultar os endpoints públicos de saúde e identificação depois de uma ação explícita. Não inclui sessão autenticada nem conclui emparelhamento; a identidade do Gateway continua por validar.</span></div>
-      <section class="photo-settings" aria-labelledby="photo-settings-title">
-        <p class="eyebrow" id="photo-settings-title">PERSONALIZAÇÃO VISUAL</p>
-        <p class="field-note">Escolhe uma fotografia da propriedade. A imagem é redimensionada e guardada apenas neste browser; não é enviada para nenhum servidor.</p>
-        <label for="property-photo-file">Fotografia da propriedade</label><input id="property-photo-file" type="file" accept="image/*">
-        <button id="remove-property-photo" class="button secondary" type="button">Remover fotografia</button>
-        <div id="photo-result" class="field-note" role="status" aria-live="polite"></div>
+      <section class="photo-settings" aria-label="Preferências de demonstração">
         <p class="eyebrow weather-setting-label">CONDIÇÃO DO CÉU · SIMULADA</p>
         <div class="weather-options settings-weather-options" role="group" aria-label="Condição do céu simulada"><button type="button" data-sky="limpo">☀️ <span>Limpo</span></button><button type="button" data-sky="pouco nublado" class="selected">⛅ <span>Pouco nublado</span></button><button type="button" data-sky="muito nublado">☁️ <span>Muito nublado</span></button><button type="button" data-sky="tempestade">⛈️ <span>Trovoada</span></button></div>
       </section>

@@ -42,13 +42,14 @@ from pydantic import BaseModel, ConfigDict, Field, StrictStr
 from . import connectors as connector_manager
 from . import energy_registry
 from . import energy_engine
+from . import site_profile
 from . import integrations as hardware_integrations
 from . import update_helper_client
 from . import updates as update_manager
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.40"
+PACKAGE_VERSION = "0.6.42"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -892,6 +893,28 @@ def status_endpoint(session: dict[str, Any] = Depends(require_permission("read")
 @app.get("/api/v1/energy/categories")
 def energy_categories(session: dict[str, Any] = Depends(require_permission("read"))) -> dict[str, Any]:
     return {"categories": [{"id": key, "label": label, "api_category": key, "profile_path": "/api/v1/energy/equipment"} for key, label in energy_registry.CATEGORIES.items()], "pwa_source_available": True, "integration_state": "API_READY_PWA_V0_5_7_SAME_ORIGIN"}
+
+
+@app.get("/api/v1/site/profile")
+def read_site_profile(session: dict[str, Any] = Depends(require_permission("read"))) -> dict[str, Any]:
+    with db() as conn:
+        return site_profile.get_profile(conn)
+
+
+@app.put("/api/v1/site/profile")
+def write_site_profile(payload: dict[str, Any], session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    with db() as conn:
+        _require_owner(session, conn)
+        try:
+            result = site_profile.save_profile(conn, payload)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        audit(conn, session["user_id"], "site.profile.configure", "site-profile", "success", {
+            "photo_configured": bool(result.get("photo_data_url")),
+            "floor_count": len(result["floors"]),
+            "room_count": sum(len(floor["rooms"]) for floor in result["floors"]),
+        })
+        return result
 
 
 @app.get("/api/v1/energy/engine")
@@ -2278,7 +2301,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.40"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.42"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(
@@ -2403,11 +2426,14 @@ def _read_tailscale_status() -> dict[str, Any]:
         status_data = update_helper_client.request("tailscale_status")
     except (OSError, RuntimeError, ValueError):
         return {"installed": False, "connected": False, "dns_name": None, "https_url": None,
-                "helper_available": False}
+                "helper_available": False, "certificate_valid": False, "nginx_config_valid": False,
+                "nginx_active": False, "gateway_active": False}
     if not isinstance(status_data, dict):
         return {"installed": False, "connected": False, "dns_name": None, "https_url": None,
-                "helper_available": False}
-    return {**{key: status_data.get(key) for key in ("installed", "connected", "dns_name", "https_url")},
+                "helper_available": False, "certificate_valid": False, "nginx_config_valid": False,
+                "nginx_active": False, "gateway_active": False}
+    return {**{key: status_data.get(key) for key in ("installed", "connected", "dns_name", "https_url",
+              "certificate_valid", "nginx_config_valid", "nginx_active", "gateway_active")},
             "helper_available": True}
 
 
@@ -2455,14 +2481,42 @@ def read_tailscale_access(session: dict[str, Any] = Depends(current_session)) ->
     # The periodic certificate job issues a cert for the live MagicDNS name.
     # Stale files from a previous Tailnet identity must not be reported as ready.
     tls_ready = bool(endpoint and detected and endpoint == detected and
-                     Path("/etc/solarminer/tailscale.crt").is_file() and
-                     Path("/etc/solarminer/tailscale.key").is_file())
+                     status_data.get("certificate_valid") is True and
+                     status_data.get("nginx_config_valid") is True and
+                     status_data.get("nginx_active") is True and
+                     status_data.get("gateway_active") is True)
     return {"installed": bool(status_data.get("installed")), "connected": bool(status_data.get("connected")),
             "dns_name": status_data.get("dns_name"), "detected_endpoint": detected,
             "configured_endpoint": configured, "endpoint": endpoint, "https_ready": tls_ready,
+            "checks": {key: status_data.get(key) is True for key in
+                       ("certificate_valid", "nginx_config_valid", "nginx_active", "gateway_active")},
             "helper_available": status_data.get("helper_available") is True,
             "router_ports_required": False,
             "note": "O Gateway tem de ser autorizado no Tailnet; a emissão HTTPS exige MagicDNS e HTTPS Certificates ativos no painel Tailscale."}
+
+
+@app.get("/api/v1/system/console")
+def read_gateway_console(session: dict[str, Any] = Depends(current_session)) -> dict[str, Any]:
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_only")
+    try:
+        result = update_helper_client.request("diagnostics")
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise HTTPException(503, "gateway_console_unavailable") from exc
+    logs = result.get("logs")
+    if result.get("status") != "ok" or not isinstance(logs, str):
+        raise HTTPException(503, "gateway_console_unavailable")
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_only")
+        audit(conn, actor["user_id"], "system.console.logs_read", "allowlisted_gateway_services", "success",
+              {"characters": len(logs), "truncated": result.get("truncated") is True})
+    return {"state": "available", "captured_at": utcnow(), "logs": logs,
+            "truncated": result.get("truncated") is True,
+            "scope": "Allowlisted Gateway, update, Tailscale and Nginx service logs from the last two hours."}
 
 
 @app.post("/api/v1/system/tailscale/connect")

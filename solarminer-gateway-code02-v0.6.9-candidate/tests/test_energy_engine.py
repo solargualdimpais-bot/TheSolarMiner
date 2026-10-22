@@ -26,36 +26,86 @@ def insert_reading(conn, equipment_id, field, value, unit, observed_at):
     })
 
 
+def test_gateway_battery_soc_integrates_signed_power_from_rolling_voltage_peak():
+    now = datetime.now(timezone.utc)
+    stamps = [(now - timedelta(seconds=60 - offset)).isoformat(timespec="microseconds") for offset in (0, 30, 60)]
+    voltage = [{"observed_at": stamps[0], "value": 55.0}]
+    discharge = [{"observed_at": stamp, "value": 3600.0} for stamp in stamps]
+    charge = [{"observed_at": stamp, "value": -3600.0} for stamp in stamps]
+
+    estimated, details = energy_engine._estimate_battery_soc(voltage, discharge, 10.0, 20.0, 100.0)
+    charged, _ = energy_engine._estimate_battery_soc(voltage, charge, 10.0, 20.0, 100.0)
+
+    assert estimated == 99.4
+    assert details["voltage_max_30d_v"] == 55.0
+    assert details["bank_voltage_scope"] == "SHARED_PARALLEL_BUS"
+    assert charged == 100.0
+
+
+def test_persisted_battery_voltage_anchor_survives_rolling_history_window():
+    conn = database()
+    start = datetime.now(timezone.utc).replace(microsecond=0)
+    stamps = [start - timedelta(seconds=60), start - timedelta(seconds=30), start]
+    voltage = [{"observed_at": stamps[0].isoformat(), "value": 55.0},
+               {"observed_at": stamps[1].isoformat(), "value": 54.8},
+               {"observed_at": stamps[2].isoformat(), "value": 54.7}]
+    power = [{"observed_at": stamp.isoformat(), "value": 3600.0} for stamp in stamps]
+
+    first_soc, first_details = energy_engine._estimate_battery_soc_persistent(
+        conn, voltage, power, 10.0, 20.0, 100.0, as_of=start)
+    assert first_soc == 99.4
+    assert first_details["voltage_max_30d_v"] == 55.0
+
+    later = start + timedelta(seconds=30)
+    later_power = power + [{"observed_at": later.isoformat(), "value": 3600.0}]
+    # The original 55 V observation has now disappeared from the supplied
+    # rolling window. The persisted full-charge anchor must not move down.
+    later_voltage = [{"observed_at": start.isoformat(), "value": 54.7}]
+    second_soc, second_details = energy_engine._estimate_battery_soc_persistent(
+        conn, later_voltage, later_power, 10.0, 20.0, 100.0, as_of=later)
+    assert second_soc == 99.1
+    assert second_details["voltage_max_30d_v"] == 55.0
+
+    # Re-reading the same telemetry is idempotent and cannot double-integrate.
+    repeated_soc, _ = energy_engine._estimate_battery_soc_persistent(
+        conn, later_voltage, later_power, 10.0, 20.0, 100.0, as_of=later)
+    assert repeated_soc == second_soc
+
+
 def test_energy_summary_uses_persisted_soc_energy_and_counter_history():
     conn = database()
     inverter = energy_registry.upsert_equipment(conn, {"category": "inversores", "name": "Deye", "model": "SUN-15K-SG05LP3-EU-SM2"}, "deye-inverter-test")
     battery = energy_registry.upsert_equipment(conn, {"category": "baterias", "name": "Deye battery", "manufacturer": "Deye"}, "deye-battery-test")
     energy_engine.save_config(conn, {"battery_capacity_kwh": 20, "minimum_soc_percent": 20, "maximum_soc_percent": 95})
     now = datetime.now(timezone.utc)
-    for minutes_ago, pv, load, soc in ((20, 900, 700, 75), (10, 1200, 650, 77), (0, 1500, 640, 80)):
+    for minutes_ago, pv, load, reported_soc, battery_v in ((20, 900, 700, 75, 55.0), (10, 1200, 650, 77, 54.5), (0, 1500, 640, 80, 53.4)):
         stamp = (now - timedelta(minutes=minutes_ago)).isoformat(timespec="microseconds")
         insert_reading(conn, inverter["id"], "pv_total_power", pv, "W", stamp)
         insert_reading(conn, inverter["id"], "load_total_power", load, "W", stamp)
-        insert_reading(conn, battery["id"], "battery_soc", soc, "%", stamp)
+        insert_reading(conn, battery["id"], "battery_soc", reported_soc, "%", stamp)
+        insert_reading(conn, battery["id"], "battery_voltage", battery_v, "V", stamp)
+        insert_reading(conn, battery["id"], "battery_output_power", 100, "W", stamp)
     stamp = now.isoformat(timespec="microseconds")
     for field, value, unit in (("pv_daily_energy", 37.8, "kWh"),):
         insert_reading(conn, inverter["id"], field, value, unit, stamp)
-    for field, value, unit in (("battery_voltage", 53.4, "V"),
-                               ("battery_output_current", -1.5, "A"), ("battery_output_power", -80, "W"),
+    for field, value, unit in (("battery_output_current", -1.5, "A"),
                                ("battery_temperature", 25, "°C"), ("battery_max_charge_current", 100, "A")):
         insert_reading(conn, battery["id"], field, value, unit, stamp)
 
     result = energy_engine.build_summary(conn)
-    assert result["current"]["battery_soc_percent"] == 80
+    assert result["current"]["battery_soc_percent"] == 94.83
+    assert result["current"]["battery_soc_source"] == "gateway_energy_integrated"
+    assert result["current"]["battery_soc_estimate"]["voltage_max_30d_v"] == 55.0
+    assert result["current"]["battery_inverter_reported_soc_percent"] == 80
     assert result["current"]["battery_current_a"] == -1.5
-    assert result["current"]["battery_energy_available_kwh_above_minimum"] == 12
-    assert result["current"]["battery_charge_headroom_kwh_to_maximum"] == 3
+    assert result["current"]["battery_energy_available_kwh_above_minimum"] == 14.966
+    assert result["current"]["battery_charge_headroom_kwh_to_maximum"] == 0.034
     assert result["current"]["battery_at_configured_maximum"] is False
     assert result["latest_readings"]["pv_daily_energy"]["value"] == 37.8
     assert len(result["history"]["pv_total_power"]) == 3
     assert result["forecast"]["solar_power"]["confidence"] == "LOW_INDICATIVE"
     assert result["forecast"]["load_power"]["one_hour_value"] is not None
-    assert result["forecast"]["battery_soc"]["one_hour_value"] is not None
+    assert result["forecast"]["battery_soc"]["one_hour_value"] is None
     assert result["limits"]["controls_enabled"] is False
 
 
@@ -71,14 +121,48 @@ def test_engine_rejects_invalid_battery_configuration(payload):
         energy_engine.save_config(database(), payload)
 
 
+def test_only_online_parallel_battery_banks_contribute_capacity():
+    conn = database()
+    banks = [{"id": f"bank-{index}", "name": f"Banco {index}", "capacity_kwh": 15,
+              "minimum_soc_percent": 20, "maximum_soc_percent": 100, "active": index != 3}
+             for index in range(1, 4)]
+    saved = energy_engine.save_config(conn, {"battery_banks": banks})
+    assert saved["battery_capacity_kwh"] == 30
+    assert [bank["active"] for bank in saved["battery_banks"]] == [True, True, False]
+
+    saved = energy_engine.save_config(conn, {"battery_banks": [dict(bank, active=False) for bank in banks]})
+    assert saved["battery_capacity_kwh"] is None
+    battery = energy_registry.upsert_equipment(conn, {"category": "baterias", "name": "Deye battery"}, "deye-battery-test")
+    stamp = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    insert_reading(conn, battery["id"], "battery_voltage", 55.0, "V", stamp)
+    insert_reading(conn, battery["id"], "battery_output_power", 0, "W", stamp)
+    summary = energy_engine.build_summary(conn)
+    assert summary["current"]["battery_capacity_kwh"] is None
+    assert summary["current"]["battery_soc_percent"] is None
+    assert summary["current"]["battery_energy_available_kwh_above_minimum"] is None
+
+
 def test_battery_energy_is_unknown_without_owner_declared_capacity():
     conn = database()
     battery = energy_registry.upsert_equipment(conn, {"category": "baterias", "name": "Deye battery"}, "deye-battery-test")
     insert_reading(conn, battery["id"], "battery_soc", 100, "%", datetime.now(timezone.utc).isoformat())
     result = energy_engine.build_summary(conn)
-    assert result["current"]["battery_soc_percent"] == 100
+    assert result["current"]["battery_soc_percent"] is None
     assert result["current"]["battery_energy_available_kwh_above_minimum"] is None
-    assert result["current"]["battery_at_configured_maximum"] is True
+    assert result["current"]["battery_soc_source"] == "unavailable"
+    assert result["current"]["battery_at_configured_maximum"] is False
+
+
+def test_deye_reported_soc_alone_never_becomes_gateway_estimated_soc():
+    conn = database()
+    battery = energy_registry.upsert_equipment(conn, {"category": "baterias", "name": "Battery"}, "deye-battery-test")
+    energy_engine.save_config(conn, {"battery_capacity_kwh": 30})
+    insert_reading(conn, battery["id"], "battery_soc", 100, "%", datetime.now(timezone.utc).isoformat())
+    current = energy_engine.build_summary(conn)["current"]
+    assert current["battery_inverter_reported_soc_percent"] == 100
+    assert current["battery_soc_percent"] is None
+    assert current["battery_energy_available_kwh_above_minimum"] is None
+    assert current["battery_soc_estimate"]["reason"] == "NO_BATTERY_VOLTAGE_HISTORY"
 
 
 def test_live_half_minute_sample_overrides_current_without_changing_history():
@@ -99,7 +183,7 @@ def test_live_half_minute_sample_overrides_current_without_changing_history():
     })
 
     assert result["current"]["pv_power_w"] == 1800
-    assert result["current"]["battery_soc_percent"] == 82
+    assert result["current"]["battery_soc_percent"] is None
     assert result["latest_readings"]["pv_total_power"]["observed_at"] == fresh
     assert result["latest_readings"]["pv_total_power"]["trust"] == "LIVE_UNVERIFIED"
     assert [point["value"] for point in result["history"]["pv_total_power"]] == [1000]
@@ -125,8 +209,13 @@ def test_history_exposes_each_mppt_and_curtailed_hour_does_not_train_panels_down
             insert_reading(conn, inverter["id"], field, value, unit, observed)
         insert_reading(conn, battery["id"], "battery_soc", 100, "%", observed)
         insert_reading(conn, battery["id"], "battery_charge_power", 0, "W", observed)
+        insert_reading(conn, battery["id"], "battery_voltage", 55.0, "V", observed)
+        insert_reading(conn, battery["id"], "battery_output_power", 0, "W", observed)
+    battery_tail = (stamp - timedelta(minutes=1)).isoformat(timespec="microseconds")
+    insert_reading(conn, battery["id"], "battery_voltage", 55.0, "V", battery_tail)
+    insert_reading(conn, battery["id"], "battery_output_power", 0, "W", battery_tail)
 
-    model = energy_engine._learn_solar_performance(conn, weather, inverter, battery, 8.0, 0.85, 100.0)
+    model = energy_engine._learn_solar_performance(conn, weather, inverter, battery, 8.0, 0.85, 100.0, 30.0)
     assert model["possible_curtailment_hours"] == 1
     assert model["new_curtailment_candidates"] == 1
     assert model["sample_count"] == 3

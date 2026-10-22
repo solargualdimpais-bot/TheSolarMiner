@@ -1,15 +1,19 @@
 # API v1 (CODE 01)
 
-## CODE02 v0.6.40 — áreas Live da PWA e controlo Tuya de nível
+## CODE02 v0.6.42 — perfil partilhado com transparência de fotografia
 
+- `GET /api/v1/site/profile` — nome/fotografia e estrutura de pisos/divisões partilhados com as PWA autenticadas. O perfil inicial chama-se `Solar Energy` e não inclui fotografia.
+- `PUT /api/v1/site/profile` — Owner-only; grava nome, fotografia JPEG enviada pelo Owner (base64 validado até 1,8 MB), opacidade visual entre 0 e 1 e até 32 pisos/200 divisões. A API rejeita IDs inválidos ou duplicados. A imagem não é incluída no pacote nem nos logs.
 - `POST /api/v1/integrations/tuya/switch` — Owner-only; recebe exatamente `{"device_id":"...","on":true|false}` para um dispositivo Tuya configurado com `switch_code`. O Gateway valida a configuração, executa o comando pela API HTTPS Tuya, tenta ler o estado e regista o resultado na auditoria sem segredos.
 - `PUT /api/v1/energy/engine/config` — Owner-only; além da bateria agrega `battery_banks` (até 8), `loads` (até 64) e `automation` (ativação, comissionamento, confirmação do mapa, margem e intervalo mínimo de 300 s).
 - `GET /api/v1/energy/engine` — calcula plano de despacho e devolve o último ciclo executado. O serviço verifica a cadência Owner configurada; automatização desligada é o padrão. Amostra Deye ausente, inválida ou com mais de 90 s bloqueia comandos.
+- `GET /api/v1/system/console` — Owner-only; devolve até 160 linhas/24 kB das últimas duas horas dos serviços SolarMiner, atualização assinada, Tailscale e Nginx. O helper privilegiado usa `journalctl` com unidades fixas e redação de palavras-passe, tokens, cabeçalhos Bearer e chaves privadas. A PWA pode iniciar uma verificação de release assinada através do fluxo de atualizações existente; a aplicação continua separada e exige confirmação do Owner. Não existe endpoint de shell ou comando arbitrário.
+- `GET /api/v1/system/tailscale` — Owner-only; inclui `checks.certificate_valid`, `checks.nginx_config_valid`, `checks.nginx_active` e `checks.gateway_active`. `https_ready` só é verdadeiro se o nome MagicDNS corresponder ao endpoint e todos os checks passarem.
 
 ## CODE02 v0.6.38 — histórico e engine energético
 
 - `GET /api/v1/energy/engine?history_hours=24` exige `read`; o período válido é 1–168 horas. Devolve últimas leituras Deye, séries de FV/cargas/bateria/SOC, configuração de capacidade e reserva, energia disponível estimada e tendência solar histórica indicativa.
-- `PUT /api/v1/energy/engine/config` exige papel Owner e recebe `battery_capacity_kwh` (número ou `null`), `minimum_soc_percent` e `maximum_soc_percent`. A capacidade vem da especificação do banco de baterias, não é deduzida do inversor.
+- `PUT /api/v1/energy/engine/config` exige papel Owner e recebe `battery_capacity_kwh` (número ou `null`), `minimum_soc_percent`, `maximum_soc_percent` e até 8 bancos `{id,name,capacity_kwh,minimum_soc_percent,maximum_soc_percent,active}`. Bancos paralelos com `active:false` não entram na capacidade. O resumo devolve `current.battery_soc_percent` estimado no Gateway a partir de uma âncora persistente de tensão máxima (inicializada com o pico observado nos 30 dias anteriores) e integração de potência assinada. `battery_soc_source` identifica a estimativa, `battery_soc_estimate` explica estado e referência, `battery_energy_available_kwh_above_minimum` dá energia utilizável e `battery_inverter_reported_soc_percent` é apenas diagnóstico. A expiração de amostras históricas não redefine a âncora; uma lacuna superior a dez minutos suspende a estimativa até nova referência de tensão. Sem capacidade, referência ou histórico de potência recente/contínuo, os campos calculados ficam `null`.
 - O Gateway recolhe FC03 a cada 30 segundos e a API serve a leitura mais recente em memória; persiste uma amostra por minuto e elimina histórico Deye com mais de 90 dias. A resposta inclui estado/idade da última amostra e ambos os intervalos.
 - A projeção usa regressão linear das amostras de FV recentes, sem meteorologia, e não executa comandos físicos. A confiança é baixa e as leituras continuam `LIVE_UNVERIFIED`.
 

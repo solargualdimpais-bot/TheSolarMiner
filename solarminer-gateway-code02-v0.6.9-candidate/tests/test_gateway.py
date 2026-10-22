@@ -595,6 +595,32 @@ def test_owner_can_read_and_configure_valid_tailscale_endpoint(client, monkeypat
     assert cleared.json()["configured_endpoint"] is None
 
 
+def test_owner_can_read_redacted_gateway_console_logs(client, monkeypatch):
+    owner, private, _ = create_owner(client)
+    headers, _ = _owner_headers(client, owner, private, nonce="owner-console-logs-01")
+    monkeypatch.setattr(gateway.update_helper_client, "request", lambda action: {
+        "status": "ok", "logs": "2026-10-22 INFO service started", "truncated": False,
+        "scope": "allowlisted_services_last_2_hours"} if action == "diagnostics" else {})
+    response = client.get("/api/v1/system/console", headers=headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "available"
+    assert response.json()["logs"] == "2026-10-22 INFO service started"
+    assert response.json()["truncated"] is False
+
+
+def test_non_owner_cannot_read_gateway_console(client, monkeypatch):
+    owner, private, _ = create_owner(client)
+    member, _ = _create_member(client, owner, private, role="viewer", username="console-viewer",
+                               password="console-viewer-password")
+    viewer_login = login(client, owner, private, username=member["username"],
+                         password="console-viewer-password", nonce="console-viewer-login-01")
+    assert viewer_login.status_code == 200, viewer_login.text
+    headers = {"Authorization": f"Bearer {viewer_login.json()['access_token']}"}
+    monkeypatch.setattr(gateway.update_helper_client, "request", lambda *_args: pytest.fail("viewer triggered privileged diagnostics"))
+    response = client.get("/api/v1/system/console", headers=headers)
+    assert response.status_code == 403
+
+
 @pytest.mark.parametrize("endpoint", [
     "http://solarminer-gateway.tail1234.ts.net",
     "https://evil.example",
@@ -1273,3 +1299,33 @@ def test_aud_a1b01_device_revoke_audit_failure_rolls_back(client):
         success_events = conn.execute("SELECT COUNT(*) FROM audit WHERE action='device.revoked' AND outcome='success' AND target=?", (device_id,)).fetchone()[0]
     assert device["status"] == "active"
     assert success_events == 0
+
+
+def test_site_profile_is_shared_and_owner_only_for_writes(client):
+    owner, owner_private, owner_public = create_owner(client)
+    owner_login = client.post("/api/v1/auth/password-device-login", json=password_device_payload(
+        owner_private, owner_public, "owner1", "a-long-passphrase-01", "site-profile-owner-login-01"))
+    assert owner_login.status_code == 201, owner_login.text
+    owner_headers = {"Authorization": f"Bearer {owner_login.json()['access_token']}"}
+    import base64
+    image = "data:image/jpeg;base64," + base64.b64encode(b"\xff\xd8\xffimage\xff\xd9").decode("ascii")
+    profile = {"name": "Casa Solar", "photo_data_url": image, "photo_opacity": 0.38, "floors": [
+        {"id": "floor-ground", "name": "Rés do chão", "rooms": [{"id": "room-living", "name": "Sala"}]}
+    ]}
+    saved = client.put("/api/v1/site/profile", headers=owner_headers, json=profile)
+    assert saved.status_code == 200, saved.text
+    assert client.get("/api/v1/site/profile", headers=owner_headers).json() == profile
+
+    with gateway.db() as conn:
+        conn.execute("INSERT INTO users(id,account_id,username,password_hash,role,status,created_at) VALUES(?,?,?,?, 'viewer','active',?)",
+                     ("00000000-0000-4000-8000-000000000082", "00000000-0000-4000-8000-000000000083",
+                      "siteviewer", gateway.PASSWORDS.hash("viewer-password-01"), gateway.utcnow()))
+    viewer_private, viewer_public = keypair()
+    viewer_login = client.post("/api/v1/auth/password-device-login", json=password_device_payload(
+        viewer_private, viewer_public, "siteviewer", "viewer-password-01", "site-profile-viewer-login-01"))
+    assert viewer_login.status_code == 201, viewer_login.text
+    viewer_headers = {"Authorization": f"Bearer {viewer_login.json()['access_token']}"}
+    assert client.get("/api/v1/site/profile", headers=viewer_headers).status_code == 200
+    denied = client.put("/api/v1/site/profile", headers=viewer_headers, json={**profile, "name": "Alteração não autorizada"})
+    assert denied.status_code == 403
+    assert client.get("/api/v1/site/profile", headers=owner_headers).json()["name"] == "Casa Solar"

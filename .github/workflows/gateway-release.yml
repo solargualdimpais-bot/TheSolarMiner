@@ -222,13 +222,19 @@ jobs:
           set -eu
           ROLLBACK_ROOT="$RUNNER_TEMP/solarminer-usb-rollback"
           mkdir -p "$ROLLBACK_ROOT"
-          for VERSION in 0.6.10 0.6.11 0.6.12 0.6.13 0.6.14 0.6.20 0.6.29 0.6.30 0.6.31 0.6.32 0.6.33 0.6.39; do
+          for VERSION in 0.6.10 0.6.11 0.6.12 0.6.13 0.6.14 0.6.20 0.6.29 0.6.30 0.6.31 0.6.32 0.6.33 0.6.39 0.6.40 0.6.41; do
             DEST="$ROLLBACK_ROOT/$VERSION"
             mkdir -p "$DEST"
-            gh release download "gateway-v$VERSION" \
-              --pattern "solarminer-gateway_${VERSION}_amd64.deb" \
-              --pattern solarminer-release.json \
-              --dir "$DEST" --repo "$GITHUB_REPOSITORY"
+            if [ "$VERSION" = "0.6.41" ]; then
+              SOURCE="solarminer-gateway-code02-v0.6.9-candidate/dist/rollback-0.6.41"
+              cp "$SOURCE/solarminer-gateway_${VERSION}_amd64.deb" "$DEST/"
+              cp "$SOURCE/solarminer-release-${VERSION}.json" "$DEST/solarminer-release.json"
+            else
+              gh release download "gateway-v$VERSION" \
+                --pattern "solarminer-gateway_${VERSION}_amd64.deb" \
+                --pattern solarminer-release.json \
+                --dir "$DEST" --repo "$GITHUB_REPOSITORY"
+            fi
             python3 - "$VERSION" "$DEST" "$PUBLIC_KEY" <<'PY'
           import hashlib, json, pathlib, sys
           from cryptography.hazmat.primitives import serialization
@@ -266,7 +272,7 @@ jobs:
           BUNDLE="$RUNNER_TEMP/solarminer-usb-installer"
           mkdir -p "$BUNDLE"
           cp "$PACKAGE" "$MANIFEST" "$PUBLIC_KEY" "$BUNDLE/"
-          for VERSION in 0.6.10 0.6.11 0.6.12 0.6.13 0.6.14 0.6.20 0.6.29 0.6.30 0.6.31 0.6.32 0.6.33 0.6.39; do
+          for VERSION in 0.6.10 0.6.11 0.6.12 0.6.13 0.6.14 0.6.20 0.6.29 0.6.30 0.6.31 0.6.32 0.6.33 0.6.39 0.6.40 0.6.41; do
             cp "$RUNNER_TEMP/solarminer-usb-rollback/$VERSION/solarminer-gateway_${VERSION}_amd64.deb" "$BUNDLE/"
             cp "$RUNNER_TEMP/solarminer-usb-rollback/$VERSION/solarminer-release.json" "$BUNDLE/solarminer-release-$VERSION.json"
           done

@@ -48,12 +48,16 @@ test("demo UI labels controls as local and does not expose command endpoints",as
   assert.match(app,/DEMO · NÃO É UM COMANDO REAL/);
   assert.doesNotMatch(app,/\/api\/v1\/commands|\/api\/v1\/control|writeRegister|writeCoil/i);
 });
-test("property image is configured locally and only image data URLs are restored",async()=>{
+test("property image comes from the Gateway and is only changed by the Owner",async()=>{
   const app=await readFile(new URL("../app.js",import.meta.url),"utf8");
-  assert.match(app,/solar-miner-demo-property-photo-v1/);
   assert.match(app,/function readAndCompressImage/);
-  assert.match(app,/workspace\.house\.photo=compressed/);
-  assert.match(app,/data:image\\\/jpeg;base64/);
+  assert.match(app,/saveGatewaySiteProfile\(payload\)/);
+  assert.match(app,/state\.siteProfile\?\.photo_data_url \|\| ""/);
+  assert.match(app,/Só o Owner pode alterar os dados partilhados da propriedade/);
+  assert.doesNotMatch(app,/function readStoredPhoto/);
+  assert.match(app,/canvas\.toDataURL\('image\/jpeg'/);
+  assert.match(app,/maxDimension=Math\.round\(maxDimension\*\.82\)/);
+  assert.match(app,/photo_opacity/);
 });
 test("static cache includes demo module but never caches API responses",async()=>{
   const sw=await readFile(new URL("../service-worker.js",import.meta.url),"utf8");

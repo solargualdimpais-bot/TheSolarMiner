@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.9: gestão Owner de utilizadores reais do Gateway, convites QR e exportação offline da chave de recuperação. Dados sintéticos continuam identificados; sem integração física não validada.",
+  "description": "The Solar Miner PWA v0.5.11: painel Live do Gateway com perfil da casa partilhado, transparência de fotografia e cartões compactos.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",

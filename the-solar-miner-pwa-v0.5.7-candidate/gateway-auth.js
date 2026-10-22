@@ -262,6 +262,9 @@ export async function readGatewayUpdateSource() {
 export async function readGatewayTailscale() {
   return gatewayApi("/api/v1/system/tailscale");
 }
+export async function readGatewayConsole() {
+  return gatewayApi("/api/v1/system/console");
+}
 export async function configureGatewayTailscale(endpoint) {
   if (endpoint !== null && (typeof endpoint !== "string" || !endpoint.trim())) throw new Error("Indica um endereço Tailscale HTTPS ou deixa o campo vazio para deteção automática.");
   return gatewayApi("/api/v1/system/tailscale", { method: "PUT", body: { endpoint: endpoint === null ? null : endpoint.trim() } });
@@ -306,9 +309,9 @@ export async function updateGatewayUserStatus(userId, status, currentPassword) {
   return gatewayApi(`/api/v1/users/${encodeURIComponent(userId)}/status`, { method: "PATCH", body: { status, current_password: currentPassword } });
 }
 export async function readGatewayEnergy() {
-  const [status, categories, equipment, engine] = await Promise.all([
+  const [status, categories, equipment, engine, siteProfile] = await Promise.all([
     gatewayApi("/api/v1/status"), gatewayApi("/api/v1/energy/categories"), gatewayApi("/api/v1/energy/equipment"),
-    gatewayApi("/api/v1/energy/engine?history_hours=24")
+    gatewayApi("/api/v1/energy/engine?history_hours=24"), gatewayApi("/api/v1/site/profile")
   ]);
   const liveReadings = engine?.latest_readings || {};
   const liveEquipment = (equipment.equipment || []).map(item => {
@@ -323,7 +326,14 @@ export async function readGatewayEnergy() {
     const current = [...fields].map(field => ({ ...liveReadings[field], id: `live-${field}` }));
     return { ...item, readings: [...historical, ...current], last_communication_at: engine.updated_at || item.last_communication_at };
   });
-  return { status, categories: categories.categories || [], equipment: liveEquipment, engine, fetchedAt: new Date().toISOString() };
+  return { status, categories: categories.categories || [], equipment: liveEquipment, engine, siteProfile, fetchedAt: new Date().toISOString() };
+}
+export async function readGatewaySiteProfile() {
+  return gatewayApi("/api/v1/site/profile");
+}
+export async function saveGatewaySiteProfile(profile) {
+  if (!profile || typeof profile !== "object") throw new Error("Perfil da propriedade inválido.");
+  return gatewayApi("/api/v1/site/profile", { method: "PUT", body: profile });
 }
 export async function saveGatewayEnergyEngineConfig(config) {
   if (!config || typeof config !== "object") throw new Error("Configuração energética inválida.");

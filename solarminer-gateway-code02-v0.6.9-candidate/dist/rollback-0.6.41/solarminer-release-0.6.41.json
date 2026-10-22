@@ -1,0 +1,23 @@
+{
+  "changelog": [
+    "SolarMiner Gateway CODE02 0.6.41",
+    "Gateway-backed property profile and Owner photo upload",
+    "Authenticated per-PWA favorites and updated Home presentation"
+  ],
+  "compatibility": {
+    "architecture": "amd64",
+    "debian_min": "13",
+    "python_min": "3.13"
+  },
+  "migration_requirements": [],
+  "min_compatible_version": "0.6.9",
+  "package_name": "solarminer-gateway_0.6.41_amd64.deb",
+  "package_size": 310764,
+  "package_url": "https://github.com/solargualdimpais-bot/TheSolarMiner/releases/download/gateway-v0.6.41/solarminer-gateway_0.6.41_amd64.deb",
+  "release_id": "gateway-v0.6.41",
+  "schema_version": 1,
+  "sha256": "f4809242fc58b51ddffd22d436e56844978431bb6e2ee704e78ad68ebdaf9b3f",
+  "signature": "c91a9ea64756188bd99aaa7fd9e73b01d8bbf7e3a46512251895c3571eb984b3f0b202192d99ee9b534f7e36e6ee9d6db5f02e57078cc9da5d40147683eda40a",
+  "signature_algorithm": "Ed25519",
+  "version": "0.6.41"
+}

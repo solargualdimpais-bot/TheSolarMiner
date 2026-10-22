@@ -1,4 +1,4 @@
-# Engine energético — CODE02 0.6.40
+# Engine energético — CODE02 0.6.42
 
 ## Recolha e cálculos
 
@@ -9,6 +9,12 @@ O Owner escreve o nome da cidade ou localidade no pop-up Casa do Home; o Gateway
 Quando o potencial meteorológico é substancialmente maior que a produção dos MPPTs, e os registos mostram bateria no limite, quase sem carga e baixo consumo doméstico, o Gateway assinala uma **possível** hora de curtailment e guarda a tensão/corrente de cada canal nesse evento. Com perfis de referência suficientes para a faixa de radiação, uma subida de tensão de pelo menos 2,5% junto de uma queda de corrente de pelo menos 30% acrescenta suporte elétrico ao indício. O Gateway conserva também a menor tensão observada durante produção normal e a média empírica da tensão em eventos compatíveis com curtailment; são estatísticas observadas, não limites de corte do fabricante. Uma hora candidata não reduz o fator aprendido de desempenho dos painéis. Nuvens locais, limites do mapa, falhas do logger e outras restrições podem produzir padrões semelhantes. Os registos e o modelo permanecem no Gateway; a PWA apenas consulta e apresenta os dados.
 
 O acesso histórico é limitado ao conteúdo que ainda existe na base SQLite do Gateway. O serviço retém até 90 dias enquanto está a recolher amostras e elimina dados mais antigos; uma formatação ou substituição da base sem restauro elimina esse histórico. Dados anteriores à recolha atual só podem ser recuperados de uma cópia de segurança ou exportação compatível. A previsão meteorológica retrospectiva também depende dos dados que o Gateway conseguiu guardar enquanto funcionava.
+
+## SOC estimado, energia até ao corte e autonomia
+
+O SOC operacional deixa de usar o SOC comunicado pelo inversor. Na primeira inicialização, o Gateway procura a tensão máxima da bateria registada nos últimos 30 dias e usa o primeiro instante desse pico como referência estimada de carga máxima. Guarda a referência e o acumulado de energia integrado no SQLite; assim, a expiração de amostras antigas não baixa a referência nem faz o SOC estimado saltar. Um novo pico superior por pelo menos 0,1 V cria uma nova referência de carga máxima. A partir dela, integra uma única vez cada nova amostra de potência assinada: potência positiva corresponde a descarga e negativa a carga. A integração exige capacidade configurada, uma referência, telemetria recente e uma série sem intervalos superiores a dez minutos; uma lacuna invalida a estimativa até à observação de uma nova tensão de referência. Sem esses requisitos o Gateway devolve SOC/energia indisponível, nunca um número inventado. O valor é uma estimativa de energia integrada, não uma medição BMS nem um SOC validado.
+
+Os bancos são paralelos e partilham a tensão do barramento Deye. Cada registo `battery_banks` aceita `active` (por omissão `true`); capacidade e energia de bancos offline não entram na soma. Assim, três bancos online de 15 kWh totalizam 45 kWh; com um offline, contam 30 kWh. A tensão máxima é uma referência partilhada e estimada, não uma medição individual por banco. A energia utilizável soma, para cada banco ativo, a capacidade multiplicada pela parcela do SOC estimado acima do `minimum_soc_percent` desse banco. O cartão “Autonomia até ao corte” na área Baterias divide essa energia, em kWh, pelo consumo atual, em kW; se faltar consumo positivo ou energia estimada, a PWA mostra indisponível.
 
 ## Cargas flexíveis
 
@@ -33,7 +39,7 @@ O editor Owner guarda `battery_banks`, `loads` e `automation` em `/api/v1/energy
 - O mapa usado para o logger DYDA_WiBLE 1.7.2 continua candidato; cada endereço, escala e sinal deve ser confirmado com registos físicos antes de automatizar.
 - O fator de aprendizagem é uma média global limitada, não um modelo treinado por estação ou orientação de painel. Os perfis elétricos são separados por MPPT e faixa de radiação. A possível deteção de curtailment é conservadora e não deve, por si só, acionar cargas.
 - A radiação meteorológica é uma previsão de serviço externo, não uma medição local no plano dos painéis. A previsão fica indisponível sem coordenadas ou quando o serviço falha.
-- O SOC agregado do Deye é aplicado a cada banco configurado como estimativa. Não substitui SOC separado quando os bancos têm BMS independentes.
+- A tensão e a potência Deye são agregadas; o SOC calculado é uma estimativa comum para bancos em paralelo. Não substitui telemetria individual de BMS nem um SOC independente por banco.
 - A potência nominal de uma carga é uma estimativa para planeamento, não um medidor de consumo real.
 - Tuya Cloud depende de credenciais, região, permissões do projeto e códigos de datapoint válidos. Os segredos permanecem no Gateway.
 - A Tuya e a Braiins possuem comandos explícitos Owner; Tesla permanece leitura apenas. Nenhuma previsão indicativa pode por si só acionar uma carga.

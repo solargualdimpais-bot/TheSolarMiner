@@ -11,7 +11,7 @@ DEFAULT_SOCKET_PATH = "/run/solarminer/update-broker.sock"
 
 
 def request(action: str, operation_id: str | None = None) -> dict[str, Any]:
-    if action not in {"preflight", "enqueue", "tailscale_status", "tailscale_connect"}:
+    if action not in {"preflight", "enqueue", "tailscale_status", "tailscale_connect", "diagnostics"}:
         raise ValueError("update_broker_action_invalid")
     payload: dict[str, str] = {"action": action}
     if action == "enqueue":

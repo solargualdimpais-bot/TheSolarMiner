@@ -6,20 +6,30 @@ if [ ! -x "$TAILSCALE" ]; then
   exit 0
 fi
 status=$($TAILSCALE status --json 2>/dev/null) || {
-  printf '%s\n' '{"installed":true,"connected":false,"dns_name":null,"https_url":null}'
+  printf '%s\n' '{"installed":true,"connected":false,"dns_name":null,"https_url":null,"certificate_valid":false,"nginx_config_valid":false,"nginx_active":false,"gateway_active":false}'
   exit 0
 }
 printf '%s' "$status" | /usr/bin/python3 -c '
-import json, re, sys
+import json, re, subprocess, sys
 try:
     data=json.load(sys.stdin)
     self_data=data.get("Self") or {}
     dns=(self_data.get("DNSName") or "").rstrip(".").lower()
     valid=bool(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.ts\.net", dns))
     connected=data.get("BackendState") == "Running" and valid
-    result={"installed":True,"connected":connected,"dns_name":dns if valid else None,
-            "https_url":"https://"+dns if connected else None}
+    def command_ok(args):
+        try: return subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8, check=False).returncode == 0
+        except (OSError, subprocess.TimeoutExpired): return False
+    certificate_valid=bool(connected and command_ok(["/usr/bin/openssl","x509","-in","/etc/solarminer/tailscale.crt","-noout","-checkhost",dns])
+                           and command_ok(["/usr/bin/openssl","x509","-in","/etc/solarminer/tailscale.crt","-noout","-checkend","3600"])
+                           and command_ok(["/usr/bin/test","-s","/etc/solarminer/tailscale.key"]))
+    result={"installed":True,"connected":connected,"dns_name":dns if connected else None,
+            "https_url":"https://"+dns if connected else None,
+            "certificate_valid":certificate_valid,
+            "nginx_config_valid":command_ok(["/usr/sbin/nginx","-t"]),
+            "nginx_active":command_ok(["/usr/bin/systemctl","is-active","--quiet","nginx.service"]),
+            "gateway_active":command_ok(["/usr/bin/systemctl","is-active","--quiet","solarminer-gateway.service"])}
     print(json.dumps(result, separators=(",", ":")))
 except Exception:
-    print("{\"installed\":true,\"connected\":false,\"dns_name\":null,\"https_url\":null}")
+    print("{\"installed\":true,\"connected\":false,\"dns_name\":null,\"https_url\":null,\"certificate_valid\":false,\"nginx_config_valid\":false,\"nginx_active\":false,\"gateway_active\":false}")
 '

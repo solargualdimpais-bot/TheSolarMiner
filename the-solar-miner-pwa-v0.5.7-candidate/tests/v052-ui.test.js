@@ -41,13 +41,14 @@ test('v0.5.2 contextual editor has one local-save path for house, room and devic
   assert.match(app, /},2000\)/);
   assert.match(app, /pointermove/);
   assert.match(app, /context-editor-preview/);
-  assert.match(app, /Alteração guardada apenas neste browser/);
+  assert.match(app, /As alterações ficam apenas neste browser\/instalação PWA/);
+  assert.match(app, /saveGatewaySiteProfile\(payload\)/);
 });
 
 test('workspace editor stays local while authenticated Gateway settings use explicit API operations', () => {
   assert.doesNotMatch(source, /fetch\s*\(|XMLHttpRequest|WebSocket|\/api\/v1\/|writeRegister|writeCoil|GatewayApiClient/i);
   assert.match(source, /DEMO · dados de exemplo/);
-  assert.match(app, /locationSaved\?'Nome e fotografia guardados neste browser; cidade guardada no Gateway/);
+  assert.match(app, /Nome e fotografia guardados no Gateway e partilhados com as outras PWA/);
   assert.match(app, /saveGatewayEnergyEngineConfig/);
   assert.match(app, /controlGatewayTuyaLevel/);
 });

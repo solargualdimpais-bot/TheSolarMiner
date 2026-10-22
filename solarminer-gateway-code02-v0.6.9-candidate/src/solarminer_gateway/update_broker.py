@@ -13,6 +13,22 @@ TAILSCALE_CONNECT_HELPER = "/usr/sbin/solarminer-tailscale-connect"
 UUID_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 TAILSCALE_DNS_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.ts\.net$")
 TAILSCALE_AUTH_PATTERN = re.compile(r"^https://login\.tailscale\.com/a/[A-Za-z0-9_-]{6,128}$")
+DIAGNOSTIC_UNITS = (
+    "solarminer-gateway.service", "solarminer-update-check-daily.service",
+    "solarminer-update-apply@*.service", "solarminer-tailscale-cert.service", "nginx.service",
+)
+DIAGNOSTIC_SECRET_PATTERNS = (
+    (re.compile(r"(?i)(\b(?:password|passwd|token|secret|authorization|access[_-]?token|api[_-]?key)\b\s*[:=]\s*)([^\s,;]+)"), r"\1[REDACTED]"),
+    (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"), "Bearer [REDACTED]"),
+    (re.compile(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----", re.DOTALL), "[REDACTED PRIVATE KEY]"),
+    (re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]"), ""),
+)
+
+
+def _redact_diagnostics(value: str) -> str:
+    for pattern, replacement in DIAGNOSTIC_SECRET_PATTERNS:
+        value = pattern.sub(replacement, value)
+    return value[-24000:]
 
 
 def handle_request(raw: bytes, runner=subprocess.run) -> dict[str, object]:
@@ -23,14 +39,21 @@ def handle_request(raw: bytes, runner=subprocess.run) -> dict[str, object]:
     except (ValueError, UnicodeDecodeError):
         return {"status": "error", "reason": "request_invalid"}
     if not isinstance(request, dict) or request.get("action") not in {
-        "preflight", "enqueue", "tailscale_status", "tailscale_connect"
+        "preflight", "enqueue", "tailscale_status", "tailscale_connect", "diagnostics"
     }:
         return {"status": "error", "reason": "request_invalid"}
     action = request["action"]
-    if action in {"preflight", "tailscale_status"}:
+    if action in {"preflight", "tailscale_status", "diagnostics"}:
         if set(request) != {"action"}:
             return {"status": "error", "reason": "request_invalid"}
-        args = [HELPER, "--preflight"] if action == "preflight" else [TAILSCALE_INFO_HELPER]
+        if action == "preflight":
+            args = [HELPER, "--preflight"]
+        elif action == "tailscale_status":
+            args = [TAILSCALE_INFO_HELPER]
+        else:
+            args = ["/usr/bin/journalctl", "--since=-2 hours", "--lines=160", "--no-pager", "--output=short-iso"]
+            for unit in DIAGNOSTIC_UNITS:
+                args.extend(("--unit", unit))
     elif action == "tailscale_connect":
         if set(request) != {"action"}:
             return {"status": "error", "reason": "request_invalid"}
@@ -52,6 +75,11 @@ def handle_request(raw: bytes, runner=subprocess.run) -> dict[str, object]:
         result = runner(args, capture_output=True, text=True, timeout=timeout, check=False)
     except (OSError, subprocess.TimeoutExpired):
         return {"status": "error", "reason": "update_helper_unavailable_or_timed_out"}
+    if action == "diagnostics":
+        if result.returncode != 0 or not isinstance(result.stdout, str):
+            return {"status": "error", "reason": "gateway_journal_unavailable"}
+        return {"status": "ok", "logs": _redact_diagnostics(result.stdout),
+                "truncated": len(result.stdout) > 24000, "scope": "allowlisted_services_last_2_hours"}
     if action == "tailscale_connect" and result.returncode != 0:
         return {"status": "error", "reason": "tailscale_connect_failed"}
     if action == "tailscale_status" and result.returncode != 0:
@@ -71,11 +99,14 @@ def handle_request(raw: bytes, runner=subprocess.run) -> dict[str, object]:
         dns_name = payload.get("dns_name")
         if connected and (not installed or not isinstance(dns_name, str) or not TAILSCALE_DNS_PATTERN.fullmatch(dns_name)):
             return {"status": "error", "reason": "tailscale_status_invalid"}
+        checks = {key: payload.get(key) is True for key in
+                  ("certificate_valid", "nginx_config_valid", "nginx_active", "gateway_active")}
         if not installed:
-            return {"installed": False, "connected": False, "dns_name": None, "https_url": None}
+            return {"installed": False, "connected": False, "dns_name": None, "https_url": None,
+                    **checks}
         https_url = "https://" + dns_name if connected else None
         return {"installed": True, "connected": connected, "dns_name": dns_name if connected else None,
-                "https_url": https_url}
+                "https_url": https_url, **checks}
     if action == "tailscale_connect":
         if payload.get("started") is not True or not isinstance(payload.get("connected"), bool):
             return {"status": "error", "reason": "tailscale_connect_failed"}

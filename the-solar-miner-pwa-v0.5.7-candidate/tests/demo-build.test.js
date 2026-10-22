@@ -62,16 +62,19 @@ test('DEMO mode and simulated fixtures are explicit', () => {
   assert.ok(read('demo-mode.js').includes('mode !== "SIMULATED"'));
 });
 
-test('property image controls only use browser-local storage and are removable', () => {
+test('property image is empty until the Owner uploads it to the Gateway', () => {
   const app = read('app.js');
-  assert.ok(app.includes('workspace.house.photo=compressed'));
-  assert.ok(app.includes('saveDemoWorkspace()'));
-  assert.ok(read('workspace-ui.js').includes('indexedDB.open(PHOTO_DB,1)'));
-  assert.ok(read('workspace-ui.js').includes('makePhotoSafe(workspace)'));
-  assert.ok(app.includes('hydrateWorkspacePhotos'));
-  assert.ok(!app.includes('localStorage.setItem("solar-miner-demo-property-photo-v1"'));
-  assert.ok(app.includes('1400/Math.max'));
-  assert.ok(read('index.html').includes('id="property-photo-file"'));
+  assert.ok(app.includes('saveGatewaySiteProfile(payload)'));
+  assert.ok(app.includes('const photo = state.siteProfile?.photo_data_url || ""'));
+  assert.ok(app.includes('id="hero-photo-settings"'));
+  assert.ok(app.includes('sessionInfo().user?.role===\'owner\''));
+  assert.ok(!app.includes('function readStoredPhoto'));
+  assert.ok(!app.includes('workspace.house.photo=compressed'));
+  assert.ok(!app.includes('Ambiente demonstrativo ativo.'));
+  assert.ok(app.includes('maxDimension=1400'));
+  assert.ok(app.includes('photoTransparency'));
+  assert.ok(app.includes('photo_opacity'));
+  assert.ok(!read('index.html').includes('id="property-photo-file"'));
 });
 
 test('responsive breakpoints and safe-area bottom navigation are present', () => {
@@ -96,7 +99,7 @@ test('Meta reference visual elements and basic interactions are present', () => 
   const html = read('index.html');
   const app = read('app.js');
   const css = read('styles.css');
-  for (const id of ['weather-dialog','production-dialog','property-photo-file']) assert.ok(html.includes(id), id);
+  for (const id of ['weather-dialog','production-dialog','property-hero-host']) assert.ok(html.includes(id), id);
   for (const id of ['open-weather','open-production']) assert.ok(app.includes(id), id);
   for (const token of ['favoriteDeviceCards','data-fav-toggle','data-fav-range','function setSky','function miniChart']) assert.ok(app.includes(token), token);
   for (const token of ['#060608','#dcc99c','.reference-home-grid','.weather-options','.favorite-device-grid']) assert.ok(css.includes(token), token);
@@ -116,4 +119,15 @@ test('live Home uses Gateway weather, solar history and owner-controlled Tuya fa
   assert.doesNotMatch(runtime, /cdn\.jsdelivr\.net|chart\.js/i);
   assert.match(runtime, /CONNECTION_STATES/);
   assert.match(app, /state\.mode!=="SIMULATED"&&liveAreaPages\.includes/);
+});
+
+test('live Home uses compact square weather and production cards with a lighter house title', () => {
+  const css = read('styles.css');
+  assert.match(css, /\.home-weather-row\{[^}]*grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+  assert.match(css, /\.home-weather-card,\.home-production-card\{[^}]*aspect-ratio:1\/1/);
+  assert.match(css, /\.live-property-hero \.home-property-name\{[^}]*font-weight:300/);
+  assert.match(css, /\.home-weather-values strong,\.home-production-value\{[^}]*font-size:clamp\(24px,2\.3vw,32px\)/);
+  assert.match(css, /\.main-content \.home-weather-card,\.main-content \.home-production-card\{aspect-ratio:1\/1/);
+  assert.match(css, /\.main-content \.home-weather-row\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+  assert.match(css, /\.main-content \.live-property-hero\.has-property-photo::before[^}]*opacity:var\(--property-photo-opacity/);
 });
