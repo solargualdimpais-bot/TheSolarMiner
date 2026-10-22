@@ -41,7 +41,7 @@ from . import energy_registry
 from . import updates as update_manager
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.19"
+PACKAGE_VERSION = "0.6.20"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -1598,7 +1598,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.19"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.20"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(
@@ -1737,6 +1737,27 @@ def _read_tailscale_status() -> dict[str, Any]:
     return {key: status_data.get(key) for key in ("installed", "connected", "dns_name", "https_url")}
 
 
+def _start_tailscale_auth() -> dict[str, Any]:
+    """Run a fixed privileged helper and return only a validated login URL."""
+    helper = os.environ.get("SOLARMINER_TAILSCALE_CONNECT_HELPER", "/usr/sbin/solarminer-tailscale-connect")
+    try:
+        result = subprocess.run(["/usr/bin/sudo", "-n", helper], capture_output=True, text=True,
+                                timeout=25, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise HTTPException(503, "tailscale_start_unavailable") from exc
+    try:
+        payload = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise HTTPException(503, "tailscale_start_unavailable") from exc
+    if result.returncode != 0 or not isinstance(payload, dict):
+        raise HTTPException(503, "tailscale_start_unavailable")
+    auth_url = payload.get("auth_url")
+    if auth_url is not None and (not isinstance(auth_url, str) or
+            not re.fullmatch(r"https://login\.tailscale\.com/a/[A-Za-z0-9_-]{6,128}", auth_url)):
+        raise HTTPException(503, "tailscale_start_unavailable")
+    return {"started": True, "connected": payload.get("connected") is True, "auth_url": auth_url}
+
+
 def _normalize_tailscale_endpoint(value: Any) -> str:
     if not isinstance(value, str) or len(value) > 253:
         raise HTTPException(422, "invalid_tailscale_endpoint")
@@ -1772,6 +1793,22 @@ def read_tailscale_access(session: dict[str, Any] = Depends(current_session)) ->
             "configured_endpoint": configured, "endpoint": endpoint, "https_ready": tls_ready,
             "router_ports_required": False,
             "note": "O Gateway tem de ser autorizado no Tailnet; a emissão HTTPS exige MagicDNS e HTTPS Certificates ativos no painel Tailscale."}
+
+
+@app.post("/api/v1/system/tailscale/connect")
+def start_tailscale_connection(session: dict[str, Any] = Depends(current_session)) -> dict[str, Any]:
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_only")
+    result = _start_tailscale_auth()
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_only")
+        audit(conn, actor["user_id"], "system.tailscale.auth_started", "tailscale_up", "success",
+              {"connected": result["connected"], "auth_url_present": bool(result["auth_url"])})
+    return result
 
 
 @app.put("/api/v1/system/tailscale")

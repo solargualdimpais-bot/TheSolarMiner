@@ -622,6 +622,27 @@ def test_non_owner_cannot_read_or_configure_tailscale(client):
     assert client.get("/api/v1/system/tailscale", headers=headers).status_code == 403
     assert client.put("/api/v1/system/tailscale", headers=headers,
                       json={"endpoint": "https://solarminer-gateway.tail1234.ts.net"}).status_code == 403
+    assert client.post("/api/v1/system/tailscale/connect", headers=headers, json={}).status_code == 403
+
+
+def test_owner_can_start_tailscale_auth_without_exposing_raw_command_output(client, monkeypatch):
+    owner, private, _ = create_owner(client)
+    headers, _ = _owner_headers(client, owner, private, nonce="owner-tailscale-start-01")
+    monkeypatch.setattr(gateway, "_start_tailscale_auth", lambda: {
+        "started": True, "connected": False,
+        "auth_url": "https://login.tailscale.com/a/AbCdEf123456"})
+    response = client.post("/api/v1/system/tailscale/connect", headers=headers, json={})
+    assert response.status_code == 200, response.text
+    assert response.json() == {"started": True, "connected": False,
+                               "auth_url": "https://login.tailscale.com/a/AbCdEf123456"}
+
+
+def test_tailscale_auth_url_is_strictly_validated(monkeypatch):
+    monkeypatch.setattr(gateway.subprocess, "run", lambda *args, **kwargs: type("Result", (), {
+        "returncode": 0, "stdout": '{"auth_url":"https://evil.example/a/token","connected":false}'})())
+    with pytest.raises(gateway.HTTPException) as exc:
+        gateway._start_tailscale_auth()
+    assert exc.value.status_code == 503
 
 
 def test_migration_v2_upgrades_existing_v1_database_without_losing_users(tmp_path, monkeypatch):

@@ -131,6 +131,12 @@ The browser client uses Web Crypto Ed25519 with a non-exportable private `Crypto
 
 `POST /api/v1/presence/heartbeat` creates or refreshes the caller's presence for 120 seconds. Persisted writes are throttled to at most one every five seconds per user/device pair. The Gateway generates `last_seen_at` and `expires_at`. Response states are `online`; `GET /api/v1/presence/me` returns `unknown` when no record exists, `online` before expiry, and `offline` after expiry. `connection_method` is always `unknown` in this increment; the client cannot claim LAN/REMOTE. Presence transitions are audited. Authenticated logout removes the current user/device presence. No API claims physical presence.
 
+## v0.6.20 — autorização Tailscale iniciada pela PWA Owner
+
+- `POST /api/v1/system/tailscale/connect` é exclusivo do Owner. Executa o helper fixo `solarminer-tailscale-connect` e devolve apenas um URL de autorização validado `login.tailscale.com` quando a aprovação está pendente.
+- O helper não aceita argumentos, não devolve saída bruta do comando e o sudoers permite apenas esse executável exato. O URL temporário é devolvido à sessão autenticada do Owner, mas não é escrito nos logs nem no registo de auditoria.
+- O Owner abre o link e aprova o Gateway na conta Tailscale. A inclusão do dispositivo na conta não pode ser feita silenciosamente pelo Gateway.
+
 ## v0.6.8 — integração PWA e convites QR
 
 - `GET /api/v1/status`, `GET /api/v1/energy/categories` e `GET /api/v1/energy/equipment` são usados pela PWA depois de autenticação; não existem novos endpoints de telemetria ou histórico nesta versão.

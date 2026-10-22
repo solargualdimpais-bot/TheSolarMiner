@@ -20,7 +20,7 @@ A execução de software automaticamente ao inserir uma pen USB está desativada
 sh /mnt/solarminer-usb/install-from-usb.sh
 ```
 
-O pacote de entrega do release `solarminer-gateway-usb-installer_0.6.19_amd64.zip` inclui o instalador inicial, instalação/configuração base do Tailscale, a ferramenta de reparação, pacotes de rollback assinados, o pacote Debian AMD64, o manifesto Ed25519 e a chave pública de release derivada no workflow da chave privada mantida como segredo de GitHub Actions. Não copies a chave privada para a pen ou Gateway.
+O pacote de entrega do release `solarminer-gateway-usb-installer_0.6.20_amd64.zip` inclui o instalador inicial, instalação/configuração base do Tailscale, a ferramenta de reparação, pacotes de rollback assinados, o pacote Debian AMD64, o manifesto Ed25519 e a chave pública de release derivada no workflow da chave privada mantida como segredo de GitHub Actions. Não copies a chave privada para a pen ou Gateway.
 
 O instalador não pede URLs, hashes nem impressão digital: usa o repositório oficial `https://github.com/solargualdimpais-bot/TheSolarMiner`. Antes de instalar o SolarMiner, valida no Gateway Debian 13 ou posterior, AMD64 e Python 3.13 ou posterior, o esquema/versão/origem do manifesto, a assinatura Ed25519, o tamanho e SHA-256 do pacote e a arquitetura Debian. Se a assinatura ou qualquer validação falhar, termina sem instalar o SolarMiner. Depois instala o pacote e dependências apenas dos repositórios Debian, provisiona a chave pública e a allowlist oficial, ativa os serviços e timers e verifica o health endpoint local. Em falha, tenta remover o pacote e restaurar a configuração inicial; consulta `/var/log/solarminer-first-install.log`.
 

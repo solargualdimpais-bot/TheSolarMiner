@@ -110,6 +110,11 @@ case "${1:-}" in
       chmod 0440 /etc/sudoers.d/solarminer-tailscale-info
       if command -v visudo >/dev/null 2>&1; then visudo -cf /etc/sudoers.d/solarminer-tailscale-info >/dev/null; fi
     fi
+    if [ -f /etc/sudoers.d/solarminer-tailscale-connect ]; then
+      chown root:root /etc/sudoers.d/solarminer-tailscale-connect
+      chmod 0440 /etc/sudoers.d/solarminer-tailscale-connect
+      if command -v visudo >/dev/null 2>&1; then visudo -cf /etc/sudoers.d/solarminer-tailscale-connect >/dev/null; fi
+    fi
     if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
       nginx -t
       systemctl daemon-reload

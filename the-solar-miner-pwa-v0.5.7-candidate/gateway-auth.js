@@ -263,6 +263,9 @@ export async function configureGatewayTailscale(endpoint) {
   if (endpoint !== null && (typeof endpoint !== "string" || !endpoint.trim())) throw new Error("Indica um endereço Tailscale HTTPS ou deixa o campo vazio para deteção automática.");
   return gatewayApi("/api/v1/system/tailscale", { method: "PUT", body: { endpoint: endpoint === null ? null : endpoint.trim() } });
 }
+export async function startGatewayTailscale() {
+  return gatewayApi("/api/v1/system/tailscale/connect", { method: "POST", body: {} });
+}
 export async function checkGatewayUpdate(repositoryUrl) {
   if (typeof repositoryUrl !== "string" || !repositoryUrl.trim()) throw new Error("Indica o URL do repositório GitHub.");
   return gatewayApi("/api/v1/system/update/check", { method: "POST", body: { repository_url: repositoryUrl.trim() } });

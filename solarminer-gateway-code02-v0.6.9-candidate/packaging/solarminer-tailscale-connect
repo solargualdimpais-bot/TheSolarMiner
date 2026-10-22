@@ -1,0 +1,30 @@
+#!/bin/sh
+set -eu
+TAILSCALE=/usr/bin/tailscale
+[ -x "$TAILSCALE" ] || { printf '%s\n' '{"started":false,"connected":false,"auth_url":null}'; exit 1; }
+status=$($TAILSCALE status --json 2>/dev/null) || status='{}'
+connected=$(printf '%s' "$status" | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin); print("true" if d.get("BackendState")=="Running" else "false")' 2>/dev/null || printf false)
+if [ "$connected" = true ]; then
+  printf '%s\n' '{"started":true,"connected":true,"auth_url":null}'
+  exit 0
+fi
+output=$(mktemp /run/solarminer-tailscale-up.XXXXXX)
+trap 'rm -f "$output"' EXIT HUP INT TERM
+if ! "$TAILSCALE" up >"$output" 2>&1; then
+  printf '%s\n' '{"started":false,"connected":false,"auth_url":null}'
+  exit 1
+fi
+auth_url=$(/usr/bin/python3 - "$output" <<'PY'
+import re, sys
+try:
+    text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+except OSError:
+    text = ""
+match = re.search(r"https://login\.tailscale\.com/a/[A-Za-z0-9_-]{6,128}", text)
+print(match.group(0) if match else "")
+PY
+)
+/usr/bin/python3 - "$auth_url" <<'PY'
+import json, sys
+print(json.dumps({"started": True, "connected": False, "auth_url": sys.argv[1] or None}, separators=(",", ":")))
+PY
