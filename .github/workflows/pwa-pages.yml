@@ -39,6 +39,7 @@ jobs:
           node --check service-worker.js
       - name: Test standalone PWA contracts
         working-directory: the-solar-miner-pwa-v0.5.7-candidate
+        # Keep this validation tied to the Gateway-embedded Owner PWA release.
         run: node --test tests/*.test.js
       - name: Upload the Gateway-integrated PWA
         uses: actions/upload-pages-artifact@v4
