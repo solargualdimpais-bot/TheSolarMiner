@@ -321,6 +321,15 @@ export async function saveGatewayHardwareIntegrationConfig(config) {
 export async function readGatewayHardwareIntegrations() {
   return gatewayApi("/api/v1/integrations/hardware/read", { method: "POST", body: {} });
 }
+export async function controlGatewayAntminer(action, watt) {
+  if (!["set_power_target", "pause", "stop", "start"].includes(action)) throw new Error("Ação Antminer inválida.");
+  const body = { action };
+  if (action === "set_power_target") {
+    if (!Number.isInteger(watt) || watt < 1 || watt > 2900) throw new Error("O alvo tem de estar entre 1 e 2900 W.");
+    body.watt = watt;
+  }
+  return gatewayApi("/api/v1/integrations/antminer/control", { method: "POST", body });
+}
 export async function readGatewayTeslaEvConfig() {
   return gatewayApi("/api/v1/energy/ev/tesla");
 }

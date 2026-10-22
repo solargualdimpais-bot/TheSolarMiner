@@ -98,7 +98,8 @@ def public_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
     tuya = config.get("tuya", {}) if isinstance(config.get("tuya", {}), dict) else {}
     return {
         "deye": {k: config.get("deye", {}).get(k) for k in ("host", "port", "unit_id", "model") if config.get("deye", {}).get(k) is not None},
-        "antminer": {k: config.get("antminer", {}).get(k) for k in ("host", "port", "model") if config.get("antminer", {}).get(k) is not None},
+        "antminer": {k: config.get("antminer", {}).get(k) for k in ("host", "port", "rest_port", "model") if config.get("antminer", {}).get(k) is not None},
+        "antminer_control_configured": bool(config.get("antminer", {}).get("username") and config.get("antminer", {}).get("password")),
         "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": [{"device_id": x.get("device_id"), "name": x.get("name")} for x in tuya.get("devices", []) if isinstance(x, dict)], "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
         "secrets_returned": False,
     }
@@ -157,10 +158,18 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
         if item.get("enabled", True):
             host = _private_ip(item.get("host"))
             port = item.get("port", 4028)
+            rest_port = item.get("rest_port", 80)
             if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535: raise ValueError("invalid_port")
+            if isinstance(rest_port, bool) or not isinstance(rest_port, int) or not 1 <= rest_port <= 65535: raise ValueError("invalid_rest_port")
             model = item.get("model", "S19K Pro")
             if model != "S19K Pro": raise ValueError("unsupported_antminer_model")
-            result["antminer"] = {"host": host, "port": port, "model": model}
+            old_antminer = result.get("antminer", {})
+            username = item.get("username") or old_antminer.get("username")
+            password = item.get("password") or old_antminer.get("password")
+            if username is not None and (not isinstance(username, str) or not 1 <= len(username) <= 128): raise ValueError("invalid_antminer_username")
+            if password is not None and (not isinstance(password, str) or not 1 <= len(password) <= 512): raise ValueError("invalid_antminer_password")
+            result["antminer"] = {"host": host, "port": port, "rest_port": rest_port, "model": model,
+                                  "username": username, "password": password}
         else: result["antminer"] = {}
     if "tuya" in payload:
         item = payload["tuya"]
@@ -298,6 +307,91 @@ def read_antminer(host: str, port: int = 4028, timeout: float = 2.0) -> dict[str
     return {"host": address, "port": port, "configured_model": "S19K Pro", "model_identity_verified": False, "protocol": "BOSminer CGMiner-compatible read-only", "connection_state": "api_responded", "commands": list(CGMINER_COMMANDS), "data": responses, "trust": "LIVE_UNVERIFIED", "control_commands_sent": False, "observed_at": time.time()}
 
 
+_BOS_CONTROL_ACTIONS = {
+    "pause": ("PUT", "/api/v1/actions/pause", None),
+    "stop": ("PUT", "/api/v1/actions/stop", None),
+    "start": ("PUT", "/api/v1/actions/start", None),
+}
+
+
+def _bos_rest_request(host: str, port: int, path: str, *, method: str = "GET",
+                      token: str | None = None, payload: dict[str, Any] | None = None,
+                      timeout: float = 8.0) -> dict[str, Any]:
+    """Call a fixed Braiins OS REST API path on a private miner address."""
+    address = _private_ip(host)
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise ValueError("invalid_rest_port")
+    if not isinstance(path, str) or not path.startswith("/api/v1/") or ".." in path or "?" in path or "#" in path:
+        raise ValueError("invalid_antminer_api_path")
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8") if payload is not None else None
+    headers = {"Accept": "application/json", "User-Agent": "SolarMiner-Gateway"}
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+    if token:
+        headers["Authorization"] = token
+    request = urllib.request.Request(f"http://{address}:{port}{path}", data=body, headers=headers, method=method)
+    opener = urllib.request.build_opener(_NoRedirect())
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            raw = response.read(262_145)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            raise RuntimeError("antminer_api_authentication_failed") from exc
+        if exc.code == 404 or exc.code == 405:
+            raise RuntimeError("antminer_public_api_unsupported_or_wrong_port") from exc
+        raise RuntimeError(f"antminer_api_http_{exc.code}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError("antminer_public_api_connection_failed") from exc
+    if len(raw) > 262_144:
+        raise RuntimeError("antminer_api_response_too_large")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("antminer_api_invalid_json") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("antminer_api_invalid_response")
+    return data
+
+
+def _bos_rest_login(config: dict[str, Any]) -> str:
+    username, password = config.get("username"), config.get("password")
+    if not isinstance(username, str) or not username or not isinstance(password, str) or not password:
+        raise RuntimeError("antminer_control_credentials_required")
+    response = _bos_rest_request(config["host"], config.get("rest_port", 80), "/api/v1/auth/login",
+                                method="POST", payload={"username": username, "password": password})
+    token = response.get("token")
+    if not isinstance(token, str) or not token or len(token) > 4096:
+        raise RuntimeError("antminer_api_login_response_invalid")
+    return token
+
+
+def control_antminer(config: dict[str, Any], action: str, watt: int | None = None) -> dict[str, Any]:
+    """Perform one explicit Owner-requested Braiins OS action."""
+    if not isinstance(config, dict) or not config.get("host"):
+        raise RuntimeError("antminer_not_configured")
+    if action not in {*_BOS_CONTROL_ACTIONS, "set_power_target"}:
+        raise ValueError("unsupported_antminer_control_action")
+    if action == "set_power_target" and (isinstance(watt, bool) or not isinstance(watt, int) or not 1 <= watt <= 2900):
+        raise ValueError("power_target_out_of_range_1_2900_watts")
+    host = _private_ip(config["host"])
+    rest_port = config.get("rest_port", 80)
+    token = _bos_rest_login(config)
+    if action == "set_power_target":
+        response = _bos_rest_request(host, rest_port, "/api/v1/performance/power-target", method="PUT",
+                                    token=token, payload={"watt": watt})
+        result = response.get("watt")
+        if isinstance(result, bool) or not isinstance(result, int):
+            raise RuntimeError("antminer_power_target_response_invalid")
+        return {"action": action, "requested_watt": watt, "applied_watt": result,
+                "connection_state": "control_applied", "control_command_sent": True}
+    method, path, payload = _BOS_CONTROL_ACTIONS[action]
+    response = _bos_rest_request(host, rest_port, path, method=method, token=token, payload=payload)
+    return {"action": action, "result": response, "connection_state": "control_applied",
+            "control_command_sent": True}
+
+
 def probe_tcp(host: str, port: int, timeout: float = 2.0) -> dict[str, Any]:
     """Confirm private-LAN TCP reachability without sending a device command."""
     address = _private_ip(host)
@@ -378,6 +472,8 @@ def read_deye(config: dict[str, Any]) -> dict[str, Any]:
             "protocol": "Modbus TCP read-only protocol probe",
             "probe_method": probe_method,
             "connection_state": modbus_state, "modbus_identity": identity_data,
+            "web_ui_credentials_apply_to_modbus": False,
+            "diagnostic_detail": ("TCP respondeu, mas FC43 e a leitura FC03 não receberam resposta Modbus. O login da página web é independente; confirmar que Link 2 Modbus TCP está ativo e que o Unit ID corresponde ao endereço Modbus do inversor." if modbus_state == "modbus_timeout" else None),
             "metrics_decoded": False, "reason": reason, "trust": "LIVE_UNVERIFIED",
             "control_commands_sent": False}
 

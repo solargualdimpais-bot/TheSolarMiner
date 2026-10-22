@@ -2,7 +2,7 @@
 
 Standalone Gateway foundation for local identity, bootstrap, authentication, authorization, device identity and audit. This directory is deliberately separate from the archived Prova 0 v0.3.0 artifacts. The current package version is recorded in `packaging/control`; the API-reported version remains `0.6.0` for compatibility. Release workflow builds, tests, signs and publishes the Debian package and USB bundle.
 
-CODE02 v0.6.33 adds an optional-token, automatic reporter for sanitized Gateway application errors. See [`docs/CHANGELOG_V0633.md`](docs/CHANGELOG_V0633.md), [`docs/ERROR_REPORTING.md`](docs/ERROR_REPORTING.md), [`docs/CHANGELOG_V0632.md`](docs/CHANGELOG_V0632.md), [`docs/HARDWARE_INTEGRATIONS.md`](docs/HARDWARE_INTEGRATIONS.md), and [`docs/UPDATE_AND_ROLLBACK.md`](docs/UPDATE_AND_ROLLBACK.md).
+CODE02 v0.6.34 adds Owner-confirmed Braiins OS power/start/stop/pause controls and clearer Deye Modbus diagnostics. See [`docs/CHANGELOG_V0634.md`](docs/CHANGELOG_V0634.md), [`docs/CHANGELOG_V0633.md`](docs/CHANGELOG_V0633.md), [`docs/ERROR_REPORTING.md`](docs/ERROR_REPORTING.md), [`docs/HARDWARE_INTEGRATIONS.md`](docs/HARDWARE_INTEGRATIONS.md), and [`docs/UPDATE_AND_ROLLBACK.md`](docs/UPDATE_AND_ROLLBACK.md).
 
 ## Build and test
 

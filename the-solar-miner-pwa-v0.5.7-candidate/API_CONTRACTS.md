@@ -1,6 +1,10 @@
 # Contratos API — PWA v0.5.4
 
-## Gateway hardware connectivity diagnostics (CODE02 0.6.33)
+## Braiins OS Owner control (Gateway 0.6.34)
+
+The PWA configures local Braiins OS REST credentials through the authenticated Owner Gateway API. Secrets are held by the Gateway and never returned. The PWA calls `POST /api/v1/integrations/antminer/control` only after an explicit Owner confirmation. Supported actions are `set_power_target` (1–2900 W), `pause`, `stop`, and `start`; Gateway audit records contain action/result only, never credentials or session tokens. Braiins OS REST support requires firmware 25.07 or later. CGMiner-compatible port 4028 remains read-only.
+
+## Gateway hardware connectivity diagnostics (CODE02 0.6.34)
 
 `POST /api/v1/integrations/hardware/read` returns a `configuration` object and per-device `connection_state`. Deye uses FC43/MEI14 with a read-only FC03 fallback after FC43 rejection or timeout and discards diagnostic values. Antminer reports its configured model as unverified. Tuya Cloud status is isolated by device ID; one failing ID does not discard successful reads for others. MOES is supported only when exposed through the configured Tuya Cloud project. Shelly has no Gateway driver. This endpoint sends no control commands.
 

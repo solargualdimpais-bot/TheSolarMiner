@@ -16,13 +16,16 @@ def test_config_accepts_deye_antminer_and_tuya_and_redacts_secret(tmp_path, monk
     monkeypatch.setattr(integrations, "_data_dir", lambda: tmp_path)
     config = integrations.validate_config({
         "deye": {"host": "192.168.8.10", "port": 502, "unit_id": 1, "model": "SUN-15K-SG05LP3-EU-SM2"},
-        "antminer": {"host": "192.168.8.20", "port": 4028, "model": "S19K Pro"},
+        "antminer": {"host": "192.168.8.20", "port": 4028, "rest_port": 80, "username": "root", "password": "antminer-secret", "model": "S19K Pro"},
         "tuya": {"region": "eu_central", "client_id": "client-id", "client_secret": "secret-value-123", "devices": [{"device_id": "device_123", "name": "Tomada"}]},
     }, existing={})
     public = integrations.save_config(config)
     loaded = integrations.load_config()
     assert loaded["tuya"]["client_secret"] == "secret-value-123"
     assert public["tuya"]["configured"] is True
+    assert public["antminer_control_configured"] is True
+    assert public["antminer"]["rest_port"] == 80
+    assert "antminer-secret" not in json.dumps(public)
     assert "client_secret" not in json.dumps(public)
     assert "secret-value-123" not in json.dumps(public)
 
@@ -59,6 +62,58 @@ def test_antminer_uses_only_allowlisted_read_commands(monkeypatch):
     assert response["configured_model"] == "S19K Pro"
     assert response["model_identity_verified"] is False
     assert all(frame.endswith(b"\n") for frame in frames)
+
+
+def test_antminer_control_uses_authenticated_braiins_public_api(monkeypatch):
+    calls = []
+
+    def request(host, port, path, **kwargs):
+        calls.append((host, port, path, kwargs))
+        if path == "/api/v1/auth/login":
+            assert kwargs["payload"] == {"username": "root", "password": "miner-secret"}
+            return {"token": "session-token"}
+        assert kwargs["token"] == "session-token"
+        if path == "/api/v1/performance/power-target":
+            assert kwargs["method"] == "PUT" and kwargs["payload"] == {"watt": 2400}
+            return {"watt": 2400}
+        return {"ok": True}
+
+    monkeypatch.setattr(integrations, "_bos_rest_request", request)
+    config = {"host": "192.168.8.69", "rest_port": 80, "username": "root", "password": "miner-secret"}
+    result = integrations.control_antminer(config, "set_power_target", 2400)
+    assert result == {"action": "set_power_target", "requested_watt": 2400, "applied_watt": 2400,
+                      "connection_state": "control_applied", "control_command_sent": True}
+    assert len(calls) == 2
+    assert all(call[0:2] == ("192.168.8.69", 80) for call in calls)
+
+
+@pytest.mark.parametrize("action,path", [("pause", "/api/v1/actions/pause"),
+                                           ("stop", "/api/v1/actions/stop"),
+                                           ("start", "/api/v1/actions/start")])
+def test_antminer_start_stop_pause_use_only_fixed_actions(monkeypatch, action, path):
+    calls = []
+
+    def request(host, port, route, **kwargs):
+        calls.append((route, kwargs))
+        return {"token": "session-token"} if route.endswith("/auth/login") else {"accepted": True}
+
+    monkeypatch.setattr(integrations, "_bos_rest_request", request)
+    result = integrations.control_antminer({"host": "192.168.8.69", "username": "root", "password": "secret"}, action)
+    assert result["connection_state"] == "control_applied"
+    assert result["control_command_sent"] is True
+    assert calls[-1][0] == path
+    assert calls[-1][1]["method"] == "PUT"
+
+
+def test_antminer_control_rejects_missing_credentials_and_out_of_range_power(monkeypatch):
+    with pytest.raises(RuntimeError, match="antminer_control_credentials_required"):
+        integrations.control_antminer({"host": "192.168.8.69"}, "start")
+    config = {"host": "192.168.8.69", "username": "root", "password": "secret"}
+    monkeypatch.setattr(integrations, "_bos_rest_request", lambda *_args, **_kwargs: {"token": "x"})
+    with pytest.raises(ValueError, match="power_target_out_of_range"):
+        integrations.control_antminer(config, "set_power_target", 0)
+    with pytest.raises(ValueError, match="unsupported_antminer_control_action"):
+        integrations.control_antminer(config, "reboot")
 
 
 def test_deye_uses_standard_identification_without_guessing_registers(monkeypatch):
@@ -108,6 +163,18 @@ def test_deye_falls_back_to_fc03_when_fc43_silently_times_out(monkeypatch):
     assert result["probe_method"] == "FC03 fallback after FC43 timeout"
     assert result["modbus_identity"]["fc43_result"] == "timeout"
     assert "raw_registers" not in json.dumps(result)
+
+
+def test_deye_timeout_explains_web_credentials_do_not_authenticate_modbus(monkeypatch):
+    monkeypatch.setattr(integrations, "probe_tcp", lambda host, port, timeout: {"state": "tcp_reachable", "host": host, "port": port})
+    monkeypatch.setattr(integrations.deye_modbus, "read_device_identification",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(integrations.deye_modbus.ModbusTimeout("timeout")))
+    monkeypatch.setattr(integrations.deye_modbus, "read_holding_registers",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(integrations.deye_modbus.ModbusTimeout("timeout")))
+    result = integrations.read_deye({"host": "192.168.8.10", "port": 502, "unit_id": 1})
+    assert result["connection_state"] == "modbus_timeout"
+    assert result["web_ui_credentials_apply_to_modbus"] is False
+    assert "Unit ID" in result["diagnostic_detail"]
 
 
 def test_empty_hardware_configuration_is_reported_as_unconfigured():

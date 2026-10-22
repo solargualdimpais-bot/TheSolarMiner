@@ -1,10 +1,16 @@
 # API v1 (CODE 01)
 
-## Error reporting (CODE02 0.6.33)
+## CODE02 v0.6.34 — controlo Owner do Braiins OS
+
+`POST /api/v1/integrations/antminer/control` é exclusivo do Owner autenticado. Aceita apenas `{"action":"set_power_target","watt":N}`, `{"action":"pause"}`, `{"action":"stop"}` ou `{"action":"start"}`. O servidor revalida o papel Owner, chama apenas endpoints fixos da REST API Braiins OS e regista a ação e resultado na auditoria sem palavra-passe nem token. O alvo está limitado a 1–2900 W e a resposta devolve os watts que o firmware confirmou. As credenciais são enviadas na configuração Owner e guardadas no ficheiro privado do Gateway, nunca devolvidas. A ligação ao minerador usa REST HTTP em rede privada; requer Braiins OS 25.07 ou mais recente. A porta CGMiner 4028 continua apenas de leitura.
+
+Para Deye, a resposta de diagnóstico explicita os timeouts de FC43/FC03 e confirma que as credenciais da página web não se aplicam à ligação Modbus TCP.
+
+## Error reporting (CODE02 0.6.34)
 
 There is no PWA endpoint for log upload. The Gateway queues sanitized application `ERROR` records locally and, when the owner has configured a repository-scoped GitHub token, a systemd timer submits batches as GitHub issues. Configuration and privacy details are in `ERROR_REPORTING.md`.
 
-## CODE02 v0.6.33 — diagnóstico de hardware
+## CODE02 v0.6.34 — diagnóstico de hardware
 
 `POST /api/v1/integrations/hardware/read` returns per-device diagnostics. Deye uses FC43 identification and a one-register FC03 fallback when FC43 is rejected or times out; the diagnostic register value is discarded. Tuya Cloud failures are isolated per configured device ID. Antminer model identity remains unverified by the API response.
 

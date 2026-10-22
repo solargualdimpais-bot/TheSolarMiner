@@ -325,6 +325,16 @@ def test_hardware_integration_config_is_owner_only_and_secrets_are_redacted(clie
     assert read.json()["antminer"]["port"] == 4028
     assert read.json()["tuya"]["device_ids"] == ["tuya_device_123"]
     assert secret not in read.text
+    monkeypatch.setattr(gateway.hardware_integrations, "control_antminer", lambda config, action, watt=None: {
+        "action": action, "requested_watt": watt, "applied_watt": watt,
+        "connection_state": "control_applied", "control_command_sent": True,
+    })
+    control = client.post("/api/v1/integrations/antminer/control", headers=headers,
+                          json={"action": "set_power_target", "watt": 2400})
+    assert control.status_code == 200, control.text
+    assert control.json()["applied_watt"] == 2400
+    assert client.post("/api/v1/integrations/antminer/control", headers=headers,
+                       json={"action": "reboot"}).status_code == 422
     tesla_secret = "tesla-refresh-secret-123"
     tesla_saved = client.put("/api/v1/energy/ev/tesla", headers=headers, json={
         "region": "europe", "client_id": "tesla-client-id", "refresh_token": tesla_secret,
@@ -369,6 +379,8 @@ def test_hardware_integration_config_is_owner_only_and_secrets_are_redacted(clie
     assert client.get("/api/v1/integrations/hardware", headers=admin_headers).status_code == 403
     assert client.put("/api/v1/integrations/hardware", headers=admin_headers, json={}).status_code == 403
     assert client.post("/api/v1/integrations/hardware/read", headers=admin_headers, json={}).status_code == 403
+    assert client.post("/api/v1/integrations/antminer/control", headers=admin_headers,
+                       json={"action": "stop"}).status_code == 403
     assert client.get("/api/v1/energy/ev/tesla", headers=admin_headers).status_code == 403
     assert client.put("/api/v1/energy/ev/tesla", headers=admin_headers, json={}).status_code == 403
     assert client.post("/api/v1/energy/ev/tesla/read", headers=admin_headers, json={}).status_code == 403

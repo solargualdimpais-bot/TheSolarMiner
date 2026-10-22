@@ -44,7 +44,7 @@ from . import updates as update_manager
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.33"
+PACKAGE_VERSION = "0.6.34"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -738,6 +738,44 @@ def hardware_integrations_read(session: dict[str, Any] = Depends(require_permiss
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             LOG.error("Hardware integration read failed (%s)", type(exc).__name__)
             raise HTTPException(503, "integration_read_unavailable") from exc
+
+
+@app.post("/api/v1/integrations/antminer/control")
+def antminer_control(payload: dict[str, Any], session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Owner-only, single-action Braiins OS control endpoint."""
+    with db() as conn:
+        _require_owner(session, conn)
+        action = payload.get("action") if isinstance(payload, dict) else None
+        watt = payload.get("watt") if isinstance(payload, dict) else None
+        if set(payload) - {"action", "watt"}:
+            raise HTTPException(422, "antminer_control_payload_invalid")
+        if action not in {"set_power_target", "pause", "stop", "start"}:
+            raise HTTPException(422, "unsupported_antminer_control_action")
+        if action == "set_power_target":
+            if isinstance(watt, bool) or not isinstance(watt, int) or not 1 <= watt <= 2900:
+                raise HTTPException(422, "power_target_out_of_range_1_2900_watts")
+        elif watt is not None:
+            raise HTTPException(422, "antminer_control_payload_invalid")
+        try:
+            config = hardware_integrations.load_config().get("antminer", {})
+            result = hardware_integrations.control_antminer(config, action, watt)
+            audit(conn, session["user_id"], "hardware.antminer.control", "antminer", "success", {
+                "action": action, "requested_watt": watt if action == "set_power_target" else None,
+                "applied_watt": result.get("applied_watt"), "control_command_sent": True,
+            })
+            return result
+        except ValueError as exc:
+            audit(conn, session["user_id"], "hardware.antminer.control", "antminer", "rejected", {"reason": str(exc)[:120]})
+            raise HTTPException(422, str(exc)) from exc
+        except RuntimeError as exc:
+            reason = str(exc)[:120]
+            LOG.error("Antminer control failed reason=%s", reason)
+            audit(conn, session["user_id"], "hardware.antminer.control", "antminer", "failed", {"action": action, "reason": reason, "control_command_sent": False})
+            raise HTTPException(502, reason) from exc
+        except (OSError, json.JSONDecodeError) as exc:
+            LOG.error("Antminer control failed (%s)", type(exc).__name__)
+            audit(conn, session["user_id"], "hardware.antminer.control", "antminer", "failed", {"action": action, "reason": type(exc).__name__, "control_command_sent": False})
+            raise HTTPException(502, "antminer_control_failed") from exc
 
 
 def _require_owner(session: dict[str, Any], conn) -> None:
@@ -1721,7 +1759,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.32"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.34"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

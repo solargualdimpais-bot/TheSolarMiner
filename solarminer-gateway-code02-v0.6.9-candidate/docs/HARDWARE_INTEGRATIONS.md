@@ -10,9 +10,13 @@ Não está incorporado um mapa de registos confirmado para a variante e revisão
 
 ## Antminer S19K Pro com Braiins OS
 
-A PWA configura IP privado e porta 4028. O Gateway confirma TCP e consulta `summary`, `stats` e `devs` através da API CGMiner compatível do BOSminer, usando um pedido JSON terminado em nova linha. Cada comando usa uma ligação separada. A resposta comprova que uma API respondeu, mas o Gateway não verifica a identidade física do modelo; `configured_model` é o modelo indicado pelo Owner.
+A PWA configura IP privado, porta 4028 para as consultas CGMiner compatíveis, porta 80 para a API REST pública Braiins OS e credenciais locais. O Gateway confirma TCP e consulta `summary`, `stats` e `devs` na porta 4028. Para controlo usa apenas os endpoints fixos da REST API Braiins OS: alvo de potência, pause, stop e start. A REST API está documentada para Braiins OS 25.07 ou posterior; a versão anterior pode expor apenas a API gRPC e será indicada como não suportada por esta integração. O utilizador e palavra-passe são guardados apenas no Gateway com permissões de ficheiro restritas; a palavra-passe não é devolvida à PWA nem registada. Cada comando exige sessão Owner e confirmação explícita na PWA. O alvo aceite pelo equipamento tem limite de entrada de 1–2900 W e o valor devolvido pelo firmware é apresentado como aplicado. A ligação Gateway–minerador usa HTTP na LAN privada e deve permanecer numa rede local confiável.
 
-As leituras são apenas de monitorização. Esta integração não muda potência, perfil do tuner, pools, estado de mineração ou comandos CGMiner. A API CGMiner em modo read-only pode responder às consultas; se a API estiver desativada, protegida ou inacessível, a leitura falha. A API pública BOSminer mais recente também oferece interfaces REST/gRPC, que ainda não estão implementadas neste Gateway.
+O controlo não é executado pela API CGMiner da porta 4028. Essa interface continua apenas de leitura. A API pública Braiins OS autentica por `POST /api/v1/auth/login`, envia o token de sessão no cabeçalho `Authorization` e implementa `PUT /api/v1/performance/power-target`, `/api/v1/actions/pause`, `/api/v1/actions/stop` e `/api/v1/actions/start`. A PWA nunca liga diretamente ao minerador.
+
+### Diagnóstico Deye e credenciais da página web
+
+Uma ligação TCP aberta à porta 502 não prova que exista resposta Modbus. Se FC43 e a sonda FC03 terminarem em timeout, a resposta agora identifica os dois resultados e explica que o login da página web não autentica Modbus. As credenciais HTTP da interface local são um mecanismo separado; não são enviadas nem usadas pelo protocolo Modbus TCP. Para o modelo configurado, confirmar no equipamento que `Link 2 Modbus TCP` está ativo e consultar o endereço/Unit ID Modbus configurado. A versão atual não tenta adivinhar endereços de registo nem envia escritas ao inversor.
 
 ## Tuya e MOES via Tuya Cloud
 

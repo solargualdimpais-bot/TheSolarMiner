@@ -1,5 +1,5 @@
 Package: solarminer-gateway
-Version: 0.6.33
+Version: 0.6.34
 Section: net
 Priority: optional
 Architecture: amd64
@@ -7,4 +7,4 @@ Depends: dpkg, python3 (>= 3.13), python3-venv, python3-pydantic (>= 2), python3
 Maintainer: SolarMiner Gateway Maintainers
 Description: SolarMiner Gateway local identity, authentication and connector management service
  The local authority for owner bootstrap, user/device identity, authentication,
- authorization, audit, signed connector catalog and read-only discovery API.
+ authorization, audit, signed updates and Owner-controlled local energy devices.

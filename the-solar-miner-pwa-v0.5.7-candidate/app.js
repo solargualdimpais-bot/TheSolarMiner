@@ -3,7 +3,7 @@ import { DEMO_CONTROL_CONFIG, createDemoControlState, updateDemoControl, toggleD
 import { renderWorkspacePage, renderHomePreferenceLinks, renderHouseSearch, handleWorkspaceAction, handleWorkspaceChange, applyPreferences, getWorkspacePageLabel, workspace, getEditableEntity, saveEditableEntity, saveDemoWorkspace, hydrateWorkspacePhotos } from "./workspace-ui.js";
 import { renderAutomationsPage, renderSolarProductionPage, renderDemoAdminPanel, handleFeatureAction, saveAutomationForm, addDemoUser, saveDemoUserEdit, saveSolarWeather, demoFeatures } from "./features-v053.js";
 import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classifyEndpoint, inferHostedGatewayEndpoint, PRESENCE_API_STATUS } from "./gateway-connection.js";
-import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, saveGatewayHardwareIntegrationConfig, readGatewayHardwareIntegrations, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, saveGatewayHardwareIntegrationConfig, readGatewayHardwareIntegrations, controlGatewayAntminer, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging } from "./gateway-auth.js";
 
 let automationEditingId = "";
 const state = { page: "inicio", mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], lastUpdated: null, lastMeasurementAt: null, refreshing: false, propertyPhoto: "", demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [] };
@@ -580,11 +580,14 @@ async function refreshHardwareIntegrationConfig() {
   $("#hardware-deye-unit").value = deye.unit_id ?? 1;
   $("#hardware-antminer-host").value = miner.host || "";
   $("#hardware-antminer-port").value = miner.port || 4028;
+  $("#hardware-antminer-rest-port").value = miner.rest_port || 80;
+  $("#hardware-antminer-username").value = "";
+  $("#hardware-antminer-password").value = "";
   $("#hardware-tuya-region").value = tuya.region || "eu_central";
   $("#hardware-tuya-client-id").value = tuya.client_id || "";
   $("#hardware-tuya-client-secret").value = "";
   $("#hardware-tuya-devices").value = (tuya.devices || []).map(device => `${device.device_id} | ${device.name}`).join("\n");
-  $("#hardware-integrations-status").textContent = `Configuração carregada · Deye ${deye.host ? "definido" : "por configurar"} · Antminer ${miner.host ? "definido" : "por configurar"} · Tuya ${tuya.configured ? "configurado; segredo oculto" : "por configurar"}. Tesla é configurado apenas na área Carregador EV.`;
+  $("#hardware-integrations-status").textContent = `Configuração carregada · Deye ${deye.host ? "definido" : "por configurar"} · Antminer ${miner.host ? "definido" : "por configurar"}; credenciais ${config.antminer_control_configured ? "guardadas no Gateway" : "por configurar"} · Tuya ${tuya.configured ? "configurado; segredo oculto" : "por configurar"}.`;
   return config;
 }
 function hardwareConnectionSummary(result) {
@@ -593,7 +596,7 @@ function hardwareConnectionSummary(result) {
     modbus_identity_response: "Modbus respondeu; mapa de dados ainda não validado",
     modbus_register_probe_response: "Modbus respondeu à leitura FC03 de diagnóstico; valor descartado e mapa de dados ainda não validado",
     modbus_exception_response: "O equipamento respondeu por Modbus, mas rejeitou a consulta de identificação",
-    modbus_timeout: "IP/porta acessíveis, mas sem resposta Modbus; confirmar Unit ID e serviço Modbus",
+    modbus_timeout: "TCP acessível, mas o Modbus não respondeu; a palavra-passe da página web não autentica Modbus. Confirmar Link 2 Modbus TCP ativo e Unit ID",
     invalid_modbus_response: "A porta respondeu, mas a resposta não correspondeu ao Modbus esperado",
     modbus_transport_error: "Falha de transporte durante a consulta Modbus",
     api_responded: "API da Antminer respondeu",
@@ -620,17 +623,40 @@ $("#hardware-integrations-save").addEventListener("click", async () => {
     const tuyaClient = $("#hardware-tuya-client-id").value.trim(), tuyaSecret = $("#hardware-tuya-client-secret").value;
     const payload = {
       deye: { enabled: Boolean(deyeHost), host: deyeHost, port: Number($("#hardware-deye-port").value), unit_id: Number($("#hardware-deye-unit").value), model: "SUN-15K-SG05LP3-EU-SM2" },
-      antminer: { enabled: Boolean(minerHost), host: minerHost, port: Number($("#hardware-antminer-port").value), model: "S19K Pro" }
+      antminer: { enabled: Boolean(minerHost), host: minerHost, port: Number($("#hardware-antminer-port").value), rest_port: Number($("#hardware-antminer-rest-port").value), username: $("#hardware-antminer-username").value.trim(), password: $("#hardware-antminer-password").value, model: "S19K Pro" }
     };
     if (tuyaRows.length || tuyaClient || tuyaSecret) {
       payload.tuya = { region: $("#hardware-tuya-region").value, client_id: tuyaClient || undefined, client_secret: tuyaSecret || undefined, devices: tuyaDevices };
     }
     const saved = await saveGatewayHardwareIntegrationConfig(payload);
     $("#hardware-tuya-client-secret").value = "";
-    status.textContent = `Ligações guardadas no Gateway. Segredos nunca são devolvidos à PWA. Tuya: ${saved.tuya?.configured ? "configurado" : "por configurar"}. Tesla é configurado na área Carregador EV.`;
+    $("#hardware-antminer-password").value = "";
+    status.textContent = `Ligações guardadas no Gateway. Credenciais do minerador: ${saved.antminer_control_configured ? "configuradas" : "por configurar"}. Segredos não são devolvidos à PWA.`;
   } catch (error) { status.textContent = `Não foi possível guardar: ${error.message}`; }
   finally { button.disabled = false; }
 });
+async function sendAntminerControl(action) {
+  const info = sessionInfo(), status = $("#hardware-integrations-status");
+  if (!info.authenticated || info.user.role !== "owner") { status.textContent = "Só o Owner autenticado pode controlar o Antminer."; return; }
+  const labels = { set_power_target: "alterar o alvo de potência", pause: "pausar a mineração", stop: "parar a mineração", start: "iniciar a mineração" };
+  const watt = Number($("#hardware-antminer-watt").value);
+  if (action === "set_power_target" && (!Number.isInteger(watt) || watt < 1 || watt > 2900)) { status.textContent = "Indica um alvo entre 1 e 2900 W."; return; }
+  const prompt = action === "set_power_target" ? `Enviar ao Antminer a ordem para definir o alvo de potência em ${watt} W?` : `Confirmas que queres ${labels[action]} no Antminer?`;
+  if (!confirm(prompt)) return;
+  const buttons = ["antminer-power-target", "antminer-pause", "antminer-stop", "antminer-start"].map(id => $("#" + id));
+  buttons.forEach(button => { button.disabled = true; });
+  status.textContent = `A enviar o comando “${labels[action]}” ao Antminer…`;
+  try {
+    const result = await controlGatewayAntminer(action, watt);
+    status.textContent = action === "set_power_target" ? `Comando aceite pelo Braiins OS: alvo aplicado ${result.applied_watt} W.` : `Comando “${labels[action]}” aceite pelo Braiins OS.`;
+  } catch (error) {
+    status.textContent = `O Gateway não conseguiu executar o comando: ${error.message}`;
+  } finally { buttons.forEach(button => { button.disabled = false; }); }
+}
+$("#antminer-power-target").addEventListener("click", () => sendAntminerControl("set_power_target"));
+$("#antminer-pause").addEventListener("click", () => sendAntminerControl("pause"));
+$("#antminer-stop").addEventListener("click", () => sendAntminerControl("stop"));
+$("#antminer-start").addEventListener("click", () => sendAntminerControl("start"));
 $("#hardware-integrations-read").addEventListener("click", async () => {
   const info = sessionInfo(), button = $("#hardware-integrations-read"), status = $("#hardware-integrations-status"), output = $("#hardware-integrations-result");
   if (!info.authenticated || info.user.role !== "owner") { status.textContent = "Só o Owner autenticado pode iniciar a leitura."; return; }
