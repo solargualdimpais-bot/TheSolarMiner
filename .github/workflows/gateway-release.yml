@@ -69,11 +69,13 @@ jobs:
           sh -n packaging/prerm
           sh -n packaging/solarminer-public-tls-renew
           sh -n packaging/install-tailscale.sh
+          sh -n packaging/solarminer-update-broker
           sh -n packaging/solarminer-tailscale-info
           sh -n packaging/solarminer-tailscale-connect
           sh -n packaging/solarminer-tailscale-cert
           [ "$(sed -n 's/^TARGET_VERSION=//p' packaging/repair-existing-from-usb.sh)" = "$(sed -n 's/^Version: //p' packaging/control)" ]
           ! grep -q '^VERSION=' packaging/repair-existing-from-usb.sh
+          systemd-analyze verify packaging/solarminer-recovery.service packaging/solarminer-update-broker.socket packaging/solarminer-update-broker@.service
 
       - name: Run Gateway tests
         working-directory: solarminer-gateway-code02-v0.6.9-candidate

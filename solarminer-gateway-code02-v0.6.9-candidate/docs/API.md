@@ -1,5 +1,9 @@
 # API v1 (CODE 01)
 
+## CODE02 v0.6.27 — atualizações assinadas automáticas
+
+O `solarminer-update-check-daily.timer` verifica a origem GitHub selecionada e permitida e enfileira automaticamente uma atualização apenas se o manifesto e o pacote forem válidos e o preflight independente passar. A API sem privilégios e o serviço diário comunicam com o helper root através do socket Unix privado `solarminer-update-broker.socket`; o broker só aceita `preflight` e `enqueue` com UUID. A aplicação usa o mesmo helper privilegiado, backup SQLite, staging, health check e rollback que o endpoint Owner. `GET /api/v1/system/update/status` expõe o estado e a versão alvo. A verificação manual continua disponível na PWA Owner.
+
 ## CODE02 v0.6.26 — integrações de hardware e carregamento EV
 
 - `GET /api/v1/integrations/hardware`, `PUT /api/v1/integrations/hardware` e `POST /api/v1/integrations/hardware/read` são reservados ao Owner autenticado.
@@ -111,7 +115,7 @@ O ficheiro tem o formato:
 }
 ```
 
-A lista de origens é configurada pelo administrador, contém apenas origens HTTPS e tem limites de tamanho/quantidade. Redirecionamentos do manifesto e pacote só são seguidos se o destino permanecer numa origem respetiva permitida. O manifesto tem de passar a validação Ed25519 com a chave já provisionada no Gateway; o pacote é validado por hash, tamanho, versão, arquitetura, dependências e preflight antes de ficar `VERIFIED`. Não há clone/pull, execução de scripts do repositório ou instalação de dependências arbitrárias. A PWA não recebe segredos de GitHub. A verificação não instala a atualização: a aplicação continua a exigir POST Owner separado e confirmação explícita. URL/origem/manifesto/assinatura inválidos são rejeitados antes de qualquer alteração do sistema e ficam refletidos no estado/auditoria sem credenciais.
+A lista de origens é configurada pelo administrador, contém apenas origens HTTPS e tem limites de tamanho/quantidade. Redirecionamentos do manifesto e pacote só são seguidos se o destino permanecer numa origem respetiva permitida. O manifesto tem de passar a validação Ed25519 com a chave já provisionada no Gateway; o pacote é validado por hash, tamanho, versão, arquitetura, dependências e preflight antes de ficar `VERIFIED`. Não há clone/pull, execução de scripts do repositório ou instalação de dependências arbitrárias. A PWA não recebe segredos de GitHub. A verificação manual não instala a atualização: exige POST Owner separado e confirmação explícita. O serviço diário pode enfileirar automaticamente apenas depois de todas as validações e do preflight independente passarem. URL/origem/manifesto/assinatura inválidos são rejeitados antes de qualquer alteração do sistema e ficam refletidos no estado/auditoria sem credenciais.
 
 ## CODE 02 — Connector Manager v0.6.0
 

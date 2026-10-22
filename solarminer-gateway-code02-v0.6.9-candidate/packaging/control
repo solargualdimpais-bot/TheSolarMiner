@@ -1,5 +1,5 @@
 Package: solarminer-gateway
-Version: 0.6.26
+Version: 0.6.27
 Section: net
 Priority: optional
 Architecture: amd64

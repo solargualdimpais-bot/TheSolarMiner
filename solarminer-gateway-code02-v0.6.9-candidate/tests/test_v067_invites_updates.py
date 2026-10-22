@@ -197,7 +197,6 @@ def test_energy_categories_report_embedded_pwa_version(client):
 
 
 def test_apply_queues_verified_operation_through_privileged_helper(client, monkeypatch):
-    import subprocess
     token = owner_session(client)
     with gateway.db() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -208,18 +207,17 @@ def test_apply_queues_verified_operation_through_privileged_helper(client, monke
         })
         conn.commit()
     captured = []
-    def fake_run(args, **kwargs):
-        captured.append(args)
-        return subprocess.CompletedProcess(args, 0,
-            json.dumps({"status": "APPLY_QUEUED", "operation_id": op, "target_version": "0.6.9",
-                        "status_url": "/api/v1/system/update/status", "health_check_seconds": 60}), "")
-    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+    def fake_request(action, operation_id=None):
+        captured.append((action, operation_id))
+        return {"status": "APPLY_QUEUED", "operation_id": op, "target_version": "0.6.9",
+                "status_url": "/api/v1/system/update/status", "health_check_seconds": 60}
+    monkeypatch.setattr(gateway.update_helper_client, "request", fake_request)
     response = client.post("/api/v1/system/update/apply",
         headers={"Authorization": f"Bearer {token}"}, json={"version": "0.6.9", "confirm": True})
     assert response.status_code == 202, response.text
     assert response.json()["status"] == "APPLY_QUEUED"
     assert response.json()["health_check_seconds"] == 60
-    assert captured and captured[0][-2:] == ["--enqueue", op]
+    assert captured == [("enqueue", op)]
 
 
 def test_repository_update_check_is_owner_only_and_passes_allowlisted_source(client, monkeypatch):

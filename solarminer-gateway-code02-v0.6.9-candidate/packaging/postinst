@@ -121,6 +121,7 @@ case "${1:-}" in
       systemctl enable nginx.service
       systemctl enable solarminer-gateway.service
       systemctl enable --now solarminer-recovery.timer
+      systemctl enable --now solarminer-update-broker.socket
       systemctl enable --now solarminer-update-check-daily.timer
       systemctl enable --now solarminer-public-tls-renew.timer
       systemctl enable --now solarminer-tailscale-cert.timer

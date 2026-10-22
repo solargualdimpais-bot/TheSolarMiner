@@ -5,6 +5,10 @@ case "${1:-}" in
     if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
       systemctl stop solarminer-gateway.service || true
       systemctl disable solarminer-gateway.service || true
+      systemctl stop solarminer-update-check-daily.timer || true
+      systemctl disable solarminer-update-check-daily.timer || true
+      systemctl stop solarminer-update-broker.socket || true
+      systemctl disable solarminer-update-broker.socket || true
       systemctl stop solarminer-public-tls-renew.timer || true
       systemctl disable solarminer-public-tls-renew.timer || true
     fi

@@ -1,5 +1,5 @@
 [Unit]
-Description=Daily signed SolarMiner release check
+Description=Daily signed SolarMiner release check and safe auto-apply
 Documentation=file:/usr/share/doc/solarminer-gateway/UPDATE_AND_ROLLBACK.md
 After=network-online.target solarminer-gateway.service
 Wants=network-online.target

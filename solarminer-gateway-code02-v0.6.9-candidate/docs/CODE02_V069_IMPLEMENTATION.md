@@ -4,11 +4,13 @@
 
 Incremento sobre CODE02 v0.6.8 e PWA v0.5.7. Preserva o contrato público da API `0.6.0`, a base visual da PWA e as integrações existentes. O incremento fecha a implementação de código do pipeline de atualização; não declara instalação física nem publicação.
 
+Desde v0.6.27, o serviço diário verifica e pode enfileirar automaticamente um release validado. A API e o serviço diário falam com o helper root por um socket Unix `0600` e um broker com ações estritas; não elevam privilégios com `sudo`. O pedido manual de aplicação permanece Owner-only. Ver `UPDATE_AND_ROLLBACK.md` para o comportamento atual.
+
 ## Pipeline update ponta-a-ponta
 
 - `GET /api/v1/system/update/check` verifica manifesto Ed25519, compatibilidade, origem HTTPS, tamanho e SHA-256 do pacote. Guarda o manifesto assinado junto do pacote verificado para revalidação independente pelo helper root.
 - `POST /api/v1/system/update/apply` exige Owner, operação `VERIFIED` e versão de destino coincidente. Enfileira a atualização numa unidade systemd independente e responde HTTP 202; não reinicia o processo que está a responder ao pedido.
-- `/usr/sbin/solarminer-update-apply` aceita apenas modos estritos e identificadores UUID. A regra sudoers permite invocar o helper, não comandos shell arbitrários.
+- `/usr/sbin/solarminer-update-apply` aceita apenas modos estritos e identificadores UUID. Desde v0.6.27, uma unidade broker root-owned expõe somente `preflight` e `enqueue` no socket local restrito.
 - O helper root revalida assinatura, hash, tamanho, versão Debian, arquitetura e dependências instaladas. Exige chave pública root-owned, symlink `current` válido, base de dados existente e timer de recuperação ativo.
 - A máquina de estados é persistida em `/opt/solarminer/update-state.json` e `update-state.jsonl`, com `fsync` em cada transição e lock `flock`. Os estados são refletidos em `update_operations`.
 - Antes de extrair/ativar, cria backup SQLite online e regista timestamp UTC, hash, tamanho e versões de schema.

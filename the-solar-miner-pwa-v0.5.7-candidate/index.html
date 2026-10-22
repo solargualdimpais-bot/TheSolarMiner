@@ -50,7 +50,7 @@
       </section>
       <div id="notice" class="notice" role="status" hidden></div>
       <section id="page-content" aria-live="polite"></section>
-      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.6.26</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
+      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.6.27</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
     </main>
   </div>
 
@@ -125,11 +125,11 @@
       </section>
       <section class="panel gateway-auth-panel" id="gateway-update-management" hidden>
         <div class="panel-header"><div><p class="eyebrow">SOFTWARE DO GATEWAY</p><h3>Atualizações assinadas</h3></div><span class="source-tag">OWNER</span></div>
-        <p class="field-note">Indica um repositório público HTTPS autorizado pelo administrador do dispositivo. O Gateway consulta apenas o manifesto e o pacote de lançamento, valida a assinatura Ed25519 e não executa código-fonte do repositório.</p>
+        <p class="field-note">O Gateway verifica este repositório diariamente e aplica automaticamente lançamentos com assinatura válida quando o preflight e o rollback independente estão prontos. Também podes verificar e aplicar manualmente. O Gateway consulta apenas o manifesto e o pacote assinado; não executa código-fonte do repositório.</p>
         <label for="gateway-update-repository">URL HTTPS do repositório GitHub</label>
         <input id="gateway-update-repository" type="url" inputmode="url" autocomplete="url" spellcheck="false" placeholder="https://github.com/owner/repository" maxlength="512">
         <div class="dialog-actions"><button id="gateway-update-check" class="button primary" type="button">Verificar atualização</button><button id="gateway-update-refresh" class="button secondary" type="button">Atualizar estado</button></div>
-        <div id="gateway-update-message" class="connection-result" role="status" aria-live="polite">A verificação só começa após ação explícita do Owner.</div>
+        <div id="gateway-update-message" class="connection-result" role="status" aria-live="polite">Verificação automática diária ativa no Gateway; a aplicação automática exige assinatura válida e preflight concluído.</div>
         <div id="gateway-update-details" class="field-note" aria-live="polite"></div>
         <button id="gateway-update-apply" class="button primary" type="button" hidden disabled>Aplicar atualização verificada</button>
       </section>

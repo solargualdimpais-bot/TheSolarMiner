@@ -71,11 +71,11 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   assert.match(embeddedAuth, /\/api\/v1\/system\/tailscale/);
   assert.match(embeddedAuth, /\/api\/v1\/system\/tailscale\/connect/);
   assert.match(embeddedApp, /startGatewayTailscale/);
-  assert.match(embeddedWorker, /owner-pwa-v0\.6\.26/);
+  assert.match(embeddedWorker, /owner-pwa-v0\.6\.27/);
   assert.match(embeddedWorker, /password-device-login/);
-  assert.match(embeddedHtml, /OWNER PWA 0\.6\.26/);
+  assert.match(embeddedHtml, /OWNER PWA 0\.6\.27/);
   assert.match(embeddedHtml, /gateway-password-login-form/);
-  assert.match(control, /^Version: 0\.6\.26$/m);
-  assert.match(installer, /solarminer-gateway_0\.6\.26_amd64\.deb/);
+  assert.match(control, /^Version: 0\.6\.27$/m);
+  assert.match(installer, /solarminer-gateway_0\.6\.27_amd64\.deb/);
   assert.match(installer, /install-tailscale\.sh/);
 });

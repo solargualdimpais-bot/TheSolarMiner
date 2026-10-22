@@ -39,10 +39,11 @@ from pydantic import BaseModel, ConfigDict, Field, StrictStr
 from . import connectors as connector_manager
 from . import energy_registry
 from . import integrations as hardware_integrations
+from . import update_helper_client
 from . import updates as update_manager
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.26"
+PACKAGE_VERSION = "0.6.27"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -1699,7 +1700,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.26"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.27"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(
@@ -1752,12 +1753,10 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         with manifest_tmp.open("rb") as stream:
             os.fsync(stream.fileno())
         os.replace(manifest_tmp, manifest_path)
-        helper = os.environ.get("SOLARMINER_UPDATE_HELPER", "/usr/sbin/solarminer-update-apply")
         try:
-            preflight = subprocess.run(["/usr/bin/sudo", "-n", helper, "--preflight"],
-                                       capture_output=True, text=True, timeout=7, check=False)
-            activation_available = preflight.returncode == 0
-        except (OSError, subprocess.TimeoutExpired):
+            preflight = update_helper_client.request("preflight")
+            activation_available = preflight.get("status") == "ready"
+        except (OSError, RuntimeError, TimeoutError, ValueError):
             activation_available = False
         details = {"manifest_signature": "valid", "package_sha256": checked["sha256"],
                    "package_path": str(package_path), "manifest_path": str(manifest_path),
@@ -2004,25 +2003,10 @@ def apply_system_update(payload: dict[str, Any], session: dict[str, Any] = Depen
         op_id = row["id"]
         audit(conn, actor["user_id"], "system.update.apply_queued", op_id, "success", {"target_version": payload["version"]})
         conn.commit()
-    helper = os.environ.get("SOLARMINER_UPDATE_HELPER", "/usr/sbin/solarminer-update-apply")
     try:
-        result = subprocess.run(["/usr/bin/sudo", "-n", helper, "--enqueue", op_id],
-                                capture_output=True, text=True, timeout=10, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise HTTPException(503, "update_helper_unavailable_or_timed_out") from exc
-    if result.returncode != 0:
-        reason = "update_pipeline_preflight_failed"
-        try:
-            error_body = json.loads(result.stderr or result.stdout)
-            if isinstance(error_body, dict) and isinstance(error_body.get("reason"), str):
-                reason = error_body["reason"][:180]
-        except (json.JSONDecodeError, TypeError):
-            pass
-        raise HTTPException(503, reason)
-    try:
-        response = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(503, "update_helper_response_invalid") from exc
+        response = update_helper_client.request("enqueue", op_id)
+    except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
+        raise HTTPException(503, str(exc)[:180] or "update_helper_unavailable_or_timed_out") from exc
     if not isinstance(response, dict) or response.get("operation_id") != op_id or response.get("status") != "APPLY_QUEUED":
         raise HTTPException(503, "update_helper_did_not_confirm_queue")
     return response
