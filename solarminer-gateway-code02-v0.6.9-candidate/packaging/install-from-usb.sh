@@ -33,7 +33,7 @@ if dpkg-query -W -f='${db:Status-Status}' solarminer-gateway 2>/dev/null | grep 
 fi
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-PACKAGE_NAME=solarminer-gateway_0.6.30_amd64.deb
+PACKAGE_NAME=solarminer-gateway_0.6.31_amd64.deb
 PACKAGE="$HERE/$PACKAGE_NAME"
 MANIFEST="$HERE/solarminer-release.json"
 PUBLIC_KEY="$HERE/release-pubkey.pem"
@@ -43,7 +43,7 @@ for file in "$PACKAGE" "$MANIFEST" "$PUBLIC_KEY"; do
 done
 [ "$(dpkg-deb -f "$PACKAGE" Architecture)" = amd64 ] || fail "Pacote não é amd64."
 [ "$(dpkg-deb -f "$PACKAGE" Package)" = solarminer-gateway ] || fail "Pacote inesperado."
-[ "$(dpkg-deb -f "$PACKAGE" Version)" = 0.6.30 ] || fail "Versão do pacote não corresponde ao instalador."
+[ "$(dpkg-deb -f "$PACKAGE" Version)" = 0.6.31 ] || fail "Versão do pacote não corresponde ao instalador."
 
 WORK=$(mktemp -d /tmp/solarminer-bootstrap.XXXXXX)
 CREATED_TRUST=0
@@ -82,7 +82,7 @@ try:
                 "signature_algorithm", "signature", "compatibility", "migration_requirements"}
     if not isinstance(m, dict) or not required.issubset(m):
         raise ValueError("campos obrigatórios do manifesto em falta")
-    version = "0.6.30"
+    version = "0.6.31"
     if m["schema_version"] != 1 or m["signature_algorithm"] != "Ed25519":
         raise ValueError("esquema ou algoritmo não suportado")
     if m["version"] != version or m["release_id"] != "gateway-v" + version:
@@ -189,7 +189,7 @@ PY
   sleep 1
 done
 [ "$attempt" -lt 30 ] || fail "Health check não passou dentro de 60 segundos."
-log "Instalação inicial SolarMiner Gateway 0.6.30 concluída."
+log "Instalação inicial SolarMiner Gateway 0.6.31 concluída."
 log "O Gateway está configurado para verificar diariamente o repositório oficial; aplicar uma atualização continua a exigir ação Owner na PWA."
 trap - EXIT HUP INT TERM
 rm -rf "$WORK"

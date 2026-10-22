@@ -4,7 +4,7 @@ set -eu
 
 [ "$(id -u)" -eq 0 ] || { echo "Executa como root: sh repair-existing-from-usb.sh" >&2; exit 1; }
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-TARGET_VERSION=0.6.30
+TARGET_VERSION=0.6.31
 PACKAGE="$HERE/solarminer-gateway_${TARGET_VERSION}_amd64.deb"
 MANIFEST="$HERE/solarminer-release.json"
 PUBLIC_KEY="$HERE/release-pubkey.pem"
@@ -153,6 +153,14 @@ trap rollback EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+# A failed online activation may leave current pointing at the candidate that
+# could not start. Restore the package-recorded release before dpkg runs
+# postinst; postinst restarts the service and must start the known-good code.
+log "A selecionar a release anterior conhecida $OLD_RELEASE_NAME antes de atualizar os helpers locais."
+rm -f /opt/solarminer/.current-usb-repair
+ln -s "releases/$OLD_RELEASE_NAME" /opt/solarminer/.current-usb-repair
+mv -Tf /opt/solarminer/.current-usb-repair "$CURRENT"
 
 log "A instalar o pacote assinado da pen; o updater online não será usado."
 DEBIAN_FRONTEND=noninteractive apt-get install -y "$PACKAGE" >>"$LOG" 2>&1 || fail "Instalação Debian falhou. Consulta $LOG; o rollback será tentado."

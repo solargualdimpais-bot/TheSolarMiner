@@ -2,7 +2,7 @@
 
 Standalone Gateway foundation for local identity, bootstrap, authentication, authorization, device identity and audit. This directory is deliberately separate from the archived Prova 0 v0.3.0 artifacts. The current package version is recorded in `packaging/control`; the API-reported version remains `0.6.0` for compatibility. Release workflow builds, tests, signs and publishes the Debian package and USB bundle.
 
-CODE02 v0.6.30 improves diagnostics for Deye Modbus TCP and the Braiins OS Antminer API. The Owner PWA now distinguishes saved configuration, TCP reachability, Modbus response and API response. Deye uses the standard device-identification probe instead of guessing register 0; Antminer requests use the documented JSON line framing. It remains read-only: no Deye register map or Antminer power-control command has been added. Tesla Fleet remains limited to EV charging-state reads. See [`docs/HARDWARE_INTEGRATIONS.md`](docs/HARDWARE_INTEGRATIONS.md), [`docs/EV_TESLA_CHARGING.md`](docs/EV_TESLA_CHARGING.md) and [`docs/UPDATE_AND_ROLLBACK.md`](docs/UPDATE_AND_ROLLBACK.md).
+CODE02 v0.6.31 improves recovery after a blocked rollback and exposes failure diagnostics in the Owner PWA. Recovery retries the validated previous release and database backup; it does not repeat the failed update. See [`docs/CHANGELOG_V0631.md`](docs/CHANGELOG_V0631.md) and [`docs/UPDATE_AND_ROLLBACK.md`](docs/UPDATE_AND_ROLLBACK.md).
 
 ## Build and test
 

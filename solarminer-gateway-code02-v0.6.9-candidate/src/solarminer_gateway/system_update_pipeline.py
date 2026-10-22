@@ -475,7 +475,11 @@ class SystemUpdatePipeline:
         from .deployment_recovery import DeploymentReleaseSwitch
         connector_recovery = DeploymentReleaseSwitch(self.root).recover_pending()
         record = self._read_state()
-        if not record or record.get("state") in TERMINAL:
+        # RECOVERY_BLOCKED is visible as a terminal result to the Owner, but
+        # it must remain retryable by the independent recovery service. A
+        # transient stop/start or health-check failure must not permanently
+        # disable restoration of the validated previous release and DB backup.
+        if not record or (record.get("state") in TERMINAL and record.get("state") != "RECOVERY_BLOCKED"):
             if record and isinstance(record.get("operation_id"), str) and record.get("state") in TERMINAL:
                 self._db_state(record["operation_id"], record["state"], record)
             return {"status": "clean", "state": record.get("state") if record else None,
@@ -489,6 +493,12 @@ class SystemUpdatePipeline:
         if not isinstance(op_id, str) or not UUID_RE.fullmatch(op_id): raise PipelineError("recovery_operation_id_invalid")
         backup_raw, previous_raw = record.get("backup_path"), record.get("previous_target")
         if not isinstance(previous_raw, str): raise PipelineError("recovery_previous_target_missing")
+        if record.get("state") == "RECOVERY_BLOCKED" and not isinstance(backup_raw, str):
+            raise PipelineError("recovery_blocked_database_backup_missing")
+        if isinstance(backup_raw, str):
+            backup_candidate = Path(backup_raw)
+            if backup_candidate.is_symlink() or self.backups.resolve() not in backup_candidate.resolve().parents:
+                raise PipelineError("recovery_backup_path_invalid")
         previous = (self.root / previous_raw).resolve()
         if self.releases.resolve() not in previous.parents or not previous.is_dir(): raise PipelineError("recovery_previous_release_invalid")
         self._record("ROLLING_BACK", operation_id=op_id, previous_target=previous_raw,

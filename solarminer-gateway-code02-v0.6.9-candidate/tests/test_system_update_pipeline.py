@@ -194,3 +194,36 @@ def test_recovery_reconciles_interrupted_switch_and_restores_database(tmp_path: 
     assert json.loads((root / "update-state.json").read_text())["state"] == "ROLLED_BACK"
     with sqlite3.connect(db) as conn:
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+
+def test_recovery_retries_recovery_blocked_operation_with_valid_backup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from solarminer_gateway.database_backup import create_database_backup
+    pipeline, root, previous, db, op_id = _pipeline_fixture(tmp_path, monkeypatch)
+    target = root / "releases/0.6.9"
+    target.mkdir(parents=True)
+    backup = create_database_backup(db, root / "backups")
+    pipeline._switch(target)
+    pipeline._record("RECOVERY_BLOCKED", operation_id=op_id, target_version="0.6.9",
+                     previous_target="releases/0.6.8", new_target="releases/0.6.9",
+                     backup_path=backup["backup_path"], failure="PipelineError",
+                     rollback_failure="TimeoutExpired")
+    real_runner = pipeline.runner
+    active_calls = [0]
+    def runner(args, **kwargs):
+        if args[0] == "/usr/bin/systemctl" and args[1:3] == ["is-active", "solarminer-gateway.service"]:
+            active_calls[0] += 1
+            if active_calls[0] == 1:
+                return subprocess.CompletedProcess(args, 0, "active\n", "")
+            return subprocess.CompletedProcess(args, 3, "inactive\n", "")
+        return real_runner(args, **kwargs)
+    pipeline.runner = runner
+    monkeypatch.setattr(pipeline, "_health", lambda expected, seconds: expected == "0.6.8")
+    monkeypatch.setattr(pipeline, "_uid", lambda _name: 0)
+    monkeypatch.setattr(pipeline, "_gid", lambda _name: 0)
+    monkeypatch.setattr("solarminer_gateway.system_update_pipeline.os.chown", lambda *_args: None)
+
+    result = pipeline.recover()
+
+    assert result["state"] == "ROLLED_BACK"
+    assert os.readlink(root / "current") == "releases/0.6.8"
+    assert json.loads((root / "update-state.json").read_text())["state"] == "ROLLED_BACK"

@@ -242,3 +242,4 @@ html[data-font="small"]{--font-ui-scale:.9;}html[data-font="normal"]{--font-ui-s
 .gateway-auth-panel{width:100%}
 .nav-item[hidden],.mobile-nav button[hidden],.gateway-auth-panel[hidden],[hidden]{display:none!important}
 @media(max-width:680px){.mobile-nav{grid-template-columns:repeat(auto-fit,minmax(0,1fr))}.mobile-nav button[hidden]{display:none!important}}
+#gateway-update-details{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:10px}

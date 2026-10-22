@@ -1,6 +1,10 @@
 # API v1 (CODE 01)
 
-## CODE02 v0.6.30 — diagnósticos de ligação de hardware
+## CODE02 v0.6.31 — estado e diagnóstico de recuperação de atualização
+
+`GET /api/v1/system/update/status` inclui o identificador e estado da operação. `details.pipeline` contém `failure`, `rollback_failure`, `recovery` e `finished_at_utc` quando aplicáveis. A PWA Owner apresenta a operação, versões e causas da falha/rollback sem exigir acesso ao terminal.
+
+`RECOVERY_BLOCKED` não volta a aplicar a versão que falhou. O serviço de recuperação pode repetir apenas o rollback para a release anterior e a restauração do backup SQLite validado.
 
 `POST /api/v1/integrations/hardware/read` now returns `configuration` for unsaved fields and per-device connection states for TCP, Modbus, and BOSminer API. Missing configuration is no longer shown as a completed read. Deye uses FC43/MEI14 Read Device Identification instead of guessing an FC03 register. Braiins OS receives JSON newline requests for `summary`, `stats`, and `devs`. The endpoint still sends no control commands.
 

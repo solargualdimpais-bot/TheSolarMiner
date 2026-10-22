@@ -843,6 +843,18 @@ async function refreshGatewayUpdateStatus() {
   const info = sessionInfo();
   if (!info.authenticated || info.user.role !== "owner") throw new Error("Apenas o Owner pode consultar atualizações.");
   const result = await readGatewayUpdateStatus();
+  const pipeline = result.details?.pipeline || {};
+  const failure = pipeline.failure || result.details?.failure || result.details?.reason;
+  const rollbackFailure = pipeline.rollback_failure || result.details?.rollback_failure;
+  const diagnosticRows = [
+    result.operation_id ? `Operação: ${result.operation_id}` : "",
+    result.installed_version ? `Versão instalada: ${result.installed_version}` : "",
+    result.target_version ? `Versão de destino: ${result.target_version}` : "",
+    failure ? `Falha da atualização: ${failure}` : "",
+    rollbackFailure ? `Falha ao recuperar a versão anterior: ${rollbackFailure}` : "",
+    pipeline.recovery ? `Recuperação: ${pipeline.recovery}` : "",
+    pipeline.finished_at_utc ? `Terminado em: ${pipeline.finished_at_utc}` : ""
+  ].filter(Boolean);
   if (result.status === "VERIFIED" && result.target_version) {
     setGatewayUpdateDetails({
       status: "verified_staged", installed_version: result.installed_version,
@@ -859,9 +871,12 @@ async function refreshGatewayUpdateStatus() {
   } else {
     setGatewayUpdateDetails(null);
   }
+  const statusDetails = $("#gateway-update-details");
+  if (statusDetails && diagnosticRows.length) statusDetails.textContent = diagnosticRows.join("\n");
   showGatewayUpdateMessage(result.status === "VERIFIED" && !result.activation_available
     ? "Pacote verificado; a aplicação está bloqueada pelo preflight de recuperação."
     : result.status === "CURRENT" ? `O Gateway já está atualizado. Versão verificada: ${result.target_version}.`
+    : result.status === "RECOVERY_BLOCKED" ? "A recuperação automática não foi confirmada. Consulta abaixo os motivos registados; não repitas a aplicação."
     : result.status === "FAILED" ? `A última verificação falhou: ${gatewayUpdateFailureText(result.details?.reason)}`
     : `Estado da atualização: ${result.status || "desconhecido"}${result.target_version ? ` · destino ${result.target_version}` : ""}.`);
   return result;
