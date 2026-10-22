@@ -305,3 +305,47 @@ def test_repository_update_check_rejects_invalid_and_unconfigured_urls(client, m
     assert rejected.status_code == 200
     assert rejected.json()["status"] == "rejected"
     assert rejected.json()["message"] == "repository_not_allowlisted"
+
+
+def test_hardware_integration_config_is_owner_only_and_secrets_are_redacted(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(gateway.hardware_integrations, "_data_dir", lambda: tmp_path / "gateway-data")
+    token = owner_session(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    secret = "tuya-access-secret-123"
+    saved = client.put("/api/v1/integrations/hardware", headers=headers, json={
+        "deye": {"host": "192.168.8.10", "port": 502, "unit_id": 1, "model": "other"},
+        "antminer": {"host": "192.168.8.20", "port": 4028, "model": "S19K Pro"},
+        "tuya": {"region": "eu_central", "client_id": "tuya-client-id", "client_secret": secret,
+                 "devices": [{"device_id": "tuya_device_123", "name": "Plug"}]},
+    })
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["tuya"]["configured"] is True
+    assert secret not in saved.text
+    read = client.get("/api/v1/integrations/hardware", headers=headers)
+    assert read.status_code == 200
+    assert read.json()["deye"]["host"] == "192.168.8.10"
+    assert read.json()["antminer"]["port"] == 4028
+    assert read.json()["tuya"]["device_ids"] == ["tuya_device_123"]
+    assert secret not in read.text
+    invalid = client.put("/api/v1/integrations/hardware", headers=headers, json={
+        "deye": {"host": "8.8.8.8", "port": 502, "unit_id": 1}
+    })
+    assert invalid.status_code == 422
+
+    with gateway.db() as conn:
+        uid, did = "hardware-admin", "hardware-admin-device"
+        _, dpub = keypair()
+        der = serialization.load_pem_public_key(dpub.encode()).public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+        conn.execute("INSERT INTO users(id,account_id,username,password_hash,role,status,created_at) VALUES(?,?,?,?, 'admin','active',?)",
+                     (uid, uid, uid, gateway.PASSWORDS.hash("hardware-admin-password"), gateway.utcnow()))
+        conn.execute("INSERT INTO devices(id,public_key_pem,public_key_sha256,mac_declared,mac_status,status,created_at) VALUES(?,?,?,?,'declared','active',?)",
+                     (did, dpub, hashlib.sha256(der).hexdigest(), "AA:BB:CC:DD:EE:77", gateway.utcnow()))
+        conn.execute("INSERT INTO user_devices(user_id,device_id,status,created_at) VALUES(?,?,'active',?)", (uid, did, gateway.utcnow()))
+        raw = "hardware-admin-session-token"
+        conn.execute("INSERT INTO sessions(token_sha256,user_id,device_id,created_at,expires_at,credential_version) VALUES(?,?,?,?,?,1)",
+                     (gateway.token_hash(raw), uid, did, int(time.time()), int(time.time()) + 3600))
+    admin_headers = {"Authorization": "Bearer hardware-admin-session-token"}
+    assert client.get("/api/v1/integrations/hardware", headers=admin_headers).status_code == 403
+    assert client.put("/api/v1/integrations/hardware", headers=admin_headers, json={}).status_code == 403
+    assert client.post("/api/v1/integrations/hardware/read", headers=admin_headers, json={}).status_code == 403

@@ -308,6 +308,16 @@ export async function readGatewayEnergy() {
   ]);
   return { status, categories: categories.categories || [], equipment: equipment.equipment || [], fetchedAt: new Date().toISOString() };
 }
+export async function readGatewayHardwareIntegrationConfig() {
+  return gatewayApi("/api/v1/integrations/hardware");
+}
+export async function saveGatewayHardwareIntegrationConfig(config) {
+  if (!config || typeof config !== "object") throw new Error("Configuração de equipamentos inválida.");
+  return gatewayApi("/api/v1/integrations/hardware", { method: "PUT", body: config });
+}
+export async function readGatewayHardwareIntegrations() {
+  return gatewayApi("/api/v1/integrations/hardware/read", { method: "POST", body: {} });
+}
 export async function revokeGatewayInvite(inviteId) {
   if (!/^[0-9a-f-]{36}$/i.test(inviteId)) throw new Error("Identificador de convite inválido.");
   return gatewayApi(`/api/v1/invites/${encodeURIComponent(inviteId)}/revoke`, { method: "POST", body: {} });

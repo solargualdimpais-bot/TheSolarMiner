@@ -3,7 +3,7 @@ import { DEMO_CONTROL_CONFIG, createDemoControlState, updateDemoControl, toggleD
 import { renderWorkspacePage, renderHomePreferenceLinks, renderHouseSearch, handleWorkspaceAction, handleWorkspaceChange, applyPreferences, getWorkspacePageLabel, workspace, getEditableEntity, saveEditableEntity, saveDemoWorkspace, hydrateWorkspacePhotos } from "./workspace-ui.js";
 import { renderAutomationsPage, renderSolarProductionPage, renderDemoAdminPanel, handleFeatureAction, saveAutomationForm, addDemoUser, saveDemoUserEdit, saveSolarWeather, demoFeatures } from "./features-v053.js";
 import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classifyEndpoint, PRESENCE_API_STATUS } from "./gateway-connection.js";
-import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, configureGatewayTailscale, startGatewayTailscale } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, saveGatewayHardwareIntegrationConfig, readGatewayHardwareIntegrations } from "./gateway-auth.js";
 
 let automationEditingId = "";
 const state = { page: "inicio", mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], lastUpdated: null, lastMeasurementAt: null, refreshing: false, propertyPhoto: "", demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [] };
@@ -479,6 +479,7 @@ const invitePanel = $("#gateway-invite-management");
 const userPanel = $("#gateway-user-management");
 const updatePanel = $("#gateway-update-management");
 const tailscalePanel = $("#gateway-tailscale-management");
+const hardwarePanel = $("#gateway-hardware-management");
 let verifiedGatewayUpdate = null;
 let inviteQrObjectUrl = null;
 let ownerRecoveryFingerprint = "";
@@ -515,15 +516,72 @@ function updateSessionUi() {
         $("#gateway-tailscale-status").textContent = `Não foi possível consultar o Tailscale: ${error.message}`;
       });
     }
+    if (hardwarePanel) {
+      hardwarePanel.hidden = info.user.role !== "owner";
+      if (info.user.role === "owner") refreshHardwareIntegrationConfig().catch(error => {
+        $("#hardware-integrations-status").textContent = `Não foi possível carregar a configuração: ${error.message}`;
+      });
+    }
   } else {
     status.textContent = "Sem sessão ativa. Ao testar o endpoint, este dispositivo tenta autenticar-se pela identidade guardada.";
     invitePanel.hidden = true;
     userPanel.hidden = true;
     if (updatePanel) updatePanel.hidden = true;
     if (tailscalePanel) tailscalePanel.hidden = true;
+    if (hardwarePanel) hardwarePanel.hidden = true;
     verifiedGatewayUpdate = null;
   }
 }
+async function refreshHardwareIntegrationConfig() {
+  const config = await readGatewayHardwareIntegrationConfig();
+  const deye = config.deye || {}, miner = config.antminer || {}, tuya = config.tuya || {};
+  $("#hardware-deye-host").value = deye.host || "";
+  $("#hardware-deye-port").value = deye.port || 502;
+  $("#hardware-deye-unit").value = deye.unit_id ?? 1;
+  $("#hardware-antminer-host").value = miner.host || "";
+  $("#hardware-antminer-port").value = miner.port || 4028;
+  $("#hardware-tuya-region").value = tuya.region || "eu_central";
+  $("#hardware-tuya-client-id").value = tuya.client_id || "";
+  $("#hardware-tuya-client-secret").value = "";
+  $("#hardware-tuya-devices").value = (tuya.devices || []).map(device => `${device.device_id} | ${device.name}`).join("\n");
+  $("#hardware-integrations-status").textContent = `Configuração carregada · Deye ${deye.host ? "definido" : "por configurar"} · Antminer ${miner.host ? "definido" : "por configurar"} · Tuya ${tuya.configured ? "configurado; segredo oculto" : "por configurar"}.`;
+  return config;
+}
+$("#hardware-integrations-save").addEventListener("click", async () => {
+  const info = sessionInfo(), button = $("#hardware-integrations-save"), status = $("#hardware-integrations-status");
+  if (!info.authenticated || info.user.role !== "owner") { status.textContent = "Só o Owner autenticado pode alterar as ligações."; return; }
+  button.disabled = true; status.textContent = "A guardar a configuração privada no Gateway…";
+  try {
+    const deyeHost = $("#hardware-deye-host").value.trim(), minerHost = $("#hardware-antminer-host").value.trim();
+    const tuyaRows = $("#hardware-tuya-devices").value.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    const tuyaDevices = tuyaRows.map(line => { const [device_id, ...nameParts] = line.split("|"); return { device_id: device_id.trim(), name: nameParts.join("|").trim() || `Tuya ${device_id.trim()}` }; });
+    const tuyaClient = $("#hardware-tuya-client-id").value.trim(), tuyaSecret = $("#hardware-tuya-client-secret").value;
+    const payload = {
+      deye: { enabled: Boolean(deyeHost), host: deyeHost, port: Number($("#hardware-deye-port").value), unit_id: Number($("#hardware-deye-unit").value), model: "other" },
+      antminer: { enabled: Boolean(minerHost), host: minerHost, port: Number($("#hardware-antminer-port").value), model: "S19K Pro" }
+    };
+    if (tuyaRows.length || tuyaClient || tuyaSecret) {
+      payload.tuya = { region: $("#hardware-tuya-region").value, client_id: tuyaClient || undefined, client_secret: tuyaSecret || undefined, devices: tuyaDevices };
+    }
+    const saved = await saveGatewayHardwareIntegrationConfig(payload);
+    $("#hardware-tuya-client-secret").value = "";
+    status.textContent = `Ligações guardadas no Gateway. Segredos nunca são devolvidos à PWA. Tuya: ${saved.tuya?.configured ? "credenciais guardadas" : "não configurado"}.`;
+  } catch (error) { status.textContent = `Não foi possível guardar: ${error.message}`; }
+  finally { button.disabled = false; }
+});
+$("#hardware-integrations-read").addEventListener("click", async () => {
+  const info = sessionInfo(), button = $("#hardware-integrations-read"), status = $("#hardware-integrations-status"), output = $("#hardware-integrations-result");
+  if (!info.authenticated || info.user.role !== "owner") { status.textContent = "Só o Owner autenticado pode iniciar a leitura."; return; }
+  button.disabled = true; output.hidden = true; status.textContent = "A consultar os equipamentos a partir do Gateway…";
+  try {
+    const result = await readGatewayHardwareIntegrations();
+    output.textContent = JSON.stringify(result, null, 2);
+    output.hidden = false;
+    status.textContent = result.errors?.length ? `Leitura concluída com ${result.errors.length} falha(s). Os erros aparecem abaixo; nenhum comando de controlo foi enviado.` : "Leitura concluída. Os valores permanecem LIVE_UNVERIFIED até validação física.";
+    await refreshGatewayReadings();
+  } catch (error) { status.textContent = `A leitura falhou: ${error.message}`; }
+  finally { button.disabled = false; }
+});
 $("#gateway-bootstrap-form").addEventListener("submit", async event => {
   event.preventDefault();
   const passwordField = $("#gateway-bootstrap-password");

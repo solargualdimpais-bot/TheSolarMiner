@@ -2,6 +2,8 @@
 
 Standalone Gateway foundation for local identity, bootstrap, authentication, authorization, device identity and audit. This directory is deliberately separate from the archived Prova 0 v0.3.0 artifacts. The current package version is recorded in `packaging/control`; the API-reported version remains `0.6.0` for compatibility. Release workflow builds, tests, signs and publishes the Debian package and USB bundle.
 
+CODE02 v0.6.24 acrescenta configuração Owner e leitura sem comandos de controlo para Deye Modbus, Antminer S19K Pro e Tuya Cloud. Ver [`docs/HARDWARE_INTEGRATIONS.md`](docs/HARDWARE_INTEGRATIONS.md) para requisitos, configuração e limitações.
+
 ## Build and test
 
 ```sh

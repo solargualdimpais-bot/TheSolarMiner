@@ -130,6 +130,7 @@ body:has(.ws-house-background)::before{content:"";position:fixed;inset:0;z-index
 .favorite-device{background:rgba(26,26,23,.78);backdrop-filter:blur(8px)}
 .context-editor{width:min(620px,calc(100vw - 24px));max-height:min(88vh,900px);overflow:auto}
 .context-editor .dialog-body{overflow:visible}
+.integration-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}.integration-form-grid fieldset{min-width:0;border:1px solid var(--line);border-radius:12px;padding:13px;background:#141413}.integration-form-grid legend{padding:0 6px;color:var(--gold);font-size:11px}.integration-form-grid label{display:block;font-size:10px;margin:12px 0 7px}.integration-form-grid input,.integration-form-grid select,.integration-form-grid textarea{display:block;width:100%;padding:10px;border:1px solid var(--line);border-radius:9px;background:#10100f;color:var(--text)}.integration-form-grid .field-note{margin:9px 0 0}.integration-result{white-space:pre-wrap;overflow-wrap:anywhere;max-height:300px;overflow:auto;padding:12px;border:1px solid var(--line);border-radius:10px;background:#10100f;color:#d8c99c;font-size:9px;line-height:1.55}
 .context-editor-preview{border:1px solid var(--line);border-radius:12px;overflow:hidden;margin:12px 0;background:#101010}
 .context-editor-preview img{display:block;width:100%;max-height:230px;object-fit:contain}
 .context-editor textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:10px;color:var(--text);font:inherit}
@@ -232,3 +233,5 @@ html[data-font="small"]{--font-ui-scale:.9;}html[data-font="normal"]{--font-ui-s
 .gateway-user-row select{min-height:40px;border:1px solid var(--line,#39372f);border-radius:9px;background:rgba(0,0,0,.2);color:var(--text,#f3f0e8);padding:8px;font:inherit}
 .gateway-user-row button{margin-top:2px}
 @media(max-width:580px){.gateway-form-grid{grid-template-columns:minmax(0,1fr)}.gateway-form-grid button{width:100%}.invite-row{align-items:flex-start;flex-direction:column}.invite-row button{width:100%}.gateway-user-row>label{width:100%}.gateway-auth-panel{padding:12px}}
+.integration-form-grid fieldset{margin:0}
+@media(max-width:680px){.integration-form-grid{grid-template-columns:1fr}.integration-form-grid fieldset{padding:11px}}
