@@ -1,4 +1,4 @@
-const CACHE_NAME = "the-solar-miner-static-v0.5.8-owner-user-management-recovery-usb-1";
+const CACHE_NAME = "the-solar-miner-static-v0.5.8-owner-user-management-recovery-usb-password-device-login-1";
 const STATIC_ASSETS = [
   "./", "./index.html", "./styles.css", "./app.js", "./gateway-connection.js",
   "./gateway-auth.js", "./app-core.js", "./workspace-ui.js", "./demo-mode.js",

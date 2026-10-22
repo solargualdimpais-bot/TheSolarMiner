@@ -1,4 +1,4 @@
-const CACHE_NAME = "the-solar-miner-owner-pwa-v0.6.17";
+const CACHE_NAME = "the-solar-miner-owner-pwa-v0.6.18-password-device-login-1";
 const STATIC_ASSETS = [
   "./", "./index.html", "./styles.css", "./app.js", "./gateway-connection.js",
   "./gateway-auth.js", "./app-core.js", "./workspace-ui.js", "./demo-mode.js",

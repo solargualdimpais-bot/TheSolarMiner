@@ -10,6 +10,7 @@ All network use is intended over TLS. A fresh USB installation sets the initial 
 | POST | `/api/v1/bootstrap/owner` | Exact allow-listed HTTPS origin, locally set one-time setup password + Ed25519 proof + timestamp/nonce; legacy token remains supported |
 | POST | `/api/v1/auth/device-login` | Associated device Ed25519 signature; issues a temporary session without a password |
 | POST | `/api/v1/auth/login` | Legacy password + associated device Ed25519 signature |
+| POST | `/api/v1/auth/password-device-login` | Existing active account password + new device Ed25519 proof; registers that browser device and issues a session. Rate limited; password is not logged |
 | POST | `/api/v1/auth/logout` | Authenticated session |
 | GET | `/api/v1/status` | `read` permission |
 | POST | `/api/v1/users` | `manage_users`; owner creation is prohibited here |
@@ -32,7 +33,7 @@ Role permissions:
 - `operator`: read and operate.
 - `viewer`: read only.
 
-The current CODE 01 API does not expose a general-purpose operation endpoint, password-change endpoint, recovery command, independent MAC verification procedure, or a complete cross-platform browser signing client. A1b adds the role-change and account-status endpoints documented below; no broader user-management endpoints are claimed.
+The current API does not expose a general-purpose operation endpoint, password-change endpoint, or independent MAC verification procedure. The PWA signing client uses browser Web Crypto; device enrollment and Gateway operations remain subject to the documented role permissions.
 
 
 ## CODE 01 / A1b user management
@@ -57,6 +58,12 @@ Local commands are installed as `/usr/bin/solarminer-gateway`:
 Each command requires a TTY, root privileges, and a provably stopped `solarminer-gateway.service`. Recovery keys and passwords are read interactively without echo and are never accepted as command-line arguments or environment variables. The challenge message signed by a new device is the exact UTF-8 text printed by the command, beginning `SOLARMINER-GATEWAY-DEVICE-PROOF-V1`, followed by the purpose (`recovery` or `emergency`), owner UUID, and 64-character lowercase hex challenge, each on a separate line. Setup proofs also include the existing device UUID before the challenge.
 
 A successful recovery invalidates all prior owner sessions and increments `credential_version`. A role removal from owner or account deactivation consumes any active recovery key. The new recovery key is displayed only after commit. If the commit succeeds but terminal delivery fails, the plaintext key cannot be reconstructed from the stored verifier; the operator must use the emergency procedure to rotate it again. Audit success events are in the same transaction as the protected mutation; failed attempts are recorded separately without secret material.
+
+## CODE 02 v0.6.18 — login de novo dispositivo
+
+`POST /api/v1/auth/password-device-login` accepts `username`, `password`, PEM Ed25519 `public_key_pem`, a fresh `timestamp`/`nonce` and a device signature. The signature covers UTF-8 `PASSWORD-DEVICE-LOGIN\n{username}\n{timestamp}\n{nonce}\n{sha256(password UTF-8)}\n{sha256(public-key SPKI DER)}`. The Gateway requires a valid active account, verifies the signature and password, then associates the public key with that account and issues a temporary bearer session in one SQLite transaction. Existing keys can be used only when the key is already active and associated with the same account. Authentication failures do not create device rows. Nginx throttles requests per source IP; the app limits attempts by both source IP and a keyed hash of the username, so the account limit is shared across source IPs without storing usernames in the attempt table. Plaintext passwords are neither persisted nor logged; the request must use validated HTTPS.
+
+The packaged Nginx edge listens on TCP 80/443; the app remains on loopback TCP 8443 for health checks and internal proxy traffic. See `REMOTE_ACCESS_AND_TLS.md` for the public-IP certificate workflow and network requirements.
 
 ## CODE 02 v0.6.9 — verificação de atualização por repositório
 

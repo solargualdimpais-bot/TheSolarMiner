@@ -40,7 +40,7 @@ from . import energy_registry
 from . import updates as update_manager
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.17"
+PACKAGE_VERSION = "0.6.18"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -88,6 +88,8 @@ CREATE TABLE IF NOT EXISTS bootstrap(
 );
 CREATE TABLE IF NOT EXISTS bootstrap_attempts(ip_hash TEXT NOT NULL, attempted_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_bootstrap_attempts_ip_time ON bootstrap_attempts(ip_hash,attempted_at);
+CREATE TABLE IF NOT EXISTS password_device_attempts(ip_hash TEXT NOT NULL, account_hash TEXT NOT NULL, attempted_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_password_device_attempts_ip_time ON password_device_attempts(ip_hash,attempted_at);
 CREATE TABLE IF NOT EXISTS sessions(
  token_sha256 TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), device_id TEXT NOT NULL REFERENCES devices(id),
  created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, revoked_at INTEGER, credential_version INTEGER NOT NULL
@@ -201,6 +203,15 @@ def token_hash(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def request_source_ip(request: Request) -> str:
+    # The app listens only on loopback behind the packaged Nginx proxy. Nginx
+    # overwrites X-Real-IP, so this is the actual client address for rate limits.
+    forwarded = request.headers.get("x-real-ip", "").strip()
+    if forwarded and len(forwarded) <= 64:
+        return forwarded
+    return request.client.host if request.client else "unknown"
+
+
 def normalize_mac(value: str) -> str:
     if not isinstance(value, str) or not MAC_RE.fullmatch(value):
         raise HTTPException(422, "invalid_mac")
@@ -263,6 +274,10 @@ def initialize() -> None:
         bootstrap_columns = {row[1] for row in conn.execute("PRAGMA table_info(bootstrap)")}
         if "setup_password_hash" not in bootstrap_columns:
             conn.execute("ALTER TABLE bootstrap ADD COLUMN setup_password_hash TEXT")
+        password_attempt_columns = {row[1] for row in conn.execute("PRAGMA table_info(password_device_attempts)")}
+        if "account_hash" not in password_attempt_columns:
+            conn.execute("ALTER TABLE password_device_attempts ADD COLUMN account_hash TEXT NOT NULL DEFAULT ''")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_password_device_attempts_account_time ON password_device_attempts(account_hash,attempted_at)")
         conn.executescript(PRESENCE_SCHEMA)
         conn.executescript(A1_TRIGGERS)
         connector_manager.ensure_schema(conn)
@@ -408,6 +423,17 @@ class LoginRequest(BaseModel):
     timestamp: int
     nonce: str = Field(min_length=16, max_length=128)
     signature: str = Field(min_length=80, max_length=256)
+
+
+class PasswordDeviceLoginRequest(BaseModel):
+    """Authenticate a new browser device with an existing account password."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    username: StrictStr = Field(min_length=1, max_length=128)
+    password: StrictStr = Field(min_length=1, max_length=1024)
+    public_key_pem: StrictStr = Field(min_length=80, max_length=8192)
+    timestamp: int
+    nonce: StrictStr = Field(min_length=16, max_length=128)
+    signature: StrictStr = Field(min_length=128, max_length=128, pattern=r"^[0-9a-fA-F]{128}$")
 
 
 class CreateUser(BaseModel):
@@ -827,7 +853,7 @@ def bootstrap_owner(payload: BootstrapOwner, request: Request) -> dict[str, Any]
     # Remote bootstrap is allowed only from an exact, administratively
     # configured HTTPS origin and requires the password provisioned at the
     # Gateway console (or a legacy one-time token) plus fresh device proof.
-    remote = request.client.host if request.client else ""
+    remote = request_source_ip(request)
     origin = request.headers.get("origin", "").rstrip("/")
     same_origin = origin == f"{request.url.scheme}://{request.url.netloc}"
     if remote not in {"127.0.0.1", "::1", "testclient"} and not (same_origin or origin in _CORS_ORIGINS):
@@ -954,6 +980,90 @@ def login(payload: LoginRequest) -> dict[str, Any]:
                 conn.rollback()
             raise
     return {"access_token": bearer, "token_type": "Bearer", "expires_in": SESSION_TTL, "device_id": payload.device_id, "user": {"id": current["id"], "username": current["username"], "role": current["role"]}}
+
+
+@app.post("/api/v1/auth/password-device-login", status_code=201)
+def password_device_login(payload: PasswordDeviceLoginRequest, request: Request) -> dict[str, Any]:
+    """Register this browser's Ed25519 identity after the account password proves authority.
+
+    This is intentionally the user-visible recovery/login path for a new device.
+    TLS protects the password in transit; only a key proof and a password hash
+    are included in the signed canonical message. The password is never logged.
+    """
+    verify_fresh(payload.timestamp, payload.nonce)
+    username = payload.username.strip()
+    if not username or any(ord(char) < 32 or ord(char) == 127 for char in username):
+        raise HTTPException(401, "invalid_credentials_or_device")
+    key = load_public_key(payload.public_key_pem)
+    public_der = key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    public_hash = hashlib.sha256(public_der).hexdigest()
+    password_hash = hashlib.sha256(payload.password.encode("utf-8")).hexdigest()
+    canonical = (f"PASSWORD-DEVICE-LOGIN\n{username}\n{payload.timestamp}\n{payload.nonce}\n"
+                 f"{password_hash}\n{public_hash}").encode("utf-8")
+    try:
+        key.verify(bytes.fromhex(payload.signature), canonical)
+    except (ValueError, InvalidSignature) as exc:
+        raise HTTPException(401, "invalid_credentials_or_device") from exc
+
+    now = int(time.time())
+    source_hash = token_hash(request_source_ip(request))
+    account_hash = token_hash(username.casefold())
+    with db() as conn:
+        conn.execute("DELETE FROM password_device_attempts WHERE attempted_at < ?", (now - 3600,))
+        recent = conn.execute("SELECT COUNT(*) FROM password_device_attempts WHERE ip_hash=? AND attempted_at>=?",
+                              (source_hash, now - 300)).fetchone()[0]
+        account_recent = conn.execute("SELECT COUNT(*) FROM password_device_attempts WHERE account_hash=? AND attempted_at>=?",
+                                      (account_hash, now - 300)).fetchone()[0]
+        if recent >= 10 or account_recent >= 10:
+            raise HTTPException(429, "login_attempts_limited")
+        conn.execute("INSERT INTO password_device_attempts(ip_hash,account_hash,attempted_at) VALUES(?,?,?)",
+                     (source_hash, account_hash, now))
+        user = conn.execute("SELECT * FROM users WHERE username=? AND status='active'", (username,)).fetchone()
+        try:
+            password_ok = bool(user and PASSWORDS.verify(user["password_hash"], payload.password))
+        except (VerifyMismatchError, VerificationError, InvalidHashError):
+            password_ok = False
+        if not password_ok:
+            if user:
+                audit(conn, user["id"], "auth.password_device_login", None, "denied", {"reason": "invalid_credentials"})
+            raise HTTPException(401, "invalid_credentials_or_device")
+
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            current_user = conn.execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone()
+            if not current_user or current_user["status"] != "active" or current_user["credential_version"] != user["credential_version"]:
+                conn.rollback()
+                raise HTTPException(401, "invalid_credentials_or_device")
+            device = conn.execute("SELECT * FROM devices WHERE public_key_sha256=?", (public_hash,)).fetchone()
+            if device:
+                association = conn.execute("SELECT status FROM user_devices WHERE user_id=? AND device_id=?",
+                                           (current_user["id"], device["id"])).fetchone()
+                if device["status"] != "active" or not association or association["status"] != "active":
+                    conn.rollback()
+                    raise HTTPException(401, "invalid_credentials_or_device")
+                device_id = device["id"]
+            else:
+                device_id = str(uuid.uuid4())
+                conn.execute("INSERT INTO devices(id,public_key_pem,public_key_sha256,mac_declared,mac_status,status,created_at) VALUES(?,?,?,?,?,'active',?)",
+                             (device_id, payload.public_key_pem, public_hash, "unknown", "declared", utcnow()))
+                conn.execute("INSERT INTO user_devices(user_id,device_id,status,created_at) VALUES(?,?,'active',?)",
+                             (current_user["id"], device_id, utcnow()))
+            consume_nonce(conn, device_id, payload.nonce, payload.timestamp)
+            bearer = secrets.token_urlsafe(48)
+            conn.execute("INSERT INTO sessions(token_sha256,user_id,device_id,created_at,expires_at,revoked_at,credential_version) VALUES(?,?,?,?,?,NULL,?)",
+                         (token_hash(bearer), current_user["id"], device_id, now, now + SESSION_TTL, current_user["credential_version"]))
+            audit(conn, current_user["id"], "auth.password_device_login", device_id, "success", {"device_id": device_id})
+            conn.commit()
+        except HTTPException:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+    return {"access_token": bearer, "token_type": "Bearer", "expires_in": SESSION_TTL,
+            "device_id": device_id, "user": {"id": current_user["id"], "username": current_user["username"], "role": current_user["role"]}}
 
 
 @app.post("/api/v1/auth/device-login")
@@ -1400,7 +1510,7 @@ def redeem_invite(payload: RedeemInvite, request: Request) -> dict[str, Any]:
     except HTTPException:
         raise
     digest = token_hash(payload.invite_token)
-    ip_hash = token_hash(request.client.host if request.client else "unknown")
+    ip_hash = token_hash(request_source_ip(request))
     # Small local rate limit; only hashes of source IPs are retained.
     with db() as conn:
         conn.execute("DELETE FROM invite_attempts WHERE attempted_at < ?", (now - 3600,))
@@ -1487,7 +1597,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.17"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.18"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

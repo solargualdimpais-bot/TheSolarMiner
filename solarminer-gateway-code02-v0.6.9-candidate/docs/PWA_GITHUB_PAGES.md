@@ -1,54 +1,33 @@
 # Publicação e primeira configuração Owner
 
-## Publicar a PWA no GitHub Pages
+## Publicar no GitHub Pages
 
-O workflow .github/workflows/pwa-pages.yml publica a cópia integrada com a API e os controlos Owner de solarminer-gateway-code02-v0.6.9-candidate/web/pwa. Não publica a candidata visual isolada, que contém apenas dados sintéticos.
+O workflow `.github/workflows/pwa-pages.yml` publica a PWA integrada em `web/pwa`. Na primeira publicação, seleciona **Settings → Pages → GitHub Actions** em *Build and deployment → Source*. O endereço é `https://solargualdimpais-bot.github.io/TheSolarMiner/`. Alterações em `main` voltam a publicar a PWA depois das verificações do workflow.
 
-Na primeira publicação, abre **Settings → Pages** no repositório e seleciona **GitHub Actions** em **Build and deployment → Source**. Depois de guardar, o workflow valida a sintaxe JavaScript, executa os testes da PWA e publica o artefacto em:
+O Gateway permite apenas a origem exata `https://solargualdimpais-bot.github.io`; não usa wildcard.
 
-https://solargualdimpais-bot.github.io/TheSolarMiner/
+## Rede e TLS
 
-Cada alteração posterior à PWA em main volta a executar as verificações e a publicar o site. O origin permitido no Gateway é exatamente https://solargualdimpais-bot.github.io; não são permitidos origins com wildcard.
+O backend escuta apenas em `127.0.0.1:8443`. O Nginx do pacote recebe o tráfego externo em TCP 80/443, encaminha a API com TLS verificado para o backend e limita tentativas de login. TCP 80 serve o desafio ACME. O router deve encaminhar WAN TCP 80 → Gateway TCP 80 e WAN TCP 443 → Gateway TCP 443. Não encaminhes 8443.
 
-## Requisitos de rede e TLS
+O Gateway tenta emitir um certificado público Let's Encrypt para o seu IPv4 público e renova-o automaticamente. Na PWA, usa `https://IP-PUBLICO`, sem `:8443`. Um IP LAN `192.168.x.x` não corresponde ao certificado do IP WAN. Para usar o mesmo URL enquanto estás no Wi-Fi, o router precisa de suportar NAT loopback/hairpin. Requisitos, limitações de CGNAT e verificação estão em `docs/REMOTE_ACCESS_AND_TLS.md`.
 
-- O browser que abre a PWA tem de alcançar o Gateway pela porta TCP 8443.
-- A ligação é HTTPS estrita. Instala no dispositivo cliente o certificado público /var/lib/solarminer/server.crt depois de confirmares a sua fingerprint SHA-256 no Gateway. Não uses -k, não desatives a validação TLS e não confies num certificado entregue apenas pela mesma ligação que estás a tentar validar.
-- O hostname usado pelo browser tem de constar no SAN do certificado. O certificado instalado inicialmente inclui localhost, o hostname conhecido no momento da instalação e 127.0.0.1; um endereço IP LAN pode exigir renovação do certificado com esse IP no SAN.
-- O browser precisa de suportar Web Crypto Ed25519 e IndexedDB. A chave privada do cliente é não exportável e fica no armazenamento de identidade do origin da PWA.
+O browser precisa de Web Crypto Ed25519 e IndexedDB. A PWA não ignora nem contorna erros TLS.
 
 ## Criar o primeiro Owner
 
-1. O instalador USB termina com o pedido local de palavra-passe do Owner. Escreve-a na consola do Gateway; os caracteres ficam visíveis. Confirma-a quando o instalador pedir. O texto não é guardado em logs; o Gateway mantém temporariamente apenas um verificador Argon2id.
-2. Abre o URL do GitHub Pages, escolhe **Gateway · detalhes**, introduz o endereço HTTPS do Gateway e seleciona **Testar endpoint**.
-3. Quando a PWA detetar `BOOTSTRAP_PENDING`, apresenta a janela **Registar este telemóvel como Owner**. Introduz o teu nome e a palavra-passe definida na consola local. O primeiro Owner e a chave Ed25519 deste browser são registados uma só vez. Guarda a chave de recuperação apresentada nessa janela.
+1. No fim da instalação USB, introduz duas vezes na consola local do Gateway a palavra-passe inicial do Owner. Os caracteres são visíveis enquanto escreves; fica guardado apenas um verificador Argon2id.
+2. Abre o GitHub Pages no iPhone, abre **Gateway · detalhes**, informa `https://IP-PUBLICO` e testa a ligação.
+3. Quando surgir `BOOTSTRAP_PENDING`, escolhe **Registar este telemóvel como Owner**, informa o nome e a palavra-passe definida localmente. A PWA gera uma chave Ed25519 para esse browser. Guarda offline a chave de recuperação mostrada uma única vez.
 
-Não é necessário copiar token, MAC nem fingerprint para a PWA. O browser valida o certificado HTTPS para o endpoint e fixa automaticamente a identidade Ed25519 do Gateway. O bootstrap mantém a assinatura Ed25519 do dispositivo, a origem HTTPS autorizada, uma única criação de Owner e limite de tentativas. Mais detalhes: `docs/OWNER_FIRST_BOOTSTRAP.md`.
+O bootstrap exige uma origem permitida, palavra-passe configurada localmente, assinatura de dispositivo e uso único. Não pede token nem MAC.
 
-Nas visitas seguintes, a PWA tenta autenticar automaticamente o dispositivo registado com uma nova assinatura Ed25519. Não mostra um formulário de palavra-passe. O endpoint HTTPS escolhido fica guardado neste browser. Se apagares os dados de Safari, perderes a chave local ou mudares de telemóvel, usa o procedimento de recuperação; a palavra-passe inicial já não reabre o registo Owner.
+## Aceder noutro browser/dispositivo
 
-## Modo Owner e limites de dados
+Na primeira ligação desse browser, introduz o nome e a palavra-passe de uma conta ativa do Gateway. A PWA cria a chave Ed25519 local e o Gateway associa o dispositivo à conta. A palavra-passe só é transmitida pelo endpoint HTTPS e não é escrita nos logs. Os limites por IP e as rotas continuam a respeitar o papel da conta. Depois, a identidade do dispositivo fica guardada no armazenamento do browser e é usada para as sessões seguintes.
 
-Uma sessão Owner pode consultar os dados disponíveis no Gateway, gerir convites e verificar/aplicar atualizações assinadas. A PWA autenticada já não preenche cartões com amostras simuladas; áreas sem contrato de API ou sem equipamento registado mostram estado vazio/indisponível. A gestão Owner fica em **Gateway · detalhes**.
+Se apagares os dados do Safari ou trocares de equipamento, autentica novamente com as credenciais da conta. O fluxo de recuperação de Owner continua separado e exige a chave de recuperação.
 
-O Gateway disponibiliza APIs de leitura/identidade, administração e atualização, mas não há ainda uma API de comandos físicos para todos os equipamentos, regras de automatização, meteorologia ou histórico energético. A interface não afirma que esses elementos funcionam como controlos reais. A integração física exige perfil e validação específica de cada inversor, bateria, carregador ou dispositivo.
+## Âmbito funcional
 
-## Recuperar um Gateway 0.6.10–0.6.14 antes da primeira conta Owner
-
-O Gateway que ainda não tem Owner e apresenta `recovery required` não deve ser atualizado pelo fluxo online enquanto o estado de recuperação da instalação anterior estiver bloqueado. A atualização remota 0.6.12 falhou porque o nome do asset `.deb` publicado não coincidia com o nome assinado no manifesto; por isso o pacote não foi aplicado e o Gateway permaneceu na 0.6.10. A versão 0.6.14 do script USB também tinha um defeito: `/etc/os-release` substituía a variável `VERSION` destinada ao pacote Debian, fazendo a validação recusar um pacote que era realmente 0.6.14. A 0.6.15 separa esses valores e inclui uma verificação no workflow para impedir regressão.
-
-## Owner USB e gestão de utilizadores — 0.6.17
-
-A PWA Owner lista agora as contas reais do Gateway e permite alterar o papel ou o estado de cada conta através das rotas existentes. Cada alteração pede novamente a palavra-passe Owner; as ações são auditadas e o Gateway protege o último Owner ativo. Convites continuam a ser o fluxo de adesão de novos utilizadores/dispositivos.
-
-No primeiro registo Owner, a chave de recuperação de uso único pode ser descarregada como ficheiro e guardada numa pen dedicada. A chave é texto simples e deve ser protegida fisicamente. Não é uma chave de assinatura de release, não instala código, não ignora TLS nem inicia sessão automaticamente. Após recuperação, o Gateway consome a chave antiga; guarda a nova chave no dispositivo offline.
-
-Não edites diretamente o SQLite num PC. Usa a PWA para alterações normais de utilizadores; usa o backup SQLite e os comandos locais descritos no manual de recuperação apenas para manutenção offline.
-
-No Debian 13 amd64, inicia sessão como `root`, monta a pen em `/mnt/solarminer-usb` e executa `sh /mnt/solarminer-usb/repair-existing-from-usb.sh`. Depois de confirmar que o script terminou com health check válido, se ainda não houver Owner, define a palavra-passe de bootstrap local:
-
-```sh
-solarminer-gateway owner-password
-```
-
-Escreve e confirma a palavra-passe no terminal local. Depois abre a PWA e segue a janela inicial. O iPhone continua a exigir confiança explícita num certificado válido para o IP/hostname usado; a PWA não pode ignorar nem instalar essa confiança silenciosamente. Se a assinatura, a origem, a instalação ou o health check falhar, conserva `/var/log/solarminer-usb-repair.log` e `/var/lib/solarminer/backups/`.
+Uma sessão Owner consulta dados disponibilizados pelo Gateway, gere utilizadores/convites e verifica/aplica atualizações assinadas. Áreas sem contrato de API ou sem equipamento registado mostram estado vazio/indisponível. A integração física de inversores, baterias e outros equipamentos continua dependente do perfil e da validação de cada modelo.

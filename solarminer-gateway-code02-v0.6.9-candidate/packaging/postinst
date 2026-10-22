@@ -27,6 +27,23 @@ case "${1:-}" in
       install -o solarminer -g solarminer -m 0600 "$tmpdir/server.key" /var/lib/solarminer/server.key
       install -o root -g solarminer -m 0644 "$tmpdir/server.crt" /var/lib/solarminer/server.crt
     fi
+    # The app keeps its local HTTPS identity for loopback health checks. Nginx
+    # terminates public HTTPS with an automatically renewed, publicly trusted
+    # certificate for the Gateway's current WAN IPv4 address.
+    if [ ! -s /etc/solarminer/public-tls.crt ] || [ ! -s /etc/solarminer/public-tls.key ]; then
+      install -o root -g root -m 0644 /var/lib/solarminer/server.crt /etc/solarminer/public-tls.crt
+      install -o root -g root -m 0600 /var/lib/solarminer/server.key /etc/solarminer/public-tls.key
+    fi
+    install -d -o root -g root -m 0755 /var/lib/letsencrypt/webroot/.well-known/acme-challenge
+    install -d -o root -g root -m 0755 /etc/letsencrypt /var/log/letsencrypt /var/log/nginx
+    install -d -o root -g root -m 0755 /etc/nginx/conf.d
+    install -o root -g root -m 0644 /usr/share/solarminer/nginx/solarminer-gateway.conf /etc/nginx/conf.d/solarminer-gateway.conf
+    # Remove only Debian's stock Nginx site symlink so the packaged default
+    # vhost can answer ACME HTTP-01 and public HTTPS on ports 80/443.
+    if [ -L /etc/nginx/sites-enabled/default ] &&
+       [ "$(readlink -f /etc/nginx/sites-enabled/default 2>/dev/null || true)" = /etc/nginx/sites-available/default ]; then
+      rm -f /etc/nginx/sites-enabled/default
+    fi
     # Every device creates one stable Ed25519 identity at install. Existing keys
     # are validated and preserved; a partial or mismatched pair fails closed.
     PYTHONPATH=/usr/lib/solarminer-gateway /usr/bin/python3 -m solarminer_gateway.identity provision
@@ -44,6 +61,7 @@ case "${1:-}" in
       echo "Refusing symlink deployment root/releases/backups" >&2; exit 1
     fi
     install -d -o root -g root -m 0755 /opt/solarminer /opt/solarminer/releases /opt/solarminer/backups
+    install -d -o root -g root -m 0755 /opt/solarminer/certbot
     safe_root_dir() {
       [ -d "$1" ] && [ ! -L "$1" ] || return 1
       [ "$(stat -c %u "$1")" = 0 ] || return 1
@@ -88,11 +106,19 @@ case "${1:-}" in
       if command -v visudo >/dev/null 2>&1; then visudo -cf /etc/sudoers.d/solarminer-update-apply >/dev/null; fi
     fi
     if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+      nginx -t
       systemctl daemon-reload
+      systemctl enable nginx.service
       systemctl enable solarminer-gateway.service
       systemctl enable --now solarminer-recovery.timer
       systemctl enable --now solarminer-update-check-daily.timer
+      systemctl enable --now solarminer-public-tls-renew.timer
+      systemctl restart nginx.service || systemctl start nginx.service
       systemctl restart solarminer-gateway.service || systemctl start solarminer-gateway.service
+      # Certificate issuance may fail until the owner forwards WAN TCP/80 and
+      # WAN TCP/443 to this Gateway. The persistent timer retries without
+      # making initial Debian package configuration fail.
+      systemctl start solarminer-public-tls-renew.service || true
     fi
     ;;
 esac

@@ -54,6 +54,80 @@ def login(client, owner, private, password="a-long-passphrase-01", nonce="login-
     })
 
 
+def password_device_payload(private, public, username, password, nonce_value="new-device-password-login-01"):
+    ts = int(time.time())
+    public_der = serialization.load_pem_public_key(public.encode()).public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    password_digest = hashlib.sha256(password.encode()).hexdigest()
+    public_digest = hashlib.sha256(public_der).hexdigest()
+    canonical = f"PASSWORD-DEVICE-LOGIN\n{username}\n{ts}\n{nonce_value}\n{password_digest}\n{public_digest}"
+    return {"username": username, "password": password, "public_key_pem": public,
+            "timestamp": ts, "nonce": nonce_value, "signature": sig(private, canonical)}
+
+
+def test_password_login_registers_new_device_and_issues_owner_session(client):
+    create_owner(client)
+    private, public = keypair()
+    payload = password_device_payload(private, public, "owner1", "a-long-passphrase-01")
+    response = client.post("/api/v1/auth/password-device-login", json=payload)
+    assert response.status_code == 201, response.text
+    result = response.json()
+    assert result["user"]["role"] == "owner"
+    assert result["device_id"]
+    assert client.get("/api/v1/system/update/status", headers={"Authorization": f"Bearer {result['access_token']}"}).status_code == 200
+
+
+def test_password_login_rejects_wrong_password_without_registering_device(client):
+    create_owner(client)
+    private, public = keypair()
+    payload = password_device_payload(private, public, "owner1", "wrong-password")
+    response = client.post("/api/v1/auth/password-device-login", json=payload)
+    assert response.status_code == 401
+    with gateway.db() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0] == 1
+
+
+def test_password_login_rejects_invalid_signature_without_registering_device(client):
+    create_owner(client)
+    private, public = keypair()
+    payload = password_device_payload(private, public, "owner1", "a-long-passphrase-01")
+    payload["signature"] = "00" * 64
+    response = client.post("/api/v1/auth/password-device-login", json=payload)
+    assert response.status_code == 401
+    with gateway.db() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0] == 1
+
+
+def test_password_login_preserves_non_owner_role_and_owner_management_stays_forbidden(client):
+    create_owner(client)
+    with gateway.db() as conn:
+        conn.execute("INSERT INTO users(id,account_id,username,password_hash,role,status,created_at) VALUES(?,?,?,?, 'viewer','active',?)",
+                     ("00000000-0000-4000-8000-000000000002", "00000000-0000-4000-8000-000000000003",
+                      "viewer1", gateway.PASSWORDS.hash("viewer-password-01"), gateway.utcnow()))
+    private, public = keypair()
+    payload = password_device_payload(private, public, "viewer1", "viewer-password-01")
+    response = client.post("/api/v1/auth/password-device-login", json=payload)
+    assert response.status_code == 201, response.text
+    result = response.json()
+    assert result["user"]["role"] == "viewer"
+    denied = client.get("/api/v1/system/update/source", headers={"Authorization": f"Bearer {result['access_token']}"})
+    assert denied.status_code == 403
+
+
+def test_password_login_rate_limit_is_shared_across_source_ips(client):
+    create_owner(client)
+    account_hash = gateway.token_hash("owner1".casefold())
+    with gateway.db() as conn:
+        conn.executemany("INSERT INTO password_device_attempts(ip_hash,account_hash,attempted_at) VALUES(?,?,?)",
+                         [(gateway.token_hash(f"other-source-{index}"), account_hash, int(time.time())) for index in range(10)])
+    private, public = keypair()
+    payload = password_device_payload(private, public, "owner1", "a-long-passphrase-01")
+    response = client.post("/api/v1/auth/password-device-login", json=payload, headers={"X-Real-IP": "198.51.100.28"})
+    assert response.status_code == 429
+    with gateway.db() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0] == 1
+
+
 def test_health_info_and_bootstrap_token_permissions(client, caplog):
     assert client.get("/api/v1/health").status_code == 200
     assert client.get("/api/v1/info").json()["version"] == "0.6.0"

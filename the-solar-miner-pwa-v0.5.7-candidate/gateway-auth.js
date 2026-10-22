@@ -1,4 +1,4 @@
-import { parseInviteQr, verifyGatewayIdentityChallenge, signInviteRedemption, validateGatewayUrl } from "./gateway-connection.js";
+import { parseInviteQr, verifyGatewayIdentityChallenge, signInviteRedemption, signGatewayLogin, validateGatewayUrl } from "./gateway-connection.js";
 
 let bearerToken = null;
 let currentUser = null;
@@ -83,7 +83,10 @@ async function gatewayRequest(baseUrl, path, { method = "GET", body, authenticat
       bootstrap_token_invalid_or_expired: "O token de bootstrap expirou ou é inválido. No Gateway, renova-o localmente como root.",
       bootstrap_password_invalid: "A palavra-passe não corresponde à que foi definida na consola do Gateway durante a instalação.",
       bootstrap_attempts_limited: "Demasiadas tentativas. Aguarda 15 minutos antes de tentar novamente.",
-      bootstrap_unavailable: "O Gateway já não permite criar o primeiro Owner."
+      login_attempts_limited: "Demasiadas tentativas de início de sessão. Aguarda alguns minutos antes de tentar novamente.",
+      bootstrap_unavailable: "O Gateway já não permite criar o primeiro Owner.",
+      invalid_credentials_or_device: "Utilizador ou palavra-passe incorretos, ou este dispositivo não está associado à conta.",
+      device_not_associated: "Este dispositivo ainda não está associado a essa conta. Confirma as credenciais ou remove a identidade antiga deste browser."
     })[detail] || detail;
     const error = new Error(message);
     error.status = response.status;
@@ -203,6 +206,45 @@ export async function loginGateway({ gatewayUrl }) {
   bearerToken = result.access_token;
   currentUser = result.user;
   currentGateway = base;
+  await startPresenceHeartbeat();
+  return { ...result, gatewayUrl: base, presence: presenceInfo() };
+}
+export async function loginGatewayWithPassword({ gatewayUrl, username, password }) {
+  const base = validateGatewayUrl(gatewayUrl).origin;
+  const normalizedUsername = String(username || "").trim();
+  if (!normalizedUsername || !password) throw new Error("Introduz o utilizador e a palavra-passe do Gateway.");
+  const timestamp = Math.floor(Date.now() / 1000), challengeNonce = nonce();
+  const challenge = await gatewayRequest(base, `/api/v1/gateway/identity?timestamp=${timestamp}&nonce=${challengeNonce}`);
+  let identity = await loadDeviceIdentity(base);
+  if (identity && identity.gatewayFingerprint !== challenge.fingerprint_sha256) {
+    throw new Error("A identidade Ed25519 do Gateway mudou. A ligação foi interrompida para proteger a conta.");
+  }
+  if (identity?.privateKey && identity?.deviceId && identity?.publicKeyPem) {
+    const loginTimestamp = Math.floor(Date.now() / 1000), loginNonce = nonce();
+    const payload = await signGatewayLogin({ privateKey: identity.privateKey, username: normalizedUsername,
+      deviceId: identity.deviceId, timestamp: loginTimestamp, nonce: loginNonce });
+    payload.password = password;
+    const result = await gatewayRequest(base, "/api/v1/auth/login", { method: "POST", body: payload });
+    bearerToken = result.access_token; currentUser = result.user; currentGateway = base;
+    await startPresenceHeartbeat();
+    return { ...result, gatewayUrl: base, presence: presenceInfo() };
+  }
+  if (!identity) identity = await createDeviceIdentity(base, challenge.fingerprint_sha256);
+  const digestHex = async bytes => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), b => b.toString(16).padStart(2, "0")).join("");
+  const publicDer = Uint8Array.from(atob(identity.publicKeyPem.replace(/-----BEGIN PUBLIC KEY-----|-----END PUBLIC KEY-----|\s/g, "")), c => c.charCodeAt(0));
+  const passwordHash = await digestHex(new TextEncoder().encode(password));
+  const publicHash = await digestHex(publicDer);
+  const loginTime = Math.floor(Date.now() / 1000), loginNonce = nonce();
+  const canonical = `PASSWORD-DEVICE-LOGIN\n${normalizedUsername}\n${loginTime}\n${loginNonce}\n${passwordHash}\n${publicHash}`;
+  const signatureBytes = new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, identity.privateKey, new TextEncoder().encode(canonical)));
+  const signature = Array.from(signatureBytes, b => b.toString(16).padStart(2, "0")).join("");
+  const result = await gatewayRequest(base, "/api/v1/auth/password-device-login", { method: "POST", body: {
+    username: normalizedUsername, password, public_key_pem: identity.publicKeyPem,
+    timestamp: loginTime, nonce: loginNonce, signature
+  } });
+  identity.deviceId = result.device_id; identity.userId = result.user.id;
+  await identityDbRequest("readwrite", store => store.put(identity));
+  bearerToken = result.access_token; currentUser = result.user; currentGateway = base;
   await startPresenceHeartbeat();
   return { ...result, gatewayUrl: base, presence: presenceInfo() };
 }

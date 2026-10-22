@@ -1,0 +1,55 @@
+#!/bin/sh
+set -eu
+
+log() { printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"; }
+fail() { log "ERROR: $*" >&2; exit 1; }
+[ "$(id -u)" -eq 0 ] || fail "must_run_as_root"
+
+CERTBOT=/opt/solarminer/certbot/bin/certbot
+export PIP_NO_CACHE_DIR=1
+if [ ! -x "$CERTBOT" ]; then
+  log "Installing pinned Certbot 5.5.0 in an isolated virtual environment"
+  install -d -o root -g root -m 0755 /opt/solarminer/certbot
+  python3 -m venv /opt/solarminer/certbot
+  "$CERTBOT" --version >/dev/null 2>&1 || /opt/solarminer/certbot/bin/pip install --disable-pip-version-check 'certbot==5.5.0'
+fi
+
+PUBLIC_IP=$(/usr/bin/python3 - <<'PY'
+import ipaddress
+import urllib.request
+
+with urllib.request.urlopen("https://api.ipify.org", timeout=10) as response:
+    value = response.read(64).decode("ascii").strip()
+address = ipaddress.ip_address(value)
+if not isinstance(address, ipaddress.IPv4Address) or not address.is_global:
+    raise SystemExit("no_global_public_ipv4")
+print(address)
+PY
+) || fail "Could not determine a global public IPv4 address. Check Internet access and CGNAT."
+CERT_NAME="solarminer-gateway-$PUBLIC_IP"
+LIVE_DIR="/etc/letsencrypt/live/$CERT_NAME"
+
+if [ -s "$LIVE_DIR/fullchain.pem" ] && [ -s "$LIVE_DIR/privkey.pem" \
+   && openssl x509 -in "$LIVE_DIR/fullchain.pem" -noout -checkip "$PUBLIC_IP" >/dev/null 2>&1 \
+   && openssl x509 -in "$LIVE_DIR/fullchain.pem" -noout -checkend 172800 >/dev/null 2>&1 \
+   && [ -s /etc/solarminer/public-tls.crt ] \
+   && [ "$(openssl x509 -in "$LIVE_DIR/fullchain.pem" -noout -fingerprint -sha256)" = "$(openssl x509 -in /etc/solarminer/public-tls.crt -noout -fingerprint -sha256 2>/dev/null || true)" ]; then
+  log "Public-IP certificate is valid for $PUBLIC_IP and has more than 48 hours remaining"
+  exit 0
+fi
+
+install -d -o root -g root -m 0755 /var/lib/letsencrypt/webroot/.well-known/acme-challenge
+log "Requesting/renewing short-lived public-IP certificate for $PUBLIC_IP"
+"$CERTBOT" certonly --webroot --webroot-path /var/lib/letsencrypt/webroot \
+  --non-interactive --agree-tos --register-unsafely-without-email \
+  --preferred-profile shortlived --ip-address "$PUBLIC_IP" --cert-name "$CERT_NAME"
+
+[ -s "$LIVE_DIR/fullchain.pem" ] && [ -s "$LIVE_DIR/privkey.pem" ] || fail "certificate_files_missing"
+openssl x509 -in "$LIVE_DIR/fullchain.pem" -noout -checkip "$PUBLIC_IP" >/dev/null || fail "certificate_ip_mismatch"
+install -o root -g root -m 0644 "$LIVE_DIR/fullchain.pem" /etc/solarminer/public-tls.crt.new
+install -o root -g root -m 0600 "$LIVE_DIR/privkey.pem" /etc/solarminer/public-tls.key.new
+mv -f /etc/solarminer/public-tls.crt.new /etc/solarminer/public-tls.crt
+mv -f /etc/solarminer/public-tls.key.new /etc/solarminer/public-tls.key
+nginx -t
+systemctl reload nginx
+log "Public HTTPS certificate installed and Nginx reloaded"

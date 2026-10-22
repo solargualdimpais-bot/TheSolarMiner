@@ -3,7 +3,7 @@ import { DEMO_CONTROL_CONFIG, createDemoControlState, updateDemoControl, toggleD
 import { renderWorkspacePage, renderHomePreferenceLinks, renderHouseSearch, handleWorkspaceAction, handleWorkspaceChange, applyPreferences, getWorkspacePageLabel, workspace, getEditableEntity, saveEditableEntity, saveDemoWorkspace, hydrateWorkspacePhotos } from "./workspace-ui.js";
 import { renderAutomationsPage, renderSolarProductionPage, renderDemoAdminPanel, handleFeatureAction, saveAutomationForm, addDemoUser, saveDemoUserEdit, saveSolarWeather, demoFeatures } from "./features-v053.js";
 import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, PRESENCE_API_STATUS } from "./gateway-connection.js";
-import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate } from "./gateway-auth.js";
 
 let automationEditingId = "";
 const state = { page: "inicio", mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], lastUpdated: null, lastMeasurementAt: null, refreshing: false, propertyPhoto: "", demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [] };
@@ -421,10 +421,12 @@ $("#gateway-check").addEventListener("click",async()=>{
         } else {
           try {
             const login = await loginGateway({ gatewayUrl: endpoint.origin });
+            $("#gateway-password-login-form").hidden = true;
             gatewayResult(`Ligação autenticada neste dispositivo como ${login.user.username} (${login.user.role}).`);
             markGatewayAuthenticated(); updateSessionUi(); await refreshGatewayReadings();
           } catch (loginError) {
-            gatewayResult(`${result.state}. ${loginError.message}`);
+            $("#gateway-password-login-form").hidden = false;
+            gatewayResult(`${result.state}. ${loginError.message} Introduz as credenciais de uma conta ativa para registar este browser.`);
           }
         }
       } catch (statusError) {
@@ -434,10 +436,30 @@ $("#gateway-check").addEventListener("click",async()=>{
     else gatewayResult(`${result.state}. Nenhuma identidade ou ligação foi confirmada. Código técnico: ${result.errorCode || "erro de rede"}. Não foram contornados erros TLS.`);
   } catch(error) { gatewayResult(error.message || "Endpoint inválido."); }
 });
+$("#gateway-password-login-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const status = $("#gateway-session-status");
+  const endpoint = $("#gateway-endpoint").value;
+  const password = $("#gateway-login-password");
+  status.textContent = "A validar credenciais no Gateway…";
+  try {
+    const login = await loginGatewayWithPassword({ gatewayUrl: endpoint,
+      username: $("#gateway-login-username").value, password: password.value });
+    password.value = "";
+    $("#gateway-password-login-form").hidden = true;
+    gatewayResult(`Sessão iniciada como ${login.user.username} (${login.user.role}).`);
+    status.textContent = `Dispositivo autenticado como ${login.user.username}.`;
+    markGatewayAuthenticated(); updateSessionUi(); await refreshGatewayReadings();
+  } catch (error) {
+    password.value = "";
+    status.textContent = error.message || "Não foi possível iniciar sessão.";
+  }
+});
 $("#gateway-clear").addEventListener("click",async()=>{
   try { await logoutGateway(); } catch {}
   try { localStorage.removeItem("solarminer-gateway-endpoint-v1"); } catch {}
   $("#gateway-endpoint").value=""; gatewayManager.clear(); updateSessionUi(); resetToDemoAfterLogout();
+  $("#gateway-password-login-form").hidden = true;
   gatewayResult("Endpoint removido deste browser. A identidade do dispositivo permanece guardada para poderes voltar a ligar sem palavra-passe.");
 });
 try { if (localStorage.getItem("solarminer-gateway-endpoint-v1")) setTimeout(() => $("#gateway-check").click(), 0); } catch {}

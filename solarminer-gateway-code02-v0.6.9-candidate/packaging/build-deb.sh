@@ -6,7 +6,7 @@ mkdir -p "$OUT"
 STAGE=$(mktemp -d "${TMPDIR:-/tmp}/solarminer-gateway-build.XXXXXX")
 trap 'rm -rf "$STAGE"' EXIT HUP INT TERM
 chmod 0755 "$STAGE"
-mkdir -p "$STAGE/DEBIAN" "$STAGE/usr/bin" "$STAGE/usr/sbin" "$STAGE/etc/sudoers.d" "$STAGE/usr/lib/solarminer-gateway/solarminer_gateway" "$STAGE/lib/systemd/system" "$STAGE/usr/share/doc/solarminer-gateway" "$STAGE/usr/share/solarminer/pwa"
+mkdir -p "$STAGE/DEBIAN" "$STAGE/usr/bin" "$STAGE/usr/sbin" "$STAGE/etc/sudoers.d" "$STAGE/usr/lib/solarminer-gateway/solarminer_gateway" "$STAGE/lib/systemd/system" "$STAGE/usr/share/doc/solarminer-gateway" "$STAGE/usr/share/solarminer/pwa" "$STAGE/usr/share/solarminer/nginx"
 cp "$ROOT/packaging/control" "$STAGE/DEBIAN/control"
 cp "$ROOT/packaging/postinst" "$STAGE/DEBIAN/postinst"
 cp "$ROOT/packaging/prerm" "$STAGE/DEBIAN/prerm"
@@ -22,9 +22,14 @@ cp "$ROOT/packaging/solarminer-update-check-daily.timer" "$STAGE/lib/systemd/sys
 cp "$ROOT/packaging/solarminer-recovery.service" "$STAGE/lib/systemd/system/solarminer-recovery.service"
 cp "$ROOT/packaging/solarminer-recovery.timer" "$STAGE/lib/systemd/system/solarminer-recovery.timer"
 cp "$ROOT/packaging/solarminer-gateway.service" "$STAGE/lib/systemd/system/solarminer-gateway.service"
+cp "$ROOT/packaging/solarminer-public-tls-renew" "$STAGE/usr/sbin/solarminer-public-tls-renew"
+cp "$ROOT/packaging/solarminer-public-tls-renew.service" "$STAGE/lib/systemd/system/solarminer-public-tls-renew.service"
+cp "$ROOT/packaging/solarminer-public-tls-renew.timer" "$STAGE/lib/systemd/system/solarminer-public-tls-renew.timer"
+cp "$ROOT/packaging/solarminer-gateway-nginx.conf" "$STAGE/usr/share/solarminer/nginx/solarminer-gateway.conf"
 cp "$ROOT/src/solarminer_gateway/"*.py "$STAGE/usr/lib/solarminer-gateway/solarminer_gateway/"
 cp "$ROOT/README.md" "$STAGE/usr/share/doc/solarminer-gateway/README.md"
 cp "$ROOT/docs/TLS_TRUST.md" "$STAGE/usr/share/doc/solarminer-gateway/TLS_TRUST.md"
+cp "$ROOT/docs/REMOTE_ACCESS_AND_TLS.md" "$STAGE/usr/share/doc/solarminer-gateway/REMOTE_ACCESS_AND_TLS.md"
 cp "$ROOT/docs/API.md" "$STAGE/usr/share/doc/solarminer-gateway/API.md"
 cp "$ROOT/docs/A1B_SECURITY.md" "$STAGE/usr/share/doc/solarminer-gateway/A1B_SECURITY.md"
 cp "$ROOT/docs/A2_OWNER_RECOVERY.md" "$STAGE/usr/share/doc/solarminer-gateway/A2_OWNER_RECOVERY.md"
@@ -47,6 +52,7 @@ cp "$ROOT/docs/CODE02_V069_IMPLEMENTATION.md" "$STAGE/usr/share/doc/solarminer-g
 cp "$ROOT/docs/CHANGELOG_V069.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V069.md"
 cp "$ROOT/docs/CHANGELOG_V0613.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0613.md"
 cp "$ROOT/docs/CHANGELOG_V0616.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0616.md"
+cp "$ROOT/docs/CHANGELOG_V0618.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0618.md"
 cp "$ROOT/docs/DATABASE_BACKUP_AND_RESTORE.md" "$STAGE/usr/share/doc/solarminer-gateway/DATABASE_BACKUP_AND_RESTORE.md"
 cp "$ROOT/docs/UPDATE_AND_ROLLBACK.md" "$STAGE/usr/share/doc/solarminer-gateway/UPDATE_AND_ROLLBACK.md"
 cp "$ROOT/docs/INSTALL_DEBIAN_AMD64.md" "$STAGE/usr/share/doc/solarminer-gateway/INSTALL_DEBIAN_AMD64.md"
@@ -61,8 +67,8 @@ cp "$ROOT/packaging/catalog/catalog.sig" "$STAGE/usr/share/solarminer/catalog.si
 cp "$ROOT/packaging/catalog/catalog.pub" "$STAGE/usr/share/solarminer/catalog.pub"
 cp -R "$ROOT/web/pwa/." "$STAGE/usr/share/solarminer/pwa/"
 chmod 0440 "$STAGE/etc/sudoers.d/solarminer-update-apply"
-chmod 0755 "$STAGE/usr/sbin/solarminer-update-apply" "$STAGE/usr/bin/solarminer-update-check-daily" "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/prerm" "$STAGE/DEBIAN/postrm" "$STAGE/usr/bin/solarminer-gateway" "$STAGE/usr/bin/solarminer-recovery"
-chmod 0644 "$STAGE/usr/lib/solarminer-gateway/solarminer_gateway/"*.py "$STAGE/lib/systemd/system/solarminer-gateway.service" "$STAGE/lib/systemd/system/solarminer-recovery.service" "$STAGE/lib/systemd/system/solarminer-recovery.timer" "$STAGE/lib/systemd/system/solarminer-update-apply@.service" "$STAGE/lib/systemd/system/solarminer-update-check-daily.service" "$STAGE/lib/systemd/system/solarminer-update-check-daily.timer" "$STAGE/usr/share/solarminer/catalog.json" "$STAGE/usr/share/solarminer/catalog.sig" "$STAGE/usr/share/solarminer/catalog.pub"
+chmod 0755 "$STAGE/usr/sbin/solarminer-update-apply" "$STAGE/usr/sbin/solarminer-public-tls-renew" "$STAGE/usr/bin/solarminer-update-check-daily" "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/prerm" "$STAGE/DEBIAN/postrm" "$STAGE/usr/bin/solarminer-gateway" "$STAGE/usr/bin/solarminer-recovery"
+chmod 0644 "$STAGE/usr/share/solarminer/nginx/solarminer-gateway.conf" "$STAGE/usr/lib/solarminer-gateway/solarminer_gateway/"*.py "$STAGE/lib/systemd/system/solarminer-gateway.service" "$STAGE/lib/systemd/system/solarminer-public-tls-renew.service" "$STAGE/lib/systemd/system/solarminer-public-tls-renew.timer" "$STAGE/lib/systemd/system/solarminer-recovery.service" "$STAGE/lib/systemd/system/solarminer-recovery.timer" "$STAGE/lib/systemd/system/solarminer-update-apply@.service" "$STAGE/lib/systemd/system/solarminer-update-check-daily.service" "$STAGE/lib/systemd/system/solarminer-update-check-daily.timer" "$STAGE/usr/share/solarminer/catalog.json" "$STAGE/usr/share/solarminer/catalog.sig" "$STAGE/usr/share/solarminer/catalog.pub"
 find "$STAGE/usr/share/solarminer/pwa" -type d -exec chmod 0755 {} +
 find "$STAGE/usr/share/solarminer/pwa" -type f -exec chmod 0644 {} +
 PACKAGE_VERSION=$(sed -n 's/^Version: //p' "$ROOT/packaging/control")

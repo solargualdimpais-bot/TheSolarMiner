@@ -2,7 +2,7 @@
 
 ## Recovery key
 
-During first Owner registration, the Gateway generates a one-time recovery key. The Owner PWA v0.6.17 allows downloading it together with the Gateway Ed25519 fingerprint as `solarminer-owner-recovery-key.txt`, which can be copied to a dedicated offline USB drive. The file is plaintext. Anyone who obtains the secret can initiate the Owner recovery flow, so protect the drive physically and replace the file after recovery rotates the key.
+During first Owner registration, the Gateway generates a one-time recovery key. The Owner PWA v0.6.18 allows downloading it together with the Gateway Ed25519 fingerprint as `solarminer-owner-recovery-key.txt`, which can be copied to a dedicated offline USB drive. The file is plaintext. Anyone who obtains the secret can initiate the Owner recovery flow, so protect the drive physically and replace the file after recovery rotates the key.
 
 The PWA's **Recover Owner with USB** form reads this file, creates a new device identity in the browser, and completes the existing recovery challenge. This recovery key is not the Ed25519 release-signing private key, contains no GitHub credentials, does not validate TLS certificates, and does not bypass normal authentication. Insertion of the USB drive does not silently log into the PWA or grant operating-system root access.
 

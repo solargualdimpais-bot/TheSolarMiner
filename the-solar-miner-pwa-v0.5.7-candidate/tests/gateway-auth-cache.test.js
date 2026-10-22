@@ -34,6 +34,20 @@ test("first Owner uses the local install password and later sessions use the dev
   assert.match(connection, /signGatewayLogin/);
 });
 
+test("new browser sign-in sends password only to the HTTPS Gateway and stores device key, not credentials", () => {
+  assert.match(auth, /\/api\/v1\/auth\/password-device-login/);
+  assert.match(auth, /PASSWORD-DEVICE-LOGIN/);
+  assert.match(auth, /identityDbRequest\("readwrite", store => store\.put\(identity\)\)/);
+  assert.doesNotMatch(auth, /localStorage\.setItem\([^\n]*(?:password|username)/i);
+  assert.match(app, /loginGatewayWithPassword/);
+  assert.match(app, /loginGateway\(\{ gatewayUrl: endpoint\.origin \}\)/);
+  assert.match(app, /gateway-password-login-form/);
+  assert.match(html, /id="gateway-login-username"/);
+  assert.match(html, /id="gateway-login-password"/);
+  assert.match(app, /password\.value = ""/);
+  assert.match(sw, /password-device-login/);
+});
+
 test("service worker only caches allowlisted static resources and versions cache explicitly", () => {
   assert.match(sw, /the-solar-miner-static-v0\.5\.8/);
   assert.match(sw, /url\.pathname\.includes\("\/api\/v1\/"\)/);

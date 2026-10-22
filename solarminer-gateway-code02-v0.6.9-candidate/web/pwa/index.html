@@ -50,7 +50,7 @@
       </section>
       <div id="notice" class="notice" role="status" hidden></div>
       <section id="page-content" aria-live="polite"></section>
-      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.6.17</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
+      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.6.18</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
     </main>
   </div>
 
@@ -99,6 +99,12 @@
       <div class="dialog-actions"><button id="gateway-check" class="button primary" type="button">Testar endpoint</button><button id="gateway-clear" class="button secondary" type="button">Desassociado / limpar</button></div>
       <div id="gateway-result" class="connection-result" role="status" aria-live="polite">Nenhum endpoint foi testado. A PWA permanece em modo demonstração.</div>
       <div id="gateway-session-status" class="connection-result" role="status" aria-live="polite">Sem sessão autenticada neste dispositivo.</div>
+      <form id="gateway-password-login-form" class="gateway-form-grid" hidden>
+        <p class="field-note">Inicia sessão com o utilizador e a palavra-passe já registados no Gateway. Num dispositivo novo, o Gateway regista uma identidade criptográfica neste browser após validar a palavra-passe.</p>
+        <label for="gateway-login-username">Utilizador</label><input id="gateway-login-username" autocomplete="username" maxlength="128" required>
+        <label for="gateway-login-password">Palavra-passe</label><input id="gateway-login-password" type="password" autocomplete="current-password" required>
+        <button class="button primary" type="submit">Entrar no Gateway</button>
+      </form>
       <div class="dialog-actions"><button id="open-owner-recovery" class="button secondary" type="button">Recuperar Owner com a pen</button></div>
       <section class="panel gateway-auth-panel" id="gateway-invite-management" hidden>
         <div class="panel-header"><div><p class="eyebrow">ADMINISTRAÇÃO DO GATEWAY</p><h3>Convites de utilização única</h3></div><span class="source-tag">OWNER</span></div>
@@ -113,7 +119,7 @@
       </section>
       <section class="panel gateway-auth-panel" id="gateway-user-management" hidden>
         <div class="panel-header"><div><p class="eyebrow">ADMINISTRAÇÃO DO GATEWAY</p><h3>Utilizadores e acessos reais</h3></div><span class="source-tag">OWNER</span></div>
-        <p class="field-note">Esta lista vem da base de dados do Gateway. Alterações de papel ou estado exigem novamente a palavra-passe do Owner e são registadas na auditoria. A proteção impede remover ou despromover o último Owner ativo.</p>
+        <p class="field-note">Esta lista vem da base de dados do Gateway. Alterações de papel ou estado exigem novamente a palavra-passe do Owner e são registadas na auditoria. A proteção impede remover o último Owner ativo.</p>
         <div class="dialog-actions"><button class="button secondary" type="button" id="gateway-refresh-users">Atualizar utilizadores</button></div>
         <div id="gateway-user-list" class="invite-list" aria-live="polite">A lista só é carregada numa sessão Owner autenticada.</div>
       </section>

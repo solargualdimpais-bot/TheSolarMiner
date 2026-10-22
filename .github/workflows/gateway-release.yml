@@ -65,6 +65,9 @@ jobs:
         run: |
           sh -n packaging/install-from-usb.sh
           sh -n packaging/repair-existing-from-usb.sh
+          sh -n packaging/postinst
+          sh -n packaging/prerm
+          sh -n packaging/solarminer-public-tls-renew
           [ "$(sed -n 's/^TARGET_VERSION=//p' packaging/repair-existing-from-usb.sh)" = "$(sed -n 's/^Version: //p' packaging/control)" ]
           ! grep -q '^VERSION=' packaging/repair-existing-from-usb.sh
 
