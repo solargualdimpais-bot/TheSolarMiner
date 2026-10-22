@@ -131,6 +131,11 @@ The browser client uses Web Crypto Ed25519 with a non-exportable private `Crypto
 
 `POST /api/v1/presence/heartbeat` creates or refreshes the caller's presence for 120 seconds. Persisted writes are throttled to at most one every five seconds per user/device pair. The Gateway generates `last_seen_at` and `expires_at`. Response states are `online`; `GET /api/v1/presence/me` returns `unknown` when no record exists, `online` before expiry, and `offline` after expiry. `connection_method` is always `unknown` in this increment; the client cannot claim LAN/REMOTE. Presence transitions are audited. Authenticated logout removes the current user/device presence. No API claims physical presence.
 
+## v0.6.21 — correção do proxy HTTPS para LAN e Tailscale
+
+- O Nginx valida o certificado TLS interno do backend com o nome DNS `localhost`, que está incluído no SAN do certificado provisionado no Gateway.
+- A validação TLS entre Nginx e a API permanece ativa nos endpoints LAN e Tailscale.
+
 ## v0.6.20 — autorização Tailscale iniciada pela PWA Owner
 
 - `POST /api/v1/system/tailscale/connect` é exclusivo do Owner. Executa o helper fixo `solarminer-tailscale-connect` e devolve apenas um URL de autorização validado `login.tailscale.com` quando a aprovação está pendente.

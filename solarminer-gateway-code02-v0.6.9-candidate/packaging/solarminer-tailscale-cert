@@ -18,23 +18,28 @@ d=json.load(sys.stdin); s=d.get("Self") or {}; n=(s.get("DNSName") or "").rstrip
 if d.get("BackendState") != "Running" or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.ts\.net", n): raise SystemExit(1)
 print(n)
 ') || { log "No Tailscale MagicDNS name is active; certificate setup will retry."; exit 0; }
+cert_valid=0
 if [ -s "$CERT" ] && [ -s "$KEY" ] && openssl x509 -in "$CERT" -noout -checkhost "$dns_name" >/dev/null 2>&1 &&
    openssl x509 -in "$CERT" -noout -checkend 259200 >/dev/null 2>&1; then
-  exit 0
+  cert_valid=1
 fi
 work=$(mktemp -d /etc/solarminer/.tailscale-cert.XXXXXX)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
-log "Requesting/renewing HTTPS certificate for configured Tailscale MagicDNS identity."
-"$TAILSCALE" cert --min-validity=72h --cert-file="$work/tailscale.crt" --key-file="$work/tailscale.key" "$dns_name" >>"$LOG" 2>&1 || {
-  log "Tailscale certificate request failed. Enable HTTPS certificates for this tailnet in its admin console; the timer will retry."
-  exit 0
-}
-[ -s "$work/tailscale.crt" ] && [ -s "$work/tailscale.key" ] || fail "certificate_files_missing"
-openssl x509 -in "$work/tailscale.crt" -noout -checkhost "$dns_name" >/dev/null 2>&1 || fail "certificate_hostname_mismatch"
-install -o root -g root -m 0644 "$work/tailscale.crt" "$CERT.new"
-install -o root -g root -m 0600 "$work/tailscale.key" "$KEY.new"
-mv -f "$CERT.new" "$CERT"
-mv -f "$KEY.new" "$KEY"
+certificate_changed=0
+if [ "$cert_valid" -ne 1 ]; then
+  log "Requesting/renewing HTTPS certificate for configured Tailscale MagicDNS identity."
+  "$TAILSCALE" cert --min-validity=72h --cert-file="$work/tailscale.crt" --key-file="$work/tailscale.key" "$dns_name" >>"$LOG" 2>&1 || {
+    log "Tailscale certificate request failed. Enable HTTPS certificates for this tailnet in its admin console; the timer will retry."
+    exit 0
+  }
+  [ -s "$work/tailscale.crt" ] && [ -s "$work/tailscale.key" ] || fail "certificate_files_missing"
+  openssl x509 -in "$work/tailscale.crt" -noout -checkhost "$dns_name" >/dev/null 2>&1 || fail "certificate_hostname_mismatch"
+  install -o root -g root -m 0644 "$work/tailscale.crt" "$CERT.new"
+  install -o root -g root -m 0600 "$work/tailscale.key" "$KEY.new"
+  mv -f "$CERT.new" "$CERT"
+  mv -f "$KEY.new" "$KEY"
+  certificate_changed=1
+fi
 cat >"$work/nginx.conf" <<EOF
 server {
     listen 443 ssl;
@@ -51,7 +56,7 @@ server {
         proxy_ssl_trusted_certificate /var/lib/solarminer/server.crt;
         proxy_ssl_verify on;
         proxy_ssl_verify_depth 2;
-        proxy_ssl_name 127.0.0.1;
+        proxy_ssl_name localhost;
         proxy_ssl_server_name on;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -60,6 +65,9 @@ server {
     }
 }
 EOF
+if [ "$certificate_changed" -eq 0 ] && cmp -s "$work/nginx.conf" "$CONFIG"; then
+  exit 0
+fi
 install -o root -g root -m 0644 "$work/nginx.conf" "$CONFIG.new"
 mv -f "$CONFIG.new" "$CONFIG"
 nginx -t >>"$LOG" 2>&1 || fail "nginx_configuration_invalid"
