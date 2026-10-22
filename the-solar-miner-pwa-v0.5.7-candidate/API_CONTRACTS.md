@@ -1,6 +1,6 @@
 # Contratos API — PWA v0.5.4
 
-## Gateway hardware connectivity diagnostics (CODE02 0.6.32)
+## Gateway hardware connectivity diagnostics (CODE02 0.6.33)
 
 `POST /api/v1/integrations/hardware/read` returns a `configuration` object and per-device `connection_state`. Deye uses FC43/MEI14 with a read-only FC03 fallback after FC43 rejection or timeout and discards diagnostic values. Antminer reports its configured model as unverified. Tuya Cloud status is isolated by device ID; one failing ID does not discard successful reads for others. MOES is supported only when exposed through the configured Tuya Cloud project. Shelly has no Gateway driver. This endpoint sends no control commands.
 
