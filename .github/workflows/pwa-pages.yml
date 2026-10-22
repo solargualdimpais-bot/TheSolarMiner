@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "solarminer-gateway-code02-v0.6.9-candidate/web/pwa/**"
+      - "the-solar-miner-pwa-v0.5.7-candidate/**"
       - ".github/workflows/pwa-pages.yml"
   workflow_dispatch:
 
