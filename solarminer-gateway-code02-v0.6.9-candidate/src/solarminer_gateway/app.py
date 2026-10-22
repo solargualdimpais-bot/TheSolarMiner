@@ -41,9 +41,10 @@ from . import energy_registry
 from . import integrations as hardware_integrations
 from . import update_helper_client
 from . import updates as update_manager
+from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.32"
+PACKAGE_VERSION = "0.6.33"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -57,6 +58,7 @@ MAC_RE = re.compile(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 PASSWORDS = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=2, hash_len=32, salt_len=16)
 LOG = logging.getLogger("solarminer.gateway")
 logging.basicConfig(level=os.environ.get("SOLARMINER_LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
+install_error_queue_handler()
 
 ROLES = {"owner", "admin", "operator", "viewer"}
 PERMISSIONS = {
@@ -370,6 +372,20 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="SolarMiner Gateway", version=VERSION, docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+
+
+@app.middleware("http")
+async def report_http_server_errors(request: Request, call_next):
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        LOG.error("Unhandled Gateway request exception route=%s type=%s",
+                  request.url.path, type(exc).__name__)
+        raise
+    if response.status_code >= 500:
+        LOG.error("Gateway returned HTTP server error status=%s route=%s",
+                  response.status_code, request.url.path)
+    return response
 # Cross-origin PWA access is opt-in and exact-origin allow-listed. The official
 # GitHub Pages origin is enabled by the package; additional origins must be set
 # explicitly by the administrator in SOLARMINER_CORS_ORIGINS.
@@ -697,6 +713,7 @@ def hardware_integrations_configure(payload: dict[str, Any], session: dict[str, 
             audit(conn, session["user_id"], "hardware.integrations.configure", "gateway", "rejected", {"reason": str(exc)[:120]})
             raise HTTPException(422, str(exc)) from exc
         except (OSError, json.JSONDecodeError) as exc:
+            LOG.error("Hardware integration configuration save failed (%s)", type(exc).__name__)
             raise HTTPException(500, "integration_config_save_failed") from exc
 
 
@@ -707,6 +724,9 @@ def hardware_integrations_read(session: dict[str, Any] = Depends(require_permiss
         if actor["role"] != "owner": raise HTTPException(403, "owner_required")
         try:
             result = hardware_integrations.collect(hardware_integrations.load_config())
+            for item in result.get("errors", []):
+                LOG.error("Hardware integration failure provider=%s reason=%s",
+                          item.get("provider", "unknown"), item.get("reason", "unknown"))
             audit(conn, session["user_id"], "hardware.integrations.read", "gateway", "partial" if result["errors"] else "success", {
                 "deye_connected": result["deye"] is not None,
                 "antminer_connected": result["antminer"] is not None,
@@ -716,6 +736,7 @@ def hardware_integrations_read(session: dict[str, Any] = Depends(require_permiss
             })
             return result
         except (OSError, ValueError, json.JSONDecodeError) as exc:
+            LOG.error("Hardware integration read failed (%s)", type(exc).__name__)
             raise HTTPException(503, "integration_read_unavailable") from exc
 
 
@@ -1782,6 +1803,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         return result
     except (update_manager.UpdateValidationError, ValueError, OSError, sqlite3.Error, TimeoutError, subprocess.TimeoutExpired) as exc:
         reason = str(exc) if isinstance(exc, update_manager.UpdateValidationError) else type(exc).__name__
+        LOG.error("Signed Gateway update check failed reason=%s", reason)
         with db() as conn:
             op = _update_state_write(conn, "FAILED", None, {"reason": reason})
             audit(conn, session["user_id"], "system.update.manifest_rejected", op, "denied",

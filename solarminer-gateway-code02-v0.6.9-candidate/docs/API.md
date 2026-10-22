@@ -1,6 +1,10 @@
 # API v1 (CODE 01)
 
-## CODE02 v0.6.32 — diagnóstico de hardware
+## Error reporting (CODE02 0.6.33)
+
+There is no PWA endpoint for log upload. The Gateway queues sanitized application `ERROR` records locally and, when the owner has configured a repository-scoped GitHub token, a systemd timer submits batches as GitHub issues. Configuration and privacy details are in `ERROR_REPORTING.md`.
+
+## CODE02 v0.6.33 — diagnóstico de hardware
 
 `POST /api/v1/integrations/hardware/read` returns per-device diagnostics. Deye uses FC43 identification and a one-register FC03 fallback when FC43 is rejected or times out; the diagnostic register value is discarded. Tuya Cloud failures are isolated per configured device ID. Antminer model identity remains unverified by the API response.
 

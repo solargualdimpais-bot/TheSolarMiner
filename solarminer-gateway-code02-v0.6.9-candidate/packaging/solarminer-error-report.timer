@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically send queued SolarMiner Gateway errors to GitHub
+
+[Timer]
+OnBootSec=10m
+OnUnitActiveSec=1h
+RandomizedDelaySec=10m
+Persistent=true
+Unit=solarminer-error-report.service
+
+[Install]
+WantedBy=timers.target

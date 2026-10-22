@@ -1,6 +1,6 @@
 # Contratos API — PWA v0.5.4
 
-## Hardware diagnostics (CODE02 0.6.32)
+## Hardware diagnostics (CODE02 0.6.33)
 
 `POST /api/v1/integrations/hardware/read` returns explicit configuration state and per-device connection state. Deye tries FC43/MEI14 and then a one-register, read-only FC03 probe if FC43 is rejected or times out; it discards the value and never claims unknown metrics. Antminer separates TCP reachability from BOSminer API response and reports its configured model as unverified. Tuya devices report per-ID success or failure and safe provider error codes so one bad ID does not hide other successful reads. No control commands are sent. MOES is usable only through Tuya Cloud when exposed to the configured project. Shelly has no Gateway driver in this release.
 

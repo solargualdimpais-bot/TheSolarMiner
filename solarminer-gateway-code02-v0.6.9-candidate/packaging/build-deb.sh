@@ -21,6 +21,8 @@ cp "$ROOT/packaging/solarminer-update-broker" "$STAGE/usr/bin/solarminer-update-
 cp "$ROOT/packaging/solarminer-update-check-daily" "$STAGE/usr/bin/solarminer-update-check-daily"
 cp "$ROOT/packaging/solarminer-update-check-daily.service" "$STAGE/lib/systemd/system/solarminer-update-check-daily.service"
 cp "$ROOT/packaging/solarminer-update-check-daily.timer" "$STAGE/lib/systemd/system/solarminer-update-check-daily.timer"
+cp "$ROOT/packaging/solarminer-error-report.service" "$STAGE/lib/systemd/system/solarminer-error-report.service"
+cp "$ROOT/packaging/solarminer-error-report.timer" "$STAGE/lib/systemd/system/solarminer-error-report.timer"
 cp "$ROOT/packaging/solarminer-recovery.service" "$STAGE/lib/systemd/system/solarminer-recovery.service"
 cp "$ROOT/packaging/solarminer-recovery.timer" "$STAGE/lib/systemd/system/solarminer-recovery.timer"
 cp "$ROOT/packaging/solarminer-gateway.service" "$STAGE/lib/systemd/system/solarminer-gateway.service"
@@ -74,6 +76,8 @@ cp "$ROOT/docs/CHANGELOG_V0628.md" "$STAGE/usr/share/doc/solarminer-gateway/CHAN
 cp "$ROOT/docs/CHANGELOG_V0629.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0629.md"
 cp "$ROOT/docs/CHANGELOG_V0630.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0630.md"
 cp "$ROOT/docs/CHANGELOG_V0632.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0632.md"
+cp "$ROOT/docs/CHANGELOG_V0633.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0633.md"
+cp "$ROOT/docs/ERROR_REPORTING.md" "$STAGE/usr/share/doc/solarminer-gateway/ERROR_REPORTING.md"
 cp "$ROOT/docs/LAN_PWA_ACCESS.md" "$STAGE/usr/share/doc/solarminer-gateway/LAN_PWA_ACCESS.md"
 cp "$ROOT/docs/DATABASE_BACKUP_AND_RESTORE.md" "$STAGE/usr/share/doc/solarminer-gateway/DATABASE_BACKUP_AND_RESTORE.md"
 cp "$ROOT/docs/UPDATE_AND_ROLLBACK.md" "$STAGE/usr/share/doc/solarminer-gateway/UPDATE_AND_ROLLBACK.md"
@@ -89,7 +93,7 @@ cp "$ROOT/packaging/catalog/catalog.sig" "$STAGE/usr/share/solarminer/catalog.si
 cp "$ROOT/packaging/catalog/catalog.pub" "$STAGE/usr/share/solarminer/catalog.pub"
 cp -R "$ROOT/web/pwa/." "$STAGE/usr/share/solarminer/pwa/"
 chmod 0755 "$STAGE/usr/sbin/solarminer-update-apply" "$STAGE/usr/sbin/solarminer-public-tls-renew" "$STAGE/usr/sbin/solarminer-tailscale-info" "$STAGE/usr/sbin/solarminer-tailscale-connect" "$STAGE/usr/sbin/solarminer-tailscale-cert" "$STAGE/usr/share/solarminer/install-tailscale.sh" "$STAGE/usr/bin/solarminer-update-check-daily" "$STAGE/usr/bin/solarminer-update-broker" "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/prerm" "$STAGE/DEBIAN/postrm" "$STAGE/usr/bin/solarminer-gateway" "$STAGE/usr/bin/solarminer-recovery"
-chmod 0644 "$STAGE/usr/share/solarminer/nginx/solarminer-gateway.conf" "$STAGE/usr/lib/solarminer-gateway/solarminer_gateway/"*.py "$STAGE/lib/systemd/system/solarminer-gateway.service" "$STAGE/lib/systemd/system/solarminer-public-tls-renew.service" "$STAGE/lib/systemd/system/solarminer-public-tls-renew.timer" "$STAGE/lib/systemd/system/solarminer-tailscale-cert.service" "$STAGE/lib/systemd/system/solarminer-tailscale-cert.timer" "$STAGE/lib/systemd/system/solarminer-recovery.service" "$STAGE/lib/systemd/system/solarminer-recovery.timer" "$STAGE/lib/systemd/system/solarminer-update-apply@.service" "$STAGE/lib/systemd/system/solarminer-update-broker.socket" "$STAGE/lib/systemd/system/solarminer-update-broker@.service" "$STAGE/lib/systemd/system/solarminer-update-check-daily.service" "$STAGE/lib/systemd/system/solarminer-update-check-daily.timer" "$STAGE/usr/share/solarminer/catalog.json" "$STAGE/usr/share/solarminer/catalog.sig" "$STAGE/usr/share/solarminer/catalog.pub"
+chmod 0644 "$STAGE/usr/share/solarminer/nginx/solarminer-gateway.conf" "$STAGE/usr/lib/solarminer-gateway/solarminer_gateway/"*.py "$STAGE/lib/systemd/system/solarminer-gateway.service" "$STAGE/lib/systemd/system/solarminer-error-report.service" "$STAGE/lib/systemd/system/solarminer-error-report.timer" "$STAGE/lib/systemd/system/solarminer-public-tls-renew.service" "$STAGE/lib/systemd/system/solarminer-public-tls-renew.timer" "$STAGE/lib/systemd/system/solarminer-tailscale-cert.service" "$STAGE/lib/systemd/system/solarminer-tailscale-cert.timer" "$STAGE/lib/systemd/system/solarminer-recovery.service" "$STAGE/lib/systemd/system/solarminer-recovery.timer" "$STAGE/lib/systemd/system/solarminer-update-apply@.service" "$STAGE/lib/systemd/system/solarminer-update-broker.socket" "$STAGE/lib/systemd/system/solarminer-update-broker@.service" "$STAGE/lib/systemd/system/solarminer-update-check-daily.service" "$STAGE/lib/systemd/system/solarminer-update-check-daily.timer" "$STAGE/usr/share/solarminer/catalog.json" "$STAGE/usr/share/solarminer/catalog.sig" "$STAGE/usr/share/solarminer/catalog.pub"
 find "$STAGE/usr/share/solarminer/pwa" -type d -exec chmod 0755 {} +
 find "$STAGE/usr/share/solarminer/pwa" -type f -exec chmod 0644 {} +
 PACKAGE_VERSION=$(sed -n 's/^Version: //p' "$ROOT/packaging/control")

@@ -80,14 +80,17 @@ jobs:
           printf 'root:x:0:0:root:/root:/bin/sh\nsolarminer:x:998:998:SolarMiner:/var/lib/solarminer:/usr/sbin/nologin\n' > "$VERIFY_ROOT/etc/passwd"
           printf 'root:x:0:\nsolarminer:x:998:\n' > "$VERIFY_ROOT/etc/group"
           install -m 0644 packaging/solarminer-recovery.service "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-recovery.service"
+          install -m 0644 packaging/solarminer-error-report.service "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-error-report.service"
+          install -m 0644 packaging/solarminer-error-report.timer "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-error-report.timer"
           install -m 0644 packaging/solarminer-update-broker@.service "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-update-broker@.service"
           install -m 0644 packaging/solarminer-update-broker.socket "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-update-broker.socket"
           install -m 0755 packaging/solarminer-recovery "$VERIFY_ROOT/usr/bin/solarminer-recovery"
           install -m 0755 packaging/solarminer-update-broker "$VERIFY_ROOT/usr/bin/solarminer-update-broker"
-          for TARGET in sysinit local-fs sockets; do
+          for TARGET in sysinit local-fs sockets network-online; do
             printf '[Unit]\nDescription=Verification placeholder target\n' > "$VERIFY_ROOT/usr/lib/systemd/system/$TARGET.target"
           done
-          systemd-analyze --root="$VERIFY_ROOT" verify solarminer-recovery.service solarminer-update-broker.socket solarminer-update-broker@.service
+          printf '[Unit]\nDescription=Verification placeholder Gateway service\n' > "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-gateway.service"
+          systemd-analyze --root="$VERIFY_ROOT" verify solarminer-recovery.service solarminer-error-report.service solarminer-error-report.timer solarminer-update-broker.socket solarminer-update-broker@.service
 
       - name: Run Gateway tests
         working-directory: solarminer-gateway-code02-v0.6.9-candidate
@@ -217,7 +220,7 @@ jobs:
           set -eu
           ROLLBACK_ROOT="$RUNNER_TEMP/solarminer-usb-rollback"
           mkdir -p "$ROLLBACK_ROOT"
-          for VERSION in 0.6.10 0.6.11 0.6.12 0.6.13 0.6.14 0.6.20 0.6.29 0.6.30 0.6.31; do
+          for VERSION in 0.6.10 0.6.11 0.6.12 0.6.13 0.6.14 0.6.20 0.6.29 0.6.30 0.6.31 0.6.32; do
             DEST="$ROLLBACK_ROOT/$VERSION"
             mkdir -p "$DEST"
             gh release download "gateway-v$VERSION" \
@@ -261,7 +264,7 @@ jobs:
           BUNDLE="$RUNNER_TEMP/solarminer-usb-installer"
           mkdir -p "$BUNDLE"
           cp "$PACKAGE" "$MANIFEST" "$PUBLIC_KEY" "$BUNDLE/"
-          for VERSION in 0.6.10 0.6.11 0.6.12 0.6.13 0.6.14 0.6.20 0.6.29 0.6.30 0.6.31; do
+          for VERSION in 0.6.10 0.6.11 0.6.12 0.6.13 0.6.14 0.6.20 0.6.29 0.6.30 0.6.31 0.6.32; do
             cp "$RUNNER_TEMP/solarminer-usb-rollback/$VERSION/solarminer-gateway_${VERSION}_amd64.deb" "$BUNDLE/"
             cp "$RUNNER_TEMP/solarminer-usb-rollback/$VERSION/solarminer-release.json" "$BUNDLE/solarminer-release-$VERSION.json"
           done
