@@ -17,17 +17,20 @@ test("device private key is re-imported non-extractable and bearer is memory-onl
   assert.match(auth, /credentials: "omit"/);
 });
 
-test("invite flow validates signed Gateway identity before redeeming and exposes owner management", () => {
+test("first Owner uses the local install password and later sessions use the device key", () => {
   assert.match(auth, /verifyGatewayIdentityChallenge\(invite, challenge\)/);
   assert.match(auth, /bootstrapGatewayOwner/);
-  assert.match(auth, /bootstrap_requires_local_access|browser local no próprio Gateway/i);
+  assert.match(auth, /bootstrap_password_invalid/);
+  assert.match(auth, /\/api\/v1\/auth\/device-login/);
+  assert.match(auth, /DEVICE-LOGIN/);
   assert.match(auth, /\/api\/v1\/invites\/redeem/);
-  assert.match(auth, /\/api\/v1\/auth\/login/);
   assert.match(app, /gateway-create-invite-form/);
   assert.match(app, /refreshInviteList/);
   assert.match(app, /revokeGatewayInvite/);
-  assert.match(html, /gateway-invite-qr/);
-  assert.match(html, /gateway-redeem-form/);
+  assert.match(html, /id="gateway-bootstrap-dialog"/);
+  assert.match(html, /id="gateway-bootstrap-form"/);
+  assert.match(html, /id="gateway-endpoint"/);
+  assert.doesNotMatch(html, /gateway-login-form|gateway-redeem-form|gateway-bootstrap-token|gateway-bootstrap-fingerprint/);
   assert.match(connection, /signGatewayLogin/);
 });
 

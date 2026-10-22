@@ -81,6 +81,8 @@ async function gatewayRequest(baseUrl, path, { method = "GET", body, authenticat
     const message = ({
       bootstrap_origin_not_allowed: "A origem desta PWA não está autorizada pelo Gateway.",
       bootstrap_token_invalid_or_expired: "O token de bootstrap expirou ou é inválido. No Gateway, renova-o localmente como root.",
+      bootstrap_password_invalid: "A palavra-passe não corresponde à que foi definida na consola do Gateway durante a instalação.",
+      bootstrap_attempts_limited: "Demasiadas tentativas. Aguarda 15 minutos antes de tentar novamente.",
       bootstrap_unavailable: "O Gateway já não permite criar o primeiro Owner."
     })[detail] || detail;
     const error = new Error(message);
@@ -97,7 +99,10 @@ async function startPresenceHeartbeat() {
       lastPresence = await gatewayRequest(currentGateway, "/api/v1/presence/heartbeat", { method: "POST", body: {}, authenticated: true });
     } catch (error) {
       lastPresence = { state: "unknown", reason: error.status === 401 ? "session_expired" : "heartbeat_failed" };
-      if (error.status === 401 && heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+      if (error.status === 401 && currentGateway) {
+        try { await loginGateway({ gatewayUrl: currentGateway }); }
+        catch { if (heartbeatTimer) clearInterval(heartbeatTimer); heartbeatTimer = null; }
+      }
     }
   };
   await send();
@@ -109,28 +114,57 @@ export async function readGatewayBootstrapStatus(gatewayUrl) {
   return gatewayRequest(gatewayUrl, "/api/v1/bootstrap/status");
 }
 
-export async function bootstrapGatewayOwner({ gatewayUrl, bootstrapToken, username, password, mac, expectedGatewayFingerprint }) {
+export async function bootstrapGatewayOwner({ gatewayUrl, username, password }) {
   const base = validateGatewayUrl(gatewayUrl, { allowLocalHttp: ["localhost", "127.0.0.1", "::1"].includes(location.hostname.replace(/^\[|\]$/g, "")) }).origin;
-  if (!bootstrapToken || bootstrapToken.length < 32) throw new Error("Token de bootstrap local inválido ou ausente.");
-  const pinnedFingerprint = String(expectedGatewayFingerprint || "").trim().replaceAll(":", "").toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(pinnedFingerprint)) throw new Error("Confirma a fingerprint SHA-256 Ed25519 lida localmente no Gateway.");
   const bootstrapStatus = await readGatewayBootstrapStatus(base);
   if (!["BOOTSTRAP_PENDING", "OWNER_SETUP_REQUIRED"].includes(bootstrapStatus.state)) throw new Error("O Gateway não está à espera da criação inicial do Owner.");
   const ts = Math.floor(Date.now() / 1000), challengeNonce = nonce();
   const challenge = await gatewayRequest(base, `/api/v1/gateway/identity?timestamp=${ts}&nonce=${challengeNonce}`);
-  await verifyGatewayIdentityChallenge({ fingerprint: pinnedFingerprint }, challenge);
   const identity = await createDeviceIdentity(base, challenge.fingerprint_sha256);
-  const timestamp = Math.floor(Date.now() / 1000), requestNonce = nonce(), normalizedMac = mac.toUpperCase();
-  const canonical = new TextEncoder().encode(`BOOTSTRAP\n${username}\n${normalizedMac}\n${timestamp}\n${requestNonce}`);
+  const normalizedUsername = username.trim();
+  const timestamp = Math.floor(Date.now() / 1000), requestNonce = nonce();
+  const canonical = new TextEncoder().encode(`BOOTSTRAP\n${normalizedUsername}\n${timestamp}\n${requestNonce}`);
   const signatureBytes = new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, identity.privateKey, canonical));
   const signature = Array.from(signatureBytes, b => b.toString(16).padStart(2, "0")).join("");
   const result = await gatewayRequest(base, "/api/v1/bootstrap/owner", { method: "POST", body: {
-    bootstrap_token: bootstrapToken, username, password, mac: normalizedMac,
+    username: normalizedUsername, password,
     public_key_pem: identity.publicKeyPem, signature, timestamp, nonce: requestNonce
   } });
   identity.deviceId = result.device_id;
+  identity.userId = result.user_id;
   await identityDbRequest("readwrite", store => store.put(identity));
-  const login = await loginGateway({ gatewayUrl: base, username, password });
+  const login = await loginGateway({ gatewayUrl: base });
+  return { ...result, login, gatewayUrl: base, identityValidated: true, gatewayFingerprint: challenge.fingerprint_sha256 };
+}
+
+export async function recoverGatewayOwner({ gatewayUrl, username, recoveryKey, newPassword, mac, expectedGatewayFingerprint }) {
+  const base = validateGatewayUrl(gatewayUrl, { allowLocalHttp: ["localhost", "127.0.0.1", "::1"].includes(location.hostname.replace(/^\[|\]$/g, "")) }).origin;
+  const existingIdentity = await loadDeviceIdentity(base).catch(() => null);
+  const pinnedFingerprint = String(expectedGatewayFingerprint || existingIdentity?.gatewayFingerprint || "").trim().replaceAll(":", "").toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(pinnedFingerprint)) throw new Error("Confirma a fingerprint SHA-256 Ed25519 do Gateway, apresentada no terminal local.");
+  if (!recoveryKey || recoveryKey.length < 20) throw new Error("Chave de recuperação inválida ou ausente.");
+
+  const identityTimestamp = Math.floor(Date.now() / 1000), identityNonce = nonce();
+  const gatewayChallenge = await gatewayRequest(base, `/api/v1/gateway/identity?timestamp=${identityTimestamp}&nonce=${identityNonce}`);
+  await verifyGatewayIdentityChallenge({ fingerprint: pinnedFingerprint }, gatewayChallenge);
+  const challenge = await gatewayRequest(base, "/api/v1/owner/recovery/challenge", {
+    method: "POST", body: { username: username.trim() }
+  });
+  const identity = await createDeviceIdentity(base, pinnedFingerprint);
+  const proofMessage = new TextEncoder().encode(
+    `SOLARMINER-GATEWAY-DEVICE-PROOF-V1\nrecovery\n${challenge.owner_id}\n${challenge.challenge}`
+  );
+  const signatureBytes = new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, identity.privateKey, proofMessage));
+  const signature = Array.from(signatureBytes, b => b.toString(16).padStart(2, "0")).join("");
+  const result = await gatewayRequest(base, "/api/v1/owner/recovery", { method: "POST", body: {
+    username: username.trim(), recovery_key: recoveryKey.trim(), new_password: newPassword,
+    mac: mac.trim().toUpperCase(), public_key_pem: identity.publicKeyPem,
+    challenge: challenge.challenge, signature
+  } });
+  identity.deviceId = result.device_id;
+  identity.userId = challenge.owner_id;
+  await identityDbRequest("readwrite", store => store.put(identity));
+  const login = await loginGateway({ gatewayUrl: base });
   return { ...result, login, gatewayUrl: base, identityValidated: true, gatewayFingerprint: pinnedFingerprint };
 }
 
@@ -144,6 +178,7 @@ export async function redeemGatewayInvite({ qrText, username, password, mac }) {
     username, password, mac, publicKeyPem: identity.publicKeyPem, timestamp: Math.floor(Date.now() / 1000), nonce: nonce() });
   const result = await gatewayRequest(invite.gatewayUrl, "/api/v1/invites/redeem", { method: "POST", body: payload, authenticated: false });
   identity.deviceId = result.device_id;
+  identity.userId = result.user?.id;
   await identityDbRequest("readwrite", store => store.put(identity));
   bearerToken = result.access_token;
   currentUser = result.user;
@@ -151,18 +186,20 @@ export async function redeemGatewayInvite({ qrText, username, password, mac }) {
   await startPresenceHeartbeat();
   return { ...result, gatewayUrl: invite.gatewayUrl, identityValidated: true, presence: presenceInfo() };
 }
-export async function loginGateway({ gatewayUrl, username, password }) {
+export async function loginGateway({ gatewayUrl }) {
   const base = validateGatewayUrl(gatewayUrl, { allowLocalHttp: ["localhost", "127.0.0.1", "::1"].includes(location.hostname.replace(/^\[|\]$/g, "")) }).origin;
   const identity = await loadDeviceIdentity(base);
-  if (!identity?.privateKey || !identity?.deviceId || !identity?.publicKeyPem || !identity?.gatewayFingerprint) throw new Error("Este browser ainda não tem uma identidade associada e verificada para este Gateway. Usa primeiro um convite QR válido.");
+  if (!identity?.privateKey || !identity?.deviceId || !identity?.publicKeyPem || !identity?.gatewayFingerprint) throw new Error("Este dispositivo ainda não foi registado neste Gateway. A configuração inicial deve ser feita no primeiro dispositivo.");
   const identityTimestamp = Math.floor(Date.now() / 1000), identityNonce = nonce();
   const challenge = await gatewayRequest(base, `/api/v1/gateway/identity?timestamp=${identityTimestamp}&nonce=${identityNonce}`);
   await verifyGatewayIdentityChallenge({ fingerprint: identity.gatewayFingerprint }, challenge);
   const timestamp = Math.floor(Date.now() / 1000), requestNonce = nonce();
-  const canonical = new TextEncoder().encode(`LOGIN\n${username}\n${identity.deviceId}\n${timestamp}\n${requestNonce}`);
+  const canonical = new TextEncoder().encode(identity.userId
+    ? `DEVICE-LOGIN\n${identity.userId}\n${identity.deviceId}\n${timestamp}\n${requestNonce}`
+    : `DEVICE-LOGIN\n${identity.deviceId}\n${timestamp}\n${requestNonce}`);
   const signatureBytes = new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, identity.privateKey, canonical));
   const signature = Array.from(signatureBytes, b => b.toString(16).padStart(2, "0")).join("");
-  const result = await gatewayRequest(base, "/api/v1/auth/login", { method: "POST", body: { username, password, device_id: identity.deviceId, timestamp, nonce: requestNonce, signature } });
+  const result = await gatewayRequest(base, "/api/v1/auth/device-login", { method: "POST", body: { ...(identity.userId ? { user_id: identity.userId } : {}), device_id: identity.deviceId, timestamp, nonce: requestNonce, signature } });
   bearerToken = result.access_token;
   currentUser = result.user;
   currentGateway = base;

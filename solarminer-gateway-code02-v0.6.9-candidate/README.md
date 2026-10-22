@@ -9,13 +9,13 @@ make test
 make deb
 ```
 
-For the signed install/repair USB workflow and first Owner bootstrap, see [`docs/INSTALL_DEBIAN_AMD64.md`](docs/INSTALL_DEBIAN_AMD64.md), [`packaging/USB_INSTALL_README.txt`](packaging/USB_INSTALL_README.txt), and [`packaging/USB_REPAIR_README.txt`](packaging/USB_REPAIR_README.txt). The repair tool is for a previously installed Gateway; it is not an unattended USB autorun feature. Release notes for the current repair are in [`docs/CHANGELOG_V0615.md`](docs/CHANGELOG_V0615.md).
+For the signed install/repair USB workflow and first Owner bootstrap, see [`docs/INSTALL_DEBIAN_AMD64.md`](docs/INSTALL_DEBIAN_AMD64.md), [`docs/OWNER_FIRST_BOOTSTRAP.md`](docs/OWNER_FIRST_BOOTSTRAP.md), [`packaging/USB_INSTALL_README.txt`](packaging/USB_INSTALL_README.txt), and [`packaging/USB_REPAIR_README.txt`](packaging/USB_REPAIR_README.txt). The repair tool is for a previously installed Gateway; it is not an unattended USB autorun feature. Release notes are in [`docs/CHANGELOG_V0616.md`](docs/CHANGELOG_V0616.md).
 
 The supported deployment target is Debian 13 (Trixie) or later on `amd64`, with Python 3.13 or later. Runtime dependencies include `sudo`, `dpkg`, `python3-pydantic (>= 2)`, `python3-fastapi (>= 0.115.11)`, `python3-uvicorn`, `python3-argon2`, `python3-cryptography`, `python3-qrcode`, `openssl`, and `adduser`. The Debian package creates a dedicated `solarminer` service identity and a self-signed TLS certificate. Review `docs/TLS_TRUST.md` before LAN exposure.
 
 ## Bootstrap
 
-The service creates `/var/lib/solarminer/bootstrap.token` on the first startup with mode `0600`, under `/var/lib/solarminer` mode `0700`. Read it only through local privileged access. The token expires after 15 minutes; expiry does not trigger automatic re-issuance. The bootstrap API is loopback-only and does not return the token. The first owner setup requires a client Ed25519 key pair and a signature over the canonical message described in `docs/API.md`. The private key must remain with the client.
+On the initial USB install, the local installer asks for the first Owner password with visible terminal input and stores only a temporary Argon2id verifier. The first PWA device uses that password once to register the Owner and its Ed25519 identity. Later visits authenticate using a fresh device-key signature, without another password form. The private device key stays non-exportable in the browser. See `docs/OWNER_FIRST_BOOTSTRAP.md` and `docs/API.md`.
 
 ## MAC and cryptographic identity
 

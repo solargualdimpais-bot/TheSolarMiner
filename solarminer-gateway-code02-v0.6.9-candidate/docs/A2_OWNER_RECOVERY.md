@@ -8,7 +8,7 @@ Recovery commands require a real interactive terminal, OS root privileges, and a
 
 ## Initial setup and upgrades
 
-On a fresh instance, the `POST /api/v1/bootstrap/owner` success response contains a one-time `recovery_key`. Bootstrap can run from loopback, same-origin, or the exact HTTPS PWA origin configured on the Gateway; it still requires the short-lived local token and fresh Ed25519 proof. The bootstrap client must show the recovery key once and must not store it in logs, telemetry, support tickets, shell history, or temporary files. Store the printed key offline. The Gateway persists only a domain-separated SHA-256 verifier. This is appropriate because the key contains 32 CSPRNG bytes (256 bits of entropy); human-chosen passwords continue to use Argon2id.
+On a fresh USB installation, `solarminer-gateway owner-password` stores a temporary Argon2id verifier for the password chosen in the local console. The first PWA registration requires that password, an allowed HTTPS origin and fresh Ed25519 device proof. The bootstrap transaction consumes the temporary verifier while creating the Owner. Its success response contains a one-time `recovery_key`; the client shows it once and must not store it in logs, telemetry, support tickets, shell history, or temporary files. Store the key offline. The Gateway persists only a domain-separated SHA-256 verifier because the recovery key contains 32 CSPRNG bytes (256 bits of entropy); human-chosen account passwords use Argon2id.
 
 An existing A1b database does not have a recoverable key because the old release never displayed one. While the owner still has the current password and an active associated device, stop the service and run:
 

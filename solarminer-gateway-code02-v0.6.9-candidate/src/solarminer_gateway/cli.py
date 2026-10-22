@@ -201,6 +201,43 @@ def run_bootstrap_token() -> None:
     print(f"Gateway identity SHA-256: {fingerprint}")
 
 
+def run_owner_password() -> None:
+    """Set the one-time first-owner password locally; input is intentionally visible."""
+    _require_root()
+    _require_tty()
+    from . import app as gateway_app
+    gateway_app.initialize()
+    print("Define a palavra-passe inicial do Owner. O texto aparece enquanto escreves.")
+    first = input("Palavra-passe inicial (8 a 128 caracteres): ")
+    second = input("Repete a palavra-passe: ")
+    if first != second:
+        raise recovery.RecoveryError("passwords_do_not_match")
+    if not 8 <= len(first) <= 128:
+        raise recovery.RecoveryError("owner_password_must_be_8_to_128_characters")
+    with sqlite3.connect(gateway_app.DB_PATH, timeout=10, isolation_level=None) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN IMMEDIATE")
+        owner = conn.execute("SELECT 1 FROM users WHERE role='owner' AND status='active' LIMIT 1").fetchone()
+        row = conn.execute("SELECT consumed_at FROM bootstrap WHERE id=1").fetchone()
+        if owner:
+            conn.rollback()
+            raise recovery.RecoveryError("an_active_owner_already_exists")
+        if not row or row["consumed_at"] is not None:
+            conn.rollback()
+            raise recovery.RecoveryError("initial_owner_setup_is_unavailable")
+        password_hash = gateway_app.PASSWORDS.hash(first)
+        conn.execute("UPDATE bootstrap SET setup_password_hash=?,state='local_password_ready' WHERE id=1 AND consumed_at IS NULL", (password_hash,))
+        conn.execute("UPDATE system_state SET value='BOOTSTRAP_PENDING' WHERE key='bootstrap_state'")
+        gateway_app.audit(conn, None, "bootstrap.owner_password_configured", None, "success")
+        conn.commit()
+    try:
+        gateway_app.BOOTSTRAP_PATH.unlink(missing_ok=True)
+    except OSError:
+        pass
+    first = second = ""
+    print("Palavra-passe inicial configurada. Abre o PWA, indica o endpoint HTTPS e usa-a uma vez no primeiro registo Owner.")
+
+
 def run_identity_fingerprint() -> None:
     _require_root()
     from .identity import identity_fingerprint
@@ -216,6 +253,7 @@ def main() -> None:
     subparsers.add_parser("recovery-setup", help="create or rotate a recovery key while owner access still works")
     subparsers.add_parser("emergency-reset", help="recover an owner using OS-root authority and a protected backup")
     subparsers.add_parser("bootstrap-token", help="rotate and display a one-time token for initial Owner setup")
+    subparsers.add_parser("owner-password", help="set the visible, one-time first-owner password from the local console")
     subparsers.add_parser("identity-fingerprint", help="display the provisioned Gateway Ed25519 identity fingerprint")
     args = parser.parse_args()
     handlers = {
@@ -223,6 +261,7 @@ def main() -> None:
         "recovery-setup": run_recovery_setup,
         "emergency-reset": run_emergency_reset,
         "bootstrap-token": run_bootstrap_token,
+        "owner-password": run_owner_password,
         "identity-fingerprint": run_identity_fingerprint,
     }
     try:

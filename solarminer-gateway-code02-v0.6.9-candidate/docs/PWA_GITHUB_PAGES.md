@@ -19,22 +19,13 @@ Cada alteração posterior à PWA em main volta a executar as verificações e a
 
 ## Criar o primeiro Owner
 
-1. Inicia sessão no terminal do Gateway como root. O serviço de primeira instalação cria uma identidade Ed25519 por Gateway e nunca a substitui durante upgrades.
-2. Se o token de bootstrap expirou, executa os três comandos seguintes, um a um: para o serviço, gera token/fingerprint e volta a iniciar o serviço.
+1. O instalador USB termina com o pedido local de palavra-passe do Owner. Escreve-a na consola do Gateway; os caracteres ficam visíveis. Confirma-a quando o instalador pedir. O texto não é guardado em logs; o Gateway mantém temporariamente apenas um verificador Argon2id.
+2. Abre o URL do GitHub Pages, escolhe **Gateway · detalhes**, introduz o endereço HTTPS do Gateway e seleciona **Testar endpoint**.
+3. Quando a PWA detetar `BOOTSTRAP_PENDING`, apresenta a janela **Registar este telemóvel como Owner**. Introduz o teu nome e a palavra-passe definida na consola local. O primeiro Owner e a chave Ed25519 deste browser são registados uma só vez. Guarda a chave de recuperação apresentada nessa janela.
 
-   systemctl stop solarminer-gateway.service
+Não é necessário copiar token, MAC nem fingerprint para a PWA. O browser valida o certificado HTTPS para o endpoint e fixa automaticamente a identidade Ed25519 do Gateway. O bootstrap mantém a assinatura Ed25519 do dispositivo, a origem HTTPS autorizada, uma única criação de Owner e limite de tentativas. Mais detalhes: `docs/OWNER_FIRST_BOOTSTRAP.md`.
 
-   solarminer-gateway bootstrap-token
-
-   systemctl start solarminer-gateway.service
-
-   O comando exige root, terminal interativo e serviço parado. Gera um token aleatório de utilização única, válido por 15 minutos, e imprime também a fingerprint da identidade Ed25519. Não guardes o token em ficheiro de texto, shell history, logs ou mensagens.
-
-3. Abre o URL do GitHub Pages, escolhe **Gateway · detalhes**, introduz o endereço HTTPS do Gateway (por exemplo https://solarminer-gateway:8443) e seleciona **Testar endpoint**.
-4. Compara, caractere por caractere, a fingerprint mostrada pelo comando local com a do campo de bootstrap da PWA. Usa o mesmo URL/hostname validado no certificado TLS.
-5. Introduz o token, nome do Owner, palavra-passe e MAC como metadado declarado. A criação assina o pedido com uma nova chave Ed25519 do browser; o Gateway consome o token uma vez e devolve a chave de recuperação apenas na resposta de sucesso. Guarda a chave de recuperação offline.
-
-O servidor aceita bootstrap remoto apenas por same-origin ou por um origin HTTPS exato em SOLARMiner_CORS_ORIGINS, com token de bootstrap válido, assinatura Ed25519 e nonce/timestamp novos. O endpoint não devolve o token. Após expirar, emite outro apenas através do comando local root.
+Nas visitas seguintes, a PWA tenta autenticar automaticamente o dispositivo registado com uma nova assinatura Ed25519. Não mostra um formulário de palavra-passe. O endpoint HTTPS escolhido fica guardado neste browser. Se apagares os dados de Safari, perderes a chave local ou mudares de telemóvel, usa o procedimento de recuperação; a palavra-passe inicial já não reabre o registo Owner.
 
 ## Modo Owner e limites de dados
 
@@ -46,12 +37,10 @@ O Gateway disponibiliza APIs de leitura/identidade, administração e atualizaç
 
 O Gateway que ainda não tem Owner e apresenta `recovery required` não deve ser atualizado pelo fluxo online enquanto o estado de recuperação da instalação anterior estiver bloqueado. A atualização remota 0.6.12 falhou porque o nome do asset `.deb` publicado não coincidia com o nome assinado no manifesto; por isso o pacote não foi aplicado e o Gateway permaneceu na 0.6.10. A versão 0.6.14 do script USB também tinha um defeito: `/etc/os-release` substituía a variável `VERSION` destinada ao pacote Debian, fazendo a validação recusar um pacote que era realmente 0.6.14. A 0.6.15 separa esses valores e inclui uma verificação no workflow para impedir regressão.
 
-No Debian 13 amd64, inicia sessão como `root`, monta a pen em `/mnt/solarminer-usb` e executa `sh /mnt/solarminer-usb/repair-existing-from-usb.sh`. Depois de confirmar que o script terminou com health check válido, emite o token local de bootstrap, um comando de cada vez:
+No Debian 13 amd64, inicia sessão como `root`, monta a pen em `/mnt/solarminer-usb` e executa `sh /mnt/solarminer-usb/repair-existing-from-usb.sh`. Depois de confirmar que o script terminou com health check válido, se ainda não houver Owner, define a palavra-passe de bootstrap local:
 
 ```sh
-systemctl stop solarminer-gateway.service
-solarminer-gateway bootstrap-token
-systemctl start solarminer-gateway.service
+solarminer-gateway owner-password
 ```
 
-Escreve a confirmação `ISSUE-OWNER-BOOTSTRAP-TOKEN` quando solicitada; compara a fingerprint local com a PWA e conclui a criação do Owner em 15 minutos. A versão 0.6.15 inclui o comando `bootstrap-token` no wrapper instalado e mantém o origin oficial do GitHub Pages permitido. O iPhone continua a exigir confiança explícita num certificado válido para o IP/hostname usado; a PWA não pode ignorar nem instalar essa confiança silenciosamente. Se a assinatura, a origem, a instalação ou o health check falhar, conserva `/var/log/solarminer-usb-repair.log` e `/var/lib/solarminer/backups/`.
+Escreve e confirma a palavra-passe no terminal local. Depois abre a PWA e segue a janela inicial. O iPhone continua a exigir confiança explícita num certificado válido para o IP/hostname usado; a PWA não pode ignorar nem instalar essa confiança silenciosamente. Se a assinatura, a origem, a instalação ou o health check falhar, conserva `/var/log/solarminer-usb-repair.log` e `/var/lib/solarminer/backups/`.

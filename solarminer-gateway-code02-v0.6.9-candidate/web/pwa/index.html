@@ -22,7 +22,7 @@
         <span><strong>The Solar Miner</strong><small>ENERGY GATEWAY</small></span>
       </a>
       <div class="side-label">A SUA PROPRIEDADE</div>
-      <div id="connection-summary" class="connection-card"><span class="pulse"></span><div><strong id="connection-title">Gateway não ligado</strong><small id="connection-detail">Configura o endpoint e inicia sessão Owner</small></div></div>
+      <div id="connection-summary" class="connection-card"><span class="pulse"></span><div><strong id="connection-title">Gateway não ligado</strong><small id="connection-detail">DEMONSTRAÇÃO — SEM LIGAÇÃO AO GATEWAY; valores simulados até autenticação.</small></div></div>
       <nav id="primary-nav" class="primary-nav" aria-label="Navegação principal">
         <button class="nav-item active" data-page="inicio"><span class="nav-icon">⌂</span>Visão geral</button>
         <button class="nav-item" data-page="energia"><span class="nav-icon">◉</span>Energia · resumo</button>
@@ -42,7 +42,7 @@
     </aside>
 
     <main class="main-content">
-      <header class="topbar"><div class="mobile-brand"><img src="assets/icon.svg" alt="" width="34" height="34"><strong>The Solar Miner</strong></div><div class="breadcrumb" id="breadcrumb">A SUA CASA / VISÃO GERAL</div><div class="top-actions"><span id="mode-chip" class="mode-chip off">SEM SESSÃO</span><button id="refresh-button" class="icon-button" title="Consultar o Gateway" aria-label="Consultar o Gateway">↻</button></div></header>
+      <header class="topbar"><div class="mobile-brand"><img src="assets/icon.svg" alt="" width="34" height="34"><strong>The Solar Miner</strong></div><div class="breadcrumb" id="breadcrumb">A SUA CASA / VISÃO GERAL</div><div class="top-actions"><span id="mode-chip" class="mode-chip simulated">DEMO · SIMULATED</span><button id="refresh-button" class="icon-button" title="Consultar o Gateway" aria-label="Consultar o Gateway">↻</button></div></header>
       <section id="gateway-status-strip" class="gateway-status-strip" aria-live="polite">
         <div class="gateway-status-dot" aria-hidden="true"></div>
         <div class="gateway-status-copy"><strong id="gateway-status-label">GATEWAY NÃO CONFIGURADO</strong><small id="gateway-status-detail">Configura o endpoint HTTPS do Gateway e inicia sessão.</small></div>
@@ -50,7 +50,7 @@
       </section>
       <div id="notice" class="notice" role="status" hidden></div>
       <section id="page-content" aria-live="polite"></section>
-      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.6.15</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
+      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.6.16</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
     </main>
   </div>
 
@@ -93,48 +93,12 @@
   <dialog id="gateway-dialog" class="settings-dialog">
     <form method="dialog" class="dialog-header"><div><p class="eyebrow">LIGAÇÃO SEGURA</p><h2>SolarMiner Gateway</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></form>
     <div class="dialog-body">
-      <div class="status-banner"><span class="demo-stamp">SEGURANÇA</span><span>Uma resposta HTTP não prova a identidade do Gateway. Esta versão nunca declara LAN/REMOTO como ligado sem identidade criptográfica validada.</span></div>
-      <p class="field-note">Insere um endpoint HTTPS já conhecido ou lê um QR Code SolarMiner. O endereço fica apenas nesta sessão até existir um método suportado para validar e fixar a identidade do Gateway.</p>
+      <div class="status-banner"><span class="demo-stamp">SEGURANÇA</span><span>A ligação só é aceite quando o browser valida o certificado HTTPS e o dispositivo conclui a autenticação criptográfica.</span></div>
+      <p class="field-note">Introduz o endpoint HTTPS do Gateway. O endereço fica guardado neste browser; um telemóvel registado volta a autenticar-se automaticamente.</p>
       <label for="gateway-endpoint">Endpoint HTTPS do Gateway</label><input id="gateway-endpoint" type="url" inputmode="url" placeholder="gateway.exemplo" autocomplete="off" spellcheck="false">
       <div class="dialog-actions"><button id="gateway-check" class="button primary" type="button">Testar endpoint</button><button id="gateway-clear" class="button secondary" type="button">Desassociado / limpar</button></div>
-      <label for="gateway-qr-file">Ler QR Code (se o browser suportar a leitura)</label><input id="gateway-qr-file" type="file" accept="image/*" capture="environment">
-      <label for="gateway-qr-text">Ou colar o conteúdo do QR Code</label><textarea id="gateway-qr-text" rows="3" placeholder="Conteúdo do convite SolarMiner" autocomplete="off" spellcheck="false"></textarea>
-      <div class="dialog-actions"><button id="gateway-qr-parse" class="button secondary" type="button">Validar formato do QR</button></div>
       <div id="gateway-result" class="connection-result" role="status" aria-live="polite">Nenhum endpoint foi testado. A PWA permanece em modo demonstração.</div>
-      <section class="panel gateway-auth-panel" id="gateway-bootstrap-panel" hidden>
-        <div class="panel-header"><div><p class="eyebrow">PRIMEIRA CONFIGURAÇÃO</p><h3>Criar o primeiro Owner</h3></div><span class="source-tag">TOKEN ÚNICO + ED25519</span></div>
-        <p class="field-note">O Gateway só aceita este passo enquanto não existir Owner. No terminal do Gateway, executa <code>solarminer-gateway bootstrap-token</code> e lê a fingerprint impressa pelo mesmo comando. Confirma que a fingerprint coincide antes de enviar credenciais. O token expira em 15 minutos.</p>
-        <form id="gateway-bootstrap-form" class="gateway-form-grid">
-          <label>Token de bootstrap local<input id="gateway-bootstrap-token" type="password" autocomplete="off" minlength="32" required></label>
-          <label>Fingerprint SHA-256 Ed25519 do Gateway<input id="gateway-bootstrap-fingerprint" inputmode="text" autocomplete="off" minlength="64" maxlength="64" pattern="[0-9A-Fa-f]{64}" placeholder="64 caracteres hexadecimais" required></label>
-          <label>Nome do Owner<input id="gateway-bootstrap-username" autocomplete="username" minlength="3" maxlength="128" pattern="[A-Za-z0-9_.-]+" required></label>
-          <label>Palavra-passe (mín. 12 caracteres)<input id="gateway-bootstrap-password" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required></label>
-          <label>MAC declarado<input id="gateway-bootstrap-mac" placeholder="AA:BB:CC:DD:EE:FF" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" required></label>
-            <button class="button primary" type="submit">Criar primeiro Owner</button>
-        </form>
-        <div id="gateway-bootstrap-recovery" hidden class="invite-created"><strong>Chave de recuperação — guardar offline agora</strong><p class="field-note">Esta chave é apresentada uma única vez e não é guardada na PWA.</p><textarea id="gateway-bootstrap-recovery-key" rows="3" readonly></textarea><button class="button secondary" type="button" id="gateway-copy-recovery-key">Copiar chave de recuperação</button></div>
-      </section>
-      <section class="panel gateway-auth-panel">
-        <div class="panel-header"><div><p class="eyebrow">IDENTIDADE DO DISPOSITIVO</p><h3>Iniciar sessão</h3></div><span class="source-tag">TOKEN SÓ EM MEMÓRIA</span></div>
-        <p class="field-note">A chave privada do dispositivo é guardada como CryptoKey não exportável no armazenamento do browser. O token de sessão nunca é guardado em localStorage nem no cache offline.</p>
-        <form id="gateway-login-form" class="gateway-form-grid">
-          <label>Utilizador<input id="gateway-login-username" autocomplete="username" minlength="3" maxlength="128" required></label>
-          <label>Palavra-passe<input id="gateway-login-password" type="password" autocomplete="current-password" minlength="12" required></label>
-          <button class="button primary" type="submit">Autenticar neste dispositivo</button>
-          <button class="button secondary" type="button" id="gateway-logout" disabled>Terminar sessão</button>
-        </form>
-        <div id="gateway-session-status" class="connection-result" role="status" aria-live="polite">Sem sessão autenticada nesta aba.</div>
-      </section>
-      <section class="panel gateway-auth-panel">
-        <div class="panel-header"><div><p class="eyebrow">FAZER PARTE DA INSTALAÇÃO</p><h3>Resgatar convite QR</h3></div></div>
-        <form id="gateway-redeem-form" class="gateway-form-grid">
-          <label>Utilizador novo<input id="gateway-redeem-username" autocomplete="username" minlength="3" maxlength="128" pattern="[A-Za-z0-9_.-]+" required></label>
-          <label>Palavra-passe (mín. 12 caracteres)<input id="gateway-redeem-password" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required></label>
-          <label>MAC declarado deste dispositivo<input id="gateway-redeem-mac" inputmode="text" placeholder="AA:BB:CC:DD:EE:FF" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" required></label>
-          <button class="button primary" type="submit">Validar identidade e resgatar convite</button>
-        </form>
-        <p class="field-note">A fingerprint completa do Gateway e a assinatura Ed25519 são verificadas antes de consumir o convite. O MAC é apenas declarado, não prova presença física.</p>
-      </section>
+      <div id="gateway-session-status" class="connection-result" role="status" aria-live="polite">Sem sessão autenticada neste dispositivo.</div>
       <section class="panel gateway-auth-panel" id="gateway-invite-management" hidden>
         <div class="panel-header"><div><p class="eyebrow">ADMINISTRAÇÃO DO GATEWAY</p><h3>Convites de utilização única</h3></div><span class="source-tag">OWNER</span></div>
         <form id="gateway-create-invite-form" class="gateway-form-grid">
@@ -156,8 +120,21 @@
         <div id="gateway-update-details" class="field-note" aria-live="polite"></div>
         <button id="gateway-update-apply" class="button primary" type="button" hidden disabled>Aplicar atualização verificada</button>
       </section>
-      <div class="security-callout"><strong>Estado de confiança:</strong> uma resposta HTTP não confirma identidade; só uma assinatura válida e a fingerprint completa o fazem. Estados DEMO locais não são apresentados como comandos LIVE. A aplicação de uma atualização exige versão validada, preflight de recuperação independente e confirmação explícita de um Owner.</div>
+      <div class="security-callout"><strong>Estado de confiança:</strong> o tráfego só é aceite com TLS válido e prova Ed25519 do dispositivo. Estados DEMO locais não são apresentados como comandos LIVE. A aplicação de uma atualização exige versão validada, preflight de recuperação independente e confirmação explícita de um Owner.</div>
       <div class="dialog-actions"><button class="button primary" type="button" id="close-gateway-dialog">Fechar</button></div>
+    </div>
+  </dialog>
+  <dialog id="gateway-bootstrap-dialog" class="settings-dialog compact-dialog">
+    <form method="dialog" class="dialog-header"><div><p class="eyebrow">PRIMEIRA CONFIGURAÇÃO</p><h2>Registar este telemóvel como Owner</h2></div></form>
+    <div class="dialog-body">
+      <p class="field-note">O Gateway ainda não tem Owner. Usa a palavra-passe definida na consola local durante a instalação. Este registo só pode acontecer uma vez.</p>
+      <form id="gateway-bootstrap-form" class="gateway-form-grid">
+        <label>Nome do Owner<input id="gateway-bootstrap-username" autocomplete="name" minlength="1" maxlength="128" required></label>
+        <label>Palavra-passe inicial do Gateway<input id="gateway-bootstrap-password" type="password" autocomplete="current-password" minlength="8" maxlength="128" required></label>
+        <button class="button primary" type="submit">Registar primeiro Owner</button>
+      </form>
+      <div id="gateway-bootstrap-recovery" hidden class="invite-created"><strong>Chave de recuperação — guardar offline agora</strong><p class="field-note">Esta chave é apresentada uma única vez e não fica guardada na PWA.</p><textarea id="gateway-bootstrap-recovery-key" rows="3" readonly></textarea><button class="button secondary" type="button" id="gateway-copy-recovery-key">Copiar chave de recuperação</button></div>
+      <div id="gateway-bootstrap-result" class="connection-result" role="status" aria-live="polite"></div>
     </div>
   </dialog>
   <dialog id="context-editor" class="settings-dialog context-editor" aria-labelledby="context-editor-title">

@@ -1,5 +1,13 @@
 # API contract CODE02 v0.6.7 — incremental / partial
 
+## Addendum: first Owner local-password setup and device login
+
+- During first USB installation, `solarminer-gateway owner-password` takes a locally entered password (8–128 chars; terminal echo is enabled), hashes it with Argon2id, and stores only that temporary verifier in the `bootstrap` row. The setup script does not put the plaintext value in its log.
+- `POST /api/v1/bootstrap/owner` accepts `username`, `password`, `public_key_pem`, `signature`, `timestamp`, and `nonce` for the new setup flow. The signature covers `BOOTSTRAP`, username, timestamp, and nonce on separate lines. The request must arrive from an allowed origin over trusted HTTPS. The password must match the local verifier. The transaction consumes that verifier and creates the first Owner and its device exactly once. The name may contain spaces. MAC metadata is marked unknown for this flow.
+- Legacy installations can still use the optional one-time `bootstrap_token` and MAC payload while they are being migrated.
+- `POST /api/v1/auth/device-login` accepts `device_id`, `timestamp`, `nonce`, and `signature`. The Ed25519 signature covers `DEVICE-LOGIN`, device ID, timestamp, and nonce on separate lines. An active, already-associated device receives an eight-hour session; no account password is sent on subsequent PWA visits.
+- The PWA stores the private `CryptoKey` as non-exportable IndexedDB data and keeps bearer sessions in memory. Clearing browser data removes the device identity; account recovery/administrative re-enrollment is then required.
+
 ## Compatibility
 
 The established `/api/v1/health` and `/api/v1/info` API version remains `0.6.0` for compatibility. The package/release version is `0.6.7`. Existing authentication, session, RBAC, device pairing, presence and audit routes are retained.

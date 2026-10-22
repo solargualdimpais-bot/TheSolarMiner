@@ -2,11 +2,11 @@ import { CATEGORIES, DEMO_EQUIPMENT, classifyEquipment, formatReading, isSimulat
 import { DEMO_CONTROL_CONFIG, createDemoControlState, updateDemoControl, toggleDemoControl } from "./demo-mode.js";
 import { renderWorkspacePage, renderHomePreferenceLinks, renderHouseSearch, handleWorkspaceAction, handleWorkspaceChange, applyPreferences, getWorkspacePageLabel, workspace, getEditableEntity, saveEditableEntity, saveDemoWorkspace, hydrateWorkspacePhotos } from "./workspace-ui.js";
 import { renderAutomationsPage, renderSolarProductionPage, renderDemoAdminPanel, handleFeatureAction, saveAutomationForm, addDemoUser, saveDemoUserEdit, saveSolarWeather, demoFeatures } from "./features-v053.js";
-import { GatewayConnectionManager, CONNECTION_STATES, parsePairingQr, parseInviteQr, probeGateway, validateGatewayUrl, PRESENCE_API_STATUS } from "./gateway-connection.js";
-import { bootstrapGatewayOwner, redeemGatewayInvite, loginGateway, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, logoutGateway, readGatewayEnergy, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate } from "./gateway-auth.js";
+import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, PRESENCE_API_STATUS } from "./gateway-connection.js";
+import { bootstrapGatewayOwner, readGatewayBootstrapStatus, loginGateway, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, logoutGateway, readGatewayEnergy, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate } from "./gateway-auth.js";
 
 let automationEditingId = "";
-const state = { page: "inicio", mode: "SIMULATED", dataStatus: "DEMO", dataError: null, equipment: DEMO_EQUIPMENT, lastUpdated: null, lastMeasurementAt: null, refreshing: false, propertyPhoto: "", demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [{id:"luz_sala",name:"Luz teto",room:"Sala de estar",floor:"RDC",pct:78},{id:"estor_sala",name:"Estore",room:"Sala de estar",floor:"RDC",pct:60},{id:"luz_coz",name:"Luz teto",room:"Cozinha",floor:"RDC",pct:0},{id:"estor_coz",name:"Estore",room:"Cozinha",floor:"RDC",pct:0}] };
+const state = { page: "inicio", mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], lastUpdated: null, lastMeasurementAt: null, refreshing: false, propertyPhoto: "", demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [] };
 const $ = (selector) => document.querySelector(selector);
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
 const pageLabel = (id) => id === "inicio" ? "Visão geral" : (CATEGORIES.find(c => c.id === id)?.label || getWorkspacePageLabel(id) || "Mais áreas");
@@ -40,7 +40,6 @@ $('#context-editor-form').addEventListener('submit',e=>{e.preventDefault();if(!e
 
 
 const gatewayManager = new GatewayConnectionManager({ onState: updateGatewayStatus });
-let qrCandidate = null;
 function updateGatewayStatus(connection) {
   const label = $("#gateway-status-label"), detail = $("#gateway-status-detail"), dot = $(".gateway-status-dot");
   if (!label || !detail) return;
@@ -53,6 +52,7 @@ function updateGatewayStatus(connection) {
   if (dot) dot.style.background = connection.simulated ? "#b9a477" : connection.reachable ? "#d6ad64" : "#b96c62";
 }
 function gatewayResult(message) { const el = $("#gateway-result"); if (el) el.textContent = message; }
+try { const savedEndpoint = localStorage.getItem("solarminer-gateway-endpoint-v1"); if (savedEndpoint) $("#gateway-endpoint").value = savedEndpoint; } catch {}
 function currentTimeLabel(value) { return value ? new Intl.DateTimeFormat("pt-PT", { dateStyle: "short", timeStyle: "medium" }).format(new Date(value)) : "não confirmada"; }
 
 
@@ -135,8 +135,8 @@ async function refreshGatewayReadings() {
   }
 }
 function resetToDemoAfterLogout() {
-  state.mode = "SIMULATED"; state.dataStatus = "DEMO"; state.dataError = null;
-  state.equipment = DEMO_EQUIPMENT; state.lastUpdated = null; state.lastMeasurementAt = null; render();
+  state.mode = "DISCONNECTED"; state.dataStatus = "UNAVAILABLE"; state.dataError = null;
+  state.equipment = []; state.lastUpdated = null; state.lastMeasurementAt = null; render();
 }
 function card(item) {
   const category = CATEGORIES.find(c => c.id === item.category) || { icon: "•", label: item.category };
@@ -227,6 +227,17 @@ function toggleFavoriteDevice(id){
   return false;
 }
 function renderOverview() {
+  if (state.mode !== "SIMULATED") {
+    const cards = state.equipment.map(card).join("") || `<div class="empty-state">Ainda não há equipamentos ou leituras registados no Gateway. Não são apresentados valores de demonstração nesta PWA.</div>`;
+    const user = sessionInfo().user;
+    const authenticated = sessionInfo().authenticated;
+    const updated = state.lastUpdated ? currentTimeLabel(state.lastUpdated) : "Ainda sem consulta";
+    return `<div class="page-heading"><div><p class="eyebrow">${authenticated ? "SESSÃO AUTENTICADA · GATEWAY" : "SOLARMiner GATEWAY"}</p><h1>SolarMiner Gateway</h1><p>${authenticated ? "Dados obtidos através da API autenticada. Áreas sem integração física são assinaladas como indisponíveis." : "Liga a PWA ao teu Gateway e autentica-te como Owner para administrar o dispositivo. Não são inventados valores nem apresentados equipamentos simulados."}</p></div><div class="date-block"><strong>${esc(user?.username || "Sem sessão")}</strong><br>${esc(user?.role || "")}</div></div>
+      <div class="status-banner"><span class="demo-stamp">${esc(state.dataStatus)}</span><span><strong>${state.dataError ? "Consulta ao Gateway" : authenticated ? "Ligação autenticada" : "É necessária uma sessão Owner"}</strong> · ${esc(state.dataError || (authenticated ? ("Última consulta: " + updated) : "Abre “Gateway · detalhes” para configurar o endpoint e iniciar sessão."))}</span></div>
+      <div class="section-heading"><div><p class="eyebrow">EQUIPAMENTOS REGISTADOS</p><h2>Estado comunicado pelo Gateway</h2></div><button class="button secondary" type="button" id="live-refresh">Consultar novamente</button></div>
+      <div class="equipment-grid">${cards}</div>
+      <section class="panel"><div class="panel-header"><div><p class="eyebrow">ADMINISTRAÇÃO</p><h2>Gestão do Gateway</h2><p>Utilizadores, convites, origem de atualizações e aplicação de firmware requerem o papel Owner.</p></div><button class="button primary" type="button" id="open-owner-management">${authenticated ? "Abrir gestão Owner" : "Configurar / iniciar sessão"}</button></div></section>`;
+  }
   const totals = demoTotals();
   const allCards = state.equipment.map(card).join("") || `<div class="empty-state">Ainda não existem equipamentos configurados no Gateway.</div>`;
   const photoStyle = state.propertyPhoto ? "has-property-photo" : "photo-placeholder";
@@ -258,10 +269,16 @@ function render() {
   freshness();
   $("#breadcrumb").textContent = `A SUA PROPRIEDADE / ${pageLabel(state.page).toUpperCase()}`;
   const workspacePage = renderWorkspacePage(state.page);
-  let pageHtml = state.page === "inicio" ? renderOverview() : (workspacePage || (CATEGORIES.some(c=>c.id===state.page) ? renderCategory(state.page) : renderOverview()));
-  if(state.page === "automatismos") pageHtml = renderAutomationsPage(workspace, automationEditingId);
-  if(state.page === "producao") pageHtml = renderSolarProductionPage();
-  if(state.page === "profile") pageHtml += renderDemoAdminPanel();
+  const gatewayBackedPages = ["inicio", ...CATEGORIES.map(c => c.id)];
+  let pageHtml;
+  if (state.mode !== "SIMULATED" && !gatewayBackedPages.includes(state.page)) {
+    pageHtml = `<div class="page-heading"><div><p class="eyebrow">FUNÇÃO NÃO DISPONÍVEL NO GATEWAY ATUAL</p><h1>${esc(pageLabel(state.page))}</h1><p>Esta área ainda não tem um contrato de dados ou comandos físicos no Gateway. Para evitar confusão, a sessão autenticada não apresenta controlos ou valores de demonstração aqui.</p></div></div><div class="empty-state">Sem dados reais fornecidos pelo Gateway para esta área. A administração do Owner está em “Gateway · detalhes”.</div>`;
+  } else {
+    pageHtml = state.page === "inicio" ? renderOverview() : (workspacePage || (CATEGORIES.some(c=>c.id===state.page) ? renderCategory(state.page) : renderOverview()));
+    if(state.page === "automatismos") pageHtml = renderAutomationsPage(workspace, automationEditingId);
+    if(state.page === "producao") pageHtml = renderSolarProductionPage();
+    if(state.page === "profile") pageHtml += renderDemoAdminPanel();
+  }
   $("#page-content").innerHTML = pageHtml;
   applyPreferences();
   applyLiveFontScale();
@@ -378,7 +395,11 @@ $("#property-photo-file").addEventListener("change",async e=>{
   } catch(error){result.textContent=error.message||"Não foi possível guardar a fotografia.";}
 });
 $("#remove-property-photo").addEventListener("click",()=>{try{state.propertyPhoto="";workspace.house.photo="";try{localStorage.removeItem("solar-miner-demo-property-photo-v1");}catch{}const saved=saveDemoWorkspace();$("#photo-result").textContent=saved?"Fotografia removida deste browser.":"Fotografia removida da sessão; a persistência local não foi confirmada.";render();}catch{$("#photo-result").textContent="O browser não permitiu remover a fotografia.";}});
-$("#page-content").addEventListener("click",e=>{const btn=e.target.closest("[data-page]");if(btn)navigate(btn.dataset.page);});
+$("#page-content").addEventListener("click",e=>{
+  if(e.target.closest("#live-refresh")){refreshGatewayReadings();return;}
+  if(e.target.closest("#open-owner-management")){$("#gateway-dialog").showModal();return;}
+  const btn=e.target.closest("[data-page]");if(btn)navigate(btn.dataset.page);
+});
 $("#page-content").addEventListener("change",e=>handleWorkspaceChange(e));
 state.propertyPhoto=workspace.house.photo || readStoredPhoto(); if(state.propertyPhoto && !workspace.house.photo){workspace.house.photo=state.propertyPhoto;saveDemoWorkspace();}try{localStorage.removeItem("solar-miner-demo-property-photo-v1");}catch{}
 $("#open-gateway-dialog").addEventListener("click",()=>$("#gateway-dialog").showModal());
@@ -387,43 +408,42 @@ $("#gateway-check").addEventListener("click",async()=>{
   const field=$("#gateway-endpoint");
   try {
     const endpoint=validateGatewayUrl(field.value,{allowLocalHttp:location.hostname==="localhost"||location.hostname==="127.0.0.1"});
+    field.value=endpoint.origin;
+    try { localStorage.setItem("solarminer-gateway-endpoint-v1", endpoint.origin); } catch {}
     gatewayResult("A verificar /api/v1/health e /api/v1/info…");
     const result=await gatewayManager.check(endpoint.origin);
-    if(result.reachable) gatewayResult(`${result.state}. Última resposta: ${currentTimeLabel(result.lastCommunicationAt)}. Método: endpoint HTTPS consultado. Identidade do Gateway: NÃO VALIDADA. O estado LAN/REMOTO não pode ser confirmado pelo contrato atual.`);
+    if(result.reachable) {
+      try {
+        const bootstrap = await readGatewayBootstrapStatus(endpoint.origin);
+        if (["BOOTSTRAP_PENDING", "OWNER_SETUP_REQUIRED"].includes(bootstrap.state)) {
+          gatewayResult("Gateway pronto para o primeiro Owner. Abre-se a configuração inicial.");
+          if (!$("#gateway-bootstrap-dialog").open) $("#gateway-bootstrap-dialog").showModal();
+        } else {
+          try {
+            const login = await loginGateway({ gatewayUrl: endpoint.origin });
+            gatewayResult(`Ligação autenticada neste dispositivo como ${login.user.username} (${login.user.role}).`);
+            markGatewayAuthenticated(); updateSessionUi(); await refreshGatewayReadings();
+          } catch (loginError) {
+            gatewayResult(`${result.state}. ${loginError.message}`);
+          }
+        }
+      } catch (statusError) {
+        gatewayResult(`Gateway respondeu, mas não foi possível consultar o estado de bootstrap: ${statusError.message}`);
+      }
+    }
     else gatewayResult(`${result.state}. Nenhuma identidade ou ligação foi confirmada. Código técnico: ${result.errorCode || "erro de rede"}. Não foram contornados erros TLS.`);
   } catch(error) { gatewayResult(error.message || "Endpoint inválido."); }
 });
-$("#gateway-clear").addEventListener("click",async()=>{qrCandidate=null;$("#gateway-endpoint").value="";$("#gateway-qr-text").value="";try{await logoutGateway();}catch{}gatewayManager.clear();updateSessionUi();resetToDemoAfterLogout();gatewayResult("Gateway desassociado nesta sessão. O token de sessão foi descartado; não foram apagados dados históricos nem enviados comandos físicos.");});
-function parseQrIntoCandidate(raw) {
-  try {
-    qrCandidate=parseInviteQr(raw,{allowLocalHttp:location.hostname==="localhost"||location.hostname==="127.0.0.1"});
-    $("#gateway-endpoint").value=qrCandidate.gatewayUrl;
-    gatewayResult(`Formato do convite CODE02 válido. Endpoint: ${qrCandidate.gatewayUrl}. Expira em ${currentTimeLabel(new Date(qrCandidate.expiresAt*1000).toISOString())}. A identidade ainda tem de ser verificada por desafio Ed25519 antes do resgate.`);
-    return;
-  } catch (inviteError) {
-    try {
-      qrCandidate=parsePairingQr(raw,{allowLocalHttp:location.hostname==="localhost"||location.hostname==="127.0.0.1"});
-      $("#gateway-endpoint").value=qrCandidate.gatewayUrl;
-      gatewayResult(`QR legado reconhecido, mas não é compatível com o endpoint de convites CODE02 v0.6.7. Não foi consumido.`);
-    } catch(error) { qrCandidate=null;gatewayResult(error.message||inviteError.message||"Não foi possível validar o QR Code."); }
-  }
-}
-$("#gateway-qr-parse").addEventListener("click",()=>parseQrIntoCandidate($("#gateway-qr-text").value));
-$("#gateway-qr-file").addEventListener("change",async event=>{
-  const file=event.target.files?.[0];if(!file)return;
-  if(typeof BarcodeDetector==="undefined"){gatewayResult("Este Safari/browser não disponibiliza BarcodeDetector. Usa outro dispositivo para ler o QR e cola aqui o conteúdo; nenhuma permissão de segurança será contornada.");return;}
-  try {
-    const detector=new BarcodeDetector({formats:["qr_code"]});
-    const bitmap=await createImageBitmap(file);const codes=await detector.detect(bitmap);bitmap.close?.();
-    if(!codes.length) throw new Error("Não foi encontrado um QR Code nesta imagem.");
-    $("#gateway-qr-text").value=codes[0].rawValue;parseQrIntoCandidate(codes[0].rawValue);
-  } catch(error) { gatewayResult(error.message||"Não foi possível ler a imagem do QR Code."); }
+$("#gateway-clear").addEventListener("click",async()=>{
+  try { await logoutGateway(); } catch {}
+  try { localStorage.removeItem("solarminer-gateway-endpoint-v1"); } catch {}
+  $("#gateway-endpoint").value=""; gatewayManager.clear(); updateSessionUi(); resetToDemoAfterLogout();
+  gatewayResult("Endpoint removido deste browser. A identidade do dispositivo permanece guardada para poderes voltar a ligar sem palavra-passe.");
 });
+try { if (localStorage.getItem("solarminer-gateway-endpoint-v1")) setTimeout(() => $("#gateway-check").click(), 0); } catch {}
 const invitePanel = $("#gateway-invite-management");
-const bootstrapPanel = $("#gateway-bootstrap-panel");
 const updatePanel = $("#gateway-update-management");
 let verifiedGatewayUpdate = null;
-bootstrapPanel.hidden = !["localhost", "127.0.0.1", "::1"].includes(location.hostname.replace(/^\[|\]$/g, ""));
 let inviteQrObjectUrl = null;
 function markGatewayAuthenticated() {
   const info = sessionInfo();
@@ -435,11 +455,9 @@ function markGatewayAuthenticated() {
 function updateSessionUi() {
   const info = sessionInfo();
   const status = $("#gateway-session-status");
-  const logout = $("#gateway-logout");
   if (info.authenticated) {
     const presence = presenceInfo();
     status.textContent = `Sessão autenticada: ${info.user.username} (${info.user.role}) · token apenas em memória · presença da sessão: ${presence.state || "unknown"}; não prova presença física.`;
-    logout.disabled = false;
     invitePanel.hidden = info.user.role !== "owner";
     if (info.user.role === "owner") refreshInviteList().catch(error => { $("#gateway-invite-list").textContent = `Não foi possível consultar convites: ${error.message}`; });
     if (updatePanel) {
@@ -451,8 +469,7 @@ function updateSessionUi() {
       }
     }
   } else {
-    status.textContent = "Sem sessão autenticada nesta aba. O token não é persistido entre recarregamentos.";
-    logout.disabled = true;
+    status.textContent = "Sem sessão ativa. Ao testar o endpoint, este dispositivo tenta autenticar-se pela identidade guardada.";
     invitePanel.hidden = true;
     if (updatePanel) updatePanel.hidden = true;
     verifiedGatewayUpdate = null;
@@ -460,55 +477,21 @@ function updateSessionUi() {
 }
 $("#gateway-bootstrap-form").addEventListener("submit", async event => {
   event.preventDefault();
-  const tokenField = $("#gateway-bootstrap-token"), passwordField = $("#gateway-bootstrap-password");
+  const passwordField = $("#gateway-bootstrap-password");
   try {
-    const result = await bootstrapGatewayOwner({ gatewayUrl: $("#gateway-endpoint").value, bootstrapToken: tokenField.value,
-      username: $("#gateway-bootstrap-username").value.trim(), password: passwordField.value, mac: $("#gateway-bootstrap-mac").value.trim() });
-    tokenField.value = ""; passwordField.value = "";
+    const result = await bootstrapGatewayOwner({ gatewayUrl: $("#gateway-endpoint").value,
+      username: $("#gateway-bootstrap-username").value.trim(), password: passwordField.value });
+    passwordField.value = "";
     $("#gateway-bootstrap-recovery-key").value = result.recovery_key;
     $("#gateway-bootstrap-recovery").hidden = false;
     $("#gateway-endpoint").value = result.gatewayUrl;
-    gatewayResult("Owner criado localmente. Guarda a chave de recuperação offline antes de fechar esta janela.");
+    $("#gateway-bootstrap-result").textContent = "Owner registado. A palavra-passe de configuração foi consumida e este telemóvel ficou associado. Guarda a chave de recuperação offline.";
     markGatewayAuthenticated(); updateSessionUi(); await refreshGatewayReadings();
-  } catch (error) { tokenField.value = ""; passwordField.value = ""; gatewayResult(`Bootstrap local não concluído: ${error.message}`); }
+  } catch (error) { passwordField.value = ""; $("#gateway-bootstrap-result").textContent = `Registo inicial não concluído: ${error.message}`; }
 });
 $("#gateway-copy-recovery-key").addEventListener("click", async () => {
-  try { await navigator.clipboard.writeText($("#gateway-bootstrap-recovery-key").value); gatewayResult("Chave de recuperação copiada. Guarda-a num local offline seguro."); }
-  catch { gatewayResult("A cópia automática foi recusada; seleciona a chave e guarda-a offline."); }
-});
-$("#gateway-login-form").addEventListener("submit", async event => {
-  event.preventDefault();
-  const username = $("#gateway-login-username").value.trim();
-  const passwordField = $("#gateway-login-password");
-  try {
-    const result = await loginGateway({ gatewayUrl: $("#gateway-endpoint").value, username, password: passwordField.value });
-    passwordField.value = "";
-    $("#gateway-endpoint").value = result.gatewayUrl;
-    gatewayResult(`Autenticação concluída para ${result.user.username}. A identidade do Gateway foi verificada durante o convite; a API de leitura será consultada agora.`);
-    markGatewayAuthenticated();
-    updateSessionUi();
-    await refreshGatewayReadings();
-  } catch (error) { passwordField.value = ""; $("#gateway-session-status").textContent = `Autenticação não concluída: ${error.message}`; }
-});
-$("#gateway-logout").addEventListener("click", async () => {
-  try { await logoutGateway(); gatewayResult("Sessão terminada. O token foi descartado da memória."); }
-  catch (error) { gatewayResult(`A sessão local foi descartada; o servidor pode não ter confirmado o logout: ${error.message}`); }
-  updateSessionUi();
-  gatewayManager.clear();
-  resetToDemoAfterLogout();
-});
-$("#gateway-redeem-form").addEventListener("submit", async event => {
-  event.preventDefault();
-  const passwordField = $("#gateway-redeem-password");
-  try {
-    const result = await redeemGatewayInvite({ qrText: $("#gateway-qr-text").value, username: $("#gateway-redeem-username").value.trim(), password: passwordField.value, mac: $("#gateway-redeem-mac").value.trim() });
-    passwordField.value = "";
-    $("#gateway-endpoint").value = result.gatewayUrl;
-    gatewayResult(`Convite consumido com sucesso. Utilizador ${result.user.username}; papel ${result.user.role}. A chave privada não exportável foi guardada no IndexedDB e o token permanece só em memória.`);
-    markGatewayAuthenticated();
-    updateSessionUi();
-    await refreshGatewayReadings();
-  } catch (error) { passwordField.value = ""; gatewayResult(`Resgate não concluído: ${error.message}. O convite pode ter expirado ou já ter sido consumido.`); }
+  try { await navigator.clipboard.writeText($("#gateway-bootstrap-recovery-key").value); $("#gateway-bootstrap-result").textContent = "Chave de recuperação copiada. Guarda-a offline."; }
+  catch { $("#gateway-bootstrap-result").textContent = "A cópia automática foi recusada; seleciona a chave e guarda-a offline."; }
 });
 function gatewayUpdateFailureText(code) {
   const messages = {

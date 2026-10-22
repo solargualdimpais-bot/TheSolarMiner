@@ -9,6 +9,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from solarminer_gateway import app as gateway
+from solarminer_gateway import cli as gateway_cli
 
 
 @pytest.fixture
@@ -93,6 +94,61 @@ def test_bootstrap_single_use(client):
         "timestamp": ts, "nonce": nonce,
     })
     assert response.status_code == 409
+
+
+def test_console_password_first_owner_and_passwordless_device_relogin(client):
+    chosen_password = "OwnerPass-8"
+    with gateway.db() as conn:
+        conn.execute("UPDATE bootstrap SET setup_password_hash=? WHERE id=1", (gateway.PASSWORDS.hash(chosen_password),))
+    private, public = keypair()
+    username = "Owner Name"
+    ts, nonce = int(time.time()), "console-bootstrap-nonce-01"
+    canonical = f"BOOTSTRAP\n{username}\n{ts}\n{nonce}"
+    payload = {"username": username, "password": chosen_password, "public_key_pem": public,
+               "signature": sig(private, canonical), "timestamp": ts, "nonce": nonce}
+    wrong = {**payload, "password": "WrongPass-8"}
+    assert client.post("/api/v1/bootstrap/owner", json=wrong).status_code == 401
+    with gateway.db() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM users WHERE role='owner'").fetchone()[0] == 0
+        assert conn.execute("SELECT setup_password_hash FROM bootstrap WHERE id=1").fetchone()[0]
+    created = client.post("/api/v1/bootstrap/owner", json=payload)
+    assert created.status_code == 201, created.text
+    assert created.json()["mac_status"] == "unknown"
+    with gateway.db() as conn:
+        assert conn.execute("SELECT setup_password_hash FROM bootstrap WHERE id=1").fetchone()[0] is None
+    assert client.post("/api/v1/bootstrap/owner", json=payload).status_code == 409
+
+    device_id = created.json()["device_id"]
+    user_id = created.json()["user_id"]
+    ts2, nonce2 = int(time.time()), "device-login-nonce-0001"
+    proof = f"DEVICE-LOGIN\n{user_id}\n{device_id}\n{ts2}\n{nonce2}"
+    response = client.post("/api/v1/auth/device-login", json={
+        "user_id": user_id, "device_id": device_id, "timestamp": ts2, "nonce": nonce2, "signature": sig(private, proof)
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()["user"]["username"] == username
+    bearer = response.json()["access_token"]
+    assert client.get("/api/v1/status", headers={"Authorization": f"Bearer {bearer}"}).status_code == 200
+    ts3, nonce3 = int(time.time()), "device-login-legacy-nonce"
+    legacy_proof = f"DEVICE-LOGIN\n{device_id}\n{ts3}\n{nonce3}"
+    legacy = client.post("/api/v1/auth/device-login", json={
+        "device_id": device_id, "timestamp": ts3, "nonce": nonce3, "signature": sig(private, legacy_proof)
+    })
+    assert legacy.status_code == 200, legacy.text
+
+
+def test_local_owner_password_command_stores_only_argon2_hash(client, monkeypatch, capsys):
+    monkeypatch.setattr(gateway_cli, "_require_root", lambda: None)
+    monkeypatch.setattr(gateway_cli, "_require_tty", lambda: None)
+    answers = iter(["VisiblePass-8", "VisiblePass-8"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+    gateway_cli.run_owner_password()
+    output = capsys.readouterr().out
+    assert "VisiblePass-8" not in output
+    with gateway.db() as conn:
+        row = conn.execute("SELECT setup_password_hash FROM bootstrap WHERE id=1").fetchone()
+        assert gateway.PASSWORDS.verify(row[0], "VisiblePass-8")
+        assert "VisiblePass-8" not in row[0]
 
 
 def test_remote_bootstrap_requires_allowlisted_origin_and_device_signature(tmp_path, monkeypatch):

@@ -1,14 +1,15 @@
 # API v1 (CODE 01)
 
-All network use is intended over TLS. Bootstrap accepts loopback, a same-origin PWA, or an exact HTTPS origin configured in `SOLARMINER_CORS_ORIGINS`. It still requires the local one-time bootstrap token, a fresh timestamp/nonce, an Ed25519 device proof, and Gateway identity fingerprint verification by the PWA. The bootstrap token is never returned by the API.
+All network use is intended over TLS. A fresh USB installation sets the initial Owner password locally with `solarminer-gateway owner-password`; the Gateway stores a temporary Argon2id verifier, never the plaintext. `POST /api/v1/bootstrap/owner` accepts the Owner name, that password, a fresh timestamp/nonce and an Ed25519 proof from the first PWA device, then consumes the verifier in the Owner-creation transaction. Only the exact configured HTTPS PWA origin is allowed remotely. Legacy one-time-token bootstrap remains available for older clients. See `OWNER_FIRST_BOOTSTRAP.md` for the end-to-end procedure.
 
 | Method | Path | Access |
 |---|---|---|
 | GET | `/api/v1/health` | Public, minimal health and bootstrap state |
 | GET | `/api/v1/info` | Public, product/version only |
 | GET | `/api/v1/bootstrap/status` | Public, state only |
-| POST | `/api/v1/bootstrap/owner` | Loopback/same-origin/exact allow-listed HTTPS origin, one-time token + Ed25519 proof + timestamp/nonce |
-| POST | `/api/v1/auth/login` | Password + associated device Ed25519 signature |
+| POST | `/api/v1/bootstrap/owner` | Exact allow-listed HTTPS origin, locally set one-time setup password + Ed25519 proof + timestamp/nonce; legacy token remains supported |
+| POST | `/api/v1/auth/device-login` | Associated device Ed25519 signature; issues a temporary session without a password |
+| POST | `/api/v1/auth/login` | Legacy password + associated device Ed25519 signature |
 | POST | `/api/v1/auth/logout` | Authenticated session |
 | GET | `/api/v1/status` | `read` permission |
 | POST | `/api/v1/users` | `manage_users`; owner creation is prohibited here |
@@ -22,7 +23,7 @@ All network use is intended over TLS. Bootstrap accepts loopback, a same-origin 
 | POST | `/api/v1/devices/{id}/revoke` | `manage_devices` |
 | GET | `/api/v1/audit` | `manage_gateway` |
 
-Device signatures use Ed25519. Browser pairing signs the exact UTF-8 string `PAIR\n{pairing_code}\n{sha256(public_key_spki_der)}\n{NORMALIZED_MAC}\n{timestamp}\n{nonce}`. Pairing codes are random, single-use, administrator-issued, scoped to one active username, and expire after 60–600 seconds (default 300); only the code digest is persisted. Login signs the exact UTF-8 string `LOGIN\n{username}\n{device_id}\n{timestamp}\n{nonce}` and submits the signature as lowercase/uppercase hexadecimal. Bootstrap signs `BOOTSTRAP\n{username}\n{NORMALIZED_MAC}\n{timestamp}\n{nonce}`. Timestamps must be within ±300 seconds. Nonces are stored under a uniqueness constraint and inserted in the same SQLite transaction as the protected action. Session bearer tokens are random opaque values; only SHA-256 digests are stored. Password hashes use Argon2id via argon2-cffi with memory=65536 KiB, iterations=3, parallelism=2.
+Device signatures use Ed25519. Browser pairing signs the exact UTF-8 string `PAIR\n{pairing_code}\n{sha256(public_key_spki_der)}\n{NORMALIZED_MAC}\n{timestamp}\n{nonce}`. Pairing codes are random, single-use, administrator-issued, scoped to one active username, and expire after 60–600 seconds (default 300); only the code digest is persisted. Legacy login signs `LOGIN\n{username}\n{device_id}\n{timestamp}\n{nonce}`. Device login signs `DEVICE-LOGIN\n{user_id}\n{device_id}\n{timestamp}\n{nonce}` (an older single-account device may omit the user ID). New bootstrap signs `BOOTSTRAP\n{username}\n{timestamp}\n{nonce}`; legacy-token bootstrap retains the MAC field in its canonical signature. Timestamps must be within ±300 seconds. Nonces are stored under a uniqueness constraint and inserted in the same SQLite transaction as the protected action. Session bearer tokens are random opaque values; only SHA-256 digests are stored. Password hashes use Argon2id via argon2-cffi with memory=65536 KiB, iterations=3, parallelism=2.
 
 Role permissions:
 

@@ -40,7 +40,7 @@ from . import energy_registry
 from . import updates as update_manager
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.15"
+PACKAGE_VERSION = "0.6.16"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -84,8 +84,10 @@ CREATE TABLE IF NOT EXISTS user_devices(
 );
 CREATE TABLE IF NOT EXISTS bootstrap(
  id INTEGER PRIMARY KEY CHECK(id=1), token_sha256 TEXT NOT NULL, expires_at INTEGER NOT NULL,
- consumed_at INTEGER, state TEXT NOT NULL
+ consumed_at INTEGER, state TEXT NOT NULL, setup_password_hash TEXT
 );
+CREATE TABLE IF NOT EXISTS bootstrap_attempts(ip_hash TEXT NOT NULL, attempted_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_bootstrap_attempts_ip_time ON bootstrap_attempts(ip_hash,attempted_at);
 CREATE TABLE IF NOT EXISTS sessions(
  token_sha256 TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), device_id TEXT NOT NULL REFERENCES devices(id),
  created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, revoked_at INTEGER, credential_version INTEGER NOT NULL
@@ -258,6 +260,9 @@ def initialize() -> None:
             return
     with db() as conn:
         conn.executescript(SCHEMA)
+        bootstrap_columns = {row[1] for row in conn.execute("PRAGMA table_info(bootstrap)")}
+        if "setup_password_hash" not in bootstrap_columns:
+            conn.execute("ALTER TABLE bootstrap ADD COLUMN setup_password_hash TEXT")
         conn.executescript(PRESENCE_SCHEMA)
         conn.executescript(A1_TRIGGERS)
         connector_manager.ensure_schema(conn)
@@ -298,6 +303,9 @@ def initialize() -> None:
         now = int(time.time())
         if row and row["consumed_at"] is not None:
             conn.execute("UPDATE system_state SET value='RECOVERY_REQUIRED' WHERE key='bootstrap_state'")
+            return
+        if row and row["setup_password_hash"]:
+            conn.execute("UPDATE system_state SET value='BOOTSTRAP_PENDING' WHERE key='bootstrap_state'")
             return
         if row and row["expires_at"] >= now:
             conn.execute("UPDATE system_state SET value='OWNER_SETUP_REQUIRED' WHERE key='bootstrap_state'")
@@ -372,14 +380,25 @@ async def security_response_headers(request: Request, call_next):
 
 
 class BootstrapOwner(BaseModel):
-    bootstrap_token: str = Field(min_length=32, max_length=256)
-    username: str = Field(min_length=3, max_length=128, pattern=r"^[A-Za-z0-9_.-]+$")
-    password: str = Field(min_length=12, max_length=1024)
-    mac: str
+    # bootstrap_token remains optional for older locally issued tokens. Fresh
+    # installs use the password chosen on the Gateway console as the one-time
+    # bootstrap proof instead.
+    bootstrap_token: str | None = Field(default=None, min_length=32, max_length=256)
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=8, max_length=128)
+    mac: str | None = None
     public_key_pem: str = Field(min_length=80, max_length=8192)
     signature: str = Field(min_length=80, max_length=256)
     timestamp: int
     nonce: str = Field(min_length=16, max_length=128)
+
+
+class DeviceLoginRequest(BaseModel):
+    user_id: str | None = Field(default=None, min_length=36, max_length=36)
+    device_id: str = Field(min_length=36, max_length=36)
+    timestamp: int
+    nonce: str = Field(min_length=16, max_length=128)
+    signature: str = Field(min_length=80, max_length=256)
 
 
 class LoginRequest(BaseModel):
@@ -805,18 +824,25 @@ def bootstrap_status() -> dict[str, str]:
 
 @app.post("/api/v1/bootstrap/owner", status_code=201)
 def bootstrap_owner(payload: BootstrapOwner, request: Request) -> dict[str, Any]:
-    # Local bootstrap remains available. Remote bootstrap is allowed only from
-    # an exact, administratively configured HTTPS origin and still requires the
-    # one-time high-entropy token plus a fresh Ed25519 device proof.
+    # Remote bootstrap is allowed only from an exact, administratively
+    # configured HTTPS origin and requires the password provisioned at the
+    # Gateway console (or a legacy one-time token) plus fresh device proof.
     remote = request.client.host if request.client else ""
     origin = request.headers.get("origin", "").rstrip("/")
     same_origin = origin == f"{request.url.scheme}://{request.url.netloc}"
     if remote not in {"127.0.0.1", "::1", "testclient"} and not (same_origin or origin in _CORS_ORIGINS):
         raise HTTPException(403, "bootstrap_origin_not_allowed")
-    mac = normalize_mac(payload.mac)
+    username = payload.username.strip()
+    if not username or any(ord(char) < 32 or ord(char) == 127 for char in username):
+        raise HTTPException(422, "invalid_owner_name")
+    # Browsers cannot reliably read an iPhone's private/randomized MAC. Keep a
+    # neutral sentinel for the new console-password flow. Preserve metadata
+    # submitted by older clients that still use the legacy token protocol.
+    mac = normalize_mac(payload.mac) if payload.bootstrap_token else "unknown"
     verify_fresh(payload.timestamp, payload.nonce)
     key = load_public_key(payload.public_key_pem)
-    canonical = f"BOOTSTRAP\n{payload.username}\n{mac}\n{payload.timestamp}\n{payload.nonce}".encode()
+    canonical = (f"BOOTSTRAP\n{username}\n{mac}\n{payload.timestamp}\n{payload.nonce}" if payload.bootstrap_token
+                else f"BOOTSTRAP\n{username}\n{payload.timestamp}\n{payload.nonce}").encode()
     try:
         key.verify(bytes.fromhex(payload.signature), canonical)
     except (ValueError, InvalidSignature) as exc:
@@ -825,6 +851,17 @@ def bootstrap_owner(payload: BootstrapOwner, request: Request) -> dict[str, Any]
     pub_hash = hashlib.sha256(pub_der).hexdigest()
     from .recovery import generate_recovery_key, recovery_verifier
     recovery_key, recovery_raw = generate_recovery_key()
+    now = int(time.time())
+    remote_hash = hashlib.sha256((remote or "unknown").encode("utf-8")).hexdigest()
+    with db() as attempts:
+        attempts.execute("BEGIN IMMEDIATE")
+        attempts.execute("DELETE FROM bootstrap_attempts WHERE attempted_at<?", (now - 15 * 60,))
+        recent = attempts.execute("SELECT COUNT(*) FROM bootstrap_attempts WHERE ip_hash=?", (remote_hash,)).fetchone()[0]
+        if recent >= 5:
+            attempts.rollback()
+            raise HTTPException(429, "bootstrap_attempts_limited")
+        attempts.execute("INSERT INTO bootstrap_attempts(ip_hash,attempted_at) VALUES(?,?)", (remote_hash, now))
+        attempts.commit()
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         state = conn.execute("SELECT value FROM system_state WHERE key='bootstrap_state'").fetchone()
@@ -832,22 +869,32 @@ def bootstrap_owner(payload: BootstrapOwner, request: Request) -> dict[str, Any]
         owner = conn.execute("SELECT 1 FROM users WHERE role='owner' AND status='active' LIMIT 1").fetchone()
         if owner or not state or state[0] not in {"BOOTSTRAP_PENDING", "OWNER_SETUP_REQUIRED"} or not token or token["consumed_at"] is not None:
             conn.rollback(); raise HTTPException(409, "bootstrap_unavailable")
-        if token["expires_at"] < int(time.time()) or not secrets.compare_digest(token["token_sha256"], token_hash(payload.bootstrap_token)):
-            conn.rollback(); raise HTTPException(401, "bootstrap_token_invalid_or_expired")
+        setup_hash = token["setup_password_hash"] if "setup_password_hash" in token.keys() else None
+        setup_ok = False
+        if setup_hash:
+            try:
+                setup_ok = PASSWORDS.verify(setup_hash, payload.password)
+            except (VerifyMismatchError, VerificationError, InvalidHashError):
+                setup_ok = False
+        else:
+            setup_ok = bool(payload.bootstrap_token and token["expires_at"] >= int(time.time())
+                            and secrets.compare_digest(token["token_sha256"], token_hash(payload.bootstrap_token)))
+        if not setup_ok:
+            conn.rollback(); raise HTTPException(401, "bootstrap_password_invalid")
         try:
             uid, did = str(uuid.uuid4()), str(uuid.uuid4())
             conn.execute("INSERT INTO devices(id,public_key_pem,public_key_sha256,mac_declared,mac_status,status,created_at) VALUES(?,?,?,?,?,'active',?)",
                          (did, payload.public_key_pem, pub_hash, mac, "declared", utcnow()))
             consume_nonce(conn, did, payload.nonce, payload.timestamp)
             conn.execute("INSERT INTO users(id,account_id,username,password_hash,role,status,created_at) VALUES(?,?,?,?, 'owner','active',?)",
-                         (uid, str(uuid.uuid4()), payload.username, PASSWORDS.hash(payload.password), utcnow()))
+                         (uid, str(uuid.uuid4()), username, PASSWORDS.hash(payload.password), utcnow()))
             conn.execute("INSERT INTO user_devices(user_id,device_id,status,created_at) VALUES(?,?,'active',?)", (uid, did, utcnow()))
             conn.execute("INSERT INTO owner_recovery_keys(id,owner_user_id,verifier_sha256,generation,status,created_at,consumed_at) VALUES(?,?,?,?, 'active', ?, NULL)",
                          (str(uuid.uuid4()), uid, recovery_verifier(recovery_raw), 1, utcnow()))
             audit(conn, uid, "owner.recovery_key_issued", uid, "success", {"generation": 1, "source": "bootstrap"})
-            conn.execute("UPDATE bootstrap SET consumed_at=?,state='consumed' WHERE id=1 AND consumed_at IS NULL", (int(time.time()),))
+            conn.execute("UPDATE bootstrap SET consumed_at=?,state='consumed',setup_password_hash=NULL WHERE id=1 AND consumed_at IS NULL", (now,))
             conn.execute("UPDATE system_state SET value='OWNER_ACTIVE' WHERE key='bootstrap_state'")
-            audit(conn, uid, "bootstrap.owner_created", uid, "success", {"device_id": did, "mac_status": "declared"})
+            audit(conn, uid, "bootstrap.owner_created", uid, "success", {"device_id": did, "mac_status": "unknown"})
             conn.commit()
         except Exception:
             conn.rollback()
@@ -856,7 +903,7 @@ def bootstrap_owner(payload: BootstrapOwner, request: Request) -> dict[str, Any]
         BOOTSTRAP_PATH.unlink(missing_ok=True)
     except OSError:
         LOG.error("Bootstrap token file cleanup failed after committed owner creation")
-    return {"user_id": uid, "device_id": did, "role": "owner", "mac_status": "declared", "message": "owner_created",
+    return {"user_id": uid, "device_id": did, "role": "owner", "mac_status": "unknown", "message": "owner_created",
             "recovery_key": recovery_key, "recovery_key_display": "one_time_only_store_offline"}
 
 
@@ -907,6 +954,50 @@ def login(payload: LoginRequest) -> dict[str, Any]:
                 conn.rollback()
             raise
     return {"access_token": bearer, "token_type": "Bearer", "expires_in": SESSION_TTL, "device_id": payload.device_id, "user": {"id": current["id"], "username": current["username"], "role": current["role"]}}
+
+
+@app.post("/api/v1/auth/device-login")
+def device_login(payload: DeviceLoginRequest) -> dict[str, Any]:
+    """Issue a session to an already-associated device after a fresh key proof."""
+    verify_fresh(payload.timestamp, payload.nonce)
+    with db() as conn:
+        device = conn.execute("SELECT * FROM devices WHERE id=? AND status='active'", (payload.device_id,)).fetchone()
+        if not device:
+            raise HTTPException(401, "invalid_device")
+        message = (f"DEVICE-LOGIN\n{payload.user_id}\n{device['id']}\n{payload.timestamp}\n{payload.nonce}"
+                   if payload.user_id else f"DEVICE-LOGIN\n{device['id']}\n{payload.timestamp}\n{payload.nonce}").encode()
+        verify_signature(device["public_key_pem"], message, payload.signature)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            if payload.user_id:
+                actor = conn.execute("""SELECT u.id,u.username,u.role,u.status,u.credential_version,d.status AS device_status
+                    FROM users u JOIN user_devices ud ON ud.user_id=u.id JOIN devices d ON d.id=ud.device_id
+                    WHERE d.id=? AND u.id=? AND ud.status='active' AND u.status='active'""", (device["id"], payload.user_id)).fetchone()
+            else:
+                matches = conn.execute("""SELECT u.id,u.username,u.role,u.status,u.credential_version,d.status AS device_status
+                    FROM users u JOIN user_devices ud ON ud.user_id=u.id JOIN devices d ON d.id=ud.device_id
+                    WHERE d.id=? AND ud.status='active' AND u.status='active' LIMIT 2""", (device["id"],)).fetchall()
+                actor = matches[0] if len(matches) == 1 else None
+            if not actor or actor["device_status"] != "active":
+                conn.rollback()
+                raise HTTPException(401, "invalid_device")
+            consume_nonce(conn, device["id"], payload.nonce, payload.timestamp)
+            bearer = secrets.token_urlsafe(48)
+            now = int(time.time())
+            conn.execute("INSERT INTO sessions(token_sha256,user_id,device_id,created_at,expires_at,revoked_at,credential_version) VALUES(?,?,?,?,?,NULL,?)",
+                         (token_hash(bearer), actor["id"], device["id"], now, now + SESSION_TTL, actor["credential_version"]))
+            audit(conn, actor["id"], "auth.device_login", actor["id"], "success", {"device_id": device["id"]})
+            conn.commit()
+        except HTTPException:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+    return {"access_token": bearer, "token_type": "Bearer", "expires_in": SESSION_TTL,
+            "device_id": device["id"], "user": {"id": actor["id"], "username": actor["username"], "role": actor["role"]}}
 
 
 @app.post("/api/v1/auth/logout")
@@ -1396,7 +1487,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.15"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.16"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

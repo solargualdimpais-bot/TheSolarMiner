@@ -22,8 +22,9 @@ A matriz corresponde à constante `PERMISSIONS` já existente. Não foi criada u
 | `GET /api/v1/health` | Público; verifica integridade da base de dados |
 | `GET /api/v1/info` | Público |
 | `GET /api/v1/bootstrap/status` | Público; não revela o token |
-| `POST /api/v1/bootstrap/owner` | Apenas loopback, token de bootstrap válido, timestamp/nonce e assinatura Ed25519 |
-| `POST /api/v1/auth/login` | Credenciais, dispositivo associado, assinatura e nonce fresco |
+| `POST /api/v1/bootstrap/owner` | Origem HTTPS autorizada, palavra-passe definida localmente na instalação, timestamp/nonce e assinatura Ed25519; token legado continua compatível |
+| `POST /api/v1/auth/device-login` | Utilizador e dispositivo associados, prova Ed25519 fresca; sessão temporária sem palavra-passe |
+| `POST /api/v1/auth/login` | Compatibilidade com clientes existentes: credenciais, dispositivo associado, assinatura e nonce fresco |
 | `GET /api/v1/status` | Sessão válida + `read` |
 | `POST /api/v1/auth/logout` | Sessão válida; revoga o token atual |
 | `GET/POST /api/v1/users` | Sessão válida + `manage_users` |

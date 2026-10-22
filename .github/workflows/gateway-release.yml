@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Release tag to create, e.g. gateway-v0.6.15"
+        description: "Release tag to create, e.g. gateway-v0.6.16"
         required: true
         type: string
 
