@@ -1,13 +1,15 @@
 # API v1 (CODE 01)
 
-## CODE02 v0.6.25 — integrações de hardware
+## CODE02 v0.6.26 — integrações de hardware e carregamento EV
 
 - `GET /api/v1/integrations/hardware`, `PUT /api/v1/integrations/hardware` e `POST /api/v1/integrations/hardware/read` são reservados ao Owner autenticado.
 - Deye Modbus TCP executa FC03 apenas e devolve registos crus sem mapa/escala.
 - Antminer executa as operações de consulta `summary`, `stats`, `devs`; não existe API de escrita.
 - Tuya Cloud usa credenciais Access ID/Secret armazenadas no ficheiro privado do Gateway; os segredos nunca são devolvidos pela API.
-- Tesla Fleet API usa refresh token rotativo armazenado no Gateway, consulta veículos selecionados e filtra localização; não envia comandos.
+- Tesla Fleet para carregamento usa `GET/PUT /api/v1/energy/ev/tesla` e `POST /api/v1/energy/ev/tesla/read`, reservados ao Owner. Devolve apenas campos de carga do veículo escolhido, não inclui localização, climatização ou estado de condução e não envia comandos.
 - Endereços LAN exigem IP privado literal. Ver `HARDWARE_INTEGRATIONS.md` para configuração e limites.
+
+O endpoint genérico de leituras de hardware é dedicado a Deye, Antminer e Tuya. Configuração e consulta Tesla pertencem exclusivamente à área Carregador EV.
 
 All network use is intended over TLS. A fresh USB installation sets the initial Owner password locally with `solarminer-gateway owner-password`; the Gateway stores a temporary Argon2id verifier, never the plaintext. `POST /api/v1/bootstrap/owner` accepts the Owner name, that password, a fresh timestamp/nonce and an Ed25519 proof from the first PWA device, then consumes the verifier in the Owner-creation transaction. Only the exact configured HTTPS PWA origin is allowed remotely. Legacy one-time-token bootstrap remains available for older clients. See `OWNER_FIRST_BOOTSTRAP.md` for the end-to-end procedure.
 

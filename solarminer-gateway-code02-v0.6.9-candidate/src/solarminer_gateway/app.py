@@ -42,7 +42,7 @@ from . import integrations as hardware_integrations
 from . import updates as update_manager
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.25"
+PACKAGE_VERSION = "0.6.26"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -688,7 +688,7 @@ def hardware_integrations_configure(payload: dict[str, Any], session: dict[str, 
             updated = hardware_integrations.validate_config(payload, old)
             result = hardware_integrations.save_config(updated)
             audit(conn, session["user_id"], "hardware.integrations.configure", "gateway", "success", {
-                "providers": sorted(k for k in ("deye", "antminer", "tuya", "tesla") if k in payload),
+                "providers": sorted(k for k in ("deye", "antminer", "tuya") if k in payload),
                 "provider_secrets_returned": False,
             })
             return result
@@ -710,13 +710,61 @@ def hardware_integrations_read(session: dict[str, Any] = Depends(require_permiss
                 "deye_connected": result["deye"] is not None,
                 "antminer_connected": result["antminer"] is not None,
                 "tuya_device_count": len(result["tuya"]),
-                "tesla_vehicle_count": len((result.get("tesla") or {}).get("vehicles", [])),
                 "errors": [{"provider": e["provider"], "reason": e["reason"]} for e in result["errors"]],
                 "control_commands_sent": False,
             })
             return result
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             raise HTTPException(503, "integration_read_unavailable") from exc
+
+
+def _require_owner(session: dict[str, Any], conn) -> None:
+    actor = _revalidate_actor(conn, session, "manage_gateway")
+    if actor["role"] != "owner": raise HTTPException(403, "owner_required")
+
+
+@app.get("/api/v1/energy/ev/tesla")
+def ev_tesla_config(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    with db() as conn: _require_owner(session, conn)
+    try: return hardware_integrations.public_tesla_config()
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(500, "ev_tesla_config_unavailable") from exc
+
+
+@app.put("/api/v1/energy/ev/tesla")
+def ev_tesla_configure(payload: dict[str, Any], session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    with db() as conn:
+        _require_owner(session, conn)
+        try:
+            config = hardware_integrations.load_config()
+            config["tesla"] = hardware_integrations.validate_tesla_config(payload, config)
+            hardware_integrations.save_config(config)
+            audit(conn, session["user_id"], "energy.ev.tesla.configure", "ev", "success", {"credentials_returned": False})
+            return hardware_integrations.public_tesla_config({**config, "tesla": config["tesla"]})
+        except ValueError as exc:
+            audit(conn, session["user_id"], "energy.ev.tesla.configure", "ev", "rejected", {"reason": str(exc)[:120]})
+            raise HTTPException(422, str(exc)) from exc
+        except (OSError, json.JSONDecodeError) as exc:
+            raise HTTPException(500, "ev_tesla_config_save_failed") from exc
+
+
+@app.post("/api/v1/energy/ev/tesla/read")
+def ev_tesla_read(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    with db() as conn:
+        _require_owner(session, conn)
+        try:
+            config = hardware_integrations.load_config().get("tesla", {})
+            if not config.get("refresh_token"): raise HTTPException(409, "ev_tesla_not_configured")
+            result = hardware_integrations.read_tesla_ev(config)
+            audit(conn, session["user_id"], "energy.ev.tesla.read", "ev", "success", {
+                "vehicle_count": len(result.get("vehicles", [])), "source": result["source"], "control_commands_sent": False,
+            })
+            return result
+        except HTTPException:
+            raise
+        except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+            audit(conn, session["user_id"], "energy.ev.tesla.read", "ev", "failed", {"reason": str(exc)[:120], "control_commands_sent": False})
+            raise HTTPException(502, "ev_tesla_read_failed") from exc
 
 
 @app.get("/api/v1/energy/equipment/{equipment_id}")
@@ -1651,7 +1699,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.25"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.26"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

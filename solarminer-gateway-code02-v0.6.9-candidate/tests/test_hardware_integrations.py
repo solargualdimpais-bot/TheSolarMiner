@@ -88,23 +88,30 @@ def test_tuya_request_uses_fixed_https_region_and_does_not_log_or_return_secret(
 
 
 def test_tesla_config_keeps_credentials_private_and_validates_selected_vehicle_ids():
-    config = integrations.validate_config({"tesla": {
+    tesla = integrations.validate_tesla_config({
         "region": "europe", "client_id": "tesla-client",
-        "refresh_token": "refresh-token-value", "vehicle_ids": ["12345678901234567", "5YJ3E1EA7KF000001"],
-    }}, existing={})
-    public = integrations.public_config(config)
-    assert public["tesla"]["configured"] is True
-    assert public["tesla"]["vehicle_ids"] == ["12345678901234567", "5YJ3E1EA7KF000001"]
+        "refresh_token": "refresh-token-value", "vehicle_ids": ["12345678901234567"],
+    }, existing={})
+    config = {"tesla": tesla}
+    public = integrations.public_tesla_config(config)
+    assert public["configured"] is True
+    assert public["vehicle_ids"] == ["12345678901234567"]
     assert "refresh-token-value" not in json.dumps(public)
+    assert integrations.public_config(config).get("tesla") is None
+    assert public["purpose"] == "ev_charging_status_read_only"
+    assert integrations.validate_tesla_config({
+        "region": "europe", "client_id": "tesla-client",
+        "refresh_token": "refresh-token-value", "vehicle_ids": ["12345678901234567"],
+    }, config)["vehicle_ids"] == ["12345678901234567"]
 
 
-@pytest.mark.parametrize("region,vehicle_ids", [("other", ["123"]), ("europe", []), ("europe", ["../other"])])
+@pytest.mark.parametrize("region,vehicle_ids", [("other", ["123"]), ("europe", []), ("europe", ["../other"]), ("europe", ["123", "456"])])
 def test_tesla_config_rejects_invalid_region_or_vehicle_ids(region, vehicle_ids):
     with pytest.raises(ValueError):
-        integrations.validate_config({"tesla": {
+        integrations.validate_tesla_config({
             "region": region, "client_id": "tesla-client",
             "refresh_token": "refresh-token-value", "vehicle_ids": vehicle_ids,
-        }}, existing={})
+        }, existing={})
 
 
 def test_tesla_read_refreshes_token_and_returns_only_selected_non_location_data(monkeypatch):
@@ -137,6 +144,30 @@ def test_tesla_read_refreshes_token_and_returns_only_selected_non_location_data(
     assert result["vehicles"][0]["name"] == "Solar Tesla"
     assert "location" not in json.dumps(result)
     assert "latitude" not in json.dumps(result)
+    assert "climate_state" not in json.dumps(result)
+    assert "vehicle_state" not in json.dumps(result)
+    assert "vehicle_config" not in json.dumps(result)
+    assert "battery_range" not in json.dumps(result)
     assert result["control_commands_sent"] is False
     assert all(call[1] != "old-refresh" for call in calls)
     assert calls[-1][0].endswith("/api/1/vehicles/123/vehicle_data")
+
+
+def test_tesla_ev_read_persists_rotated_token_without_overwriting_other_integrations(tmp_path, monkeypatch):
+    monkeypatch.setattr(integrations, "_data_dir", lambda: tmp_path)
+    integrations.save_config({
+        "deye": {"host": "192.168.8.10", "port": 502, "unit_id": 1},
+        "tesla": {"region": "europe", "client_id": "client", "refresh_token": "old-refresh-token", "vehicle_ids": ["123"]},
+    })
+    def fake_http(url, *, token=None, form=None):
+        if form: return {"access_token": "access", "refresh_token": "new-refresh-token"}
+        if url.endswith("/api/1/vehicles"):
+            return {"response": [{"id": 123, "id_s": "123", "vin": "VIN1234", "display_name": "Tesla EV"}]}
+        return {"response": {"charge_state": {"battery_level": 70, "charging_state": "Charging"}}}
+    monkeypatch.setattr(integrations, "_tesla_http", fake_http)
+
+    result = integrations.read_tesla_ev(integrations.load_config()["tesla"])
+    stored = integrations.load_config()
+    assert result["vehicles"][0]["charge_state"]["battery_level"] == 70
+    assert stored["tesla"]["refresh_token"] == "new-refresh-token"
+    assert stored["deye"]["host"] == "192.168.8.10"

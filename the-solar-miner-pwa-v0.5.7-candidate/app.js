@@ -3,7 +3,7 @@ import { DEMO_CONTROL_CONFIG, createDemoControlState, updateDemoControl, toggleD
 import { renderWorkspacePage, renderHomePreferenceLinks, renderHouseSearch, handleWorkspaceAction, handleWorkspaceChange, applyPreferences, getWorkspacePageLabel, workspace, getEditableEntity, saveEditableEntity, saveDemoWorkspace, hydrateWorkspacePhotos } from "./workspace-ui.js";
 import { renderAutomationsPage, renderSolarProductionPage, renderDemoAdminPanel, handleFeatureAction, saveAutomationForm, addDemoUser, saveDemoUserEdit, saveSolarWeather, demoFeatures } from "./features-v053.js";
 import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classifyEndpoint, PRESENCE_API_STATUS } from "./gateway-connection.js";
-import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, saveGatewayHardwareIntegrationConfig, readGatewayHardwareIntegrations } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, saveGatewayHardwareIntegrationConfig, readGatewayHardwareIntegrations, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging } from "./gateway-auth.js";
 
 let automationEditingId = "";
 const state = { page: "inicio", mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], lastUpdated: null, lastMeasurementAt: null, refreshing: false, propertyPhoto: "", demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [] };
@@ -287,6 +287,7 @@ function render() {
   if (state.page === "casa" && workspace.house.photo) document.documentElement.style.setProperty("--house-background-image", `url("${workspace.house.photo}")`); else document.documentElement.style.removeProperty("--house-background-image");
   document.querySelectorAll("[data-page]").forEach(el => el.classList.toggle("active", el.dataset.page === state.page));
   $("#refresh-button").disabled = state.refreshing;
+  if (state.page === "ev") refreshTeslaEvConfig().catch(error => { const target = $("#ev-tesla-status"); if (target) target.textContent = "Não foi possível consultar a configuração Tesla: " + error.message; });
 }
 function navigate(page) {
   if (page === "mais") { populateMore(); $("#more-dialog").showModal(); return; }
@@ -544,12 +545,7 @@ async function refreshHardwareIntegrationConfig() {
   $("#hardware-tuya-client-id").value = tuya.client_id || "";
   $("#hardware-tuya-client-secret").value = "";
   $("#hardware-tuya-devices").value = (tuya.devices || []).map(device => `${device.device_id} | ${device.name}`).join("\n");
-  const tesla = config.tesla || {};
-  $("#hardware-tesla-region").value = tesla.region || "europe";
-  $("#hardware-tesla-client-id").value = tesla.client_id || "";
-  $("#hardware-tesla-refresh-token").value = "";
-  $("#hardware-tesla-vehicles").value = (tesla.vehicle_ids || []).join("\n");
-  $("#hardware-integrations-status").textContent = `Configuração carregada · Deye ${deye.host ? "definido" : "por configurar"} · Antminer ${miner.host ? "definido" : "por configurar"} · Tuya ${tuya.configured ? "configurado; segredo oculto" : "por configurar"} · Tesla ${tesla.configured ? "configurado; tokens ocultos" : "por configurar"}.`;
+  $("#hardware-integrations-status").textContent = `Configuração carregada · Deye ${deye.host ? "definido" : "por configurar"} · Antminer ${miner.host ? "definido" : "por configurar"} · Tuya ${tuya.configured ? "configurado; segredo oculto" : "por configurar"}. Tesla é configurado apenas na área Carregador EV.`;
   return config;
 }
 $("#hardware-integrations-save").addEventListener("click", async () => {
@@ -561,8 +557,6 @@ $("#hardware-integrations-save").addEventListener("click", async () => {
     const tuyaRows = $("#hardware-tuya-devices").value.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
     const tuyaDevices = tuyaRows.map(line => { const [device_id, ...nameParts] = line.split("|"); return { device_id: device_id.trim(), name: nameParts.join("|").trim() || `Tuya ${device_id.trim()}` }; });
     const tuyaClient = $("#hardware-tuya-client-id").value.trim(), tuyaSecret = $("#hardware-tuya-client-secret").value;
-    const teslaVehicles = $("#hardware-tesla-vehicles").value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
-    const teslaClient = $("#hardware-tesla-client-id").value.trim(), teslaRefresh = $("#hardware-tesla-refresh-token").value;
     const payload = {
       deye: { enabled: Boolean(deyeHost), host: deyeHost, port: Number($("#hardware-deye-port").value), unit_id: Number($("#hardware-deye-unit").value), model: "other" },
       antminer: { enabled: Boolean(minerHost), host: minerHost, port: Number($("#hardware-antminer-port").value), model: "S19K Pro" }
@@ -570,13 +564,9 @@ $("#hardware-integrations-save").addEventListener("click", async () => {
     if (tuyaRows.length || tuyaClient || tuyaSecret) {
       payload.tuya = { region: $("#hardware-tuya-region").value, client_id: tuyaClient || undefined, client_secret: tuyaSecret || undefined, devices: tuyaDevices };
     }
-    if (teslaVehicles.length || teslaClient || teslaRefresh) {
-      payload.tesla = { region: $("#hardware-tesla-region").value, client_id: teslaClient || undefined, refresh_token: teslaRefresh || undefined, vehicle_ids: teslaVehicles };
-    }
     const saved = await saveGatewayHardwareIntegrationConfig(payload);
     $("#hardware-tuya-client-secret").value = "";
-    $("#hardware-tesla-refresh-token").value = "";
-    status.textContent = `Ligações guardadas no Gateway. Segredos nunca são devolvidos à PWA. Tuya: ${saved.tuya?.configured ? "configurado" : "por configurar"}; Tesla Fleet: ${saved.tesla?.configured ? "configurado" : "por configurar"}.`;
+    status.textContent = `Ligações guardadas no Gateway. Segredos nunca são devolvidos à PWA. Tuya: ${saved.tuya?.configured ? "configurado" : "por configurar"}. Tesla é configurado na área Carregador EV.`;
   } catch (error) { status.textContent = `Não foi possível guardar: ${error.message}`; }
   finally { button.disabled = false; }
 });
@@ -593,6 +583,78 @@ $("#hardware-integrations-read").addEventListener("click", async () => {
   } catch (error) { status.textContent = `A leitura falhou: ${error.message}`; }
   finally { button.disabled = false; }
 });
+async function refreshTeslaEvConfig() {
+  const status = $("#ev-tesla-status"), info = sessionInfo();
+  if (!status) return;
+  const save = $("#ev-tesla-save"), read = $("#ev-tesla-read");
+  if (!info.authenticated || info.user.role !== "owner") {
+    status.textContent = "Só o Owner autenticado pode configurar e consultar o Tesla.";
+    if (save) save.disabled = true;
+    if (read) read.disabled = true;
+    return;
+  }
+  if (save) save.disabled = false;
+  if (read) read.disabled = false;
+  const config = await readGatewayTeslaEvConfig();
+  $("#ev-tesla-region").value = config.region || "europe";
+  $("#ev-tesla-client-id").value = config.client_id || "";
+  $("#ev-tesla-refresh-token").value = "";
+  $("#ev-tesla-vehicle-id").value = (config.vehicle_ids || [])[0] || "";
+  status.textContent = config.configured
+    ? "Tesla configurado no Gateway. O refresh token é privado. Esta ligação só lê o estado de carga."
+    : "Tesla ainda não configurado. Indica a aplicação Fleet autorizada e o veículo.";
+}
+
+$("#page-content").addEventListener("click", async event => {
+  const save = event.target.closest("#ev-tesla-save");
+  const read = event.target.closest("#ev-tesla-read");
+  if (!save && !read) return;
+  event.preventDefault();
+  const info = sessionInfo(), status = $("#ev-tesla-status"), output = $("#ev-tesla-result");
+  if (!info.authenticated || info.user.role !== "owner") {
+    status.textContent = "Só o Owner autenticado pode gerir a ligação Tesla.";
+    return;
+  }
+  if (save) save.disabled = true;
+  if (read) read.disabled = true;
+  output.hidden = true;
+  try {
+    if (save) {
+      const vehicleId = $("#ev-tesla-vehicle-id").value.trim();
+      if (!vehicleId) throw new Error("Indica o ID Tesla ou VIN do veículo.");
+      const config = await saveGatewayTeslaEvConfig({
+        region: $("#ev-tesla-region").value,
+        client_id: $("#ev-tesla-client-id").value.trim(),
+        refresh_token: $("#ev-tesla-refresh-token").value,
+        vehicle_ids: [vehicleId],
+      });
+      $("#ev-tesla-refresh-token").value = "";
+      status.textContent = config.configured
+        ? "Ligação Tesla guardada no Gateway; token removido do formulário."
+        : "A configuração Tesla não ficou completa.";
+    } else {
+      status.textContent = "A consultar o estado de carregamento Tesla…";
+      const result = await readGatewayTeslaEvCharging();
+      output.textContent = result.vehicles?.length ? result.vehicles.map(vehicle => {
+        const charge = vehicle.charge_state || {};
+        const value = (key, suffix = "") => charge[key] === undefined || charge[key] === null ? "—" : String(charge[key]) + suffix;
+        const plugged = charge.plugged_in === undefined ? "—" : charge.plugged_in ? "sim" : "não";
+        return (vehicle.name || "Tesla") + (vehicle.vin_suffix ? " · VIN termina em " + vehicle.vin_suffix : "") +
+          "\nBateria: " + value("battery_level", "%") + " · Estado: " + value("charging_state") + " · Ligado à tomada: " + plugged +
+          "\nPotência: " + value("charger_power", " kW") + " · Taxa de carga: " + value("charge_rate") +
+          " · Limite: " + value("charge_limit_soc", "%") + " · Tempo até cheio: " + value("time_to_full_charge", " h");
+      }).join("\n\n") : "A API Tesla não devolveu o veículo selecionado.";
+      output.hidden = false;
+      status.textContent = "Leitura recebida · " + new Date(result.observed_at * 1000).toLocaleString("pt-PT") + " · LIVE_UNVERIFIED · nenhum comando enviado.";
+    }
+  } catch (error) {
+    status.textContent = "Operação Tesla falhou: " + error.message;
+  } finally {
+    if (save) save.disabled = false;
+    if (read) read.disabled = false;
+  }
+});
+
 $("#gateway-bootstrap-form").addEventListener("submit", async event => {
   event.preventDefault();
   const passwordField = $("#gateway-bootstrap-password");

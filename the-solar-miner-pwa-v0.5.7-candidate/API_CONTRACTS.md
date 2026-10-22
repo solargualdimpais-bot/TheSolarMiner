@@ -1,8 +1,8 @@
 # Contratos API — PWA v0.5.4
 
-## Hardware integrations (Gateway CODE02 0.6.25)
+## Hardware integrations and EV charging (Gateway CODE02 0.6.26)
 
-The Owner PWA calls `GET /api/v1/integrations/hardware`, `PUT /api/v1/integrations/hardware`, and `POST /api/v1/integrations/hardware/read` through the authenticated Gateway client. The Owner role is required. Tuya Access Secret and Tesla refresh token are sent only over the authenticated Gateway connection, held in the form until save, cleared after save, and never returned by the Gateway. Device endpoints accept private IP literals only. Results remain read-only; no device control API is called.
+The Owner PWA calls `GET /api/v1/integrations/hardware`, `PUT /api/v1/integrations/hardware`, and `POST /api/v1/integrations/hardware/read` through the authenticated Gateway client for Deye, Antminer and Tuya only. Tesla Fleet configuration and charging-state reads are part of **Energy → EV charger**: `GET/PUT /api/v1/energy/ev/tesla` and `POST /api/v1/energy/ev/tesla/read`. The Owner role is required. Tuya secrets and the Tesla refresh token are sent only over the authenticated Gateway connection, cleared from the form after save, and never returned. Tesla responses contain charging data for the selected vehicle only. They exclude location, climate, driving and unrelated vehicle metadata. The integration is read-only; it does not start, stop or schedule charging. EV strategies X/Y/Z remain local configuration until a Gateway energy engine and a supported Tesla command flow are implemented.
 
 ## Endpoints efetivamente utilizados pela PWA existente
 

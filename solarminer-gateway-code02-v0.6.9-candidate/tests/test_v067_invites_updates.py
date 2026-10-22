@@ -327,6 +327,28 @@ def test_hardware_integration_config_is_owner_only_and_secrets_are_redacted(clie
     assert read.json()["antminer"]["port"] == 4028
     assert read.json()["tuya"]["device_ids"] == ["tuya_device_123"]
     assert secret not in read.text
+    tesla_secret = "tesla-refresh-secret-123"
+    tesla_saved = client.put("/api/v1/energy/ev/tesla", headers=headers, json={
+        "region": "europe", "client_id": "tesla-client-id", "refresh_token": tesla_secret,
+        "vehicle_ids": ["12345678901234567"],
+    })
+    assert tesla_saved.status_code == 200, tesla_saved.text
+    assert tesla_saved.json()["configured"] is True
+    assert tesla_secret not in tesla_saved.text
+    assert "tesla" not in client.get("/api/v1/integrations/hardware", headers=headers).json()
+    generic_update = client.put("/api/v1/integrations/hardware", headers=headers, json={
+        "deye": {"host": "192.168.8.11", "port": 502, "unit_id": 1, "model": "other"}
+    })
+    assert generic_update.status_code == 200, generic_update.text
+    assert client.get("/api/v1/energy/ev/tesla", headers=headers).json()["configured"] is True
+    monkeypatch.setattr(gateway.hardware_integrations, "read_tesla_ev", lambda config: {
+        "vehicles": [{"name": "Tesla", "charge_state": {"battery_level": 61}}],
+        "source": "TESLA_FLEET_API_EV_CHARGING_READ_ONLY", "trust": "LIVE_UNVERIFIED",
+        "control_commands_sent": False, "observed_at": time.time(),
+    })
+    tesla_read = client.post("/api/v1/energy/ev/tesla/read", headers=headers, json={})
+    assert tesla_read.status_code == 200, tesla_read.text
+    assert tesla_read.json()["vehicles"][0]["charge_state"]["battery_level"] == 61
     invalid = client.put("/api/v1/integrations/hardware", headers=headers, json={
         "deye": {"host": "8.8.8.8", "port": 502, "unit_id": 1}
     })
@@ -349,3 +371,6 @@ def test_hardware_integration_config_is_owner_only_and_secrets_are_redacted(clie
     assert client.get("/api/v1/integrations/hardware", headers=admin_headers).status_code == 403
     assert client.put("/api/v1/integrations/hardware", headers=admin_headers, json={}).status_code == 403
     assert client.post("/api/v1/integrations/hardware/read", headers=admin_headers, json={}).status_code == 403
+    assert client.get("/api/v1/energy/ev/tesla", headers=admin_headers).status_code == 403
+    assert client.put("/api/v1/energy/ev/tesla", headers=admin_headers, json={}).status_code == 403
+    assert client.post("/api/v1/energy/ev/tesla/read", headers=admin_headers, json={}).status_code == 403

@@ -11,6 +11,7 @@ import ipaddress
 import json
 import os
 import socket
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -38,6 +39,7 @@ TESLA_API_BASES = {
 TESLA_AUTH_URL = "https://fleet-auth.prd.vn.cloud.tesla.com/oauth2/v3/token"
 MAX_CONFIG_BYTES = 32_768
 CGMINER_COMMANDS = ("summary", "stats", "devs")
+_TESLA_EV_READ_LOCK = threading.Lock()
 
 
 def _data_dir() -> Path:
@@ -93,14 +95,20 @@ def save_config(value: dict[str, Any]) -> dict[str, Any]:
 def public_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
     config = value if value is not None else load_config()
     tuya = config.get("tuya", {}) if isinstance(config.get("tuya", {}), dict) else {}
-    tesla = config.get("tesla", {}) if isinstance(config.get("tesla", {}), dict) else {}
     return {
         "deye": {k: config.get("deye", {}).get(k) for k in ("host", "port", "unit_id", "model") if config.get("deye", {}).get(k) is not None},
         "antminer": {k: config.get("antminer", {}).get(k) for k in ("host", "port", "model") if config.get("antminer", {}).get(k) is not None},
         "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": [{"device_id": x.get("device_id"), "name": x.get("name")} for x in tuya.get("devices", []) if isinstance(x, dict)], "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
-        "tesla": {"region": tesla.get("region"), "vehicle_ids": tesla.get("vehicle_ids", []), "client_id": tesla.get("client_id"), "configured": bool(tesla.get("client_id") and tesla.get("refresh_token"))},
         "secrets_returned": False,
     }
+
+
+def public_tesla_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
+    config = value if value is not None else load_config()
+    tesla = config.get("tesla", {}) if isinstance(config.get("tesla", {}), dict) else {}
+    return {"region": tesla.get("region", "europe"), "vehicle_ids": tesla.get("vehicle_ids", []),
+            "client_id": tesla.get("client_id"), "configured": bool(tesla.get("client_id") and tesla.get("refresh_token")),
+            "purpose": "ev_charging_status_read_only", "control_available": False, "secrets_returned": False}
 
 
 def _private_ip(host: Any) -> str:
@@ -124,6 +132,8 @@ def _port(value: Any, default: int) -> int:
 def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("integration_config_invalid")
+    if "tesla" in payload:
+        raise ValueError("tesla_config_must_use_ev_api")
     old = existing if existing is not None else load_config()
     result: dict[str, Any] = {k: old.get(k, {}) for k in ("deye", "antminer", "tuya")}
     result["tesla"] = old.get("tesla", {})
@@ -171,27 +181,26 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
             normalized.append({"device_id": device_id, "name": name.strip()})
         if normalized and (not client_id or not client_secret): raise ValueError("tuya_credentials_required")
         result["tuya"] = {"region": region, "client_id": client_id, "client_secret": client_secret, "devices": normalized}
-    if "tesla" in payload:
-        item = payload["tesla"]
-        if not isinstance(item, dict): raise ValueError("invalid_tesla_config")
-        if not item.get("enabled", True):
-            result["tesla"] = {}
-        else:
-            previous = old.get("tesla", {})
-            client_id = item.get("client_id", previous.get("client_id"))
-            refresh_token = item.get("refresh_token") or previous.get("refresh_token")
-            region = item.get("region", previous.get("region", "europe"))
-            vehicle_ids = item.get("vehicle_ids", previous.get("vehicle_ids", []))
-            if region not in TESLA_API_BASES: raise ValueError("invalid_tesla_region")
-            if not isinstance(client_id, str) or not 1 <= len(client_id) <= 256: raise ValueError("invalid_tesla_client_id")
-            if not isinstance(refresh_token, str) or not 8 <= len(refresh_token) <= 4096: raise ValueError("invalid_tesla_refresh_token")
-            if not isinstance(vehicle_ids, list) or not 1 <= len(vehicle_ids) <= 100: raise ValueError("invalid_tesla_vehicle_ids")
-            normalized_ids = []
-            for value in vehicle_ids:
-                if not isinstance(value, str) or not 1 <= len(value) <= 64 or not all(c.isalnum() or c in "-_" for c in value): raise ValueError("invalid_tesla_vehicle_id")
-                if value not in normalized_ids: normalized_ids.append(value)
-            result["tesla"] = {"region": region, "client_id": client_id, "refresh_token": refresh_token, "vehicle_ids": normalized_ids}
     return result
+
+
+def validate_tesla_config(item: Any, existing: dict[str, Any] | None = None) -> dict[str, Any]:
+    if not isinstance(item, dict): raise ValueError("invalid_tesla_config")
+    old = (existing if existing is not None else load_config()).get("tesla", {})
+    if item.get("enabled") is False: return {}
+    client_id = item.get("client_id", old.get("client_id"))
+    refresh_token = item.get("refresh_token") or old.get("refresh_token")
+    region = item.get("region", old.get("region", "europe"))
+    vehicle_ids = item.get("vehicle_ids", old.get("vehicle_ids", []))
+    if region not in TESLA_API_BASES: raise ValueError("invalid_tesla_region")
+    if not isinstance(client_id, str) or not 1 <= len(client_id) <= 256: raise ValueError("invalid_tesla_client_id")
+    if not isinstance(refresh_token, str) or not 8 <= len(refresh_token) <= 4096: raise ValueError("invalid_tesla_refresh_token")
+    if not isinstance(vehicle_ids, list) or len(vehicle_ids) != 1: raise ValueError("invalid_tesla_vehicle_ids")
+    normalized_ids = []
+    for value in vehicle_ids:
+        if not isinstance(value, str) or not 1 <= len(value) <= 64 or not all(c.isalnum() or c in "-_" for c in value): raise ValueError("invalid_tesla_vehicle_id")
+        if value not in normalized_ids: normalized_ids.append(value)
+    return {"region": region, "client_id": client_id, "refresh_token": refresh_token, "vehicle_ids": normalized_ids}
 
 
 def _json_request(url: str, headers: dict[str, str], timeout: float = 8.0) -> dict[str, Any]:
@@ -332,22 +341,14 @@ def read_tesla(config: dict[str, Any], persist_rotated_token=None) -> tuple[dict
         if not isinstance(detail, dict): raise RuntimeError("tesla_vehicle_data_invalid")
         # Copy only approved fields; nested Tesla payloads can contain location data.
         charge = detail.get("charge_state") if isinstance(detail.get("charge_state"), dict) else {}
-        climate = detail.get("climate_state") if isinstance(detail.get("climate_state"), dict) else {}
-        state = detail.get("vehicle_state") if isinstance(detail.get("vehicle_state"), dict) else {}
-        vehicle_config = detail.get("vehicle_config") if isinstance(detail.get("vehicle_config"), dict) else {}
-        safe_charge = {key: charge[key] for key in ("battery_level", "battery_range", "charging_state", "charge_limit_soc", "charger_power", "charge_rate", "time_to_full_charge", "plugged_in") if key in charge}
-        safe_climate = {key: climate[key] for key in ("is_climate_on", "inside_temp", "outside_temp", "driver_temp_setting", "passenger_temp_setting") if key in climate}
-        safe_state = {key: state[key] for key in ("odometer", "locked", "sentry_mode", "software_version") if key in state}
-        safe_config = {key: vehicle_config[key] for key in ("car_type", "trim_badging", "wheel_type", "eu_vehicle") if key in vehicle_config}
+        safe_charge = {key: charge[key] for key in ("battery_level", "charging_state", "charge_limit_soc", "charger_power", "charge_rate", "time_to_full_charge", "plugged_in") if key in charge}
         output.append({"vehicle_id": vehicle_id, "name": vehicle.get("display_name"), "vin_suffix": vin[-4:] if isinstance(vin, str) and len(vin) >= 4 else None,
-                       "state": vehicle.get("state"), "charge_state": safe_charge,
-                       "climate_state": safe_climate, "vehicle_state": safe_state,
-                       "vehicle_config": safe_config, "trust": "LIVE_UNVERIFIED", "control_commands_sent": False})
-    return ({"vehicles": output, "selected_count": len(selected), "source": "TESLA_FLEET_API_READ_ONLY", "trust": "LIVE_UNVERIFIED", "control_commands_sent": False, "observed_at": time.time()}, rotated_refresh)
+                       "charge_state": safe_charge, "trust": "LIVE_UNVERIFIED"})
+    return ({"vehicles": output, "selected_count": len(selected), "source": "TESLA_FLEET_API_EV_CHARGING_READ_ONLY", "trust": "LIVE_UNVERIFIED", "control_commands_sent": False, "observed_at": time.time()}, rotated_refresh)
 
 
 def collect(config: dict[str, Any]) -> dict[str, Any]:
-    result: dict[str, Any] = {"deye": None, "antminer": None, "tuya": [], "tesla": None, "errors": [], "collected_at": time.time()}
+    result: dict[str, Any] = {"deye": None, "antminer": None, "tuya": [], "errors": [], "collected_at": time.time()}
     if config.get("deye", {}).get("host"):
         try: result["deye"] = read_deye(config["deye"])
         except Exception as exc: result["errors"].append({"provider": "deye", "reason": str(exc)[:160]})
@@ -357,13 +358,16 @@ def collect(config: dict[str, Any]) -> dict[str, Any]:
     if config.get("tuya", {}).get("devices"):
         try: result["tuya"] = read_tuya(config["tuya"])
         except Exception as exc: result["errors"].append({"provider": "tuya", "reason": str(exc)[:160]})
-    if config.get("tesla", {}).get("refresh_token"):
-        try:
-            def persist_tesla_token(rotated: str) -> None:
-                updated = dict(config)
-                updated["tesla"] = {**config["tesla"], "refresh_token": rotated}
-                save_config(updated)
-                config["tesla"]["refresh_token"] = rotated
-            result["tesla"], _rotated = read_tesla(config["tesla"], persist_tesla_token)
-        except Exception as exc: result["errors"].append({"provider": "tesla", "reason": str(exc)[:160]})
     return result
+
+
+def read_tesla_ev(config: dict[str, Any]) -> dict[str, Any]:
+    with _TESLA_EV_READ_LOCK:
+        config = validate_tesla_config(config, {"tesla": config})
+        def persist_rotated_token(rotated: str) -> None:
+            full_config = load_config()
+            full_config["tesla"] = {**config, "refresh_token": rotated}
+            save_config(full_config)
+            config["refresh_token"] = rotated
+        result, _rotated = read_tesla(config, persist_rotated_token)
+        return result

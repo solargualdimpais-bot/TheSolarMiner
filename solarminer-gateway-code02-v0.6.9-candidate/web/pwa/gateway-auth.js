@@ -86,7 +86,10 @@ async function gatewayRequest(baseUrl, path, { method = "GET", body, authenticat
       login_attempts_limited: "Demasiadas tentativas de início de sessão. Aguarda alguns minutos antes de tentar novamente.",
       bootstrap_unavailable: "O Gateway já não permite criar o primeiro Owner.",
       invalid_credentials_or_device: "Utilizador ou palavra-passe incorretos, ou este dispositivo não está associado à conta.",
-      device_not_associated: "Este dispositivo ainda não está associado a essa conta. Confirma as credenciais ou remove a identidade antiga deste browser."
+      device_not_associated: "Este dispositivo ainda não está associado a essa conta. Confirma as credenciais ou remove a identidade antiga deste browser.",
+      ev_tesla_not_configured: "Configura primeiro a ligação Tesla em Energia → Carregador EV.",
+      ev_tesla_read_failed: "O Gateway não conseguiu ler o estado de carga Tesla. Confirma a região, a autorização Fleet e o veículo selecionado.",
+      invalid_tesla_vehicle_ids: "Seleciona apenas um veículo Tesla para o carregamento."
     })[detail] || detail;
     const error = new Error(message);
     error.status = response.status;
@@ -317,6 +320,16 @@ export async function saveGatewayHardwareIntegrationConfig(config) {
 }
 export async function readGatewayHardwareIntegrations() {
   return gatewayApi("/api/v1/integrations/hardware/read", { method: "POST", body: {} });
+}
+export async function readGatewayTeslaEvConfig() {
+  return gatewayApi("/api/v1/energy/ev/tesla");
+}
+export async function saveGatewayTeslaEvConfig(config) {
+  if (!config || typeof config !== "object") throw new Error("Configuração Tesla EV inválida.");
+  return gatewayApi("/api/v1/energy/ev/tesla", { method: "PUT", body: config });
+}
+export async function readGatewayTeslaEvCharging() {
+  return gatewayApi("/api/v1/energy/ev/tesla/read", { method: "POST", body: {} });
 }
 export async function revokeGatewayInvite(inviteId) {
   if (!/^[0-9a-f-]{36}$/i.test(inviteId)) throw new Error("Identificador de convite inválido.");

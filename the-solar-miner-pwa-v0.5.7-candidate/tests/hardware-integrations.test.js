@@ -4,16 +4,20 @@ import { readFileSync } from "node:fs";
 
 const read = path => readFileSync(new URL(path, import.meta.url), "utf8");
 
-test("Owner hardware setup exposes Deye, Antminer, Tuya and Tesla read-only fields", () => {
+test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV charging", () => {
   const html = read("../index.html");
   const app = read("../app.js");
   const auth = read("../gateway-auth.js");
-  for (const id of ["gateway-hardware-management", "hardware-deye-host", "hardware-antminer-host", "hardware-tuya-client-secret", "hardware-tesla-refresh-token", "hardware-tesla-vehicles", "hardware-integrations-read"]) assert.match(html, new RegExp(`id="${id}"`));
+  for (const id of ["gateway-hardware-management", "hardware-deye-host", "hardware-antminer-host", "hardware-tuya-client-secret", "hardware-integrations-read"]) assert.match(html, new RegExp(`id="${id}"`));
+  const workspace = read("../workspace-ui.js");
+  for (const id of ["ev-tesla-refresh-token", "ev-tesla-vehicle-id", "ev-tesla-save", "ev-tesla-read"]) assert.match(workspace, new RegExp(`id="${id}"`));
   assert.match(app, /info\.user\.role !== "owner"/);
   assert.match(app, /saveGatewayHardwareIntegrationConfig/);
   assert.match(app, /readGatewayHardwareIntegrations/);
   assert.match(app, /hardware-tuya-client-secret"\)\.value = ""/);
   assert.match(auth, /\/api\/v1\/integrations\/hardware\/read/);
+  assert.match(auth, /\/api\/v1\/energy\/ev\/tesla\/read/);
+  assert.doesNotMatch(app, /hardware-tesla-(?:region|client-id|refresh-token|vehicles)/);
   assert.doesNotMatch(auth, /tuya.*localStorage/i);
 });
 

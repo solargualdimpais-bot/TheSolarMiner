@@ -2,7 +2,7 @@
 
 Standalone Gateway foundation for local identity, bootstrap, authentication, authorization, device identity and audit. This directory is deliberately separate from the archived Prova 0 v0.3.0 artifacts. The current package version is recorded in `packaging/control`; the API-reported version remains `0.6.0` for compatibility. Release workflow builds, tests, signs and publishes the Debian package and USB bundle.
 
-CODE02 v0.6.25 acrescenta configuração Owner e leitura sem comandos de controlo para Deye Modbus, Antminer S19K Pro, Tuya Cloud e Tesla Fleet API. Ver [`docs/HARDWARE_INTEGRATIONS.md`](docs/HARDWARE_INTEGRATIONS.md) para requisitos, configuração e limitações.
+CODE02 v0.6.26 mantém as leituras Owner de Deye Modbus, Antminer S19K Pro e Tuya Cloud e coloca Tesla Fleet na área Carregador EV, limitada ao estado de carga do veículo. As estratégias EV continuam locais; o Gateway ainda não aplica decisões nem envia comandos de carregamento. Ver [`docs/HARDWARE_INTEGRATIONS.md`](docs/HARDWARE_INTEGRATIONS.md) e [`docs/EV_TESLA_CHARGING.md`](docs/EV_TESLA_CHARGING.md).
 
 ## Build and test
 
