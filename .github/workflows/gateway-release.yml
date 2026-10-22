@@ -75,7 +75,16 @@ jobs:
           sh -n packaging/solarminer-tailscale-cert
           [ "$(sed -n 's/^TARGET_VERSION=//p' packaging/repair-existing-from-usb.sh)" = "$(sed -n 's/^Version: //p' packaging/control)" ]
           ! grep -q '^VERSION=' packaging/repair-existing-from-usb.sh
-          systemd-analyze verify packaging/solarminer-recovery.service packaging/solarminer-update-broker.socket packaging/solarminer-update-broker@.service
+          VERIFY_ROOT="$(mktemp -d)"
+          mkdir -p "$VERIFY_ROOT/etc" "$VERIFY_ROOT/usr/lib/systemd/system" "$VERIFY_ROOT/usr/bin"
+          printf 'root:x:0:0:root:/root:/bin/sh\nsolarminer:x:998:998:SolarMiner:/var/lib/solarminer:/usr/sbin/nologin\n' > "$VERIFY_ROOT/etc/passwd"
+          printf 'root:x:0:\nsolarminer:x:998:\n' > "$VERIFY_ROOT/etc/group"
+          install -m 0644 packaging/solarminer-recovery.service "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-recovery.service"
+          install -m 0644 packaging/solarminer-update-broker@.service "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-update-broker@verify.service"
+          sed 's/Service=solarminer-update-broker@.service/Service=solarminer-update-broker@verify.service/' packaging/solarminer-update-broker.socket > "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-update-broker.socket"
+          install -m 0755 packaging/solarminer-recovery "$VERIFY_ROOT/usr/bin/solarminer-recovery"
+          install -m 0755 packaging/solarminer-update-broker "$VERIFY_ROOT/usr/bin/solarminer-update-broker"
+          systemd-analyze --root="$VERIFY_ROOT" verify solarminer-recovery.service solarminer-update-broker.socket solarminer-update-broker@verify.service
 
       - name: Run Gateway tests
         working-directory: solarminer-gateway-code02-v0.6.9-candidate
