@@ -70,6 +70,7 @@ cp "$ROOT/docs/CHANGELOG_V0623.md" "$STAGE/usr/share/doc/solarminer-gateway/CHAN
 cp "$ROOT/docs/CHANGELOG_V0627.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0627.md"
 cp "$ROOT/docs/CHANGELOG_V0628.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0628.md"
 cp "$ROOT/docs/CHANGELOG_V0629.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0629.md"
+cp "$ROOT/docs/CHANGELOG_V0630.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0630.md"
 cp "$ROOT/docs/LAN_PWA_ACCESS.md" "$STAGE/usr/share/doc/solarminer-gateway/LAN_PWA_ACCESS.md"
 cp "$ROOT/docs/DATABASE_BACKUP_AND_RESTORE.md" "$STAGE/usr/share/doc/solarminer-gateway/DATABASE_BACKUP_AND_RESTORE.md"
 cp "$ROOT/docs/UPDATE_AND_ROLLBACK.md" "$STAGE/usr/share/doc/solarminer-gateway/UPDATE_AND_ROLLBACK.md"

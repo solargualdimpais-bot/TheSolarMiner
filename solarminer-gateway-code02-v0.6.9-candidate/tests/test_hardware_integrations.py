@@ -40,12 +40,15 @@ def test_invalid_hardware_config_rejected(payload):
 
 def test_antminer_uses_only_allowlisted_read_commands(monkeypatch):
     calls = []
+    frames = []
 
     class FakeSocket:
         def __enter__(self): return self
         def __exit__(self, *_): return False
         def settimeout(self, _timeout): pass
-        def sendall(self, payload): calls.append(json.loads(payload.rstrip(b"\0"))["command"])
+        def sendall(self, payload):
+            frames.append(payload)
+            calls.append(json.loads(payload)["command"])
         def recv(self, _size): return b'{"STATUS":[{"STATUS":"S"}],"id":1}\0'
 
     monkeypatch.setattr(integrations.socket, "create_connection", lambda *_args, **_kwargs: FakeSocket())
@@ -53,21 +56,27 @@ def test_antminer_uses_only_allowlisted_read_commands(monkeypatch):
     assert calls == ["summary", "stats", "devs"]
     assert response["control_commands_sent"] is False
     assert response["commands"] == ["summary", "stats", "devs"]
+    assert all(frame.endswith(b"\n") for frame in frames)
 
 
-def test_deye_is_read_only_and_does_not_decode_unverified_map(monkeypatch):
-    class Raw:
-        def as_dict(self): return {"function_code": 3, "raw_registers": [7], "control_commands_sent": False}
-
-    def read(host, address, count, **kwargs):
-        assert (host, address, count, kwargs["port"], kwargs["unit_id"]) == ("192.168.8.10", 0, 1, 502, 1)
-        return Raw()
-
-    monkeypatch.setattr(integrations.deye_modbus, "read_holding_registers", read)
+def test_deye_uses_standard_identification_without_guessing_registers(monkeypatch):
+    monkeypatch.setattr(integrations, "probe_tcp", lambda host, port, timeout: {"state": "tcp_reachable", "host": host, "port": port})
+    def identify(host, **kwargs):
+        assert (host, kwargs["port"], kwargs["unit_id"]) == ("192.168.8.10", 502, 1)
+        return {"state": "modbus_identity_response", "objects": []}
+    monkeypatch.setattr(integrations.deye_modbus, "read_device_identification", identify)
     result = integrations.read_deye({"host": "192.168.8.10", "port": 502, "unit_id": 1, "model": "SUN-15K-SG05LP3-EU-SM2"})
     assert result["metrics_decoded"] is False
+    assert result["connection_state"] == "modbus_identity_response"
     assert result["trust"] == "LIVE_UNVERIFIED"
     assert result["control_commands_sent"] is False
+
+
+def test_empty_hardware_configuration_is_reported_as_unconfigured():
+    result = integrations.collect({})
+    assert result["configuration"] == {"deye": "not_configured", "antminer": "not_configured"}
+    assert result["deye"] is None and result["antminer"] is None
+    assert result["errors"] == []
 
 
 def test_tuya_request_uses_fixed_https_region_and_does_not_log_or_return_secret(monkeypatch):

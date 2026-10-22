@@ -61,6 +61,24 @@ def test_deye_only_emits_fc03():
     assert fake.request[7] not in {0x05, 0x06, 0x0F, 0x10, 0x16, 0x17}
 
 
+def test_deye_identity_probe_uses_fc43_without_a_guessed_register():
+    pdu = bytes([0x2B, 0x0E, 0x01, 0x01, 0x00, 0x00, 0x00])
+    fake = FakeSocket(struct.pack(">HHHB", 1, 0, len(pdu) + 1, 1) + pdu)
+    result = deye.read_device_identification("192.168.1.44", socket_factory=lambda *a, **k: fake)
+    assert result["state"] == "modbus_identity_response"
+    assert fake.request[7:] == bytes([0x2B, 0x0E, 0x01, 0x00])
+    assert fake.request[7] not in {0x05, 0x06, 0x0F, 0x10, 0x16, 0x17}
+
+
+def test_deye_identity_exception_is_still_a_modbus_response():
+    pdu = bytes([0xAB, 0x01])
+    fake = FakeSocket(struct.pack(">HHHB", 1, 0, len(pdu) + 1, 1) + pdu)
+    with pytest.raises(deye.ModbusExceptionResponse) as error:
+        deye.read_device_identification("192.168.1.44", socket_factory=lambda *a, **k: fake)
+    assert error.value.function_code == 0x2B
+    assert error.value.exception_code == 1
+
+
 @pytest.mark.parametrize("host", ["8.8.8.8", "127.0.0.1", "0.0.0.0", "224.0.0.1", "not-an-ip"])
 def test_deye_rejects_unsafe_or_nonliteral_hosts(host):
     with pytest.raises(ValueError):

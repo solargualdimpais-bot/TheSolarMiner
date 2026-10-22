@@ -587,6 +587,27 @@ async function refreshHardwareIntegrationConfig() {
   $("#hardware-integrations-status").textContent = `Configuração carregada · Deye ${deye.host ? "definido" : "por configurar"} · Antminer ${miner.host ? "definido" : "por configurar"} · Tuya ${tuya.configured ? "configurado; segredo oculto" : "por configurar"}. Tesla é configurado apenas na área Carregador EV.`;
   return config;
 }
+function hardwareConnectionSummary(result) {
+  const names = { deye: "Deye", antminer: "Antminer" };
+  const stateText = {
+    modbus_identity_response: "Modbus respondeu; mapa de dados ainda não validado",
+    modbus_exception_response: "O equipamento respondeu por Modbus, mas rejeitou a consulta de identificação",
+    modbus_timeout: "IP/porta acessíveis, mas sem resposta Modbus; confirmar Unit ID e serviço Modbus",
+    invalid_modbus_response: "A porta respondeu, mas a resposta não correspondeu ao Modbus esperado",
+    modbus_transport_error: "Falha de transporte durante a consulta Modbus",
+    api_responded: "API da Antminer respondeu",
+    tcp_reachable_api_failed: "Porta 4028 acessível, mas a API BOSminer não respondeu corretamente",
+    tcp_unreachable: "Gateway não conseguiu abrir ligação TCP ao equipamento",
+    failed: "Ligação falhou"
+  };
+  return ["deye", "antminer"].map(key => {
+    const device = result[key], configured = result.configuration?.[key] === "configured";
+    if (!configured) return `${names[key]}: IP ainda não guardado no Gateway`;
+    const state = device?.connection_state || "failed";
+    const reason = device?.reason ? ` (${device.reason})` : "";
+    return `${names[key]}: ${stateText[state] || state}${reason}`;
+  }).join(" · ");
+}
 $("#hardware-integrations-save").addEventListener("click", async () => {
   const info = sessionInfo(), button = $("#hardware-integrations-save"), status = $("#hardware-integrations-status");
   if (!info.authenticated || info.user.role !== "owner") { status.textContent = "Só o Owner autenticado pode alterar as ligações."; return; }
@@ -617,7 +638,8 @@ $("#hardware-integrations-read").addEventListener("click", async () => {
     const result = await readGatewayHardwareIntegrations();
     output.textContent = JSON.stringify(result, null, 2);
     output.hidden = false;
-    status.textContent = result.errors?.length ? `Leitura concluída com ${result.errors.length} falha(s). Os erros aparecem abaixo; nenhum comando de controlo foi enviado.` : "Leitura concluída. Os valores permanecem LIVE_UNVERIFIED até validação física.";
+    const summary = hardwareConnectionSummary(result);
+    status.textContent = `${summary}${result.errors?.length ? ` · ${result.errors.length} erro(s) detalhado(s) abaixo` : ""}. Nenhum comando de controlo foi enviado.`;
     await refreshGatewayReadings();
   } catch (error) { status.textContent = `A leitura falhou: ${error.message}`; }
   finally { button.disabled = false; }

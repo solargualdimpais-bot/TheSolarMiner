@@ -126,6 +126,63 @@ def read_holding_registers(host: str, start_address: int, count: int, port: int 
                             tuple(registers), time.time())
 
 
+def read_device_identification(host: str, port: int = DEFAULT_PORT, unit_id: int = 1,
+                               timeout: float = 1.5,
+                               socket_factory=socket.create_connection) -> dict[str, Any]:
+    """Probe Modbus with the standard Read Device Identification request.
+
+    Unlike FC03 this does not guess a vendor register address. Some devices do
+    not implement FC43/MEI 14; an exception response still proves Modbus was
+    reached, while a timeout remains distinguishable from a closed TCP port.
+    """
+    address, port, unit_id, timeout = validate_target(host, port, unit_id, timeout)
+    transaction_id = 1
+    # FC43 / MEI 14 / Read Device ID / Basic identification / object 0.
+    pdu = bytes((0x2B, 0x0E, 0x01, 0x00))
+    request = struct.pack(">HHHB", transaction_id, 0, len(pdu) + 1, unit_id) + pdu
+    try:
+        with socket_factory((address, port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            sock.sendall(request)
+            header = _recv_exact(sock, 7)
+            rx_tid, protocol_id, length, rx_unit = struct.unpack(">HHHB", header)
+            if rx_tid != transaction_id or protocol_id != 0 or rx_unit != unit_id or not 2 <= length <= 254:
+                raise ModbusProtocolError("invalid_mbap_header")
+            response = _recv_exact(sock, length - 1)
+    except socket.timeout as exc:
+        raise ModbusTimeout("modbus_identification_timeout") from exc
+    except OSError as exc:
+        raise ModbusError(f"modbus_connection_error:{type(exc).__name__}") from exc
+
+    function_code = response[0]
+    if function_code == 0xAB:
+        if len(response) != 2:
+            raise ModbusProtocolError("invalid_device_identification_exception")
+        raise ModbusExceptionResponse(0x2B, response[1])
+    if function_code != 0x2B or len(response) < 7 or response[1] != 0x0E:
+        raise ModbusProtocolError("invalid_device_identification_response")
+    read_code, conformity, more_follows, next_object, object_count = response[2:7]
+    if read_code not in (0x01, 0x02, 0x03) or more_follows not in (0x00, 0xFF):
+        raise ModbusProtocolError("invalid_device_identification_fields")
+    offset = 7
+    objects = []
+    for _ in range(object_count):
+        if offset + 2 > len(response):
+            raise ModbusProtocolError("truncated_device_identification_object")
+        object_id, value_length = response[offset], response[offset + 1]
+        offset += 2
+        if offset + value_length > len(response):
+            raise ModbusProtocolError("truncated_device_identification_value")
+        value = response[offset:offset + value_length].decode("utf-8", "replace")
+        objects.append({"id": object_id, "value": value})
+        offset += value_length
+    if offset != len(response):
+        raise ModbusProtocolError("trailing_device_identification_data")
+    return {"state": "modbus_identity_response", "read_device_id_code": read_code,
+            "conformity_level": conformity, "more_follows": more_follows == 0xFF,
+            "next_object_id": next_object, "objects": objects}
+
+
 def _recv_exact(sock, count: int) -> bytes:
     data = bytearray()
     while len(data) < count:

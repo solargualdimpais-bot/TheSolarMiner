@@ -1,5 +1,9 @@
 # API v1 (CODE 01)
 
+## CODE02 v0.6.30 — diagnósticos de ligação de hardware
+
+`POST /api/v1/integrations/hardware/read` now returns `configuration` for unsaved fields and per-device connection states for TCP, Modbus, and BOSminer API. Missing configuration is no longer shown as a completed read. Deye uses FC43/MEI14 Read Device Identification instead of guessing an FC03 register. Braiins OS receives JSON newline requests for `summary`, `stats`, and `devs`. The endpoint still sends no control commands.
+
 ## CODE02 v0.6.29 — atualizações assinadas automáticas
 
 O `solarminer-update-check-daily.timer` verifica a origem GitHub selecionada e permitida e enfileira automaticamente uma atualização apenas se o manifesto e o pacote forem válidos e o preflight independente passar. A API sem privilégios e o serviço diário comunicam com o helper root através do socket Unix privado `solarminer-update-broker.socket`; o broker só aceita `preflight` e `enqueue` com UUID. A aplicação usa o mesmo helper privilegiado, backup SQLite, staging, health check e rollback que o endpoint Owner. `GET /api/v1/system/update/status` expõe o estado e a versão alvo. A verificação manual continua disponível na PWA Owner.
@@ -7,8 +11,8 @@ O `solarminer-update-check-daily.timer` verifica a origem GitHub selecionada e p
 ## CODE02 v0.6.26 — integrações de hardware e carregamento EV
 
 - `GET /api/v1/integrations/hardware`, `PUT /api/v1/integrations/hardware` e `POST /api/v1/integrations/hardware/read` são reservados ao Owner autenticado.
-- Deye Modbus TCP executa FC03 apenas e devolve registos crus sem mapa/escala.
-- Antminer executa as operações de consulta `summary`, `stats`, `devs`; não existe API de escrita.
+- Deye Modbus TCP primeiro verifica o transporte e envia FC43/MEI14 Read Device Identification, sem adivinhar um registo FC03. O estado diferencia IP não configurado, TCP inacessível, resposta Modbus de exceção, timeout e resposta de identidade. Ainda não há métricas Deye descodificadas.
+- Antminer verifica TCP e envia pedidos JSON BOSminer com newline para `summary`, `stats`, `devs`. O estado distingue porta alcançável de API que não respondeu. Não existe API de escrita ou controlo de potência nesta versão.
 - Tuya Cloud usa credenciais Access ID/Secret armazenadas no ficheiro privado do Gateway; os segredos nunca são devolvidos pela API.
 - Tesla Fleet para carregamento usa `GET/PUT /api/v1/energy/ev/tesla` e `POST /api/v1/energy/ev/tesla/read`, reservados ao Owner. Devolve apenas campos de carga do veículo escolhido, não inclui localização, climatização ou estado de condução e não envia comandos.
 - Endereços LAN exigem IP privado literal. Ver `HARDWARE_INTEGRATIONS.md` para configuração e limites.

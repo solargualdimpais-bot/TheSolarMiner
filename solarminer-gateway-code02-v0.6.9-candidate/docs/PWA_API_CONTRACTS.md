@@ -1,5 +1,9 @@
 # Contratos API — PWA v0.5.4
 
+## Hardware connection diagnostics (CODE02 0.6.30)
+
+`POST /api/v1/integrations/hardware/read` returns explicit configuration state and per-device connection state. A missing saved IP is reported as `not_configured`; Deye separates TCP reachability from Modbus identity response; Antminer separates TCP reachability from BOSminer API response. No control commands are sent.
+
 ## Gateway signed automatic updates (CODE02 0.6.29)
 
 The Gateway checks its configured, administrator-allowlisted GitHub release daily. It automatically queues an update only after Ed25519 manifest and package verification and a successful independent recovery preflight. The privileged update helper performs SQLite backup, staging, activation, health check and rollback. The Owner PWA can still request an immediate check or manual application and reads progress from `GET /api/v1/system/update/status`.

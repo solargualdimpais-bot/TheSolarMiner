@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import errno
 import ipaddress
 import json
 import os
@@ -257,11 +258,17 @@ def read_antminer(host: str, port: int = 4028, timeout: float = 2.0) -> dict[str
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535: raise ValueError("invalid_port")
     responses = {}
     for command in CGMINER_COMMANDS:
-        message = json.dumps({"command": command}, separators=(",", ":")).encode() + b"\0"
+        # Braiins OS documents a newline-terminated JSON request (the newline
+        # comes from `echo`). NUL-terminating this frame can leave BOSminer
+        # waiting for a complete request and makes an open API look offline.
+        message = json.dumps({"command": command}, separators=(",", ":")).encode() + b"\n"
         try:
             with socket.create_connection((address, port), timeout=timeout) as sock:
                 sock.settimeout(timeout)
                 sock.sendall(message)
+                shutdown = getattr(sock, "shutdown", None)
+                if callable(shutdown):
+                    shutdown(socket.SHUT_WR)
                 chunks, total = [], 0
                 while total < 262_144:
                     part = sock.recv(min(16_384, 262_144 - total))
@@ -276,13 +283,66 @@ def read_antminer(host: str, port: int = 4028, timeout: float = 2.0) -> dict[str
         except json.JSONDecodeError as exc: raise RuntimeError(f"antminer_{command}_invalid_json") from exc
         if not isinstance(response, dict): raise RuntimeError(f"antminer_{command}_invalid_response")
         responses[command] = response
-    return {"host": address, "port": port, "model": "S19K Pro", "protocol": "CGMiner-compatible read-only", "commands": list(CGMINER_COMMANDS), "data": responses, "trust": "LIVE_UNVERIFIED", "control_commands_sent": False, "observed_at": time.time()}
+    return {"host": address, "port": port, "model": "S19K Pro", "protocol": "BOSminer CGMiner-compatible read-only", "connection_state": "api_responded", "commands": list(CGMINER_COMMANDS), "data": responses, "trust": "LIVE_UNVERIFIED", "control_commands_sent": False, "observed_at": time.time()}
+
+
+def probe_tcp(host: str, port: int, timeout: float = 2.0) -> dict[str, Any]:
+    """Confirm private-LAN TCP reachability without sending a device command."""
+    address = _private_ip(host)
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise ValueError("invalid_port")
+    try:
+        with socket.create_connection((address, port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+        return {"state": "tcp_reachable", "host": address, "port": port}
+    except TimeoutError as exc:
+        raise RuntimeError("tcp_connection_timeout") from exc
+    except OSError as exc:
+        if getattr(exc, "errno", None) == errno.ECONNREFUSED:
+            reason = "tcp_connection_refused"
+        elif getattr(exc, "errno", None) == errno.ENETUNREACH:
+            reason = "network_unreachable"
+        elif getattr(exc, "errno", None) == errno.EHOSTUNREACH:
+            reason = "host_unreachable"
+        else:
+            reason = f"tcp_connection_error:{type(exc).__name__}"
+        raise RuntimeError(reason) from exc
 
 
 def read_deye(config: dict[str, Any]) -> dict[str, Any]:
     host, port, unit = config["host"], config["port"], config.get("unit_id", 1)
-    result = deye_modbus.read_holding_registers(host, 0, 1, port=port, unit_id=unit, timeout=2.0)
-    return {"model": config.get("model"), "protocol": "Modbus TCP FC03 read-only", "result": result.as_dict(), "metrics_decoded": False, "reason": "model_register_map_not_verified", "trust": "LIVE_UNVERIFIED", "control_commands_sent": False}
+    # The installed configuration has no provenance-verified Deye register
+    # map. FC03 register 0 was an invented connectivity check and can be
+    # rejected even when the inverter is reachable. Probe with standard
+    # Modbus device identification instead; never report guessed telemetry.
+    tcp = probe_tcp(host, port, timeout=2.0)
+    try:
+        identity = deye_modbus.read_device_identification(host, port=port, unit_id=unit, timeout=2.0)
+        modbus_state = identity["state"]
+        identity_data = identity
+        reason = "model_register_map_not_verified"
+    except deye_modbus.ModbusExceptionResponse as exc:
+        modbus_state = "modbus_exception_response"
+        identity_data = {"function_code": exc.function_code, "exception_code": exc.exception_code}
+        reason = "device_replied_but_read_device_identification_is_not_supported_or_rejected"
+    except deye_modbus.ModbusTimeout:
+        modbus_state = "modbus_timeout"
+        identity_data = None
+        reason = "modbus_probe_timeout_check_unit_id_and_device_modbus_service"
+    except deye_modbus.ModbusProtocolError as exc:
+        modbus_state = "invalid_modbus_response"
+        identity_data = {"error": str(exc)}
+        reason = "invalid_modbus_response_check_target_and_protocol"
+    except deye_modbus.ModbusError as exc:
+        modbus_state = "modbus_transport_error"
+        identity_data = {"error": str(exc)}
+        reason = "modbus_transport_error"
+    return {"host": host, "port": port, "unit_id": unit, "model": config.get("model"),
+            "tcp": tcp,
+            "protocol": "Modbus TCP FC43/MEI14 read-only identification probe",
+            "connection_state": modbus_state, "modbus_identity": identity_data,
+            "metrics_decoded": False, "reason": reason, "trust": "LIVE_UNVERIFIED",
+            "control_commands_sent": False}
 
 
 def _tesla_http(url: str, *, token: str | None = None, form: dict[str, str] | None = None) -> dict[str, Any]:
@@ -348,13 +408,30 @@ def read_tesla(config: dict[str, Any], persist_rotated_token=None) -> tuple[dict
 
 
 def collect(config: dict[str, Any]) -> dict[str, Any]:
-    result: dict[str, Any] = {"deye": None, "antminer": None, "tuya": [], "errors": [], "collected_at": time.time()}
+    result: dict[str, Any] = {"deye": None, "antminer": None, "tuya": [], "errors": [],
+                              "configuration": {"deye": "configured" if config.get("deye", {}).get("host") else "not_configured",
+                                                "antminer": "configured" if config.get("antminer", {}).get("host") else "not_configured"},
+                              "collected_at": time.time()}
     if config.get("deye", {}).get("host"):
         try: result["deye"] = read_deye(config["deye"])
-        except Exception as exc: result["errors"].append({"provider": "deye", "reason": str(exc)[:160]})
+        except Exception as exc:
+            reason = str(exc)[:160]
+            result["errors"].append({"provider": "deye", "reason": reason})
+            result["deye"] = {"host": config["deye"].get("host"), "port": config["deye"].get("port", 502),
+                               "connection_state": "tcp_unreachable" if reason.startswith(("tcp_", "network_unreachable", "host_unreachable")) else "failed",
+                               "reason": reason, "metrics_decoded": False}
     if config.get("antminer", {}).get("host"):
-        try: result["antminer"] = read_antminer(config["antminer"]["host"], config["antminer"]["port"])
-        except Exception as exc: result["errors"].append({"provider": "antminer", "reason": str(exc)[:160]})
+        host, port = config["antminer"]["host"], config["antminer"]["port"]
+        try:
+            tcp = probe_tcp(host, port, timeout=2.0)
+            result["antminer"] = read_antminer(host, port)
+            result["antminer"]["tcp"] = tcp
+        except Exception as exc:
+            reason = str(exc)[:160]
+            result["errors"].append({"provider": "antminer", "reason": reason})
+            result["antminer"] = {"host": host, "port": port,
+                                   "connection_state": "tcp_reachable_api_failed" if reason.startswith("antminer_") else "tcp_unreachable",
+                                   "reason": reason}
     if config.get("tuya", {}).get("devices"):
         try: result["tuya"] = read_tuya(config["tuya"])
         except Exception as exc: result["errors"].append({"provider": "tuya", "reason": str(exc)[:160]})
