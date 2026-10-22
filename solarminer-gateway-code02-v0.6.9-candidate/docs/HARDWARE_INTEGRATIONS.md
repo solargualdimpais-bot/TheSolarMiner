@@ -4,9 +4,11 @@ Este documento descreve o código presente nesta candidata. Configurar um IP, no
 
 ## Deye SUN-15K-SG05LP3-EU-SM2
 
-A PWA Owner guarda IP, porta TCP (502 por omissão) e Unit ID. O Gateway verifica TCP, tenta a identificação Modbus padrão FC43/MEI14 e, se o equipamento responder com exceção ou exceder o timeout dessa função, tenta uma única leitura FC03 no endereço base 0. O valor lido é descartado e nunca é apresentado como métrica. O fallback distingue firmware que não implementa FC43 de falha de rede/Modbus. Um timeout, Unit ID incorreto, serviço Modbus desativado, porta inacessível ou outra rede/VLAN continuam a impedir leitura.
+A PWA Owner guarda IP, porta TCP (502 por omissão) e Unit ID. Para esta referência configurada, o Gateway usa apenas FC03 e lê oito janelas: estado, limites configurados de corrente, contadores de energia, bateria, rede/CT, saída AC/cargas e os dois MPPTs. A leitura de hardware é exclusiva do Owner; uma resposta bem-sucedida grava as métricas no registo de energia existente, de onde a Home e as áreas Inversores/Baterias as consultam. A PWA mostra as leituras com o nome, unidade, registo e classe `LIVE_UNVERIFIED`.
 
-Não está incorporado um mapa de registos confirmado para a variante e revisão de firmware exatas. Por isso não se mostram potência, energia, tensão ou comandos de controlo. O probe FC03 serve apenas para confirmar resposta Modbus e não substitui um mapa validado.
+O mapa descreve tensão, corrente e potência FV por MPPT; tensão, corrente e potência assinadas, SOC, temperatura, capacidade e energias diárias/acumuladas da bateria; limite de corrente de carga/descarga configurado; energia FV diária/acumulada; importação/exportação da rede; consumo diário/acumulado; tensão/frequência/corrente/potência das fases da rede; saída do inversor; saída UPS; tensão e potência de carga. Os limites de corrente 40109/40110 são campos R/W no protocolo mas são consultados apenas por FC03, sem escrita; são valores configurados, não limites dinâmicos anunciados pelo BMS. Os valores da rede interna, CT externo e lado da rede ficam separados porque dependem da configuração do medidor. Os registos de corrente da carga que o protocolo marca como sem uso são omitidos. As energias de PV1/PV2 separadas estão marcadas como reservadas e não são interpretadas. A potência FV total é a soma das duas potências de MPPT.
+
+O protocolo trifásico Deye e a implementação pública SG04/SG05 LP3 consultada fornecem endereços e escalas; o datasheet oficial confirma que a família SG05LP3-EU-SM2 de 14–20 kW tem dois MPPTs. A tabela continua sem validação oficial de compatibilidade com a revisão de firmware e com o logger `DYDA_WiBLE_1.7.2`. As oito janelas FC03 responderam na leitura física feita a partir do computador na mesma LAN. Os contadores devolvidos foram PV diário/acumulado 37,5/1888,7 kWh, bateria carga diária/acumulada 7,4/716,7 kWh, descarga diária/acumulada 4,9/647,5 kWh, consumo diário/acumulado 33,4/1612,8 kWh e limites configurados 100/200 A. As energias vieram do logger e ainda não foram comparadas com o visor. Na amostra instantânea anterior, os registos de tensão/frequência da rede vieram a zero, o tipo de dispositivo devolveu `5` face ao `0x0500` publicado, e PV2 apresentou diferença entre potência e tensão×corrente. Estes campos permanecem não confirmados; a página Owner mostra o mapa candidato e não usa esses valores para automações.
 
 ## Antminer S19K Pro com Braiins OS
 
@@ -16,13 +18,13 @@ O controlo não é executado pela API CGMiner da porta 4028. Essa interface cont
 
 ### Diagnóstico Deye e credenciais da página web
 
-Uma ligação TCP aberta à porta 502 não prova que exista resposta Modbus. Se FC43 e a sonda FC03 terminarem em timeout, a resposta agora identifica os dois resultados e explica que o login da página web não autentica Modbus. As credenciais HTTP da interface local são um mecanismo separado; não são enviadas nem usadas pelo protocolo Modbus TCP. Para o modelo configurado, confirmar no equipamento que `Link 2 Modbus TCP` está ativo e consultar o endereço/Unit ID Modbus configurado. A versão atual não tenta adivinhar endereços de registo nem envia escritas ao inversor.
+Uma ligação TCP aberta à porta 502 não prova que os registos estejam mapeados como esperado. O Gateway ignora FC43 no logger DYDA porque a sequência FC43→FC03 expirava; as leituras FC03 diretas responderam. As credenciais HTTP da interface local são separadas e não são enviadas ao Modbus. As métricas incluem leituras brutas e conversões baseadas no mapa, com `LIVE_UNVERIFIED` até confirmação da variante/firmware e dos canais de medição do logger. Não são enviados comandos ao inversor.
 
 ## Tuya e MOES via Tuya Cloud
 
 O Gateway assina chamadas Cloud com Client ID/Secret, escolhe o endpoint regional configurado, obtém token e consulta `/v1.0/devices/{id}/status`. O segredo permanece no Gateway. Até 50 IDs podem ser configurados.
 
-MOES não é um protocolo de rede uniforme. Um equipamento MOES só funciona nesta integração se a conta/projeto Tuya Cloud aplicável o expuser, as permissões de API estiverem ativas e o ID pertencer ao projeto. A marca MOES ou a utilização da app Smart Life, isoladamente, não garantem acesso. Não existe integração Tuya LAN/local nem controlo de equipamentos nesta candidata.
+MOES não é um protocolo de rede uniforme. Um equipamento MOES só funciona nesta integração se a conta/projeto Tuya Cloud aplicável o expuser, as permissões de API estiverem ativas e o ID pertencer ao projeto. A marca MOES ou a utilização da app Smart Life, isoladamente, não garantem acesso. Não existe integração Tuya LAN/local. Nesta versão, o Owner pode enviar comandos explícitos de ligar/desligar apenas para dispositivos configurados com um código de interruptor e confirmar a resposta pela API; a automação Tuya em ciclo fechado continua condicionada à validação dos datapoints e da instalação física.
 
 Os resultados e erros são isolados por ID: um dispositivo sem acesso não elimina a leitura dos outros. Falhas na autenticação Cloud afetam a consulta inteira. Erros reportam identificadores de falha e não devolvem credenciais ou tokens.
 
@@ -39,6 +41,7 @@ Tesla é configurado em Energia → Carregador EV e só lê dados de carregament
 - `GET /api/v1/integrations/hardware` — Owner; devolve configuração não secreta.
 - `PUT /api/v1/integrations/hardware` — Owner; valida e guarda Deye, Antminer e Tuya.
 - `POST /api/v1/integrations/hardware/read` — Owner; consulta os dispositivos configurados e devolve estado/erro por dispositivo sempre que possível.
+- `POST /api/v1/integrations/tuya/switch` — Owner; envia um comando explícito de interruptor para dispositivo configurado com código de função e devolve a confirmação de estado.
 - `GET/PUT /api/v1/energy/ev/tesla` e `POST /api/v1/energy/ev/tesla/read` — Owner; configuração/leitura Tesla.
 
 ## Referências oficiais consultadas

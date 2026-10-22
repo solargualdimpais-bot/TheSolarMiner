@@ -1,0 +1,19 @@
+field	register_4xxxx	pdu_offset	data_type	words	scale	unit	category	state	description
+battery_max_charge_current	40109	108	U16	1	1	A	baterias	READ_FC03	Maximum configured charge current; protocol register is R/W but this integration only reads it
+battery_max_discharge_current	40110	109	U16	1	1	A	baterias	READ_FC03	Maximum configured discharge current; protocol register is R/W but this integration only reads it
+battery_daily_charge_energy	40515	514	U16	1	0.1	kWh	baterias	READ_FC03	Daily battery charge energy
+battery_daily_discharge_energy	40516	515	U16	1	0.1	kWh	baterias	READ_FC03	Daily battery discharge energy
+battery_total_charge_energy	40517,40518	516,517	U32_LOW_WORD_FIRST	2	0.1	kWh	baterias	READ_FC03	Cumulative battery charge energy
+battery_total_discharge_energy	40519,40520	518,519	U32_LOW_WORD_FIRST	2	0.1	kWh	baterias	READ_FC03	Cumulative battery discharge energy
+grid_daily_import_energy	40521	520	U16	1	0.1	kWh	inversores	READ_FC03	Daily grid import energy
+grid_daily_export_energy	40522	521	U16	1	0.1	kWh	inversores	READ_FC03	Daily grid export energy
+grid_total_import_energy	40523,40524	522,523	U32_LOW_WORD_FIRST	2	0.1	kWh	inversores	READ_FC03	Cumulative grid import energy
+grid_total_export_energy	40525,40526	524,525	U32_LOW_WORD_FIRST	2	0.1	kWh	inversores	READ_FC03	Cumulative grid export energy
+load_daily_energy	40527	526	U16	1	0.1	kWh	inversores	READ_FC03	Daily load energy
+load_total_energy	40528,40529	527,528	U32_LOW_WORD_FIRST	2	0.1	kWh	inversores	READ_FC03	Cumulative load energy
+pv_daily_energy	40530	529	U16	1	0.1	kWh	inversores	READ_FC03	Daily total PV energy
+pv1_daily_energy	40531	530	U16	1	0.1	kWh	inversores	RESERVED	NOT_DECODED	Protocol marks per-component PV daily counters reserved
+pv2_daily_energy	40532	531	U16	1	0.1	kWh	inversores	RESERVED	NOT_DECODED	Protocol marks per-component PV daily counters reserved
+pv3_daily_energy	40533	532	U16	1	0.1	kWh	inversores	RESERVED	NOT_DECODED	Protocol marks per-component PV daily counters reserved
+pv4_daily_energy	40534	533	U16	1	0.1	kWh	inversores	RESERVED	NOT_DECODED	Protocol marks per-component PV daily counters reserved
+pv_total_energy	40535,40536	534,535	U32_LOW_WORD_FIRST	2	0.1	kWh	inversores	READ_FC03	Cumulative total PV energy

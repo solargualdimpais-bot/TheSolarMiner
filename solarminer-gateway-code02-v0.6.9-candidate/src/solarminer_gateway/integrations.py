@@ -1,4 +1,4 @@
-"""Owner-configured, read-only SolarMiner hardware integrations.
+"""Owner-configured SolarMiner hardware integrations and explicit controls.
 
 Credentials and endpoints are stored on the Gateway under its private data
 directory. This module exposes no device-control operations.
@@ -100,7 +100,7 @@ def public_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
         "deye": {k: config.get("deye", {}).get(k) for k in ("host", "port", "unit_id", "model") if config.get("deye", {}).get(k) is not None},
         "antminer": {k: config.get("antminer", {}).get(k) for k in ("host", "port", "rest_port", "model") if config.get("antminer", {}).get(k) is not None},
         "antminer_control_configured": bool(config.get("antminer", {}).get("username") and config.get("antminer", {}).get("password")),
-        "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": [{"device_id": x.get("device_id"), "name": x.get("name")} for x in tuya.get("devices", []) if isinstance(x, dict)], "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
+        "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": [{"device_id": x.get("device_id"), "name": x.get("name"), "switch_code": x.get("switch_code")} for x in tuya.get("devices", []) if isinstance(x, dict)], "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
         "secrets_returned": False,
     }
 
@@ -188,7 +188,12 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
             device_id, name = device.get("device_id"), device.get("name", "Tuya device")
             if not isinstance(device_id, str) or not 1 <= len(device_id) <= 128 or not all(c.isalnum() or c in "_-" for c in device_id): raise ValueError("invalid_tuya_device_id")
             if not isinstance(name, str) or not name.strip() or len(name) > 120: raise ValueError("invalid_tuya_device_name")
-            normalized.append({"device_id": device_id, "name": name.strip()})
+            switch_code = device.get("switch_code")
+            normalized_device = {"device_id": device_id, "name": name.strip()}
+            if switch_code is not None:
+                if not isinstance(switch_code, str) or not 1 <= len(switch_code) <= 64 or not all(c.isalnum() or c in "_-" for c in switch_code): raise ValueError("invalid_tuya_switch_code")
+                normalized_device["switch_code"] = switch_code
+            normalized.append(normalized_device)
         if normalized and (not client_id or not client_secret): raise ValueError("tuya_credentials_required")
         result["tuya"] = {"region": region, "client_id": client_id, "client_secret": client_secret, "devices": normalized}
     return result
@@ -239,15 +244,45 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         raise urllib.error.HTTPError(req.full_url, code, "redirect_rejected", headers, fp)
 
 
-def _tuya_request(config: dict[str, Any], path: str, token: str | None = None) -> dict[str, Any]:
+def _tuya_request(config: dict[str, Any], path: str, token: str | None = None, *,
+                  method: str = "GET", payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    if method not in {"GET", "POST"}:
+        raise ValueError("tuya_method_not_allowed")
     client_id, secret = config["client_id"], config["client_secret"]
     timestamp, nonce = str(int(time.time() * 1000)), uuid.uuid4().hex
-    canonical = f"GET\n{hashlib.sha256(b'').hexdigest()}\n\n{path}"
+    body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8") if payload is not None else b""
+    canonical = f"{method}\n{hashlib.sha256(body).hexdigest()}\n\n{path}"
     to_sign = client_id + (token or "") + timestamp + nonce + canonical
     signature = hmac.new(secret.encode(), to_sign.encode(), hashlib.sha256).hexdigest().upper()
     headers = {"client_id": client_id, "sign": signature, "sign_method": "HMAC-SHA256", "t": timestamp, "nonce": nonce}
     if token: headers["access_token"] = token
-    return _json_request(TUYA_REGIONS[config["region"]] + path, headers)
+    if method == "GET":
+        return _json_request(TUYA_REGIONS[config["region"]] + path, headers)
+    headers["Accept"] = "application/json"
+    if body:
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(TUYA_REGIONS[config["region"]] + path,
+                                     data=body if method == "POST" else None,
+                                     headers=headers, method=method)
+    opener = urllib.request.build_opener(_NoRedirect())
+    try:
+        with opener.open(request, timeout=8.0) as response:
+            raw = response.read(1_048_577)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"tuya_http_{exc.code}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError("tuya_connection_failed") from exc
+    if len(raw) > 1_048_576:
+        raise RuntimeError("tuya_response_too_large")
+    try:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("tuya_invalid_json") from exc
+    if not isinstance(value, dict) or value.get("success") is not True:
+        code = value.get("code") if isinstance(value, dict) else None
+        safe_code = str(code)[:32] if isinstance(code, (str, int)) and str(code).replace("_", "").replace("-", "").isalnum() else None
+        raise RuntimeError(f"tuya_api_rejected_request:{safe_code}" if safe_code else "tuya_api_rejected_request")
+    return value
 
 
 def read_tuya(config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -263,7 +298,7 @@ def read_tuya(config: dict[str, Any]) -> list[dict[str, Any]]:
             if not isinstance(result, list):
                 raise RuntimeError("tuya_status_invalid")
             output.append({"device_id": device_id, "name": item["name"], "status": result,
-                           "connection_state": "api_responded", "source": "TUYA_CLOUD_READ_ONLY",
+                           "connection_state": "api_responded", "source": "TUYA_CLOUD",
                            "trust": "LIVE_UNVERIFIED", "observed_at": time.time()})
         except (RuntimeError, ValueError) as exc:
             # Keep failures isolated per device. A stale ID or missing Tuya
@@ -272,6 +307,42 @@ def read_tuya(config: dict[str, Any]) -> list[dict[str, Any]]:
                            "connection_state": "failed", "reason": str(exc)[:120],
                            "source": "TUYA_CLOUD_READ_ONLY", "trust": "UNAVAILABLE"})
     return output
+
+
+def control_tuya_switch(config: dict[str, Any], device_id: str, on: bool) -> dict[str, Any]:
+    """Toggle only a switch datapoint explicitly assigned in Owner config."""
+    if not isinstance(on, bool):
+        raise ValueError("tuya_switch_state_must_be_boolean")
+    if not isinstance(config, dict) or not config.get("client_id") or not config.get("client_secret"):
+        raise RuntimeError("tuya_credentials_required")
+    device = next((item for item in config.get("devices", [])
+                   if isinstance(item, dict) and item.get("device_id") == device_id), None)
+    if device is None:
+        raise ValueError("tuya_device_not_configured")
+    code = device.get("switch_code")
+    if not isinstance(code, str) or not code or not code.replace("_", "").replace("-", "").isalnum() or len(code) > 64:
+        raise ValueError("tuya_switch_function_code_not_configured")
+    auth = _tuya_request(config, "/v1.0/token?grant_type=1")
+    token = (auth.get("result") or {}).get("access_token")
+    if not isinstance(token, str) or not token:
+        raise RuntimeError("tuya_token_missing")
+    path = f"/v1.0/iot-03/devices/{urllib.parse.quote(device_id, safe='')}/commands"
+    response = _tuya_request(config, path, token, method="POST",
+                             payload={"commands": [{"code": code, "value": on}]})
+    if response.get("result") is not True:
+        raise RuntimeError("tuya_command_not_accepted")
+    observed = None
+    try:
+        rows = _tuya_request(config, f"/v1.0/iot-03/devices/{urllib.parse.quote(device_id, safe='')}/status", token).get("result")
+        if isinstance(rows, list):
+            observed = next((item.get("value") for item in rows if isinstance(item, dict) and item.get("code") == code), None)
+    except (RuntimeError, ValueError):
+        pass
+    state = observed if isinstance(observed, bool) else None
+    return {"device_id": device_id, "switch_code": code, "requested_on": on,
+            "command_accepted": True, "observed_on": state,
+            "state_confirmed": state is on, "connection_state": "control_confirmed" if state is on else "command_accepted_state_unconfirmed",
+            "control_command_sent": True}
 
 
 def read_antminer(host: str, port: int = 4028, timeout: float = 2.0) -> dict[str, Any]:
@@ -421,39 +492,222 @@ _DEYE_SG05LP3_MAP_SHA256 = "ba9e0b87ed37cc28ed9fc1493a07d9b26d6dc4d15fc95b178642
 
 
 def _read_deye_sg05lp3_candidate_map(host: str, port: int, unit: int) -> dict[str, Any]:
-    """Read a small, read-only SG05LP3 candidate map, using 4xxxx-to-zero-based offsets.
+    """Read the SG05LP3 live-telemetry allowlist using FC03 only.
 
-    This community map has been checked against live Modbus responses for the
-    configured SUN-15K-SG05LP3-EU-SM2 endpoint, but is not manufacturer-certified.
-    Avoid FC43 here: the DYDA_WiBLE logger can time out FC43 and then fail to
-    serve the immediate fallback request. FC03 reads against known map offsets
-    work reliably and avoid the unsupported identification probe.
+    Register offsets and scales follow the three-phase energy-storage protocol
+    table and a public implementation for SG04/SG05 LP3 inverters. The exact
+    15 kW model is confirmed to have two MPPTs by its manufacturer datasheet.
+    The current DYDA_WiBLE endpoint has returned coherent FC03 values for PV,
+    battery and load blocks. The map remains candidate because exact firmware
+    and logger semantics have not been certified by Deye.
+
+    Eight bounded windows avoid one request per metric and preserve the
+    logger's working FC03-only behavior. 4xxxx references are converted using
+    40001 == PDU offset 0. No write function is present in this path.
     """
-    def read(reference_address: int, count: int) -> tuple[int, ...]:
-        # Map references use holding-register notation (40001 == PDU offset 0).
-        offset = reference_address - 40001
+    def read(offset: int, count: int) -> tuple[int, ...]:
         result = deye_modbus.read_holding_registers(host, start_address=offset, count=count,
                                                      port=port, unit_id=unit, timeout=2.0)
         return result.raw_registers
 
-    device_type = read(40001, 1)[0]
-    status_code = read(40501, 1)[0]
-    load_power_w = read(40654, 1)[0]
-    pv_power = read(40673, 2)
-    metrics = [
-        {"field": "load_total_power", "register": 40654, "raw_value": load_power_w, "value": load_power_w, "unit": "W"},
-        {"field": "pv1_input_power", "register": 40673, "raw_value": pv_power[0], "value": pv_power[0], "unit": "W"},
-        {"field": "pv2_input_power", "register": 40674, "raw_value": pv_power[1], "value": pv_power[1], "unit": "W"},
-    ]
+    def u16(raw: int) -> int:
+        return raw
+
+    def s16(raw: int) -> int:
+        return raw - 0x10000 if raw & 0x8000 else raw
+
+    # Exact allowlist windows: battery current limits, inverter status, energy
+    # counters, battery, grid/CT, AC/load and two populated MPPT channels.
+    # All accesses use FC03; R/W configuration registers are read-only here.
+    device_type = read(0, 1)[0]
+    battery_limits = read(108, 2)        # refs 40109..40110; read-only FC03
+    status = read(500, 1)[0]
+    energy = read(514, 22)              # refs 40515..40536
+    battery = read(586, 7)            # refs 40587..40593
+    grid = read(598, 28)              # refs 40599..40626
+    output = read(627, 29)            # refs 40628..40656
+    pv = read(672, 8)                 # refs 40673..40680 (two MPPTs)
+
+    metrics: list[dict[str, Any]] = []
+
+    def add(field: str, reference: int, raw: int, value: int | float, unit: str,
+            category: str, label: str, *, derived: bool = False,
+            registers: list[int] | None = None) -> None:
+        metric = {"field": field, "register": reference, "raw_value": raw,
+                  "value": value, "unit": unit, "category": category,
+                  "label": label, "derived": derived}
+        if registers:
+            metric["registers"] = registers
+        metrics.append(metric)
+
+    # PV1/PV2 powers are at offsets 672/673. Voltage/current are interleaved
+    # at offsets 676..679: each is scaled by 0.1 according to the protocol.
+    pv_specs = (
+        ("pv1", 40673, pv[0], 40677, pv[4], 40678, pv[5], "MPPT 1"),
+        ("pv2", 40674, pv[1], 40679, pv[6], 40680, pv[7], "MPPT 2"),
+    )
+    for name, p_ref, p_raw, v_ref, v_raw, i_ref, i_raw, label in pv_specs:
+        add(f"{name}_input_power", p_ref, u16(p_raw), u16(p_raw), "W", "inversores", f"Potência {label}")
+        add(f"{name}_voltage", v_ref, u16(v_raw), round(u16(v_raw) * 0.1, 1), "V", "inversores", f"Tensão {label}")
+        add(f"{name}_current", i_ref, u16(i_raw), round(u16(i_raw) * 0.1, 1), "A", "inversores", f"Corrente {label}")
+    pv_total = pv[0] + pv[1]
+    add("pv_total_power", 40673, pv_total, pv_total, "W", "inversores", "Potência FV total", derived=True)
+
+    # Energy counters in 40515..40536 use 0.1 kWh per word. Cumulative
+    # counters are low-word first, then high-word, per the three-phase protocol.
+    def add_energy(field: str, offset: int, raw: int, label: str, category: str,
+                   *, high_offset: int | None = None) -> None:
+        if high_offset is None:
+            add(field, 40001 + offset, raw, round(raw * 0.1, 1), "kWh", category, label)
+            return
+        low = raw
+        high = energy[high_offset - 514]
+        combined = (high << 16) | low
+        add(field, 40001 + offset, combined, round(combined * 0.1, 1), "kWh", category, label,
+            registers=[40001 + offset, 40001 + high_offset])
+
+    add_energy("battery_daily_charge_energy", 514, energy[0], "Energia diária de carga", "baterias")
+    add_energy("battery_daily_discharge_energy", 515, energy[1], "Energia diária de descarga", "baterias")
+    add_energy("battery_total_charge_energy", 516, energy[2], "Energia acumulada de carga", "baterias", high_offset=517)
+    add_energy("battery_total_discharge_energy", 518, energy[4], "Energia acumulada de descarga", "baterias", high_offset=519)
+    add_energy("grid_daily_import_energy", 520, energy[6], "Energia diária importada da rede", "inversores")
+    add_energy("grid_daily_export_energy", 521, energy[7], "Energia diária exportada para a rede", "inversores")
+    add_energy("grid_total_import_energy", 522, energy[8], "Energia acumulada importada da rede", "inversores", high_offset=523)
+    add_energy("grid_total_export_energy", 524, energy[10], "Energia acumulada exportada para a rede", "inversores", high_offset=525)
+    add_energy("load_daily_energy", 526, energy[12], "Consumo diário das cargas", "inversores")
+    add_energy("load_total_energy", 527, energy[13], "Consumo acumulado das cargas", "inversores", high_offset=528)
+    add_energy("pv_daily_energy", 529, energy[15], "Energia FV produzida hoje", "inversores")
+    add_energy("pv_total_energy", 534, energy[20], "Energia FV acumulada", "inversores", high_offset=535)
+
+    add("battery_max_charge_current", 40109, battery_limits[0], battery_limits[0], "A",
+        "baterias", "Limite configurado de corrente de carga")
+    add("battery_max_discharge_current", 40110, battery_limits[1], battery_limits[1], "A",
+        "baterias", "Limite configurado de corrente de descarga")
+
+    battery_specs = (
+        ("battery_temperature", 40587, battery[0], round((battery[0] - 1000) * 0.1, 1), "°C", "Temperatura da bateria"),
+        ("battery_voltage", 40588, battery[1], round(battery[1] * 0.01, 2), "V", "Tensão da bateria"),
+        ("battery_soc", 40589, battery[2], battery[2], "%", "Carga da bateria"),
+        ("battery_output_power", 40591, battery[4], s16(battery[4]), "W", "Potência de carga/descarga"),
+        ("battery_output_current", 40592, battery[5], round(s16(battery[5]) * 0.01, 2), "A", "Corrente de carga/descarga"),
+        ("battery_corrected_capacity", 40593, battery[6], battery[6], "Ah", "Capacidade corrigida da bateria"),
+    )
+    for field, ref, raw, value, unit, label in battery_specs:
+        add(field, ref, raw, value, unit, "baterias", label)
+    # The protocol labels these signed values as battery output current/power.
+    # On this live endpoint negative values coincided with PV surplus and are
+    # reported as charging; positive values are reported as discharging.
+    current_a = round(s16(battery[5]) * 0.01, 2)
+    power_w = s16(battery[4])
+    add("battery_charge_current", 40592, battery[5], max(0.0, -current_a), "A", "baterias", "Corrente de carga", derived=True)
+    add("battery_discharge_current", 40592, battery[5], max(0.0, current_a), "A", "baterias", "Corrente de descarga", derived=True)
+    add("battery_charge_power", 40591, battery[4], max(0, -power_w), "W", "baterias", "Potência de carga", derived=True)
+    add("battery_discharge_power", 40591, battery[4], max(0, power_w), "W", "baterias", "Potência de descarga", derived=True)
+
+    def at(block: tuple[int, ...], base: int, offset: int) -> int:
+        return block[offset - base]
+
+    # Grid side / meter channels. Internal and external CT values are kept
+    # separate: the protocol says some total fields vary with meter settings.
+    for phase, offset, ref in zip("abc", (598, 599, 600), (40599, 40600, 40601)):
+        raw = at(grid, 598, offset)
+        add(f"grid_voltage_{phase}", ref, raw, round(u16(raw) * 0.1, 1), "V", "inversores", f"Tensão da rede {phase.upper()}")
+    add("grid_frequency", 40610, at(grid, 598, 609), round(u16(at(grid, 598, 609)) * 0.01, 2), "Hz", "inversores", "Frequência da rede")
+    for phase, offset in zip("abc", (604, 605, 606)):
+        raw = at(grid, 598, offset)
+        add(f"grid_internal_power_{phase}", 40001 + offset, raw, s16(raw), "W", "inversores", f"Potência interna da rede {phase.upper()}")
+    raw = at(grid, 598, 607)
+    add("grid_internal_power_total", 40608, raw, s16(raw), "W", "inversores", "Potência interna total da rede")
+    for phase, offset in zip("abc", (610, 611, 612)):
+        raw = at(grid, 598, offset)
+        add(f"grid_internal_current_{phase}", 40001 + offset, raw, round(s16(raw) * 0.01, 2), "A", "inversores", f"Corrente interna da rede {phase.upper()}")
+    for phase, offset in zip("abc", (613, 614, 615)):
+        raw = at(grid, 598, offset)
+        add(f"grid_ct_current_{phase}", 40001 + offset, raw, round(s16(raw) * 0.01, 2), "A", "inversores", f"Corrente do CT {phase.upper()}")
+    for phase, offset in zip("abc", (616, 617, 618)):
+        raw = at(grid, 598, offset)
+        add(f"grid_ct_power_{phase}", 40001 + offset, raw, s16(raw), "W", "inversores", f"Potência do CT {phase.upper()}")
+    raw = at(grid, 598, 619)
+    add("grid_ct_power_total", 40620, raw, s16(raw), "W", "inversores", "Potência total do CT")
+    raw = at(grid, 598, 621)
+    add("grid_power_factor", 40622, raw, round(s16(raw) / 1000, 3), "", "inversores", "Fator de potência da rede")
+    for phase, offset in zip("abc", (622, 623, 624)):
+        raw = at(grid, 598, offset)
+        add(f"grid_side_power_{phase}", 40001 + offset, raw, s16(raw), "W", "inversores", f"Potência do lado da rede {phase.upper()}")
+    raw = at(grid, 598, 625)
+    add("grid_side_power_total", 40626, raw, s16(raw), "W", "inversores", "Potência total do lado da rede")
+
+    # Inverter AC output and load output; load-current registers 647..649 are
+    # explicitly marked unusable in the protocol and are intentionally omitted.
+    for phase, offset in zip("abc", (627, 628, 629)):
+        raw = at(output, 627, offset)
+        add(f"inverter_voltage_{phase}", 40001 + offset, raw, round(u16(raw) * 0.1, 1), "V", "inversores", f"Tensão do inversor {phase.upper()}")
+    for phase, offset in zip("abc", (630, 631, 632)):
+        raw = at(output, 627, offset)
+        add(f"inverter_current_{phase}", 40001 + offset, raw, round(s16(raw) * 0.01, 2), "A", "inversores", f"Corrente do inversor {phase.upper()}")
+    for phase, offset in zip("abc", (633, 634, 635)):
+        raw = at(output, 627, offset)
+        add(f"inverter_power_{phase}", 40001 + offset, raw, s16(raw), "W", "inversores", f"Potência do inversor {phase.upper()}")
+    raw = at(output, 627, 636)
+    add("inverter_power_total", 40637, raw, s16(raw), "W", "inversores", "Potência total do inversor")
+    raw = at(output, 627, 638)
+    add("inverter_frequency", 40639, raw, round(u16(raw) * 0.01, 2), "Hz", "inversores", "Frequência do inversor")
+    for phase, offset in zip("abc", (640, 641, 642)):
+        raw = at(output, 627, offset)
+        add(f"ups_load_power_{phase}", 40001 + offset, raw, u16(raw), "W", "inversores", f"Potência da saída UPS {phase.upper()}")
+    raw = at(output, 627, 643)
+    add("ups_load_power_total", 40644, raw, u16(raw), "W", "inversores", "Potência total da saída UPS")
+    for phase, offset in zip("abc", (644, 645, 646)):
+        raw = at(output, 627, offset)
+        add(f"load_voltage_{phase}", 40001 + offset, raw, round(u16(raw) * 0.1, 1), "V", "inversores", f"Tensão da carga {phase.upper()}")
+    for phase, offset in zip("abc", (650, 651, 652)):
+        raw = at(output, 627, offset)
+        add(f"load_power_{phase}", 40001 + offset, raw, s16(raw), "W", "inversores", f"Potência da carga {phase.upper()}")
+    raw = at(output, 627, 653)
+    add("load_total_power", 40654, raw, s16(raw), "W", "inversores", "Consumo total das cargas")
+
+    metric_values = {item["field"]: item["value"] for item in metrics}
+    quality_checks: list[dict[str, Any]] = []
+    if device_type != 0x0500:
+        quality_checks.append({"field": "device_type", "state": "protocol_value_mismatch",
+                              "expected": "0x0500", "observed_raw": device_type})
+    for mppt in ("pv1", "pv2"):
+        voltage = metric_values[f"{mppt}_voltage"]
+        current = metric_values[f"{mppt}_current"]
+        power = metric_values[f"{mppt}_input_power"]
+        calculated = voltage * current
+        difference = abs(power - calculated)
+        tolerance = max(50.0, max(power, calculated) * 0.2)
+        quality_checks.append({"field": f"{mppt}_power_vs_voltage_current", "state": "consistent" if difference <= tolerance else "inconsistent",
+                              "register_power_w": power, "voltage_times_current_w": round(calculated, 1),
+                              "difference_w": round(difference, 1), "tolerance_w": round(tolerance, 1)})
+    if all(metric_values.get(f"grid_voltage_{phase}") == 0 for phase in "abc") and metric_values.get("grid_frequency") == 0:
+        quality_checks.append({"field": "grid_voltage_and_frequency", "state": "all_zero_check_meter_or_logger_mapping"})
+
     return {
         "device_type_code": device_type,
-        "status_code": status_code,
+        "status_code": status,
         "metrics": metrics,
+        "quality_checks": quality_checks,
+        "read_windows": [
+            {"start_address": 0, "count": 1}, {"start_address": 108, "count": 2},
+            {"start_address": 500, "count": 1}, {"start_address": 514, "count": 22},
+            {"start_address": 586, "count": 7}, {"start_address": 598, "count": 28},
+            {"start_address": 627, "count": 29}, {"start_address": 672, "count": 8},
+        ],
         "register_map": {
             "source": _DEYE_SG05LP3_MAP_SOURCE,
             "sha256": _DEYE_SG05LP3_MAP_SHA256,
-            "status": "COMMUNITY_MAP_LIVE_READS_CONFIRMED_NOT_MANUFACTURER_VALIDATED",
-            "address_convention": "40001_based_reference_converted_to_zero_based_PDU_offset",
+            "supplement": "docs/deye/SG05LP3-register-map-supplement.tsv",
+            "protocol_reference": "Deye three-phase energy-storage Modbus protocol registers 108-109 and 514-535; cross-checked against public SG04/SG05 LP3 implementation",
+            "status": "COMMUNITY_MAP_LIVE_BLOCKS_CONFIRMED_NOT_MANUFACTURER_FIRMWARE_VALIDATED",
+            "address_convention": "zero-based_PDU_offset_0_is_40001_reference",
+            "notes": ["Only two MPPT channels are enabled for the configured 2-MPPT product family.",
+                      "Daily per-MPPT PV energy counters 40531-40534 are marked reserved and are not decoded.",
+                      "Battery current limits are configuration values read using FC03; no write is issued.",
+                      "Grid totals are exposed as separate internal, external CT and grid-side readings because their source depends on inverter meter configuration.",
+                      "Load-current offsets 647-649 are omitted; protocol labels them unusable.",
+                      "No Modbus writes are implemented or sent."],
         },
     }
 
@@ -474,10 +728,12 @@ def read_deye(config: dict[str, Any]) -> dict[str, Any]:
                     "probe_method": "SG05LP3 community map; FC43 skipped",
                     "connection_state": "mapped_registers_response", "modbus_identity": None,
                     "device_type_code": mapped["device_type_code"], "status_code": mapped["status_code"],
-                    "metrics": mapped["metrics"], "register_map": mapped["register_map"],
+                    "metrics": mapped["metrics"], "quality_checks": mapped["quality_checks"],
+                    "register_map": mapped["register_map"],
+                    "read_windows": mapped["read_windows"],
                     "metrics_decoded": True, "trust": "LIVE_UNVERIFIED",
-                    "reason": "community_map_registers_responded; manufacturer_map_and_field_semantics_unverified",
-                    "diagnostic_detail": "Registos Modbus responderam. Os valores usam um mapa comunitário candidato; confirmar semântica e compatibilidade com a Deye antes de os usar em automações.",
+                    "reason": "candidate_map_registers_responded; exact_firmware_semantics_unverified",
+                    "diagnostic_detail": "Registos de FV/MPPT, bateria, rede e cargas responderam. O mapa é baseado no protocolo trifásico Deye e numa implementação pública SG04/SG05; confirmar a variante de firmware e a configuração do contador/CT antes de usar os valores em automações.",
                     "web_ui_credentials_apply_to_modbus": False, "control_commands_sent": False}
         except deye_modbus.ModbusError as exc:
             return {"host": host, "port": port, "unit_id": unit, "model": config.get("model"),

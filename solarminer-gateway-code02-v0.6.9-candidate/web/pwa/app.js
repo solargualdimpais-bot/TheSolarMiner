@@ -3,10 +3,10 @@ import { DEMO_CONTROL_CONFIG, createDemoControlState, updateDemoControl, toggleD
 import { renderWorkspacePage, renderHomePreferenceLinks, renderHouseSearch, handleWorkspaceAction, handleWorkspaceChange, applyPreferences, getWorkspacePageLabel, workspace, getEditableEntity, saveEditableEntity, saveDemoWorkspace, hydrateWorkspacePhotos } from "./workspace-ui.js";
 import { renderAutomationsPage, renderSolarProductionPage, renderDemoAdminPanel, handleFeatureAction, saveAutomationForm, addDemoUser, saveDemoUserEdit, saveSolarWeather, demoFeatures } from "./features-v053.js";
 import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classifyEndpoint, inferHostedGatewayEndpoint, PRESENCE_API_STATUS } from "./gateway-connection.js";
-import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, saveGatewayHardwareIntegrationConfig, readGatewayHardwareIntegrations, controlGatewayAntminer, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, saveGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, saveGatewayHardwareIntegrationConfig, readGatewayHardwareIntegrations, controlGatewayAntminer, controlGatewayTuyaSwitch, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging } from "./gateway-auth.js";
 
 let automationEditingId = "";
-const state = { page: "inicio", mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], lastUpdated: null, lastMeasurementAt: null, refreshing: false, propertyPhoto: "", demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [] };
+const state = { page: "inicio", mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], energyEngine: null, tuyaDevices: [], lastUpdated: null, lastMeasurementAt: null, refreshing: false, propertyPhoto: "", demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [] };
 const $ = (selector) => document.querySelector(selector);
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
 const pageLabel = (id) => id === "inicio" ? "Visão geral" : id === "owner" ? "Owner" : (CATEGORIES.find(c => c.id === id)?.label || getWorkspacePageLabel(id) || "Mais áreas");
@@ -104,13 +104,21 @@ function normalizeGatewayEquipment(items) {
     }))
   }));
 }
-function classifyGatewayReadings(items) {
+function preferredGatewayReading(item) {
+  const readings = Array.isArray(item?.readings) ? item.readings : [];
+  const preferred = item?.category === "baterias" ? ["battery_soc", "battery_output_power"]
+    : item?.category === "inversores" ? ["pv_total_power", "inverter_power_total", "load_total_power"] : [];
+  return preferred.map(field => readings.find(reading => reading?.field === field)).find(Boolean)
+    || readings.find(reading => reading && reading.value !== null && reading.value !== undefined)
+    || null;
+}
+function classifyGatewayReadings(items, allowedAgeMs = 5 * 60 * 1000) {
   const readings = items.flatMap(item => item.readings || []);
   const measured = readings.filter(reading => ["LIVE_UNVERIFIED", "PHYSICALLY_CORROBORATED"].includes(reading.trust) && !["DEMO", "SIMULATED"].includes(String(reading.source || "").toUpperCase()));
   if (!measured.length) return "UNKNOWN";
   const times = measured.map(reading => Date.parse(reading.observed_at || "")).filter(Number.isFinite);
   if (!times.length) return "UNKNOWN";
-  return Date.now() - Math.max(...times) > 5 * 60 * 1000 ? "STALE" : "LIVE";
+  return Date.now() - Math.max(...times) > allowedAgeMs ? "STALE" : "LIVE";
 }
 async function refreshGatewayReadings() {
   if (!sessionInfo().authenticated) return false;
@@ -119,8 +127,13 @@ async function refreshGatewayReadings() {
   try {
     const result = await readGatewayEnergy();
     state.equipment = normalizeGatewayEquipment(result.equipment);
+    state.energyEngine = result.engine || null;
+    if (sessionInfo().user?.role === "owner") {
+      try { const hardware = await readGatewayHardwareIntegrationConfig(); state.tuyaDevices = hardware.tuya?.devices || []; }
+      catch { state.tuyaDevices = []; }
+    }
     state.mode = "LIVE";
-    state.dataStatus = classifyGatewayReadings(state.equipment);
+    state.dataStatus = classifyGatewayReadings(state.equipment, Math.max(90 * 1000, (result.engine?.sampling_interval_seconds || 30) * 3 * 1000));
     state.dataError = null;
     state.lastUpdated = result.fetchedAt;
     const measurementTimes = state.equipment.flatMap(item => item.readings || []).map(reading => Date.parse(reading.observed_at || "")).filter(Number.isFinite);
@@ -140,12 +153,40 @@ async function refreshGatewayReadings() {
   }
 }
 function resetToDemoAfterLogout() {
-  state.mode = "DISCONNECTED"; state.dataStatus = "UNAVAILABLE"; state.dataError = null;
+  state.mode = "DISCONNECTED"; state.dataStatus = "UNAVAILABLE"; state.dataError = null; state.energyEngine = null;
   state.equipment = []; state.lastUpdated = null; state.lastMeasurementAt = null; render();
+}
+function renderLiveEnergyEngine() {
+  const data = state.energyEngine;
+  if (!data) return `<div class="empty-state">O Gateway ainda não forneceu o resumo energético. Atualiza os dados.</div>`;
+  const current = data.current || {}, forecast = data.forecast?.solar_power || {}, readings=data.latest_readings||{};
+  const number = (value, digits=1) => Number.isFinite(value) ? Number(value).toFixed(digits) : "—";
+  const series = data.history?.pv_total_power || [];
+  const points = series.map((item, i) => ({ x: i, y: Number(item.value) / (item.unit === "W" ? 1000 : 1) })).filter(p => Number.isFinite(p.y));
+  const max = Math.max(1, ...points.map(p => p.y), Number(forecast.one_hour_value) || 0);
+  const path = points.map((p,i)=>`${i?'L':'M'}${40+(points.length>1?p.x/(points.length-1)*540:0)} ${180-p.y/max*140}`).join(" ");
+  const time = data.updated_at ? timeLabel(data.updated_at) : "Sem leitura";
+  const ownerConfig = sessionInfo().user?.role === "owner";
+  const forecastLabel = forecast.confidence === "LOW_INDICATIVE" ? "Tendência indicativa · apenas histórico" : "Histórico insuficiente para projeção";
+  const readingTile=(field,label)=>{const item=readings[field];return `<div class="detail-item"><small>${esc(label)}</small><strong>${item?`${esc(item.value)} ${esc(item.unit||"")}`:"—"}</strong><small>${item?`${esc(item.trust)} · ${esc(timeLabel(item.observed_at))}`:"Sem leitura"}</small></div>`;};
+  const dispatchRows=(data.dispatch?.actions||[]).map(action=>`<div class="detail-item"><small>${esc(action.name||action.load_id)}</small><strong>${esc(action.state)}</strong><small>${Number.isFinite(action.target_power_w)?`${esc(action.target_power_w)} W · `:""}${esc(action.control_type||"")}</small></div>`).join("");
+  const execution=data.dispatch_execution;
+  return `<div class="page-heading"><div><p class="eyebrow">ENERGY / ENGINE</p><h1>Engine energético</h1><p>Dados e cálculos processados no Gateway. Leituras do mapa Deye permanecem LIVE_UNVERIFIED.</p></div><button class="button secondary" id="engine-refresh">Atualizar ↻</button></div>
+  <div class="ws-kpi-grid"><article class="ws-kpi"><small>SOC da bateria</small><strong>${number(current.battery_soc_percent,0)} <em>%</em></strong><span>${esc(data.trust)} · ${esc(time)}${current.battery_at_configured_maximum?" · LIMITE MÁXIMO ATINGIDO":""}</span></article><article class="ws-kpi"><small>Energia acima do SOC mínimo</small><strong>${number(current.battery_energy_available_kwh_above_minimum,2)} <em>kWh</em></strong><span>${current.battery_capacity_kwh == null ? "Configura capacidade total para calcular" : `Espaço até máximo: ${number(current.battery_charge_headroom_kwh_to_maximum,2)} kWh · reserva ${number(current.minimum_soc_percent,0)}–${number(current.maximum_soc_percent,0)}%`}</span></article><article class="ws-kpi"><small>Produção FV atual</small><strong>${number(current.pv_power_w == null ? null : current.pv_power_w/1000,2)} <em>kW</em></strong><span>PV1 + PV2 · medida</span></article><article class="ws-kpi"><small>Consumo atual</small><strong>${number(current.load_power_w == null ? null : current.load_power_w/1000,2)} <em>kW</em></strong><span>Canal de cargas Deye</span></article></div>
+  <section class="panel feature-panel"><div class="panel-header"><div><p class="eyebrow">HISTÓRICO GUARDADO NO GATEWAY · ÚLTIMAS 24 H</p><h2>Produção e tendência de FV · kW</h2></div><span class="source-tag">${esc(series.length)} amostras</span></div>${points.length?`<svg viewBox="0 0 620 220" class="chart solar-potential-chart" role="img" aria-label="Histórico de potência fotovoltaica lido pelo Gateway"><path class="chart-grid" d="M40 35H600 M40 80H600 M40 125H600 M40 180H600"/><path d="${path}" class="chart-line" fill="none"/><g class="chart-label"><text x="40" y="202">mais antigo</text><text x="510" y="202">agora</text></g></svg>`:`<div class="empty-state">Ainda não há amostras suficientes. O Gateway começa a guardá-las depois de configurar o Deye.</div>`}<div class="ws-kpi-grid"><article class="ws-kpi"><small>Potência FV estimada +1 h</small><strong>${number(forecast.one_hour_value,2)} <em>kW</em></strong><span>${esc(forecastLabel)}</span></article><article class="ws-kpi"><small>Potência FV estimada +3 h</small><strong>${number(forecast.three_hour_value,2)} <em>kW</em></strong><span>Regressão linear · limitada a 15 kW</span></article><article class="ws-kpi"><small>Consumo estimado +1 h</small><strong>${number(data.forecast?.load_power?.one_hour_value,2)} <em>kW</em></strong><span>Histórico de cargas · baixa confiança</span></article><article class="ws-kpi"><small>SOC estimado +1 h</small><strong>${number(data.forecast?.battery_soc?.one_hour_value,1)} <em>%</em></strong><span>Tendência histórica simples · baixa confiança</span></article></div><p class="field-note">${esc(data.forecast?.notice || "")} ${esc(data.limits?.notice || "")}</p></section>
+  <section class="panel feature-panel"><div class="panel-header"><div><p class="eyebrow">MAPA DE REGISTOS DEYE · LEITURAS RECENTES</p><h2>FV, bateria e contadores</h2></div><span class="source-tag">LIVE_UNVERIFIED</span></div><div class="device-detail-grid telemetry-grid">${readingTile("pv1_input_power","Potência FV 1")}${readingTile("pv1_voltage","Tensão FV 1")}${readingTile("pv1_current","Corrente FV 1")}${readingTile("pv2_input_power","Potência FV 2")}${readingTile("pv2_voltage","Tensão FV 2")}${readingTile("pv2_current","Corrente FV 2")}${readingTile("battery_voltage","Tensão bateria")}${readingTile("battery_output_current","Corrente bateria")}${readingTile("battery_output_power","Potência bateria")}${readingTile("battery_temperature","Temperatura bateria")}${readingTile("pv_daily_energy","Energia FV hoje")}${readingTile("pv_total_energy","Energia FV acumulada")}${readingTile("load_daily_energy","Consumo hoje")}${readingTile("load_total_energy","Consumo acumulado")}${readingTile("battery_daily_charge_energy","Carga da bateria hoje")}${readingTile("battery_daily_discharge_energy","Descarga da bateria hoje")}${readingTile("battery_max_charge_current","Limite configurado de carga")}${readingTile("battery_max_discharge_current","Limite configurado de descarga")}<div class="detail-item"><small>Potência máxima de carga calculada</small><strong>${number(current.battery_configured_max_charge_power_kw,2)} kW</strong><small>Estimativa a partir da tensão e limite configurado</small></div><div class="detail-item"><small>Potência máxima de descarga calculada</small><strong>${number(current.battery_configured_max_discharge_power_kw,2)} kW</strong><small>Estimativa a partir da tensão e limite configurado</small></div></div><p class="field-note">As potências derivadas multiplicam tensão medida pelos limites configurados no inversor; são estimativas de configuração, não limites dinâmicos do BMS. O mapa candidato continua por validar para o firmware exato.</p></section>
+  <section class="panel feature-panel"><div class="panel-header"><div><p class="eyebrow">DESPACHO DE CARGAS</p><h2>${esc(data.dispatch?.state||"DISABLED")}</h2></div><span class="source-tag">${execution?.occurred_at?`Último ciclo ${esc(timeLabel(execution.occurred_at))}`:"Sem ciclo executado"}</span></div><p class="field-note">${esc(data.dispatch?.reason||"")} ${execution?.state?`· Último resultado: ${esc(execution.state)}`:""}</p><div class="device-detail-grid">${dispatchRows||"<div class=\"empty-state\">Sem ações planeadas.</div>"}</div><p class="field-note">O ciclo automático usa a cadência configurada, com mínimo de 5 minutos. Cada alteração Tuya exige leitura e confirmação; um relé não confirmado bloqueia o minerador dependente.</p></section>
+  ${ownerConfig?`<section class="panel feature-panel"><div class="panel-header"><div><p class="eyebrow">CONFIGURAÇÃO OWNER · GUARDADA NO GATEWAY</p><h2>Capacidade e reserva da bateria</h2></div></div><p>Introduz a capacidade total instalada indicada na etiqueta/documentação das baterias. O Gateway usa-a com o SOC medido para calcular energia disponível acima do mínimo e espaço restante até ao limite máximo definido.</p><div class="ws-config-grid"><label class="feature-field">Capacidade total (kWh)<input id="engine-battery-capacity" type="number" min="0.1" max="10000" step="0.1" value="${esc(data.configuration?.battery_capacity_kwh ?? "")}" placeholder="Ex.: 15"></label><label class="feature-field">SOC mínimo de reserva (%)<input id="engine-minimum-soc" type="number" min="0" max="99.9" step="1" value="${esc(data.configuration?.minimum_soc_percent ?? 20)}"></label><label class="feature-field">SOC máximo de carga (%)<input id="engine-maximum-soc" type="number" min="0.1" max="100" step="1" value="${esc(data.configuration?.maximum_soc_percent ?? 100)}"></label></div><div class="ws-actions"><button class="button primary" id="engine-save-config">Guardar bateria</button><span id="engine-config-status" class="ws-inline-note"></span></div></section><section class="panel feature-panel"><div class="panel-header"><div><p class="eyebrow">CARGAS FLEXÍVEIS · ATÉ 64</p><h2>Mineradora, AQS e aquecimento</h2></div><span class="source-tag">OWNER</span></div><p>Configura várias baterias e cargas sem alterar código: mineradora, cada AQS (smart ou por disjuntor Tuya), carregador EV, soalho radiante/toalheiro e cargas genéricas. Guarda as listas como JSON. Os códigos e IDs Tuya têm de corresponder a dispositivos configurados acima.</p><label class="feature-field">Bancos de bateria<input id="engine-banks-json" type="text" value="${esc(JSON.stringify(data.configuration?.battery_banks || []))}" aria-describedby="engine-json-help"></label><label class="feature-field">Cargas flexíveis<textarea id="engine-loads-json" rows="12" spellcheck="false">${esc(JSON.stringify(data.configuration?.loads || [], null, 2))}</textarea></label><p id="engine-json-help" class="field-note">Cada carga usa id, name, kind (miner, water_heater, underfloor_heating, ev_charger ou generic), control_type (tuya_smart, tuya_breaker, antminer_braiins, tesla_fleet ou manual), rated_power_w, minimum_power_w, maximum_power_w, priority, enabled e automatic. Tuya requer tuya_device_id e tuya_switch_code; a mineradora automática requer requires_load_id para o seu relé Tuya. A lista aceita 64 cargas; bateria aceita 8 bancos.</p><fieldset><legend>Comissionamento e automatização</legend><label><input id="engine-deye-map-verified" type="checkbox" ${data.configuration?.automation?.deye_map_verified ? "checked" : ""}> Confirmo que validei no local o mapa Deye, os sinais de carga/descarga e o sentido dos CTs.</label><label><input id="engine-commissioned" type="checkbox" ${data.configuration?.automation?.commissioned ? "checked" : ""}> Confirmo que configurei limites, potência nominal e prioridades das cargas.</label><label><input id="engine-automation-enabled" type="checkbox" ${data.configuration?.automation?.enabled ? "checked" : ""}> Permitir despacho automático do Gateway.</label><label class="feature-field">Margem de excedente (W)<input id="engine-surplus-margin" type="number" min="0" max="10000" step="50" value="${esc(data.configuration?.automation?.surplus_margin_w ?? 250)}"></label><p class="field-note">Até à validação física, o despacho permanece bloqueado. As decisões usam telemetria Deye a cada 30 s e o ciclo de decisão tem mínimo de 5 min.</p></fieldset><div class="ws-actions"><button class="button primary" id="engine-save-equipment-config">Guardar cargas e automatização</button><span id="engine-equipment-config-status" class="ws-inline-note"></span></div></section>`:""}`;
+}
+function renderLoadBuilder() {
+  const devices = state.tuyaDevices.filter(device => device.switch_code);
+  const loads = state.energyEngine?.configuration?.loads || [];
+  const relays = loads.filter(load => load.enabled && load.automatic && ["tuya_smart", "tuya_breaker"].includes(load.control_type));
+  return `<section class="panel"><h3>Adicionar equipamento</h3><div class="ws-config-grid"><label class="feature-field">Nome<input id="engine-load-name" maxlength="120" placeholder="Ex.: AQS 2"></label><label class="feature-field">Tipo<select id="engine-load-kind"><option value="water_heater">AQS</option><option value="underfloor_heating">Soalho radiante / toalheiro</option><option value="miner">Mineradora</option><option value="ev_charger">Carregador EV</option><option value="generic">Outra carga</option></select></label><label class="feature-field">Comando<select id="engine-load-control"><option value="tuya_smart">Interruptor smart Tuya</option><option value="tuya_breaker">Disjuntor Tuya</option><option value="antminer_braiins">Braiins OS</option><option value="manual">Manual</option><option value="tesla_fleet">Tesla Fleet (leitura apenas)</option></select></label><label class="feature-field">Potência nominal (W)<input id="engine-load-rated" type="number" min="1" max="100000" step="1" value="1500"></label><label class="feature-field">Potência mínima (W, mineradora)<input id="engine-load-minimum" type="number" min="1" max="2900" step="1" value="800"></label><label class="feature-field">Potência máxima (W, mineradora)<input id="engine-load-maximum" type="number" min="1" max="2900" step="1" value="2500"></label><label class="feature-field">Prioridade (menor número primeiro)<input id="engine-load-priority" type="number" min="1" max="100" value="10"></label><label class="feature-field">Dispositivo Tuya<select id="engine-load-tuya-device"><option value="">${devices.length ? "Escolhe dispositivo" : "Configura interruptores Tuya no Owner primeiro"}</option>${devices.map(device=>`<option value="${esc(device.device_id)}" data-code="${esc(device.switch_code)}">${esc(device.name)} · ${esc(device.device_id)}</option>`).join("")}</select></label><label class="feature-field">Relé de alimentação mineradora<select id="engine-load-miner-relay"><option value="">Escolhe uma carga Tuya automática</option>${relays.map(load=>`<option value="${esc(load.id)}">${esc(load.name)} · ${esc(load.id)}</option>`).join("")}</select></label><label class="feature-field"><input id="engine-load-automatic" type="checkbox"> Elegível para automatização</label></div><div class="ws-actions"><button class="button secondary" id="engine-add-load" type="button">Adicionar à lista</button><span class="ws-inline-note">O equipamento só é guardado quando carregares em “Guardar cargas e automatização”.</span></div></section>`;
 }
 function card(item) {
   const category = CATEGORIES.find(c => c.id === item.category) || { icon: "•", label: item.category };
-  const reading = formatReading(item.readings?.[0]);
+  const reading = formatReading(preferredGatewayReading(item));
   const status = classifyEquipment(item);
   const pill = status === "CONNECTED" ? ["Ligado", "ok"] : status === "UNAVAILABLE" ? ["Indisponível", "off"] : status === "SIMULATED" ? ["DEMO", ""] : ["Não validado", ""];
   const model = [item.manufacturer, item.model].filter(Boolean).join(" · ") || "Perfil por configurar";
@@ -161,7 +202,7 @@ function metric(label, value, unit, icon, detail) {
 }
 function liveReadingMetric(label, categoryId, icon) {
   const equipment = state.equipment.find(item => item.category === categoryId && !isSimulated(item));
-  const reading = equipment?.readings?.find(item => item && item.value !== null && item.value !== undefined);
+  const reading = equipment ? preferredGatewayReading(equipment) : null;
   const value = reading ? reading.value : null;
   const detail = reading
     ? `${equipment.name || equipment.id} · ${reading.field || "leitura"} · ${reading.trust || "UNKNOWN"}`
@@ -169,7 +210,14 @@ function liveReadingMetric(label, categoryId, icon) {
   return metric(label, value, reading?.unit || "", icon, detail);
 }
 function chart() {
-  if (state.mode !== "SIMULATED") return `<div class="empty-state">O Gateway atual não fornece uma série temporal para este gráfico. Não são inventados pontos de histórico.</div>`;
+  if (state.mode !== "SIMULATED") {
+    const samples=state.energyEngine?.history?.pv_total_power||[];
+    const points=samples.map((item,i)=>({x:i,y:Number(item.value)/(item.unit==="W"?1000:1)})).filter(p=>Number.isFinite(p.y));
+    if(!points.length)return `<div class="empty-state">O Gateway ainda não guardou amostras históricas de produção.</div>`;
+    const max=Math.max(1,...points.map(p=>p.y));
+    const d=points.map((p,i)=>`${i?"L":"M"}${42+(points.length>1?p.x/(points.length-1)*563:0)} ${145-p.y/max*120}`).join(" ");
+    return `<svg class="chart" viewBox="0 0 620 190" role="img" aria-label="Histórico real de produção solar"><path class="chart-grid" d="M42 25H605 M42 65H605 M42 105H605 M42 145H605"/><path class="chart-line" d="${d}"/><g class="chart-label"><text x="42" y="166">24 h atrás</text><text x="530" y="166">agora · kW</text></g></svg>`;
+  }
   return `<svg class="chart" viewBox="0 0 620 190" role="img" aria-label="Gráfico ilustrativo de produção solar simulada"><defs><linearGradient id="areaFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#dcc99c" stop-opacity=".30"/><stop offset="100%" stop-color="#dcc99c" stop-opacity="0"/></linearGradient></defs><path class="chart-grid" d="M42 25H605 M42 65H605 M42 105H605 M42 145H605"/><path class="chart-area" d="M42 128 C75 125 90 111 122 118 S168 92 198 97 S245 70 276 82 S320 42 350 58 S399 72 430 47 S475 35 505 49 S565 28 605 37 L605 146 L42 146Z"/><path class="chart-line" d="M42 128 C75 125 90 111 122 118 S168 92 198 97 S245 70 276 82 S320 42 350 58 S399 72 430 47 S475 35 505 49 S565 28 605 37"/><g class="chart-label"><text x="42" y="166">08:00</text><text x="176" y="166">10:00</text><text x="309" y="166">12:00</text><text x="443" y="166">14:00</text><text x="575" y="166">16:00</text><text x="42" y="15">kW · CURVA ILUSTRATIVA</text></g></svg>`;
 }
 function flowPanel() {
@@ -249,7 +297,7 @@ function renderOverview() {
     const updated = state.lastUpdated ? `Atualizado ${currentTimeLabel(state.lastUpdated)}` : "À espera de leituras";
     return `<div class="page-heading"><div><p class="eyebrow">ENERGIA DA PROPRIEDADE</p><h1>Home</h1><p>Produção solar, bateria, mineradoras e carregamento do veículo num só resumo.</p></div><div class="date-block"><strong>${esc(state.dataStatus)}</strong><br>${esc(updated)}</div></div>
       <div class="metric-grid">${liveReadingMetric("Inversor", "inversores", "ϟ")}${liveReadingMetric("Bateria", "baterias", "▤")}${liveReadingMetric("Mineradora", "mineradoras", "▦")}${liveReadingMetric("Veículo elétrico", "ev", "↗")}</div>
-      <div class="content-grid"><section class="panel chart-panel"><div class="panel-header"><div><p class="eyebrow">HISTÓRICO</p><h2>Fluxo de energia</h2><p>O Gateway ainda não fornece uma série temporal para o gráfico.</p></div><span class="source-tag">${esc(state.dataStatus)}</span></div>${chart()}</section><section class="panel flow-panel"><div class="panel-header"><div><p class="eyebrow">AGORA</p><h2>Equipamentos ativos</h2></div><button class="text-link" type="button" id="live-refresh">Atualizar ↻</button></div>${flowPanel()}</section></div>
+      <div class="content-grid"><section class="panel chart-panel"><div class="panel-header"><div><p class="eyebrow">HISTÓRICO</p><h2>Produção FV · 24 horas</h2><p>Leituras recolhidas automaticamente pelo Gateway.</p></div><span class="source-tag">${esc(state.dataStatus)}</span></div>${chart()}</section><section class="panel flow-panel"><div class="panel-header"><div><p class="eyebrow">AGORA</p><h2>Equipamentos ativos</h2></div><button class="text-link" type="button" id="live-refresh">Atualizar ↻</button></div>${flowPanel()}</section></div>
       <div class="section-heading section-heading-spaced"><div><p class="eyebrow">INSTALAÇÃO</p><h2>Equipamentos e leituras</h2></div><span class="muted-inline">${state.equipment.length} equipamentos</span></div><div class="equipment-grid">${cards}</div>`;
   }
   const totals = demoTotals();
@@ -271,13 +319,13 @@ function renderCategory(categoryId) {
   const category = CATEGORIES.find(c => c.id === categoryId);
   const equipment = state.equipment.filter(item => item.category === categoryId);
   const item = equipment[0];
-  const reading = item ? formatReading(item.readings?.[0]) : {value:"—",unit:"",valid:false};
+  const reading = item ? formatReading(preferredGatewayReading(item)) : {value:"—",unit:"",valid:false};
   return `<div class="page-heading"><div><p class="eyebrow">A SUA PROPRIEDADE / ÁREAS</p><h1>${esc(category.label)}</h1><p>${esc(category.description)}. Explore os dados e o cenário associado.</p></div><div class="date-block"><strong>${equipment.length ? "Perfil demonstrativo" : "Sem perfil"}</strong><br>${state.mode}</div></div>
   ${state.mode === "SIMULATED" ? `<div class="status-banner demo-banner"><span class="demo-stamp">DEMO</span><span>Perfil ilustrativo, sem ligação física. Os valores não são leituras reais e os controlos abaixo só alteram a interface local.</span></div>` : state.dataStatus !== "LIVE" ? `<div class="status-banner demo-banner"><span class="demo-stamp">${esc(state.dataStatus)}</span><span>${state.dataStatus === "STALE" ? "A última leitura é antiga e não deve ser tratada como estado atual." : state.dataStatus === "UNKNOWN" ? "O Gateway respondeu, mas não existe uma leitura válida para este equipamento." : "A consulta ao Gateway não confirmou dados atuais."}</span></div>` : ""}
   <div class="category-feature"><div class="category-feature-icon">${esc(category.icon)}</div><div class="category-feature-main"><p class="eyebrow">${esc(category.label.toUpperCase())}</p><h2>${esc(item?.name || "Perfil por configurar")}</h2><p>${esc(item ? [item.manufacturer,item.model].filter(Boolean).join(" · ") : "O Gateway ainda não disponibiliza um equipamento nesta área.")}</p></div><div class="category-feature-value"><strong>${esc(reading.value)} <small>${esc(reading.unit)}</small></strong><span>${state.mode === "SIMULATED" ? "VALOR SIMULADO" : reading.valid ? "LEITURA DO GATEWAY" : "SEM LEITURA"}</span></div></div>
   ${demoControlPanel(categoryId)}
   <div class="section-heading section-heading-spaced"><div><p class="eyebrow">DETALHE</p><h2>Estado e proveniência</h2></div><span class="source-tag">${state.mode}</span></div>
-  ${equipment.length ? equipment.map(item=>`<section class="panel detail-panel"><div class="panel-header"><div><h2>${esc(item.name)}</h2><p>Informação de origem e estado</p></div><span class="source-tag">${isSimulated(item)?"SIMULATED":esc(item.readings?.[0]?.trust||"UNKNOWN")}</span></div><div class="device-detail-grid"><div class="detail-item"><small>Fabricante / modelo</small><strong>${esc([item.manufacturer,item.model].filter(Boolean).join(" · ")||"Não definido")}</strong></div><div class="detail-item"><small>Ligação</small><strong>${esc(item.connection_state||"UNKNOWN")}</strong></div><div class="detail-item"><small>Última comunicação</small><strong>${esc(timeLabel(item.last_communication_at))}</strong></div><div class="detail-item"><small>Origem</small><strong>${esc(item.source||item.readings?.[0]?.source||"API_GATEWAY")}</strong></div><div class="detail-item"><small>Confiança</small><strong>${esc(item.readings?.[0]?.trust||"UNKNOWN")}</strong></div><div class="detail-item"><small>Última leitura</small><strong>${esc(reading.value)} ${esc(reading.unit)}</strong></div></div><div class="status-banner demo-banner"><span class="demo-stamp">INFO</span><span>Estado de comando: <strong>NÃO DISPONÍVEL</strong>. Esta PWA não disponibiliza controlos reais de equipamentos.</span></div></section>`).join("") : `<div class="empty-state">Não existem equipamentos nesta área no Gateway. Nenhum valor foi inventado.</div>`}`;
+  ${equipment.length ? equipment.map(item=>`<section class="panel detail-panel"><div class="panel-header"><div><h2>${esc(item.name)}</h2><p>Informação de origem e estado</p></div><span class="source-tag">${isSimulated(item)?"SIMULATED":esc(item.readings?.[0]?.trust||"UNKNOWN")}</span></div><div class="device-detail-grid"><div class="detail-item"><small>Fabricante / modelo</small><strong>${esc([item.manufacturer,item.model].filter(Boolean).join(" · ")||"Não definido")}</strong></div><div class="detail-item"><small>Ligação</small><strong>${esc(item.connection_state||"UNKNOWN")}</strong></div><div class="detail-item"><small>Última comunicação</small><strong>${esc(timeLabel(item.last_communication_at))}</strong></div><div class="detail-item"><small>Origem</small><strong>${esc(item.source||item.readings?.[0]?.source||"API_GATEWAY")}</strong></div><div class="detail-item"><small>Confiança</small><strong>${esc(item.readings?.[0]?.trust||"UNKNOWN")}</strong></div><div class="detail-item"><small>Leitura principal</small><strong>${esc(reading.value)} ${esc(reading.unit)}</strong></div></div><div class="status-banner demo-banner"><span class="demo-stamp">INFO</span><span>Leituras registadas pelo Gateway. Valores Deye identificados como LIVE_UNVERIFIED até validação adicional do modelo e logger.</span></div>${item.readings?.length ? `<div class="device-detail-grid telemetry-grid">${item.readings.map(value=>`<div class="detail-item"><small>${esc(value.evidence?.label || value.field)}</small><strong>${esc(formatReading(value).value)} ${esc(value.unit || "")}</strong><small>${esc(value.field)}${value.evidence?.register ? ` · registo ${esc(value.evidence.register)}` : ""}</small></div>`).join("")}</div>` : ""}</section>`).join("") : `<div class="empty-state">Não existem equipamentos nesta área no Gateway. Nenhum valor foi inventado.</div>`}`;
 }
 function render() {
   freshness();
@@ -297,12 +345,13 @@ function render() {
     }
   }
   const workspacePage = renderWorkspacePage(state.page);
-  const gatewayBackedPages = ["inicio", ...CATEGORIES.map(c => c.id)];
+  const gatewayBackedPages = ["inicio", "engine", ...CATEGORIES.map(c => c.id)];
   let pageHtml;
   if (state.mode !== "SIMULATED" && !gatewayBackedPages.includes(state.page)) {
     pageHtml = `<div class="page-heading"><div><p class="eyebrow">FUNÇÃO NÃO DISPONÍVEL NO GATEWAY ATUAL</p><h1>${esc(pageLabel(state.page))}</h1><p>Esta área ainda não tem um contrato de dados ou comandos físicos no Gateway. Para evitar confusão, a sessão autenticada não apresenta controlos ou valores de demonstração aqui.</p></div></div><div class="empty-state">Sem dados reais fornecidos pelo Gateway para esta área. A administração está na página Owner.</div>`;
   } else {
-    pageHtml = state.page === "inicio" ? renderOverview() : (workspacePage || (CATEGORIES.some(c=>c.id===state.page) ? renderCategory(state.page) : renderOverview()));
+    pageHtml = state.page === "inicio" ? renderOverview() : state.page === "engine" && state.mode !== "SIMULATED" ? renderLiveEnergyEngine() : (workspacePage || (CATEGORIES.some(c=>c.id===state.page) ? renderCategory(state.page) : renderOverview()));
+    if (state.page === "engine" && sessionInfo().user?.role === "owner") pageHtml = pageHtml.replace('<label class="feature-field">Cargas flexíveis', `${renderLoadBuilder()}<label class="feature-field">Cargas flexíveis`);
     if(state.page === "automatismos") pageHtml = renderAutomationsPage(workspace, automationEditingId);
     if(state.page === "producao") pageHtml = renderSolarProductionPage();
     if(state.page === "profile") pageHtml += renderDemoAdminPanel();
@@ -366,7 +415,56 @@ $("#page-content").addEventListener("change", e => {
   if(e.target.id==='solar-weather'){saveSolarWeather(e.target.value);if($('#production-dialog')?.open)openProductionDialog();else render();}
   if(['conditionDevice','sourceType','targetDevice'].includes(e.target.name)){const form=e.target.closest('#auto-form');if(form){const ds=workspace.house.floors.flatMap(f=>f.rooms.flatMap(r=>r.devices));const device=ds.find(d=>d.id===form.elements.conditionDevice.value);const type=form.elements.sourceType.value;const opts=type==='device'?(device?.type==='blind'?[['open','Fica aberto'],['closed','Fica fechado']]:device?.type==='sensor'&&/temp/i.test(device?.name||'')?[['temperature','Temperatura acima/abaixo de limite']]:device?.type==='sensor'?[['motion','Deteta movimento'],['no-motion','Não deteta movimento']]:['light','socket'].includes(device?.type)?[['on','Fica ligado'],['off','Fica desligado']]:[['online','Estado online (se suportado)']]):type==='schedule'?[['time','Hora fixa'],['sunrise','Nascer do Sol'],['sunset','Pôr do Sol']]:type==='weather'?[['temperature','Temperatura exterior'],['rain','Chuva'],['cloud','Nebulosidade']]:[['arrive','Chegar a casa'],['leave','Sair de casa'],['nobody','Ninguém em casa']];if(e.target.name!=='targetDevice')form.elements.conditionType.innerHTML=opts.map(([v,l])=>`<option value="${v}">${l}</option>`).join('');if(e.target.name==='targetDevice'){const target=ds.find(d=>d.id===form.elements.targetDevice.value);const t=(target?.type||'').toLowerCase(),n=(target?.name||'').toLowerCase();let actions=[['notify','Notificação local simulada']];if(t.includes('blind')||/estore/.test(n))actions=[['open','Abrir (simulado)'],['close','Fechar (simulado)'],...actions];else if(['light','socket','switch','plug'].some(x=>t.includes(x))||/luz|tomada/.test(n))actions=[['on','Ligar (simulado)'],['off','Desligar (simulado)'],...actions];form.elements.action.innerHTML=actions.map(([v,l])=>`<option value="${v}">${l}</option>`).join('');}}}
 });
-$("#page-content").addEventListener("click", e => {
+$("#page-content").addEventListener("click", async e => {
+  if(e.target.closest("#engine-refresh")){refreshGatewayReadings();return;}
+  if(e.target.closest("#engine-add-load")){
+    const status=$("#engine-equipment-config-status");
+    try{
+      const loads=JSON.parse($("#engine-loads-json").value||"[]");
+      if(!Array.isArray(loads)||loads.length>=64)throw new Error("A lista tem de ser válida e pode conter até 64 cargas.");
+      const kind=$("#engine-load-kind").value,control=$("#engine-load-control").value;
+      const rated=Number($("#engine-load-rated").value),priority=Number($("#engine-load-priority").value);
+      const name=$("#engine-load-name").value.trim();
+      if(!name||!Number.isInteger(rated)||rated<1||!Number.isInteger(priority)||priority<1||priority>100)throw new Error("Indica nome, potência nominal e prioridade válidos.");
+      const load={id:`load-${Date.now().toString(36)}`,name,kind,control_type:control,rated_power_w:rated,priority,enabled:true,automatic:$("#engine-load-automatic").checked};
+      if(control==="tuya_smart"||control==="tuya_breaker"){
+        const option=$("#engine-load-tuya-device").selectedOptions[0],device_id=option?.value,switch_code=option?.dataset.code;
+        if(!device_id||!switch_code)throw new Error("Configura e seleciona um interruptor Tuya registado no Gateway.");
+        load.tuya_device_id=device_id;load.tuya_switch_code=switch_code;
+      }
+      if(control==="antminer_braiins"){
+        const minimum=Number($("#engine-load-minimum").value),maximum=Number($("#engine-load-maximum").value);
+        if(!Number.isInteger(minimum)||!Number.isInteger(maximum)||minimum<1||maximum>2900||minimum>maximum)throw new Error("Define mínimo e máximo da mineradora entre 1 e 2900 W.");
+        load.minimum_power_w=minimum;load.maximum_power_w=maximum;
+        if(load.automatic){const dependency=$("#engine-load-miner-relay").value;if(!dependency)throw new Error("Escolhe primeiro um relé Tuya automático para alimentar a mineradora.");load.requires_load_id=dependency;}
+      }
+      $("#engine-loads-json").value=JSON.stringify([...loads,load],null,2);
+      $("#engine-load-name").value="";
+      status.textContent=`${name} adicionada à lista. Guarda a configuração no Gateway.`;
+    }catch(error){status.textContent=error.message;}
+    return;
+  }
+  if(e.target.closest("#engine-save-equipment-config")){
+    const button=e.target.closest("#engine-save-equipment-config"), status=$("#engine-equipment-config-status");
+    button.disabled=true;status.textContent="A validar e guardar no Gateway…";
+    try{
+      const banks=JSON.parse($("#engine-banks-json").value||"[]"),loads=JSON.parse($("#engine-loads-json").value||"[]");
+      const margin=Number($("#engine-surplus-margin").value);
+      if(!Array.isArray(banks)||!Array.isArray(loads)||!Number.isInteger(margin)||margin<0||margin>10000)throw new Error("Usa listas JSON válidas e margem entre 0 e 10000 W.");
+      await saveGatewayEnergyEngineConfig({battery_banks:banks,loads,automation:{enabled:$("#engine-automation-enabled").checked,commissioned:$("#engine-commissioned").checked,deye_map_verified:$("#engine-deye-map-verified").checked,surplus_margin_w:margin,decision_interval_seconds:300}});
+      status.textContent="Cargas e automatização guardadas no Gateway. O estado efetivo pode continuar bloqueado por segurança.";
+      await refreshGatewayReadings();
+    }catch(error){status.textContent=`Não foi possível guardar: ${error.message}`;}
+    finally{const current=$("#engine-save-equipment-config");if(current)current.disabled=false;}
+    return;
+  }
+  if(e.target.closest("#engine-save-config")){
+    const button=e.target.closest("#engine-save-config"), capacityField=$("#engine-battery-capacity"), minimumField=$("#engine-minimum-soc"), maximumField=$("#engine-maximum-soc"), status=$("#engine-config-status");
+    button.disabled=true; status.textContent="A guardar no Gateway…";
+    const raw=capacityField.value.trim(), capacity=raw===""?null:Number(raw), minimum=Number(minimumField.value), maximum=Number(maximumField.value);
+    if((capacity!==null&&(!Number.isFinite(capacity)||capacity<0.1||capacity>10000))||!Number.isFinite(minimum)||!Number.isFinite(maximum)||minimum<0||maximum>100||minimum>=maximum){status.textContent="Verifica a capacidade (0,1–10000 kWh) e os limites SOC (mínimo abaixo do máximo até 100%).";button.disabled=false;return;}
+    saveGatewayEnergyEngineConfig({battery_capacity_kwh:capacity,minimum_soc_percent:minimum,maximum_soc_percent:maximum}).then(async()=>{status.textContent="Configuração guardada no Gateway.";await refreshGatewayReadings();}).catch(error=>{status.textContent=`Não foi possível guardar: ${error.message}`;}).finally(()=>{const current=$("#engine-save-config");if(current)current.disabled=false;});return;
+  }
   const feature=e.target.closest('[data-feature-action]'); if(feature){const action=feature.dataset.featureAction,id=feature.dataset.id||'';if(action==='new-rule'){automationEditingId='';render();return;}if(action==='edit-rule'){automationEditingId=id;render();return;}if(action==='cancel-edit'){automationEditingId='';render();return;}if(action==='add-condition'){const box=$('#extra-conditions');if(box){const row=document.createElement('div');row.className='feature-extra-row';row.innerHTML='<label class="feature-field">Condição adicional<select name="extra"><option value="nobody">Não está ninguém em casa (simulado)</option><option value="weather">Temperatura exterior inferior a 12 °C (simulado)</option><option value="fresh">Dados atualizados (simulado)</option><option value="none">Sem condição adicional</option></select></label><button type="button" class="button secondary" data-feature-action="remove-condition">Remover</button>';box.appendChild(row);}return;}if(action==='remove-condition'){const row=feature.closest('.feature-extra-row');if(row&&$('#extra-conditions .feature-extra-row')?.parentElement?.children.length>1)row.remove();else if(row){const select=row.querySelector('select');if(select)select.value='none';}return;}const result=handleFeatureAction(action,id,workspace);if(result?.edit!==undefined){automationEditingId=result.edit;render();return;}if(result?.cancel){automationEditingId='';render();return;}if(result?.rerender)render();if(result?.message)showFeatureNotice(result.message);return;}
   const workspaceButton=e.target.closest("[data-ws-action]");
   if(workspaceButton){if(['open-room','open-device'].includes(workspaceButton.dataset.wsAction))workspace.house.returnScrollY=window.scrollY;const result=handleWorkspaceAction(workspaceButton.dataset.wsAction,workspaceButton);if(result?.edit)openContextEditor(result.edit.type,result.edit.id);if(result?.navigate)navigate(result.navigate);if(result?.message){const notice=$("#notice");notice.hidden=false;notice.textContent=result.message;setTimeout(()=>{notice.hidden=true;},3500);}if(result?.rerender)render();return;}
@@ -586,7 +684,9 @@ async function refreshHardwareIntegrationConfig() {
   $("#hardware-tuya-region").value = tuya.region || "eu_central";
   $("#hardware-tuya-client-id").value = tuya.client_id || "";
   $("#hardware-tuya-client-secret").value = "";
-  $("#hardware-tuya-devices").value = (tuya.devices || []).map(device => `${device.device_id} | ${device.name}`).join("\n");
+  $("#hardware-tuya-devices").value = (tuya.devices || []).map(device => `${device.device_id} | ${device.name}${device.switch_code ? ` | ${device.switch_code}` : ""}`).join("\n");
+  const tuyaSelect = $("#hardware-tuya-control-device");
+  if (tuyaSelect) tuyaSelect.innerHTML = `<option value="">Escolhe um interruptor configurado</option>${(tuya.devices || []).filter(device => device.switch_code).map(device => `<option value="${esc(device.device_id)}">${esc(device.name)} · ${esc(device.device_id)}</option>`).join("")}`;
   $("#hardware-integrations-status").textContent = `Configuração carregada · Deye ${deye.host ? "definido" : "por configurar"} · Antminer ${miner.host ? "definido" : "por configurar"}; credenciais ${config.antminer_control_configured ? "guardadas no Gateway" : "por configurar"} · Tuya ${tuya.configured ? "configurado; segredo oculto" : "por configurar"}.`;
   return config;
 }
@@ -611,7 +711,14 @@ function hardwareConnectionSummary(result) {
     if (!configured) return `${names[key]}: IP ainda não guardado no Gateway`;
     const state = device?.connection_state || "failed";
     const reason = device?.reason ? ` (${device.reason})` : "";
-    return `${names[key]}: ${stateText[state] || state}${reason}`;
+    const quality = key === "deye" ? (device?.quality_checks || []).filter(check => check.state !== "consistent") : [];
+    const qualityText = quality.length ? ` · validar ${quality.map(check => ({
+      device_type: "tipo Modbus diferente do protocolo (0x0500)",
+      grid_voltage_and_frequency: "tensão/frequência da rede a zero",
+      pv1_power_vs_voltage_current: "coerência MPPT 1",
+      pv2_power_vs_voltage_current: "coerência MPPT 2"
+    })[check.field] || check.field).join(", ")}` : "";
+    return `${names[key]}: ${stateText[state] || state}${reason}${qualityText}`;
   }).join(" · ");
 }
 $("#hardware-integrations-save").addEventListener("click", async () => {
@@ -621,7 +728,7 @@ $("#hardware-integrations-save").addEventListener("click", async () => {
   try {
     const deyeHost = $("#hardware-deye-host").value.trim(), minerHost = $("#hardware-antminer-host").value.trim();
     const tuyaRows = $("#hardware-tuya-devices").value.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-    const tuyaDevices = tuyaRows.map(line => { const [device_id, ...nameParts] = line.split("|"); return { device_id: device_id.trim(), name: nameParts.join("|").trim() || `Tuya ${device_id.trim()}` }; });
+    const tuyaDevices = tuyaRows.map(line => { const [rawId, rawName, rawCode] = line.split("|"); const device_id = (rawId || "").trim(); return { device_id, name: (rawName || "").trim() || `Tuya ${device_id}`, ...(rawCode?.trim() ? { switch_code: rawCode.trim() } : {}) }; });
     const tuyaClient = $("#hardware-tuya-client-id").value.trim(), tuyaSecret = $("#hardware-tuya-client-secret").value;
     const payload = {
       deye: { enabled: Boolean(deyeHost), host: deyeHost, port: Number($("#hardware-deye-port").value), unit_id: Number($("#hardware-deye-unit").value), model: "SUN-15K-SG05LP3-EU-SM2" },
@@ -659,6 +766,25 @@ $("#antminer-power-target").addEventListener("click", () => sendAntminerControl(
 $("#antminer-pause").addEventListener("click", () => sendAntminerControl("pause"));
 $("#antminer-stop").addEventListener("click", () => sendAntminerControl("stop"));
 $("#antminer-start").addEventListener("click", () => sendAntminerControl("start"));
+async function sendTuyaSwitch(on) {
+  const info = sessionInfo(), status = $("#hardware-integrations-status"), deviceId = $("#hardware-tuya-control-device").value;
+  if (!info.authenticated || info.user.role !== "owner") { status.textContent = "Só o Owner autenticado pode comandar interruptores Tuya."; return; }
+  if (!deviceId) { status.textContent = "Escolhe um dispositivo Tuya com código de interruptor configurado."; return; }
+  const deviceName = $("#hardware-tuya-control-device").selectedOptions[0]?.textContent || deviceId;
+  if (!window.confirm(`Confirmas que queres ${on ? "ligar" : "desligar"} ${deviceName}?`)) return;
+  const buttons = [$("#tuya-switch-on"), $("#tuya-switch-off")];
+  buttons.forEach(button => { button.disabled = true; });
+  status.textContent = `A enviar comando para ${deviceName}…`;
+  try {
+    const result = await controlGatewayTuyaSwitch(deviceId, on);
+    status.textContent = result.state_confirmed
+      ? `Estado confirmado: ${deviceName} está ${on ? "ligado" : "desligado"}.`
+      : `A Tuya aceitou o comando para ${deviceName}, mas o estado físico não foi confirmado.`;
+  } catch (error) { status.textContent = `O Gateway não conseguiu executar o comando Tuya: ${error.message}`; }
+  finally { buttons.forEach(button => { button.disabled = false; }); }
+}
+$("#tuya-switch-on").addEventListener("click", () => sendTuyaSwitch(true));
+$("#tuya-switch-off").addEventListener("click", () => sendTuyaSwitch(false));
 $("#hardware-integrations-read").addEventListener("click", async () => {
   const info = sessionInfo(), button = $("#hardware-integrations-read"), status = $("#hardware-integrations-status"), output = $("#hardware-integrations-result");
   if (!info.authenticated || info.user.role !== "owner") { status.textContent = "Só o Owner autenticado pode iniciar a leitura."; return; }
@@ -1084,3 +1210,8 @@ updateGatewayStatus(gatewayManager.state);
 if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js").catch(()=>{});
 render();
 hydrateWorkspacePhotos();
+setInterval(() => {
+  if (document.visibilityState === "visible" && sessionInfo().authenticated && !state.refreshing) {
+    refreshGatewayReadings();
+  }
+}, 30_000);

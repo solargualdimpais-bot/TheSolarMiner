@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
 import json
 import logging
 import io
@@ -11,10 +12,11 @@ import secrets
 import subprocess
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import asynccontextmanager, contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -38,13 +40,14 @@ from pydantic import BaseModel, ConfigDict, Field, StrictStr
 
 from . import connectors as connector_manager
 from . import energy_registry
+from . import energy_engine
 from . import integrations as hardware_integrations
 from . import update_helper_client
 from . import updates as update_manager
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.35"
+PACKAGE_VERSION = "0.6.39"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -59,6 +62,14 @@ PASSWORDS = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=2, hash_l
 LOG = logging.getLogger("solarminer.gateway")
 logging.basicConfig(level=os.environ.get("SOLARMINER_LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
 install_error_queue_handler()
+
+# The live Deye sample is refreshed every 30 seconds. Only one sample per
+# minute is written to SQLite; the most recent half-minute sample stays in
+# memory for the authenticated energy API and is lost safely on restart.
+_energy_sample_lock = threading.Lock()
+_latest_deye_sample: dict[str, Any] | None = None
+_dispatch_lock = threading.Lock()
+_dispatch_last_sent: dict[str, tuple[str, float]] = {}
 
 ROLES = {"owner", "admin", "operator", "viewer"}
 PERMISSIONS = {
@@ -365,10 +376,228 @@ def initialize() -> None:
         LOG.warning("Secure owner bootstrap is pending; token expires in 15 minutes and is available only to the local operator")
 
 
+def _energy_sample_interval_seconds() -> int:
+    try:
+        return max(30, min(3600, int(os.environ.get("SOLARMINER_ENERGY_SAMPLE_SECONDS", "30"))))
+    except (TypeError, ValueError):
+        return 30
+
+
+async def _energy_sampling_loop() -> None:
+    """Read Deye telemetry every 30s; persist a representative sample each minute."""
+    global _latest_deye_sample
+    interval = _energy_sample_interval_seconds()
+    last_persisted_minute: int | None = None
+    next_sample_at = asyncio.get_running_loop().time()
+    while True:
+        try:
+            config = hardware_integrations.load_config().get("deye", {})
+            if config.get("host") and config.get("enabled", True):
+                snapshot = await asyncio.to_thread(hardware_integrations.read_deye, config)
+                if isinstance(snapshot, dict) and snapshot.get("connection_state") == "mapped_registers_response":
+                    with _energy_sample_lock:
+                        _latest_deye_sample = {**snapshot, "sampled_at": datetime.now(timezone.utc).isoformat(timespec="microseconds")}
+                    # Keep minute-resolution durable history, while serving
+                    # the intervening 30-second reading from memory.
+                    minute_bucket = int(time.time() // 60)
+                    if minute_bucket != last_persisted_minute:
+                        with db() as conn:
+                            conn.execute("BEGIN")
+                            count = _persist_deye_telemetry(conn, snapshot)
+                            conn.execute("DELETE FROM energy_readings WHERE source='DEYE_MODBUS_FC03_CANDIDATE_MAP' AND observed_at < ?",
+                                         ((datetime.now(timezone.utc) - timedelta(days=90)).isoformat(timespec="seconds"),))
+                            conn.commit()
+                        last_persisted_minute = minute_bucket
+                        if not count:
+                            LOG.warning("Periodic Deye sample returned no mapped readings")
+                else:
+                    LOG.warning("Periodic Deye sample returned no mapped readings")
+            else:
+                with _energy_sample_lock:
+                    _latest_deye_sample = None
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Keep the service alive; diagnostic data contains only safe error type.
+            LOG.warning("Periodic energy sample failed (%s)", type(exc).__name__)
+        next_sample_at += interval
+        delay = next_sample_at - asyncio.get_running_loop().time()
+        if delay <= 0:
+            # A slow device read must not trigger a burst of catch-up reads.
+            next_sample_at = asyncio.get_running_loop().time() + interval
+            delay = interval
+        await asyncio.sleep(delay)
+
+
+def _run_automatic_dispatch() -> dict[str, Any]:
+    """Execute the Owner-enabled plan only when fresh, commissioned telemetry is available."""
+    with db() as conn:
+        with _energy_sample_lock:
+            sample = dict(_latest_deye_sample) if _latest_deye_sample else None
+        summary = energy_engine.build_summary(conn, latest_sample=sample)
+        plan = summary["dispatch"]
+        config = summary["configuration"]
+        if plan.get("state") not in {"PLAN_READY", "WAITING_FOR_BATTERY"}:
+            outcome = {"state": plan.get("state", "BLOCKED"), "reason": plan.get("reason"), "actions": []}
+            _persist_dispatch_outcome(conn, outcome)
+            return outcome
+        try:
+            integration_config = hardware_integrations.load_config()
+            tuya_config = integration_config.get("tuya", {})
+            tuya_states = {}
+            if any(action.get("control_type") in {"tuya_smart", "tuya_breaker"} for action in plan.get("actions", [])):
+                tuya_states = {item.get("device_id"): item for item in hardware_integrations.read_tuya(tuya_config)}
+        except (ValueError, RuntimeError, OSError, json.JSONDecodeError) as exc:
+            outcome = {"state": "BLOCKED_INTEGRATION_READ", "reason": type(exc).__name__, "actions": []}
+            _persist_dispatch_outcome(conn, outcome)
+            return outcome
+        results = []
+        result_states: dict[str, str] = {}
+        plan_actions = plan.get("actions", [])
+        loads_by_id = {item.get("id"): item for item in config.get("loads", [])}
+        # On falling surplus, stop the miner before opening its Tuya supply relay.
+        plan_actions = sorted(plan_actions, key=lambda action: (
+            0 if loads_by_id.get(action.get("load_id"), {}).get("control_type") == "antminer_braiins"
+            and int(action.get("target_power_w", 0)) == 0 else 1,
+            int(loads_by_id.get(action.get("load_id"), {}).get("priority", 100)),
+        ))
+        for action in plan_actions:
+            load = next((item for item in config.get("loads", []) if item.get("id") == action.get("load_id")), None)
+            if not load or not load.get("automatic") or not load.get("enabled"):
+                continue
+            dependency_id = load.get("requires_load_id")
+            if dependency_id and int(action.get("target_power_w", 0)) > 0 and result_states.get(dependency_id) != "ON":
+                results.append({"load_id": load["id"], "state": "BLOCKED_RELAY_UNCONFIRMED"})
+                result_states[load["id"]] = "BLOCKED_RELAY_UNCONFIRMED"
+                continue
+            control = load.get("control_type")
+            desired = "ON" if action.get("state") == "ON" or (action.get("state") == "TARGET" and action.get("target_power_w", 0) > 0) else "OFF"
+            if action.get("state") not in {"ON", "TARGET", "WAITING_FOR_SURPLUS", "BELOW_MINIMUM_SURPLUS", "BLOCKED_RELAY_NOT_READY", "OFF_FOR_BATTERY", "STOP_FOR_BATTERY"}:
+                continue
+            if control in {"tuya_smart", "tuya_breaker"}:
+                device_id, code = load.get("tuya_device_id"), load.get("tuya_switch_code")
+                device_state = tuya_states.get(device_id, {})
+                values = device_state.get("status", []) if device_state.get("connection_state") == "api_responded" else []
+                observed = next((item.get("value") for item in values if isinstance(item, dict) and item.get("code") == code), None)
+                if not isinstance(observed, bool):
+                    results.append({"load_id": load["id"], "state": "BLOCKED_STATE_UNKNOWN"})
+                    result_states[load["id"]] = "BLOCKED_STATE_UNKNOWN"
+                    continue
+                if observed is (desired == "ON"):
+                    results.append({"load_id": load["id"], "state": "ALREADY_AT_TARGET", "target": desired})
+                    result_states[load["id"]] = "ON" if observed else "OFF"
+                    continue
+                with _dispatch_lock:
+                    previous = _dispatch_last_sent.get(load["id"])
+                dwell_seconds = int(load.get("minimum_on_seconds", 300) if observed else load.get("minimum_off_seconds", 300))
+                if previous and time.monotonic() - previous[1] < dwell_seconds:
+                    results.append({"load_id": load["id"], "state": "BLOCKED_MINIMUM_DWELL", "target": desired})
+                    result_states[load["id"]] = "BLOCKED_MINIMUM_DWELL"
+                    continue
+                try:
+                    result = hardware_integrations.control_tuya_switch(tuya_config, device_id, desired == "ON")
+                    outcome = "APPLIED" if result.get("state_confirmed") else "UNCONFIRMED"
+                    if result.get("state_confirmed"):
+                        with _dispatch_lock:
+                            _dispatch_last_sent[load["id"]] = (desired, time.monotonic())
+                    results.append({"load_id": load["id"], "state": outcome, "target": desired})
+                    result_states[load["id"]] = desired if result.get("state_confirmed") else outcome
+                    audit(conn, None, "energy.dispatch.tuya", load["id"], outcome.lower(), {"target": desired, "state_confirmed": bool(result.get("state_confirmed"))})
+                except (ValueError, RuntimeError, OSError, json.JSONDecodeError) as exc:
+                    results.append({"load_id": load["id"], "state": "FAILED", "reason": type(exc).__name__})
+                    result_states[load["id"]] = "FAILED"
+                    audit(conn, None, "energy.dispatch.tuya", load["id"], "failed", {"reason": type(exc).__name__})
+            elif control == "antminer_braiins":
+                target = int(action.get("target_power_w", 0))
+                target = min(target, int(load.get("maximum_power_w", 2900)))
+                target_key = f"antminer:{target}"
+                with _dispatch_lock:
+                    previous = _dispatch_last_sent.get(load["id"])
+                if previous and previous[0] == target_key:
+                    results.append({"load_id": load["id"], "state": "UNCHANGED", "target_power_w": target})
+                    result_states[load["id"]] = "APPLIED"
+                    continue
+                if previous:
+                    try:
+                        previous_target = int(previous[0].split(":", 1)[1])
+                    except (IndexError, ValueError):
+                        previous_target = 0
+                    dwell = int(load.get("minimum_on_seconds", 300) if previous_target > 0 else load.get("minimum_off_seconds", 300))
+                    if time.monotonic() - previous[1] < dwell:
+                        results.append({"load_id": load["id"], "state": "BLOCKED_MINIMUM_DWELL", "target_power_w": target})
+                        result_states[load["id"]] = "BLOCKED_MINIMUM_DWELL"
+                        continue
+                try:
+                    miner_config = integration_config.get("antminer", {})
+                    if target > 0:
+                        result = hardware_integrations.control_antminer(miner_config, "set_power_target", target)
+                        hardware_integrations.control_antminer(miner_config, "start")
+                        command = "set_power_target_and_start"
+                    else:
+                        result = hardware_integrations.control_antminer(miner_config, "stop")
+                        command = "stop"
+                    with _dispatch_lock:
+                        _dispatch_last_sent[load["id"]] = (target_key, time.monotonic())
+                    results.append({"load_id": load["id"], "state": "APPLIED", "target_power_w": target,
+                                    "command_accepted": bool(result.get("command_accepted", True))})
+                    result_states[load["id"]] = "APPLIED"
+                    audit(conn, None, "energy.dispatch.antminer", load["id"], "success", {"target_power_w": target, "action": command})
+                except (ValueError, RuntimeError, OSError, json.JSONDecodeError) as exc:
+                    results.append({"load_id": load["id"], "state": "FAILED", "reason": type(exc).__name__})
+                    result_states[load["id"]] = "FAILED"
+                    audit(conn, None, "energy.dispatch.antminer", load["id"], "failed", {"reason": type(exc).__name__})
+        outcome = {"state": "COMPLETED", "actions": results}
+        _persist_dispatch_outcome(conn, outcome)
+        return outcome
+
+
+def _persist_dispatch_outcome(conn: sqlite3.Connection, outcome: dict[str, Any]) -> None:
+    value = {**outcome, "occurred_at": utcnow()}
+    conn.execute("INSERT INTO system_state(key,value) VALUES('energy_dispatch_last',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                 (json.dumps(value, separators=(",", ":")),))
+
+
+async def _energy_dispatch_loop() -> None:
+    """Run automatic dispatch on its configured cadence; defaults are disabled."""
+    last_run = 0.0
+    while True:
+        try:
+            with db() as conn:
+                automation = energy_engine.get_config(conn).get("automation", {})
+            interval = int(automation.get("decision_interval_seconds", 300))
+            now = asyncio.get_running_loop().time()
+            if automation.get("enabled") and automation.get("commissioned") and automation.get("deye_map_verified") and now - last_run >= interval:
+                outcome = await asyncio.to_thread(_run_automatic_dispatch)
+                last_run = now
+                LOG.info("Energy dispatch cycle state=%s action_count=%d", outcome.get("state", "unknown"), len(outcome.get("actions", [])))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            LOG.warning("Energy dispatch cycle blocked (%s)", type(exc).__name__)
+        await asyncio.sleep(10)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    global _latest_deye_sample
     initialize()
-    yield
+    with _energy_sample_lock:
+        _latest_deye_sample = None
+    sampler = asyncio.create_task(_energy_sampling_loop(), name="solarminer-energy-sampler")
+    dispatcher = asyncio.create_task(_energy_dispatch_loop(), name="solarminer-energy-dispatcher")
+    try:
+        yield
+    finally:
+        sampler.cancel()
+        dispatcher.cancel()
+        try:
+            await sampler
+        except asyncio.CancelledError:
+            pass
+        try:
+            await dispatcher
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="SolarMiner Gateway", version=VERSION, docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
@@ -664,6 +893,59 @@ def energy_categories(session: dict[str, Any] = Depends(require_permission("read
     return {"categories": [{"id": key, "label": label, "api_category": key, "profile_path": "/api/v1/energy/equipment"} for key, label in energy_registry.CATEGORIES.items()], "pwa_source_available": True, "integration_state": "API_READY_PWA_V0_5_7_SAME_ORIGIN"}
 
 
+@app.get("/api/v1/energy/engine")
+def energy_engine_summary(history_hours: int = 24, session: dict[str, Any] = Depends(require_permission("read"))) -> dict[str, Any]:
+    if isinstance(history_hours, bool) or not 1 <= history_hours <= 168:
+        raise HTTPException(422, "history_hours_must_be_1_to_168")
+    with db() as conn:
+        with _energy_sample_lock:
+            latest_sample = dict(_latest_deye_sample) if _latest_deye_sample else None
+        result = energy_engine.build_summary(conn, history_hours, latest_sample=latest_sample)
+        result["sampling_interval_seconds"] = _energy_sample_interval_seconds()
+        result["persistence_interval_seconds"] = 60
+        result["live_sample_at"] = latest_sample.get("sampled_at") if latest_sample else None
+        if latest_sample and result["live_sample_at"]:
+            try:
+                stamp = datetime.fromisoformat(result["live_sample_at"].replace("Z", "+00:00"))
+                result["live_sample_age_seconds"] = max(0, int((datetime.now(timezone.utc) - stamp).total_seconds()))
+                result["live_sample_state"] = "LIVE" if result["live_sample_age_seconds"] <= 90 else "STALE"
+            except (TypeError, ValueError):
+                result["live_sample_age_seconds"] = None
+                result["live_sample_state"] = "UNKNOWN"
+        else:
+            result["live_sample_age_seconds"] = None
+            result["live_sample_state"] = "WAITING_FOR_SAMPLE"
+        return result
+
+
+@app.put("/api/v1/energy/engine/config")
+def energy_engine_configure(payload: dict[str, Any], session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    with db() as conn:
+        _require_owner(session, conn)
+        try:
+            configured_tuya = hardware_integrations.load_config().get("tuya", {}).get("devices", [])
+            proposed_loads = payload.get("loads", energy_engine.get_config(conn).get("loads", []))
+            tuya_by_id = {item.get("device_id"): item for item in configured_tuya if isinstance(item, dict)}
+            if not isinstance(proposed_loads, list):
+                raise ValueError("invalid_flexible_loads")
+            for load in proposed_loads:
+                if not isinstance(load, dict):
+                    raise ValueError("invalid_flexible_load")
+                if load.get("control_type") in {"tuya_smart", "tuya_breaker"}:
+                    device = tuya_by_id.get(load.get("tuya_device_id"))
+                    if not device or device.get("switch_code") != load.get("tuya_switch_code"):
+                        raise ValueError("load_tuya_device_or_switch_code_not_configured")
+            result = energy_engine.save_config(conn, payload)
+            audit(conn, session["user_id"], "energy.engine.configure", "energy-engine", "success", {
+                "battery_capacity_kwh_configured": result["battery_capacity_kwh"] is not None,
+                "minimum_soc_percent": result["minimum_soc_percent"],
+                "maximum_soc_percent": result["maximum_soc_percent"],
+            })
+            return result
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+
 @app.get("/api/v1/energy/equipment")
 def energy_equipment_list(category: str | None = None, session: dict[str, Any] = Depends(require_permission("read"))) -> dict[str, Any]:
     try:
@@ -717,6 +999,54 @@ def hardware_integrations_configure(payload: dict[str, Any], session: dict[str, 
             raise HTTPException(500, "integration_config_save_failed") from exc
 
 
+def _persist_deye_telemetry(conn: sqlite3.Connection, deye: dict[str, Any] | None) -> int:
+    """Store a successful Deye FC03 snapshot in the canonical energy registry."""
+    if not isinstance(deye, dict) or deye.get("connection_state") != "mapped_registers_response":
+        return 0
+    metrics = deye.get("metrics")
+    if not isinstance(metrics, list) or not metrics:
+        return 0
+    identity = hashlib.sha256(f"{deye.get('host', '')}|{deye.get('unit_id', 1)}".encode("utf-8")).hexdigest()[:16]
+    equipment_by_category = {
+        "inversores": (f"deye-inverter-{identity}", "Inversor Deye"),
+        "baterias": (f"deye-battery-{identity}", "Bateria Deye"),
+    }
+    observed_at = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    register_map = deye.get("register_map", {})
+    persisted = 0
+    for category, (equipment_id, name) in equipment_by_category.items():
+        category_metrics = [item for item in metrics if isinstance(item, dict) and item.get("category") == category
+                            and isinstance(item.get("field"), str) and isinstance(item.get("value"), (int, float))
+                            and not isinstance(item.get("value"), bool)]
+        if not category_metrics:
+            continue
+        energy_registry.upsert_equipment(conn, {
+            "category": category, "name": name, "manufacturer": "Deye",
+            "model": deye.get("model"), "protocol": "Modbus TCP FC03",
+            "connection_state": "CONNECTED",
+            "declared_capabilities": ["read-only telemetry"],
+            "implemented_capabilities": ["FC03 register-map telemetry"],
+            "verified_capabilities": [],
+            "limitations": ["Candidate register map; exact device firmware and meter/CT semantics are not manufacturer-validated."],
+            "config": {"unit_id": deye.get("unit_id", 1), "trust": "LIVE_UNVERIFIED"},
+        }, equipment_id=equipment_id)
+        for item in category_metrics:
+            energy_registry.add_reading(conn, equipment_id, {
+                "field": item["field"], "value": item["value"], "unit": item.get("unit"),
+                "observed_at": observed_at, "source": "DEYE_MODBUS_FC03_CANDIDATE_MAP",
+                "trust": "LIVE_UNVERIFIED",
+                "evidence": {"register": item.get("register"), "registers": item.get("registers"),
+                             "raw_value": item.get("raw_value"),
+                             "label": item.get("label"), "derived": item.get("derived", False),
+                             "register_map_source": register_map.get("source"),
+                             "register_map_supplement": register_map.get("supplement"),
+                             "register_map_sha256": register_map.get("sha256"),
+                             "protocol_reference": register_map.get("protocol_reference")},
+            })
+            persisted += 1
+    return persisted
+
+
 @app.post("/api/v1/integrations/hardware/read")
 def hardware_integrations_read(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
     with db() as conn:
@@ -724,6 +1054,8 @@ def hardware_integrations_read(session: dict[str, Any] = Depends(require_permiss
         if actor["role"] != "owner": raise HTTPException(403, "owner_required")
         try:
             result = hardware_integrations.collect(hardware_integrations.load_config())
+            conn.execute("BEGIN")
+            result["energy_readings_persisted"] = _persist_deye_telemetry(conn, result.get("deye"))
             for item in result.get("errors", []):
                 LOG.error("Hardware integration failure provider=%s reason=%s",
                           item.get("provider", "unknown"), item.get("reason", "unknown"))
@@ -731,11 +1063,14 @@ def hardware_integrations_read(session: dict[str, Any] = Depends(require_permiss
                 "deye_connected": result["deye"] is not None,
                 "antminer_connected": result["antminer"] is not None,
                 "tuya_device_count": len(result["tuya"]),
+                "deye_energy_readings_persisted": result["energy_readings_persisted"],
                 "errors": [{"provider": e["provider"], "reason": e["reason"]} for e in result["errors"]],
                 "control_commands_sent": False,
             })
+            conn.commit()
             return result
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
+        except (OSError, ValueError, json.JSONDecodeError, sqlite3.Error) as exc:
+            conn.rollback()
             LOG.error("Hardware integration read failed (%s)", type(exc).__name__)
             raise HTTPException(503, "integration_read_unavailable") from exc
 
@@ -776,6 +1111,38 @@ def antminer_control(payload: dict[str, Any], session: dict[str, Any] = Depends(
             LOG.error("Antminer control failed (%s)", type(exc).__name__)
             audit(conn, session["user_id"], "hardware.antminer.control", "antminer", "failed", {"action": action, "reason": type(exc).__name__, "control_command_sent": False})
             raise HTTPException(502, "antminer_control_failed") from exc
+
+
+@app.post("/api/v1/integrations/tuya/switch")
+def tuya_switch_control(payload: dict[str, Any], session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Owner-only explicit Tuya switch command for an already configured device."""
+    with db() as conn:
+        _require_owner(session, conn)
+        if not isinstance(payload, dict) or set(payload) != {"device_id", "on"}:
+            raise HTTPException(422, "tuya_switch_payload_invalid")
+        device_id, requested_on = payload.get("device_id"), payload.get("on")
+        if not isinstance(device_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", device_id) or not isinstance(requested_on, bool):
+            raise HTTPException(422, "tuya_switch_payload_invalid")
+        try:
+            config = hardware_integrations.load_config().get("tuya", {})
+            result = hardware_integrations.control_tuya_switch(config, device_id, requested_on)
+            outcome = "success" if result.get("state_confirmed") else "unconfirmed"
+            audit(conn, session["user_id"], "hardware.tuya.switch", device_id, outcome, {
+                "requested_on": requested_on, "state_confirmed": bool(result.get("state_confirmed")),
+                "control_command_sent": True,
+            })
+            return result
+        except ValueError as exc:
+            audit(conn, session["user_id"], "hardware.tuya.switch", device_id, "rejected", {"reason": str(exc)[:120]})
+            raise HTTPException(422, str(exc)) from exc
+        except RuntimeError as exc:
+            reason = str(exc)[:120]
+            audit(conn, session["user_id"], "hardware.tuya.switch", device_id, "failed", {"reason": reason, "control_command_sent": False})
+            raise HTTPException(502, reason) from exc
+        except (OSError, json.JSONDecodeError) as exc:
+            LOG.error("Tuya switch control failed (%s)", type(exc).__name__)
+            audit(conn, session["user_id"], "hardware.tuya.switch", device_id, "failed", {"reason": type(exc).__name__, "control_command_sent": False})
+            raise HTTPException(502, "tuya_switch_control_failed") from exc
 
 
 def _require_owner(session: dict[str, Any], conn) -> None:
@@ -1759,7 +2126,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.35"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.39"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

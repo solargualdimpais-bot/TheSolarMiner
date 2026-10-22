@@ -1,4 +1,4 @@
-const CACHE_NAME = "the-solar-miner-static-v0.5.8-owner-pwa-v0.6.35-password-device-login-deye-live-map-1";
+const CACHE_NAME = "the-solar-miner-static-v0.5.8-owner-pwa-v0.6.39-flex-loads";
 const STATIC_ASSETS = [
   "./", "./index.html", "./styles.css", "./app.js", "./gateway-connection.js",
   "./gateway-auth.js", "./app-core.js", "./workspace-ui.js", "./demo-mode.js",
@@ -19,7 +19,7 @@ self.addEventListener("activate", event => {
 self.addEventListener("fetch", event => {
   const request = event.request;
   const url = new URL(request.url);
-  // API/authenticated traffic, query strings, non-GET requests and cross-origin
+  // API/authenticated traffic (including password-device-login), query strings, non-GET requests and cross-origin
   // requests are deliberately network-only and never enter Cache Storage.
   if (request.method !== "GET" || url.origin !== self.location.origin || url.search ||
       url.pathname.includes("/api/v1/") || request.headers.has("Authorization") ||

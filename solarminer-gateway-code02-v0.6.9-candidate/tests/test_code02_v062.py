@@ -216,6 +216,34 @@ def test_energy_api_uses_existing_auth_rbac_and_audit(tmp_path, monkeypatch):
         assert forbidden.status_code==422
         detail=client.get(f"/api/v1/energy/equipment/{equipment_id}",headers=headers).json()
         assert detail["readings"][0]["trust"]=="SIMULATED"
+        assert client.get("/api/v1/energy/engine",headers=headers).status_code==200
+        configured=client.put("/api/v1/energy/engine/config",headers=headers,json={"battery_capacity_kwh":18,"minimum_soc_percent":20,"maximum_soc_percent":95})
+        assert configured.status_code==200 and configured.json()["battery_capacity_kwh"]==18
+        assert client.put("/api/v1/energy/engine/config",headers=headers,json={"battery_capacity_kwh":18,"minimum_soc_percent":98,"maximum_soc_percent":95}).status_code==422
+        monkeypatch.setattr(gateway.hardware_integrations,"load_config",lambda:{"tuya":{"devices":[{"device_id":"switch1","switch_code":"switch_1"}]}})
+        def fake_tuya_control(_config, device_id, on):
+            if device_id != "switch1": raise ValueError("tuya_device_not_configured")
+            return {"device_id":device_id,"requested_on":on,"state_confirmed":True,"control_command_sent":True}
+        monkeypatch.setattr(gateway.hardware_integrations,"control_tuya_switch",fake_tuya_control)
+        tuya_owner=client.post("/api/v1/integrations/tuya/switch",headers=headers,json={"device_id":"switch1","on":True})
+        assert tuya_owner.status_code==200 and tuya_owner.json()["state_confirmed"] is True
+        assert client.post("/api/v1/integrations/tuya/switch",headers=headers,json={"device_id":"other","on":True}).status_code==422
+        invalid_load=client.put("/api/v1/energy/engine/config",headers=headers,json={"loads":[{"id":"aqs1","name":"AQS 1","kind":"water_heater","control_type":"tuya_breaker","rated_power_w":1500,"tuya_device_id":"switch1","tuya_switch_code":"wrong_code"}]})
+        assert invalid_load.status_code==422
+        valid_load=client.put("/api/v1/energy/engine/config",headers=headers,json={"loads":[{"id":"aqs1","name":"AQS 1","kind":"water_heater","control_type":"tuya_breaker","rated_power_w":1500,"tuya_device_id":"switch1","tuya_switch_code":"switch_1"}]})
+        assert valid_load.status_code==200 and valid_load.json()["loads"][0]["name"]=="AQS 1"
+        viewer_id="00000000-0000-4000-8000-000000000071"; viewer_token="energy-viewer-session-token"
+        with gateway.db() as conn:
+            conn.execute("INSERT INTO users(id,account_id,username,password_hash,role,status,created_at) VALUES(?,?,?,?,?,?,?)",
+                         (viewer_id,"energy-account","energyviewer","unused-hash","viewer","active",gateway.utcnow()))
+            conn.execute("INSERT INTO user_devices(user_id,device_id,status,created_at) VALUES(?,?,?,?)",
+                         (viewer_id,device,"active",gateway.utcnow()))
+            conn.execute("INSERT INTO sessions(token_sha256,user_id,device_id,created_at,expires_at,credential_version) VALUES(?,?,?,?,?,1)",
+                         (gateway.token_hash(viewer_token),viewer_id,device,int(time.time()),int(time.time())+3600))
+        viewer_headers={"Authorization":"Bearer "+viewer_token}
+        assert client.get("/api/v1/energy/engine",headers=viewer_headers).status_code==200
+        assert client.put("/api/v1/energy/engine/config",headers=viewer_headers,json={"battery_capacity_kwh":18,"minimum_soc_percent":20,"maximum_soc_percent":95}).status_code==403
+        assert client.post("/api/v1/integrations/tuya/switch",headers=viewer_headers,json={"device_id":"switch1","on":False}).status_code==403
         with gateway.db() as conn:
             assert conn.execute("SELECT COUNT(*) FROM audit WHERE action LIKE 'energy.%'").fetchone()[0]>=2
 

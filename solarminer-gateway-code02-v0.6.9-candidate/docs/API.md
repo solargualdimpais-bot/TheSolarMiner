@@ -1,10 +1,29 @@
 # API v1 (CODE 01)
 
+## CODE02 v0.6.39 — engine de cargas flexíveis
+
+- `POST /api/v1/integrations/tuya/switch` — Owner-only; recebe exatamente `{"device_id":"...","on":true|false}` para um dispositivo Tuya configurado com `switch_code`. O Gateway valida a configuração, executa o comando pela API HTTPS Tuya, tenta ler o estado e regista o resultado na auditoria sem segredos.
+- `PUT /api/v1/energy/engine/config` — Owner-only; além da bateria agrega `battery_banks` (até 8), `loads` (até 64) e `automation` (ativação, comissionamento, confirmação do mapa, margem e intervalo mínimo de 300 s).
+- `GET /api/v1/energy/engine` — calcula plano de despacho e devolve o último ciclo executado. O serviço verifica a cadência Owner configurada; automatização desligada é o padrão. Amostra Deye ausente, inválida ou com mais de 90 s bloqueia comandos.
+
+## CODE02 v0.6.38 — histórico e engine energético
+
+- `GET /api/v1/energy/engine?history_hours=24` exige `read`; o período válido é 1–168 horas. Devolve últimas leituras Deye, séries de FV/cargas/bateria/SOC, configuração de capacidade e reserva, energia disponível estimada e tendência solar histórica indicativa.
+- `PUT /api/v1/energy/engine/config` exige papel Owner e recebe `battery_capacity_kwh` (número ou `null`), `minimum_soc_percent` e `maximum_soc_percent`. A capacidade vem da especificação do banco de baterias, não é deduzida do inversor.
+- O Gateway recolhe FC03 a cada 30 segundos e a API serve a leitura mais recente em memória; persiste uma amostra por minuto e elimina histórico Deye com mais de 90 dias. A resposta inclui estado/idade da última amostra e ambos os intervalos.
+- A projeção usa regressão linear das amostras de FV recentes, sem meteorologia, e não executa comandos físicos. A confiança é baixa e as leituras continuam `LIVE_UNVERIFIED`.
+
+## CODE02 v0.6.36 — telemetria Deye e páginas de energia
+
+`POST /api/v1/integrations/hardware/read` continua exclusivo do Owner autenticado. Para o Deye configurado `SUN-15K-SG05LP3-EU-SM2`, devolve 76 campos FC03 de PV1/PV2, bateria, energias diária/acumulada, limites configurados, rede/CT, saída do inversor e cargas, com endereços, valores brutos, unidades e verificações de coerência. Uma leitura bem-sucedida é gravada no registo canónico de energia (`energy_equipment` e `energy_readings`) como `LIVE_UNVERIFIED`. A Home e as páginas Inversores/Baterias apresentam os dados recolhidos; a página de detalhe mostra todas as leituras. Os acumulados de energia usam pares U32 low-word-first e escala 0,1 kWh. Os limites de corrente são valores configurados lidos, nunca escritos, e não representam a capacidade dinâmica comunicada pelo BMS. Na leitura física registada, o tipo Modbus raw `5` diferiu do tipo publicado `0x0500`, os canais de rede vieram a zero e PV2 mostrou uma divergência entre potência e tensão×corrente. O mapa e o logger ainda não foram certificados pela Deye; não usar as métricas em automações.
+
+O mapa e os ensaios estão documentados em `docs/deye/README.md`, `docs/deye/SG05LP3-register-map-supplement.tsv` e `docs/deye/SG05LP3_REGISTER_MAP_SOURCE.md`. A origem continua apenas FC03, sem comandos de escrita.
+
 ## CODE02 v0.6.35 — controlo Owner do Braiins OS
 
 `POST /api/v1/integrations/antminer/control` é exclusivo do Owner autenticado. Aceita apenas `{"action":"set_power_target","watt":N}`, `{"action":"pause"}`, `{"action":"stop"}` ou `{"action":"start"}`. O servidor revalida o papel Owner, chama apenas endpoints fixos da REST API Braiins OS e regista a ação e resultado na auditoria sem palavra-passe nem token. O alvo está limitado a 1–2900 W e a resposta devolve os watts que o firmware confirmou. As credenciais são enviadas na configuração Owner e guardadas no ficheiro privado do Gateway, nunca devolvidas. A ligação ao minerador usa REST HTTP em rede privada; requer Braiins OS 25.07 ou mais recente. A porta CGMiner 4028 continua apenas de leitura.
 
-Para o Deye `SUN-15K-SG05LP3-EU-SM2`, o Gateway usa o mapa comunitário candidato versionado em `docs/deye/SG05LP3-register-map-community.tsv`, converte referências 4xxxx em offsets Modbus e lê estado, potência total da carga e potência FV1/FV2 somente por FC03. Salta FC43 porque o logger DYDA_WiBLE 1.7.2 não respondeu a essa função e a tentativa seguida de FC03 também expirou; FC03 isolado respondeu ao teste físico. Os valores continuam marcados `LIVE_UNVERIFIED`; as credenciais da página web não se aplicam ao Modbus TCP.
+Para os detalhes do mapa Deye atual, incluindo tensões/correntes por MPPT, bateria, rede e cargas, ver a secção CODE02 v0.6.36 e `docs/deye/README.md`.
 
 ## Error reporting (CODE02 0.6.33)
 

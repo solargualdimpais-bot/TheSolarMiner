@@ -1,12 +1,22 @@
-# Contratos API — PWA v0.5.4
+# Contratos API — PWA v0.5.7 / Gateway CODE02 v0.6.39
 
-## Braiins OS Owner control (Gateway 0.6.35)
+## Cargas configuráveis (Gateway 0.6.39)
+
+O Owner guarda até 8 `battery_banks` e 64 `loads` por `PUT /api/v1/energy/engine/config`. `kind` aceita `miner`, `water_heater`, `underfloor_heating`, `ev_charger` ou `generic`; `control_type` aceita `tuya_smart`, `tuya_breaker`, `antminer_braiins`, `tesla_fleet` ou `manual`. Os registos suportam vários AQS e cargas de aquecimento sem alteração do código. A amostra com mais de 90 segundos bloqueia o despacho automático. O ciclo corre na cadência guardada no Gateway quando o Owner ativa a opção, com validação física do mapa obrigatória.
+
+O Owner pode testar um interruptor registado através de `POST /api/v1/integrations/tuya/switch` com `{ "device_id": "...", "on": true }`. A PWA pede confirmação, o Gateway verifica Owner e dispositivo previamente configurado, e o resultado declara se o estado foi confirmado. Segredos Tuya não são devolvidos.
+
+## Engine energético (Gateway 0.6.38)
+
+Após autenticação, a PWA consulta `GET /api/v1/energy/engine?history_hours=24`. Apresenta histórico de FV, cargas, bateria e SOC, contadores Deye e projeção indicativa de FV. O Owner pode guardar no Gateway capacidade instalada e SOC mínimo/máximo através de `PUT /api/v1/energy/engine/config`. A energia em kWh fica indisponível até a capacidade ser configurada. A projeção não usa meteorologia nem controla equipamentos; os dados permanecem `LIVE_UNVERIFIED`.
+
+## Braiins OS Owner control (Gateway 0.6.36)
 
 The PWA configures local Braiins OS REST credentials through the authenticated Owner Gateway API. Secrets are held by the Gateway and never returned. The PWA calls `POST /api/v1/integrations/antminer/control` only after an explicit Owner confirmation. Supported actions are `set_power_target` (1–2900 W), `pause`, `stop`, and `start`; Gateway audit records contain action/result only, never credentials or session tokens. Braiins OS REST support requires firmware 25.07 or later. CGMiner-compatible port 4028 remains read-only.
 
-## Gateway hardware connectivity diagnostics (CODE02 0.6.35)
+## Gateway hardware connectivity and telemetry (CODE02 0.6.36)
 
-`POST /api/v1/integrations/hardware/read` returns a `configuration` object and per-device `connection_state`. For the configured Deye `SUN-15K-SG05LP3-EU-SM2`, the Gateway reads a limited allowlist from a community candidate map using FC03 only and skips FC43. It returns load total power, PV1/PV2 power, device type and status code with `LIVE_UNVERIFIED` provenance. The map has responded on the target LAN but is not manufacturer-certified. Antminer reports its configured model as unverified. Tuya Cloud status is isolated by device ID; one failing ID does not discard successful reads for others. MOES is supported only when exposed through the configured Tuya Cloud project. Shelly has no Gateway driver. This endpoint sends no control commands.
+`POST /api/v1/integrations/hardware/read` returns a `configuration` object and per-device `connection_state`. For the configured Deye `SUN-15K-SG05LP3-EU-SM2`, the Gateway reads the candidate telemetry map with FC03 only and skips FC43. The response includes PV1/PV2 voltage, current and power; battery SOC, voltage, signed current/power and charge/discharge splits, temperature and corrected capacity; daily/cumulative PV, battery, grid and load energy; configured battery charge/discharge current limits; grid/CT, inverter AC and load channels; and map-quality checks. A successful snapshot is saved in the canonical energy registry and becomes visible on the Home, Inversores and Baterias pages. Every Deye reading is `LIVE_UNVERIFIED`. The map is based on the three-phase Deye protocol and a public SG04/SG05 implementation, but exact logger/firmware applicability remains unconfirmed. The response reports raw type-code mismatch, zero grid channels, or MPPT power/current inconsistencies rather than hiding them. Battery current limits are read-only values from R/W registers and are not the live BMS limits. Antminer reports its configured model as unverified. Tuya Cloud status is isolated by device ID; one failing ID does not discard successful reads for others. MOES is supported only when exposed through the configured Tuya Cloud project. Shelly has no Gateway driver. This endpoint sends no Modbus control command.
 
 ## Gateway signed automatic updates (CODE02 0.6.29)
 

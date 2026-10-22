@@ -1,38 +1,15 @@
-# Contratos API — PWA v0.5.4
+# Contratos PWA / Gateway CODE02 0.6.39
 
-## Hardware diagnostics (CODE02 0.6.35)
+## Engine energético
 
-`POST /api/v1/integrations/hardware/read` returns explicit configuration state and per-device connection state. Deye tries FC43/MEI14 and then a one-register, read-only FC03 probe if FC43 is rejected or times out; it discards the value and never claims unknown metrics. Antminer separates TCP reachability from BOSminer API response and reports its configured model as unverified. Tuya devices report per-ID success or failure and safe provider error codes so one bad ID does not hide other successful reads. No control commands are sent. MOES is usable only through Tuya Cloud when exposed to the configured project. Shelly has no Gateway driver in this release.
+- `GET /api/v1/energy/engine?history_hours=24` requer sessão autenticada com permissão `read`; aceita 1–168 horas. Retorna leituras Deye, séries históricas, projeções, plano de cargas e último ciclo automático. Inclui `sampling_interval_seconds` (30 s), `persistence_interval_seconds` (60 s), `live_sample_at`, `live_sample_age_seconds` e `live_sample_state` (`LIVE`, `STALE`, `WAITING_FOR_SAMPLE` ou `UNKNOWN`). Leituras acima de 90 s bloqueiam o controlo.
+- `PUT /api/v1/energy/engine/config` é Owner-only. Recebe a capacidade agregada e SOC mínimo/máximo, até 8 `battery_banks`, até 64 `loads` e `automation`. Cada banco exige id, nome, capacidade e limites SOC. Cada carga define tipo, controlo, potência, prioridade, habilitação, elegibilidade automática e tempos mínimos ligado/desligado. A mineradora automática precisa de `requires_load_id` que aponte para um relé Tuya configurado, ativo, elegível e de prioridade anterior.
+- O Gateway lê Deye por FC03 a cada 30 segundos, independentemente dos pedidos da PWA. O último sample atualiza os cartões imediatamente; uma amostra por minuto é guardada em `energy_readings`; amostras Deye com mais de 90 dias são eliminadas.
+- O engine calcula energia acima do SOC mínimo, espaço de carga até ao máximo configurado e potências aproximadas a partir de tensão e limites de corrente configurados. Estes limites não são os limites dinâmicos do BMS.
+- As previsões usam regressão linear do histórico recente, com pelo menos três amostras em dez minutos. Não usam meteorologia nem calculam o máximo diário solar.
+- O despacho é desligado por padrão e requer Owner a ativar e confirmar comissionamento e mapa Deye. A cada ciclo lê primeiro o estado Tuya; falhas e estado desconhecido bloqueiam as ações dependentes. Uma dependência de relé não confirmada impede o arranque do minerador; na redução de excedente, a ordem de paragem precede abrir o relé.
+- As leituras do mapa Deye permanecem `LIVE_UNVERIFIED` até validação física do modelo/logger/firmware, do sentido da potência e dos CTs. A caixa Owner de confirmação não prova esses dados.
 
-## Gateway signed automatic updates (CODE02 0.6.29)
+## Integrações existentes
 
-The Gateway checks its configured, administrator-allowlisted GitHub release daily. It automatically queues an update only after Ed25519 manifest and package verification and a successful independent recovery preflight. The privileged update helper performs SQLite backup, staging, activation, health check and rollback. The Owner PWA can still request an immediate check or manual application and reads progress from `GET /api/v1/system/update/status`.
-
-## Hardware integrations and EV charging (Gateway CODE02 0.6.26)
-
-The Owner PWA calls `GET /api/v1/integrations/hardware`, `PUT /api/v1/integrations/hardware`, and `POST /api/v1/integrations/hardware/read` for Deye, Antminer and Tuya. Tesla Fleet is configured and read only in Energy → EV charger with `GET/PUT /api/v1/energy/ev/tesla` and `POST /api/v1/energy/ev/tesla/read`. Owner is required. Secrets stay on the Gateway and are never returned. Tesla responses contain charge-state fields for one selected vehicle, without location, climate or driving data. No Tesla command is sent; X/Y/Z remain local settings until a Gateway energy engine and supported command flow exist.
-
-## Endpoints efetivamente utilizados pela PWA existente
-
-| Método | Endpoint | Utilização |
-|---|---|---|
-| GET | `/api/v1/health` | Diagnóstico explícito de saúde/versão |
-| GET | `/api/v1/info` | Diagnóstico explícito de identificação do serviço |
-
-As chamadas de diagnóstico existentes continuam a ser separadas das novas áreas locais. O incremento v0.5.4 não acrescenta chamadas API.
-
-## Contratos necessários que não foram encontrados no CODE 02 v0.6.5 inspecionado
-
-- Preferências pessoais autenticadas: leitura/gravação por utilizador, com versionamento/migração aditiva.
-- Gestão de utilizadores: listagem, convite/associação, alteração de estado e papéis, com RBAC e auditoria no servidor.
-- Automatismos: capacidades declaradas por dispositivo; CRUD de regras; condições e operadores; scheduler/avaliação no Gateway; execução segura de ações; prevenção de ciclos; histórico de avaliação/execução e motivos; tratamento de fontes desatualizadas/offline.
-- Meteorologia/presença/astronomia: fonte meteorológica configurada, timestamp/validade, localização e fuso horário, nascer/pôr do Sol, e fontes de presença autorizadas.
-- Produção solar: leituras históricas por timestamp em kW/kWh, previsão central, fonte/atualização/confiança e API para potencial diário/restante calculado pelo Gateway.
-
-## Sem endpoints inventados
-
-A PWA v0.5.4 mantém os dados de demonstração em `localStorage`. Nenhum dos contratos acima é tratado como existente, e nenhum resultado local é apresentado como gravação ou execução no Gateway.
-
-## Tailscale access and Owner page
-
-Tailscale configuration, update sources, integrations, users and invites are grouped on the dedicated Owner page. The Home page shows the energy summary and equipment readings. GET/PUT /api/v1/system/tailscale and POST /api/v1/system/tailscale/connect require an authenticated Owner; privileged Tailscale status and connection use the restricted local systemd broker rather than sudo.
+A configuração de Deye, Antminer e Tuya, as leituras manuais e os comandos suportados da Antminer continuam nos endpoints documentados em `API.md` e `HARDWARE_INTEGRATIONS.md`. `POST /api/v1/integrations/tuya/switch` é Owner-only e comanda um interruptor previamente configurado com datapoint explícito. Tesla Fleet permanece uma integração de leitura do estado de carregamento; não comanda o veículo.

@@ -116,28 +116,105 @@ def test_antminer_control_rejects_missing_credentials_and_out_of_range_power(mon
         integrations.control_antminer(config, "reboot")
 
 
-def test_deye_sg05lp3_reads_live_validated_candidate_registers_without_fc43(monkeypatch):
+def test_deye_sg05lp3_reads_full_candidate_telemetry_without_fc43(monkeypatch):
     monkeypatch.setattr(integrations, "probe_tcp", lambda host, port, timeout: {"state": "tcp_reachable", "host": host, "port": port})
     monkeypatch.setattr(integrations.deye_modbus, "read_device_identification",
                         lambda *_args, **_kwargs: pytest.fail("FC43 must be skipped for DYDA_WiBLE"))
     reads = []
-    values = {0: (5,), 500: (2,), 653: (245,), 672: (2076, 305)}
+    blocks = {
+        0: (5,), 108: (40, 50), 500: (2,),
+        514: (12, 7, 256, 1, 512, 2, 33, 9, 1000, 3, 20, 0, 50, 1200, 4, 82, 0, 0, 0, 0, 3456, 5),
+        586: (1250, 5378, 100, 0, 65250, 65006, 676),
+        598: tuple([0] * 28),
+        627: (2287, 2298, 2299, 630, 60, 10, 1458, 169, 33, 1660, 1660, 5000,
+              0, 1458, 169, 33, 1660, 2290, 2299, 2294, 0, 0, 0, 1458, 169, 33, 1660, 1660, 5000),
+        672: (1869, 173, 0, 0, 3935, 47, 2412, 50),
+    }
     def read_registers(host, **kwargs):
         assert host == "192.168.8.10"
         reads.append((kwargs["start_address"], kwargs["count"], kwargs["port"], kwargs["unit_id"]))
-        return type("Probe", (), {"raw_registers": values[kwargs["start_address"]]})()
+        block = blocks[kwargs["start_address"]]
+        assert len(block) == kwargs["count"]
+        return type("Probe", (), {"raw_registers": block})()
     monkeypatch.setattr(integrations.deye_modbus, "read_holding_registers", read_registers)
     result = integrations.read_deye({"host": "192.168.8.10", "port": 502, "unit_id": 1, "model": "SUN-15K-SG05LP3-EU-SM2"})
-    assert reads == [(0, 1, 502, 1), (500, 1, 502, 1), (653, 1, 502, 1), (672, 2, 502, 1)]
+    assert reads == [(0, 1, 502, 1), (108, 2, 502, 1), (500, 1, 502, 1),
+                     (514, 22, 502, 1), (586, 7, 502, 1),
+                     (598, 28, 502, 1), (627, 29, 502, 1), (672, 8, 502, 1)]
     assert result["metrics_decoded"] is True
     assert result["connection_state"] == "mapped_registers_response"
     assert result["device_type_code"] == 5
     assert result["status_code"] == 2
-    assert [(metric["field"], metric["value"], metric["unit"]) for metric in result["metrics"]] == [
-        ("load_total_power", 245, "W"), ("pv1_input_power", 2076, "W"), ("pv2_input_power", 305, "W")]
-    assert result["register_map"]["status"] == "COMMUNITY_MAP_LIVE_READS_CONFIRMED_NOT_MANUFACTURER_VALIDATED"
+    metrics = {metric["field"]: metric for metric in result["metrics"]}
+    assert (metrics["pv1_voltage"]["register"], metrics["pv1_voltage"]["value"], metrics["pv1_voltage"]["unit"]) == (40677, 393.5, "V")
+    assert (metrics["pv1_current"]["register"], metrics["pv1_current"]["value"]) == (40678, 4.7)
+    assert (metrics["pv1_input_power"]["value"], metrics["pv2_input_power"]["value"], metrics["pv_total_power"]["value"]) == (1869, 173, 2042)
+    assert (metrics["battery_voltage"]["value"], metrics["battery_soc"]["value"]) == (53.78, 100)
+    assert (metrics["battery_output_power"]["value"], metrics["battery_output_current"]["value"]) == (-286, -5.3)
+    assert metrics["battery_charge_current"]["value"] == 5.3
+    assert metrics["battery_discharge_current"]["value"] == 0
+    assert metrics["battery_charge_power"]["value"] == 286
+    assert metrics["battery_discharge_power"]["value"] == 0
+    assert metrics["battery_daily_charge_energy"]["value"] == 1.2
+    assert metrics["battery_daily_discharge_energy"]["value"] == 0.7
+    assert metrics["battery_total_charge_energy"]["value"] == 6579.2
+    assert metrics["battery_total_charge_energy"]["registers"] == [40517, 40518]
+    assert metrics["battery_total_discharge_energy"]["value"] == 13158.4
+    assert metrics["battery_max_charge_current"]["value"] == 40
+    assert metrics["battery_max_discharge_current"]["value"] == 50
+    assert metrics["pv_daily_energy"]["value"] == 8.2
+    assert metrics["pv_total_energy"]["value"] == 33113.6
+    assert metrics["pv_total_energy"]["registers"] == [40535, 40536]
+    assert metrics["load_daily_energy"]["value"] == 5.0
+    assert metrics["load_total_energy"]["value"] == 26334.4
+    assert (metrics["inverter_power_total"]["value"], metrics["load_total_power"]["value"]) == (1660, 1660)
+    assert metrics["grid_power_factor"]["register"] == 40622
+    assert len(result["metrics"]) == 76
+    checks = {item["field"]: item for item in result["quality_checks"]}
+    assert checks["device_type"]["state"] == "protocol_value_mismatch"
+    assert checks["pv1_power_vs_voltage_current"]["state"] == "consistent"
+    assert checks["pv2_power_vs_voltage_current"]["state"] == "inconsistent"
+    assert checks["grid_voltage_and_frequency"]["state"] == "all_zero_check_meter_or_logger_mapping"
+    assert result["register_map"]["status"] == "COMMUNITY_MAP_LIVE_BLOCKS_CONFIRMED_NOT_MANUFACTURER_FIRMWARE_VALIDATED"
     assert result["trust"] == "LIVE_UNVERIFIED"
     assert result["control_commands_sent"] is False
+
+
+def test_successful_deye_snapshot_is_persisted_for_pwa_energy_pages():
+    import sqlite3
+    from solarminer_gateway import app as gateway
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    energy = gateway.energy_registry
+    energy.ensure_schema(conn)
+    result = gateway._persist_deye_telemetry(conn, {
+        "host": "192.168.8.10", "unit_id": 1, "model": "SUN-15K-SG05LP3-EU-SM2",
+        "connection_state": "mapped_registers_response",
+        "register_map": {"source": "https://example.test/map", "sha256": "abc", "protocol_reference": "protocol"},
+        "metrics": [
+            {"field": "pv_total_power", "value": 2048, "unit": "W", "category": "inversores",
+             "register": 40673, "raw_value": 2048, "label": "Potência FV total", "derived": True},
+            {"field": "battery_soc", "value": 100, "unit": "%", "category": "baterias",
+             "register": 40589, "raw_value": 100, "label": "Carga da bateria"},
+            {"field": "battery_total_charge_energy", "value": 6579.2, "unit": "kWh", "category": "baterias",
+             "register": 40517, "registers": [40517, 40518], "raw_value": 65792,
+             "label": "Energia acumulada de carga"},
+        ],
+    })
+    assert result == 3
+    equipment = energy.list_equipment(conn)
+    assert {item["category"] for item in equipment} == {"inversores", "baterias"}
+    inverter = next(item for item in equipment if item["category"] == "inversores")
+    battery = next(item for item in equipment if item["category"] == "baterias")
+    assert inverter["readings"][0]["field"] == "pv_total_power"
+    assert inverter["readings"][0]["trust"] == "LIVE_UNVERIFIED"
+    assert inverter["readings"][0]["evidence"]["register"] == 40673
+    assert battery["readings"][0]["field"] == "battery_soc"
+    cumulative = next(reading for reading in battery["readings"] if reading["field"] == "battery_total_charge_energy")
+    assert cumulative["evidence"]["registers"] == [40517, 40518]
+    conn.close()
 
 
 def test_deye_falls_back_to_read_only_fc03_when_identification_is_unsupported(monkeypatch):
@@ -246,7 +323,35 @@ def test_tuya_reports_devices_individually_when_one_status_request_fails(monkeyp
     assert [item["connection_state"] for item in result] == ["api_responded", "failed"]
     assert result[0]["status"] == [{"code": "switch", "value": True}]
     assert result[1]["reason"] == "tuya_http_404"
-    assert len(calls) == 3
+
+
+def test_tuya_switch_control_posts_only_configured_switch_and_reads_back(monkeypatch):
+    calls = []
+    def fake_request(config, path, token=None, *, method="GET", payload=None):
+        calls.append((path, method, payload))
+        if path.startswith("/v1.0/token"):
+            return {"result": {"access_token": "short-lived"}}
+        if path.endswith("/commands"):
+            return {"result": True}
+        return {"result": [{"code": "switch_1", "value": True}]}
+    monkeypatch.setattr(integrations, "_tuya_request", fake_request)
+    result = integrations.control_tuya_switch({
+        "client_id": "client", "client_secret": "private-secret", "region": "eu_central",
+        "devices": [{"device_id": "device_123", "name": "AQS 1", "switch_code": "switch_1"}],
+    }, "device_123", True)
+    assert calls[1] == ("/v1.0/iot-03/devices/device_123/commands", "POST",
+                        {"commands": [{"code": "switch_1", "value": True}]})
+    assert result["state_confirmed"] is True
+    assert "private-secret" not in json.dumps(result)
+
+
+def test_tuya_switch_control_rejects_unconfigured_device_without_request(monkeypatch):
+    calls = []
+    monkeypatch.setattr(integrations, "_tuya_request", lambda *a, **k: calls.append((a, k)))
+    with pytest.raises(ValueError, match="tuya_device_not_configured"):
+        integrations.control_tuya_switch({"client_id": "client", "client_secret": "private-secret", "devices": []},
+                                          "unlisted", True)
+    assert calls == []
 
 
 def test_tesla_config_keeps_credentials_private_and_validates_selected_vehicle_ids():

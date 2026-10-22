@@ -306,10 +306,28 @@ export async function updateGatewayUserStatus(userId, status, currentPassword) {
   return gatewayApi(`/api/v1/users/${encodeURIComponent(userId)}/status`, { method: "PATCH", body: { status, current_password: currentPassword } });
 }
 export async function readGatewayEnergy() {
-  const [status, categories, equipment] = await Promise.all([
-    gatewayApi("/api/v1/status"), gatewayApi("/api/v1/energy/categories"), gatewayApi("/api/v1/energy/equipment")
+  const [status, categories, equipment, engine] = await Promise.all([
+    gatewayApi("/api/v1/status"), gatewayApi("/api/v1/energy/categories"), gatewayApi("/api/v1/energy/equipment"),
+    gatewayApi("/api/v1/energy/engine?history_hours=24")
   ]);
-  return { status, categories: categories.categories || [], equipment: equipment.equipment || [], fetchedAt: new Date().toISOString() };
+  const liveReadings = engine?.latest_readings || {};
+  const liveEquipment = (equipment.equipment || []).map(item => {
+    const isDeyeInverter = item.id?.startsWith("deye-inverter-");
+    const isDeyeBattery = item.id?.startsWith("deye-battery-");
+    if (!isDeyeInverter && !isDeyeBattery) return item;
+    const fields = new Set(Object.entries(liveReadings)
+      .filter(([, reading]) => reading && ((isDeyeInverter && !reading.field.startsWith("battery_")) || (isDeyeBattery && reading.field.startsWith("battery_"))))
+      .map(([field]) => field));
+    if (!fields.size) return item;
+    const historical = (item.readings || []).filter(reading => !fields.has(reading.field));
+    const current = [...fields].map(field => ({ ...liveReadings[field], id: `live-${field}` }));
+    return { ...item, readings: [...historical, ...current], last_communication_at: engine.updated_at || item.last_communication_at };
+  });
+  return { status, categories: categories.categories || [], equipment: liveEquipment, engine, fetchedAt: new Date().toISOString() };
+}
+export async function saveGatewayEnergyEngineConfig(config) {
+  if (!config || typeof config !== "object") throw new Error("Configuração energética inválida.");
+  return gatewayApi("/api/v1/energy/engine/config", { method: "PUT", body: config });
 }
 export async function readGatewayHardwareIntegrationConfig() {
   return gatewayApi("/api/v1/integrations/hardware");
@@ -329,6 +347,10 @@ export async function controlGatewayAntminer(action, watt) {
     body.watt = watt;
   }
   return gatewayApi("/api/v1/integrations/antminer/control", { method: "POST", body });
+}
+export async function controlGatewayTuyaSwitch(deviceId, on) {
+  if (typeof deviceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(deviceId) || typeof on !== "boolean") throw new Error("Comando Tuya inválido.");
+  return gatewayApi("/api/v1/integrations/tuya/switch", { method: "POST", body: { device_id: deviceId, on } });
 }
 export async function readGatewayTeslaEvConfig() {
   return gatewayApi("/api/v1/energy/ev/tesla");
