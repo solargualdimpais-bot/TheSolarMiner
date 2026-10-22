@@ -638,8 +638,8 @@ def test_owner_can_start_tailscale_auth_without_exposing_raw_command_output(clie
 
 
 def test_tailscale_auth_url_is_strictly_validated(monkeypatch):
-    monkeypatch.setattr(gateway.subprocess, "run", lambda *args, **kwargs: type("Result", (), {
-        "returncode": 0, "stdout": '{"auth_url":"https://evil.example/a/token","connected":false}'})())
+    monkeypatch.setattr(gateway.update_helper_client, "request", lambda *_args, **_kwargs: {
+        "auth_url": "https://evil.example/a/token", "connected": False})
     with pytest.raises(gateway.HTTPException) as exc:
         gateway._start_tailscale_auth()
     assert exc.value.status_code == 503

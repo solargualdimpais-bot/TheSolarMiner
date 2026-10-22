@@ -43,7 +43,7 @@ from . import update_helper_client
 from . import updates as update_manager
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.27"
+PACKAGE_VERSION = "0.6.28"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -1700,7 +1700,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.27"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.28"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(
@@ -1819,38 +1819,25 @@ def read_system_update_source(session: dict[str, Any] = Depends(current_session)
 
 
 def _read_tailscale_status() -> dict[str, Any]:
-    """Read only the sanitized local Tailscale identity through the root helper."""
-    helper = os.environ.get("SOLARMINER_TAILSCALE_INFO_HELPER", "/usr/sbin/solarminer-tailscale-info")
+    """Read sanitized Tailscale identity through the root-owned broker socket."""
     try:
-        result = subprocess.run(["/usr/bin/sudo", "-n", helper], capture_output=True, text=True,
-                                timeout=5, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        return {"installed": False, "connected": False, "dns_name": None, "https_url": None}
-    if result.returncode != 0:
-        return {"installed": False, "connected": False, "dns_name": None, "https_url": None}
-    try:
-        status_data = json.loads(result.stdout)
-    except (json.JSONDecodeError, TypeError):
-        return {"installed": False, "connected": False, "dns_name": None, "https_url": None}
+        status_data = update_helper_client.request("tailscale_status")
+    except (OSError, RuntimeError, ValueError):
+        return {"installed": False, "connected": False, "dns_name": None, "https_url": None,
+                "helper_available": False}
     if not isinstance(status_data, dict):
-        return {"installed": False, "connected": False, "dns_name": None, "https_url": None}
-    return {key: status_data.get(key) for key in ("installed", "connected", "dns_name", "https_url")}
+        return {"installed": False, "connected": False, "dns_name": None, "https_url": None,
+                "helper_available": False}
+    return {**{key: status_data.get(key) for key in ("installed", "connected", "dns_name", "https_url")},
+            "helper_available": True}
 
 
 def _start_tailscale_auth() -> dict[str, Any]:
-    """Run a fixed privileged helper and return only a validated login URL."""
-    helper = os.environ.get("SOLARMINER_TAILSCALE_CONNECT_HELPER", "/usr/sbin/solarminer-tailscale-connect")
+    """Start Tailscale through the root-owned broker and expose only a login URL."""
     try:
-        result = subprocess.run(["/usr/bin/sudo", "-n", helper], capture_output=True, text=True,
-                                timeout=25, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        payload = update_helper_client.request("tailscale_connect")
+    except (OSError, RuntimeError, ValueError) as exc:
         raise HTTPException(503, "tailscale_start_unavailable") from exc
-    try:
-        payload = json.loads(result.stdout)
-    except (json.JSONDecodeError, TypeError) as exc:
-        raise HTTPException(503, "tailscale_start_unavailable") from exc
-    if result.returncode != 0 or not isinstance(payload, dict):
-        raise HTTPException(503, "tailscale_start_unavailable")
     auth_url = payload.get("auth_url")
     if auth_url is not None and (not isinstance(auth_url, str) or
             not re.fullmatch(r"https://login\.tailscale\.com/a/[A-Za-z0-9_-]{6,128}", auth_url)):
@@ -1886,11 +1873,15 @@ def read_tailscale_access(session: dict[str, Any] = Depends(current_session)) ->
     detected = status_data.get("https_url") if status_data.get("connected") else None
     configured = row["value"] if row else None
     endpoint = configured or detected
-    tls_ready = bool(endpoint and Path("/etc/solarminer/tailscale.crt").is_file() and
+    # The periodic certificate job issues a cert for the live MagicDNS name.
+    # Stale files from a previous Tailnet identity must not be reported as ready.
+    tls_ready = bool(endpoint and detected and endpoint == detected and
+                     Path("/etc/solarminer/tailscale.crt").is_file() and
                      Path("/etc/solarminer/tailscale.key").is_file())
     return {"installed": bool(status_data.get("installed")), "connected": bool(status_data.get("connected")),
             "dns_name": status_data.get("dns_name"), "detected_endpoint": detected,
             "configured_endpoint": configured, "endpoint": endpoint, "https_ready": tls_ready,
+            "helper_available": status_data.get("helper_available") is True,
             "router_ports_required": False,
             "note": "O Gateway tem de ser autorizado no Tailnet; a emissão HTTPS exige MagicDNS e HTTPS Certificates ativos no painel Tailscale."}
 

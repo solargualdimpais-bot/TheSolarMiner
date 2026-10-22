@@ -1,1 +1,0 @@
-solarminer ALL=(root) NOPASSWD: /usr/sbin/solarminer-tailscale-info

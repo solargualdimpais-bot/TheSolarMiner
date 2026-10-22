@@ -9,7 +9,7 @@ let automationEditingId = "";
 const state = { page: "inicio", mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], lastUpdated: null, lastMeasurementAt: null, refreshing: false, propertyPhoto: "", demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [] };
 const $ = (selector) => document.querySelector(selector);
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
-const pageLabel = (id) => id === "inicio" ? "Visão geral" : (CATEGORIES.find(c => c.id === id)?.label || getWorkspacePageLabel(id) || "Mais áreas");
+const pageLabel = (id) => id === "inicio" ? "Visão geral" : id === "owner" ? "Owner" : (CATEGORIES.find(c => c.id === id)?.label || getWorkspacePageLabel(id) || "Mais áreas");
 const timeLabel = (value) => value ? new Intl.DateTimeFormat("pt-PT", { dateStyle: "short", timeStyle: "medium" }).format(new Date(value)) : "Sem atualização";
 let editorContext=null, editorPhoto=undefined, editorPhotoFile=null;
 function openContextEditor(type,id){
@@ -149,7 +149,19 @@ function card(item) {
 }
 function metric(label, value, unit, icon, detail) {
   const safeDetail = state.mode !== "SIMULATED" && (value === null || value === undefined) ? "Sem leitura válida do Gateway" : detail;
-  return `<article class="metric-card"><div class="metric-top"><span>${esc(label)}</span><span class="metric-symbol">${icon}</span></div><div class="metric-value">${value === null || value === undefined ? "—" : esc(new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 2 }).format(value))} <small>${esc(unit)}</small></div><div class="metric-sub">${esc(safeDetail)}</div></article>`;
+  const formatted = typeof value === "number" && Number.isFinite(value)
+    ? new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 2 }).format(value)
+    : value === null || value === undefined ? "—" : String(value);
+  return `<article class="metric-card"><div class="metric-top"><span>${esc(label)}</span><span class="metric-symbol">${icon}</span></div><div class="metric-value">${esc(formatted)} <small>${esc(unit)}</small></div><div class="metric-sub">${esc(safeDetail)}</div></article>`;
+}
+function liveReadingMetric(label, categoryId, icon) {
+  const equipment = state.equipment.find(item => item.category === categoryId && !isSimulated(item));
+  const reading = equipment?.readings?.find(item => item && item.value !== null && item.value !== undefined);
+  const value = reading ? reading.value : null;
+  const detail = reading
+    ? `${equipment.name || equipment.id} · ${reading.field || "leitura"} · ${reading.trust || "UNKNOWN"}`
+    : "Sem leitura válida do Gateway";
+  return metric(label, value, reading?.unit || "", icon, detail);
 }
 function chart() {
   if (state.mode !== "SIMULATED") return `<div class="empty-state">O Gateway atual não fornece uma série temporal para este gráfico. Não são inventados pontos de histórico.</div>`;
@@ -229,14 +241,11 @@ function toggleFavoriteDevice(id){
 function renderOverview() {
   if (state.mode !== "SIMULATED") {
     const cards = state.equipment.map(card).join("") || `<div class="empty-state">Ainda não há equipamentos ou leituras registados no Gateway. Não são apresentados valores de demonstração nesta PWA.</div>`;
-    const user = sessionInfo().user;
-    const authenticated = sessionInfo().authenticated;
-    const updated = state.lastUpdated ? currentTimeLabel(state.lastUpdated) : "Ainda sem consulta";
-    return `<div class="page-heading"><div><p class="eyebrow">${authenticated ? "SESSÃO AUTENTICADA · GATEWAY" : "SOLARMiner GATEWAY"}</p><h1>SolarMiner Gateway</h1><p>${authenticated ? "Dados obtidos através da API autenticada. Áreas sem integração física são assinaladas como indisponíveis." : "Liga a PWA ao teu Gateway e autentica-te como Owner para administrar o dispositivo. Não são inventados valores nem apresentados equipamentos simulados."}</p></div><div class="date-block"><strong>${esc(user?.username || "Sem sessão")}</strong><br>${esc(user?.role || "")}</div></div>
-      <div class="status-banner"><span class="demo-stamp">${esc(state.dataStatus)}</span><span><strong>${state.dataError ? "Consulta ao Gateway" : authenticated ? "Ligação autenticada" : "É necessária uma sessão Owner"}</strong> · ${esc(state.dataError || (authenticated ? ("Última consulta: " + updated) : "Abre “Gateway · detalhes” para configurar o endpoint e iniciar sessão."))}</span></div>
-      <div class="section-heading"><div><p class="eyebrow">EQUIPAMENTOS REGISTADOS</p><h2>Estado comunicado pelo Gateway</h2></div><button class="button secondary" type="button" id="live-refresh">Consultar novamente</button></div>
-      <div class="equipment-grid">${cards}</div>
-      <section class="panel"><div class="panel-header"><div><p class="eyebrow">ADMINISTRAÇÃO</p><h2>Gestão do Gateway</h2><p>Utilizadores, convites, origem de atualizações e aplicação de firmware requerem o papel Owner.</p></div><button class="button primary" type="button" id="open-owner-management">${authenticated ? "Abrir gestão Owner" : "Configurar / iniciar sessão"}</button></div></section>`;
+    const updated = state.lastUpdated ? `Atualizado ${currentTimeLabel(state.lastUpdated)}` : "À espera de leituras";
+    return `<div class="page-heading"><div><p class="eyebrow">ENERGIA DA PROPRIEDADE</p><h1>Home</h1><p>Produção solar, bateria, mineradoras e carregamento do veículo num só resumo.</p></div><div class="date-block"><strong>${esc(state.dataStatus)}</strong><br>${esc(updated)}</div></div>
+      <div class="metric-grid">${liveReadingMetric("Inversor", "inversores", "ϟ")}${liveReadingMetric("Bateria", "baterias", "▤")}${liveReadingMetric("Mineradora", "mineradoras", "▦")}${liveReadingMetric("Veículo elétrico", "ev", "↗")}</div>
+      <div class="content-grid"><section class="panel chart-panel"><div class="panel-header"><div><p class="eyebrow">HISTÓRICO</p><h2>Fluxo de energia</h2><p>O Gateway ainda não fornece uma série temporal para o gráfico.</p></div><span class="source-tag">${esc(state.dataStatus)}</span></div>${chart()}</section><section class="panel flow-panel"><div class="panel-header"><div><p class="eyebrow">AGORA</p><h2>Equipamentos ativos</h2></div><button class="text-link" type="button" id="live-refresh">Atualizar ↻</button></div>${flowPanel()}</section></div>
+      <div class="section-heading section-heading-spaced"><div><p class="eyebrow">INSTALAÇÃO</p><h2>Equipamentos e leituras</h2></div><span class="muted-inline">${state.equipment.length} equipamentos</span></div><div class="equipment-grid">${cards}</div>`;
   }
   const totals = demoTotals();
   const allCards = state.equipment.map(card).join("") || `<div class="empty-state">Ainda não existem equipamentos configurados no Gateway.</div>`;
@@ -268,11 +277,25 @@ function renderCategory(categoryId) {
 function render() {
   freshness();
   $("#breadcrumb").textContent = `A SUA PROPRIEDADE / ${pageLabel(state.page).toUpperCase()}`;
+  const ownerPage = $("#gateway-owner-page");
+  const isOwnerPage = state.page === "owner";
+  if (ownerPage) ownerPage.hidden = !isOwnerPage;
+  $("#page-content").hidden = isOwnerPage;
+  if (isOwnerPage) {
+    const info = sessionInfo();
+    ownerPage.hidden = !info.authenticated || info.user.role !== "owner";
+    if (ownerPage.hidden) { state.page = "inicio"; $("#page-content").hidden = false; }
+    else {
+      document.querySelectorAll("[data-page]").forEach(el => el.classList.toggle("active", el.dataset.page === "owner"));
+      document.querySelectorAll("#mobile-nav button[data-action]").forEach(el => el.classList.toggle("active", el.dataset.action === "owner"));
+      return;
+    }
+  }
   const workspacePage = renderWorkspacePage(state.page);
   const gatewayBackedPages = ["inicio", ...CATEGORIES.map(c => c.id)];
   let pageHtml;
   if (state.mode !== "SIMULATED" && !gatewayBackedPages.includes(state.page)) {
-    pageHtml = `<div class="page-heading"><div><p class="eyebrow">FUNÇÃO NÃO DISPONÍVEL NO GATEWAY ATUAL</p><h1>${esc(pageLabel(state.page))}</h1><p>Esta área ainda não tem um contrato de dados ou comandos físicos no Gateway. Para evitar confusão, a sessão autenticada não apresenta controlos ou valores de demonstração aqui.</p></div></div><div class="empty-state">Sem dados reais fornecidos pelo Gateway para esta área. A administração do Owner está em “Gateway · detalhes”.</div>`;
+    pageHtml = `<div class="page-heading"><div><p class="eyebrow">FUNÇÃO NÃO DISPONÍVEL NO GATEWAY ATUAL</p><h1>${esc(pageLabel(state.page))}</h1><p>Esta área ainda não tem um contrato de dados ou comandos físicos no Gateway. Para evitar confusão, a sessão autenticada não apresenta controlos ou valores de demonstração aqui.</p></div></div><div class="empty-state">Sem dados reais fornecidos pelo Gateway para esta área. A administração está na página Owner.</div>`;
   } else {
     pageHtml = state.page === "inicio" ? renderOverview() : (workspacePage || (CATEGORIES.some(c=>c.id===state.page) ? renderCategory(state.page) : renderOverview()));
     if(state.page === "automatismos") pageHtml = renderAutomationsPage(workspace, automationEditingId);
@@ -286,12 +309,15 @@ function render() {
   if (hero && (workspace.house.photo || state.propertyPhoto)) hero.style.backgroundImage = `linear-gradient(90deg, rgba(9,9,9,.88) 0%, rgba(9,9,9,.62) 58%, rgba(9,9,9,.22) 100%), url("${workspace.house.photo || state.propertyPhoto}")`;
   if (state.page === "casa" && workspace.house.photo) document.documentElement.style.setProperty("--house-background-image", `url("${workspace.house.photo}")`); else document.documentElement.style.removeProperty("--house-background-image");
   document.querySelectorAll("[data-page]").forEach(el => el.classList.toggle("active", el.dataset.page === state.page));
+  const mobilePage = { home: "inicio", house: "casa", profile: "profile", energy: "energia", devices: "devices", automations: "automatismos", owner: "owner" };
+  document.querySelectorAll("#mobile-nav button[data-action]").forEach(el => el.classList.toggle("active", mobilePage[el.dataset.action] === state.page));
   $("#refresh-button").disabled = state.refreshing;
   if (state.page === "ev") refreshTeslaEvConfig().catch(error => { const target = $("#ev-tesla-status"); if (target) target.textContent = "Não foi possível consultar a configuração Tesla: " + error.message; });
 }
 function navigate(page) {
   if (page === "mais") { populateMore(); $("#more-dialog").showModal(); return; }
-  if (!["inicio", ...CATEGORIES.map(c=>c.id), "energia", "casa", "profile", "engine", "devices", "paineis-solares", "automatismos", "producao"].includes(page)) return;
+  if (page === "owner" && (!sessionInfo().authenticated || sessionInfo().user.role !== "owner")) return;
+  if (!["inicio", ...CATEGORIES.map(c=>c.id), "energia", "casa", "profile", "engine", "devices", "paineis-solares", "automatismos", "producao", "owner"].includes(page)) return;
   state.page = page; render(); if(page==="casa" && workspace.house.restoreScroll){const y=Number(workspace.house.returnScrollY||0);workspace.house.restoreScroll=false;requestAnimationFrame(()=>window.scrollTo({top:y,behavior:"auto"}));}else window.scrollTo({top:0,behavior:"smooth"});
 }
 function populateMore() { $("#more-links").innerHTML = [{id:"energia",label:"Energia",icon:"◉"},{id:"casa",label:"Casa",icon:"⌂"},{id:"engine",label:"Engine",icon:"⌘"},{id:"profile",label:"Profile",icon:"○"},{id:"devices",label:"Devices",icon:"⚙"},{id:"automatismos",label:"Automatismos",icon:"⟳"},{id:"producao",label:"Produção solar",icon:"☼"},...CATEGORIES,{id:"paineis-solares",label:"Painéis solares",icon:"☼"}].map(c=>`<button data-page="${esc(c.id)}"><span>${esc(c.icon)}</span>${esc(c.label)}<span class="more-arrow">↗</span></button>`).join("") + `<button id="more-settings"><span>⚙</span>Personalizar demonstração<span class="more-arrow">↗</span></button>`; $("#more-settings").addEventListener("click",()=>{$("#more-dialog").close();$("#settings-dialog").showModal();}); }
@@ -321,6 +347,7 @@ $("#mobile-nav").addEventListener("click", e => {
   else if(action==="energy"){navigate("energia");}
   else if(action==="devices"){navigate("devices");}
   else if(action==="automations"){navigate("automatismos");}
+  else if(action==="owner"){navigate("owner");}
 });
 $("#page-content").addEventListener("submit", e => {
   if(e.target.id === "auto-form") { e.preventDefault(); if(saveAutomationForm(e.target,workspace)){automationEditingId="";render();showFeatureNotice("Automatismo guardado na demonstração local. Nenhum comando foi enviado.");} return; }
@@ -494,6 +521,9 @@ function markGatewayAuthenticated() {
 function updateSessionUi() {
   const info = sessionInfo();
   const status = $("#gateway-session-status");
+  const isOwner = Boolean(info.authenticated && info.user.role === "owner");
+  $("#owner-nav-item").hidden = !isOwner;
+  $("#owner-mobile-link").hidden = !isOwner;
   if (info.authenticated) {
     const presence = presenceInfo();
     status.textContent = `Sessão autenticada: ${info.user.username} (${info.user.role}) · token apenas em memória · presença da sessão: ${presence.state || "unknown"}; não prova presença física.`;
@@ -840,7 +870,8 @@ async function refreshGatewayTailscale() {
   if(result.endpoint){try{localStorage.setItem("solarminer-gateway-tailscale-endpoint-v1",result.endpoint);}catch{}}
   else {try{localStorage.removeItem("solarminer-gateway-tailscale-endpoint-v1");}catch{}}
   const status=$("#gateway-tailscale-status");
-  status.textContent=!result.installed ? "Cliente Tailscale não instalado. Instala a versão SolarMiner preparada para Tailscale." :
+  status.textContent=result.helper_available===false ? "O Gateway não conseguiu consultar o serviço Tailscale. Atualiza o Gateway para uma versão com o broker Tailscale ativo e volta a tentar." :
+    !result.installed ? "Cliente Tailscale não instalado. Instala a versão SolarMiner preparada para Tailscale." :
     !result.connected ? "Tailscale instalado, mas o Gateway ainda não foi autorizado/ligado ao Tailnet. Conclui a autorização no terminal do Gateway." :
     !result.https_ready ? `Gateway ligado ao Tailnet (${result.dns_name}), mas o certificado HTTPS ainda não está pronto. Ativa MagicDNS e HTTPS Certificates no painel Tailscale e aguarda a emissão automática.` :
     `Tailscale ativo e HTTPS pronto: ${result.endpoint}. Não são necessárias portas no router.`;

@@ -1,14 +1,14 @@
 # Acesso remoto por Tailscale
 
-O pacote SolarMiner 0.6.26 instala o cliente Tailscale oficial para Debian 13 AMD64, ativa `tailscaled`, cria um verificador de estado de leitura para a PWA e agenda a emissão/renovação do certificado HTTPS do MagicDNS. O Gateway não cria uma conta Tailscale, não guarda uma auth key e não instala Tailscale no iPhone.
+O pacote SolarMiner 0.6.26 instala o cliente Tailscale oficial para Debian 13 AMD64. Desde a versão 0.6.28, a API consulta e inicia o cliente através do broker root restrito, sem `sudo`, e agenda a emissão/renovação do certificado HTTPS MagicDNS. O Gateway não cria uma conta Tailscale, não guarda uma auth key e não instala Tailscale no iPhone.
 
 ## Primeira instalação
 
 1. A pen instala o Tailscale a partir do repositório oficial assinado e ativa `tailscaled`.
-2. Depois de registares o Owner, abre Gestão do Gateway → Tailscale na PWA e toca em **Ligar Gateway ao Tailscale**. A PWA pede ao Gateway para executar `tailscale up` e mostra um link temporário. Abre o link e autoriza este Gateway na tua conta. Também podes usar o URL apresentado pelo instalador no terminal.
+2. Depois de registares o Owner, abre **Owner → Tailscale** na PWA e toca em **Ligar Gateway ao Tailscale**. A PWA pede ao Gateway para executar `tailscale up` através do broker autorizado e mostra um link temporário. Abre o link e autoriza este Gateway na tua conta. Na instalação por USB, também podes usar o URL apresentado pelo instalador no terminal.
 3. No Tailscale Admin Console, ativa MagicDNS e **HTTPS Certificates**. A emissão TLS requer esta opção; o nome do dispositivo e o domínio do Tailnet ficam publicados no Certificate Transparency, conforme o funcionamento de certificados públicos.
 4. Instala a app Tailscale no iPhone, inicia sessão no mesmo Tailnet e liga a app.
-5. Liga a PWA ao Gateway pelo IP LAN ou pelo nome `*.ts.net`. Depois de uma sessão Owner, a área Tailscale consulta o endpoint detetado, permite configurar/guardar o endereço do Gateway e fornece **Usar para ligar**. A PWA guarda esse endereço localmente e tenta-o automaticamente se o endpoint principal falhar.
+5. Liga a PWA ao Gateway pelo IP LAN ou pelo nome `*.ts.net`. Depois de uma sessão Owner, a página Owner consulta o endpoint detetado, permite configurar/guardar o endereço do Gateway e fornece **Usar para ligar**. A PWA guarda esse endereço localmente e tenta-o automaticamente se o endpoint principal falhar.
 
 O Tailscale estabelece ligações de saída e não exige encaminhamento de portas no router. O Gateway serve o IP LAN na porta HTTPS 8443 e o endpoint MagicDNS na porta HTTPS 443. O Nginx usa um certificado público Tailscale para `*.ts.net`; a API continua a aplicar sessões, roles Owner, TLS e autenticação Ed25519.
 
@@ -23,7 +23,7 @@ A instalação não pode autorizar o Gateway num Tailnet por conta própria sem 
 - `GET /api/v1/system/tailscale` — devolve estado reduzido (instalado/ligado), nome MagicDNS, endpoint detetado/configurado e se os ficheiros TLS estão prontos. Só Owner.
 - `PUT /api/v1/system/tailscale` — grava `{ "endpoint": "https://host.tailnet.ts.net" }` ou `{ "endpoint": null }` para voltar à deteção automática. Só Owner; exige HTTPS, host `*.ts.net`, porta padrão e sem caminho, query, fragmento ou credenciais.
 
-A API usa um helper root de leitura para o estado e um helper fixo para executar `tailscale up`; ambos são limitados por sudoers. A PWA recebe apenas o URL temporário de autorização, nunca a auth key, chaves privadas ou estado completo dos peers. O URL não é escrito nos logs.
+A API consulta o estado e inicia tailscale up através do broker root-owned no socket Unix privado. O broker só aceita tailscale_status e tailscale_connect; a PWA recebe apenas o URL temporário de autorização, nunca a auth key, chaves privadas ou o estado completo dos peers. O URL não é escrito nos logs.
 
 ## Diagnóstico local como root
 

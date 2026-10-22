@@ -1,3 +1,0 @@
-# The API may check readiness and enqueue a UUID; activation/recovery modes are
-# available only to their root-owned systemd units, never via sudo from the API.
-solarminer ALL=(root) NOPASSWD: /usr/sbin/solarminer-update-apply --preflight, /usr/sbin/solarminer-update-apply --enqueue *

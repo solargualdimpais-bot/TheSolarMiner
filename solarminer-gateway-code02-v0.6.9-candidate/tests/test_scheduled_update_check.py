@@ -36,7 +36,7 @@ def test_update_broker_is_root_owned_and_socket_is_private_to_service_account():
     assert "ReadWritePaths=/opt/solarminer /var/lib/solarminer" in service_unit
 
 
-def test_root_broker_accepts_only_preflight_or_validated_enqueue(monkeypatch):
+def test_root_broker_accepts_only_allowlisted_actions_and_validated_enqueue(monkeypatch):
     calls = []
 
     def runner(args, **kwargs):
@@ -55,6 +55,57 @@ def test_root_broker_accepts_only_preflight_or_validated_enqueue(monkeypatch):
     assert update_broker.handle_request(b'{"action":"enqueue","operation_id":"../../etc/passwd"}\n', runner)["status"] == "error"
     assert update_broker.handle_request(b'{"action":"recover"}\n', runner)["status"] == "error"
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize(("action", "helper", "payload"), [
+    ("tailscale_status", "/usr/sbin/solarminer-tailscale-info",
+     {"installed": True, "connected": True, "dns_name": "solarminer.tailnet.ts.net"}),
+    ("tailscale_connect", "/usr/sbin/solarminer-tailscale-connect",
+     {"started": True, "connected": False, "auth_url": "https://login.tailscale.com/a/AbCdEf123456"}),
+])
+def test_root_broker_runs_fixed_tailscale_helpers_and_returns_only_sanitized_data(action, helper, payload):
+    calls = []
+
+    def runner(args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=0, stdout=json.dumps({**payload, "secret": "never-return"}), stderr="")
+
+    response = update_broker.handle_request(json.dumps({"action": action}).encode() + b"\n", runner)
+    assert calls[0][0] == [helper]
+    assert calls[0][1]["timeout"] == (28 if action == "tailscale_connect" else 12)
+    assert "secret" not in response
+    if action == "tailscale_status":
+        assert response == {
+            "installed": True, "connected": True,
+            "dns_name": "solarminer.tailnet.ts.net",
+            "https_url": "https://solarminer.tailnet.ts.net",
+        }
+    else:
+        assert response == payload
+
+
+@pytest.mark.parametrize(("payload", "reason"), [
+    ({"installed": True, "connected": True, "dns_name": "attacker.example"}, "tailscale_status_invalid"),
+    ({"installed": True, "connected": True, "dns_name": "solarminer.tailnet.ts.net", "https_url": "https://attacker.example"}, None),
+])
+def test_root_broker_rejects_invalid_tailscale_identity_or_ignores_helper_supplied_urls(payload, reason):
+    def runner(_args, **_kwargs):
+        return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+
+    response = update_broker.handle_request(b'{"action":"tailscale_status"}\n', runner)
+    if reason:
+        assert response == {"status": "error", "reason": reason}
+    else:
+        assert response["https_url"] == "https://solarminer.tailnet.ts.net"
+
+
+def test_root_broker_does_not_report_pending_tailscale_login_as_success_without_auth_url():
+    def runner(_args, **_kwargs):
+        return SimpleNamespace(returncode=0, stdout='{"started":true,"connected":false,"auth_url":null}', stderr="")
+
+    assert update_broker.handle_request(b'{"action":"tailscale_connect"}\n', runner) == {
+        "status": "error", "reason": "tailscale_auth_url_missing"
+    }
 
 
 def test_helper_client_uses_private_unix_socket_and_rejects_bad_operation_ids(monkeypatch, tmp_path):

@@ -8,16 +8,16 @@ O Gateway permite apenas a origem exata `https://solargualdimpais-bot.github.io`
 
 ## Rede e TLS
 
-O backend escuta apenas em `127.0.0.1:8443`. O Nginx do pacote recebe o tráfego externo em TCP 80/443, encaminha a API com TLS verificado para o backend e limita tentativas de login. TCP 80 serve o desafio ACME. O router deve encaminhar WAN TCP 80 → Gateway TCP 80 e WAN TCP 443 → Gateway TCP 443. Não encaminhes 8443.
+O Gateway serve a LAN em `https://<IP-LAN>:8443`. Para acesso remoto, o Gateway entra no Tailnet, pede um certificado HTTPS para o seu nome MagicDNS `*.ts.net` e o Nginx recebe essa ligação em TCP 443. O iPhone também tem de estar ligado ao mesmo Tailnet. Não é necessário encaminhar portas no router.
 
-O Gateway tenta emitir um certificado público Let's Encrypt para o seu IPv4 público e renova-o automaticamente. Na PWA, usa `https://IP-PUBLICO`, sem `:8443`. Um IP LAN `192.168.x.x` não corresponde ao certificado do IP WAN. Para usar o mesmo URL enquanto estás no Wi-Fi, o router precisa de suportar NAT loopback/hairpin. Requisitos, limitações de CGNAT e verificação estão em `docs/REMOTE_ACCESS_AND_TLS.md`.
+A renovação de certificado por IPv4 público é opcional e fica desativada por padrão. Não uses um IP público por CGNAT. O acesso direto por IP LAN usa a identidade TLS local do Gateway e exige confiança TLS explícita no browser; o nome MagicDNS `*.ts.net` usa o certificado público emitido pela Tailscale.
 
 O browser precisa de Web Crypto Ed25519 e IndexedDB. A PWA não ignora nem contorna erros TLS.
 
 ## Criar o primeiro Owner
 
 1. No fim da instalação USB, introduz duas vezes na consola local do Gateway a palavra-passe inicial do Owner. Os caracteres são visíveis enquanto escreves; fica guardado apenas um verificador Argon2id.
-2. Abre o GitHub Pages no iPhone, abre **Gateway · detalhes**, informa `https://IP-PUBLICO` e testa a ligação.
+2. Abre o GitHub Pages no iPhone, toca em **Ligar Gateway**, informa o endpoint LAN ou Tailscale e testa a ligação. Para Tailscale, ativa MagicDNS e HTTPS Certificates e mantém a app Tailscale ligada no iPhone.
 3. Quando surgir `BOOTSTRAP_PENDING`, escolhe **Registar este telemóvel como Owner**, informa o nome e a palavra-passe definida localmente. A PWA gera uma chave Ed25519 para esse browser. Guarda offline a chave de recuperação mostrada uma única vez.
 
 O bootstrap exige uma origem permitida, palavra-passe configurada localmente, assinatura de dispositivo e uso único. Não pede token nem MAC.

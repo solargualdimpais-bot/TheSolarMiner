@@ -1,5 +1,5 @@
 [Unit]
-Description=SolarMiner restricted update helper broker request
+Description=SolarMiner restricted privileged helper broker request
 After=local-fs.target solarminer-recovery.service
 Requires=solarminer-recovery.service
 
@@ -11,7 +11,7 @@ StandardInput=socket
 StandardOutput=socket
 StandardError=journal
 ExecStart=/usr/bin/solarminer-update-broker
-TimeoutStartSec=20
+TimeoutStartSec=35
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true

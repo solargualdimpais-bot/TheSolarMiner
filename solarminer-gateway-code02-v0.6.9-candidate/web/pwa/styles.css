@@ -235,3 +235,10 @@ html[data-font="small"]{--font-ui-scale:.9;}html[data-font="normal"]{--font-ui-s
 @media(max-width:580px){.gateway-form-grid{grid-template-columns:minmax(0,1fr)}.gateway-form-grid button{width:100%}.invite-row{align-items:flex-start;flex-direction:column}.invite-row button{width:100%}.gateway-user-row>label{width:100%}.gateway-auth-panel{padding:12px}}
 .integration-form-grid fieldset{margin:0}
 @media(max-width:680px){.integration-form-grid{grid-template-columns:1fr}.integration-form-grid fieldset{padding:11px}}
+/* Keep Gateway administration out of the Home dashboard; it appears only on the Owner page. */
+.owner-admin-page{display:grid;gap:14px}
+.owner-admin-page[hidden]{display:none!important}
+.owner-admin-page>.page-heading{padding-top:20px}
+.gateway-auth-panel{width:100%}
+.nav-item[hidden],.mobile-nav button[hidden],.gateway-auth-panel[hidden],[hidden]{display:none!important}
+@media(max-width:680px){.mobile-nav{grid-template-columns:repeat(auto-fit,minmax(0,1fr))}.mobile-nav button[hidden]{display:none!important}}

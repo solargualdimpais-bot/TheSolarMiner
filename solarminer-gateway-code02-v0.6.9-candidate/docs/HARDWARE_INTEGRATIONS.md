@@ -4,7 +4,7 @@ Esta versão disponibiliza configuração Owner e leituras iniciadas no Gateway 
 
 ## Configuração na PWA
 
-Abre **Gateway · detalhes → Ligações de leitura** numa sessão Owner autenticada para Deye, Antminer e Tuya. Configura Tesla em **Energia → Carregador EV**.
+Abre **Owner → Ligações de leitura** numa sessão Owner autenticada para Deye, Antminer e Tuya. Configura Tesla em **Energia → Carregador EV**.
 
 - **Deye trifásico de 15 kW · Modbus TCP:** indica o IP LAN do inversor, porta Modbus e Unit ID. A leitura usa apenas FC03. A árvore do repositório não contém um mapa de registos confirmado para a variante exata e o firmware do aparelho. A resposta permanece como registos brutos; não deve ser interpretada como potência, energia ou tensão.
 - **Antminer S19K Pro:** indica o IP LAN e a porta da API de monitorização (predefinição 4028). O Gateway emite somente `summary`, `stats` e `devs`, uma chamada por ligação. O firmware do minerador/rede tem de aceitar o IP do Gateway. Não se configuram pools, ventoinhas, reinícios ou outras funções.

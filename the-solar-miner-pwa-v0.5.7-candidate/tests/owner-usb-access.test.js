@@ -20,6 +20,17 @@ test("Owner user management uses authenticated Gateway endpoints with reauthenti
   assert.match(app, /window\.prompt\("Confirma a palavra-passe atual do Owner/);
 });
 
+test("Gateway administration is on an Owner-only page and live Home uses Gateway readings", () => {
+  const home = app.match(/function renderOverview\(\) \{([\s\S]*?)\r?\n\}\r?\nfunction renderCategory/);
+  assert.ok(home, "renderOverview must remain a distinct dashboard renderer");
+  assert.match(home[1], /liveReadingMetric\("Inversor"/);
+  assert.match(home[1], /liveReadingMetric\("Bateria"/);
+  assert.doesNotMatch(home[1], /Gestão do Gateway|gateway-update-management|gateway-tailscale-management/);
+  assert.match(html, /id="gateway-owner-page" class="owner-admin-page" hidden/);
+  assert.match(html, /id="owner-nav-item" class="nav-item" data-page="owner" hidden/);
+  assert.match(app, /if \(page === "owner" && \(!sessionInfo\(\)\.authenticated \|\| sessionInfo\(\)\.user\.role !== "owner"\)\) return/);
+});
+
 test("the recovery key can be downloaded only from the first-owner one-time display", () => {
   assert.match(html, /gateway-download-recovery-key/);
   assert.match(html, /gateway-owner-recovery-form/);
@@ -56,6 +67,7 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   const embeddedApp = embedded("app.js");
   const embeddedAuth = embedded("gateway-auth.js");
   const embeddedWorker = embedded("service-worker.js");
+  const embeddedCss = embedded("styles.css");
   const control = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/packaging/control", import.meta.url), "utf8");
   const installer = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/packaging/install-from-usb.sh", import.meta.url), "utf8");
   assert.match(embeddedHtml, /gateway-user-management/);
@@ -71,11 +83,15 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   assert.match(embeddedAuth, /\/api\/v1\/system\/tailscale/);
   assert.match(embeddedAuth, /\/api\/v1\/system\/tailscale\/connect/);
   assert.match(embeddedApp, /startGatewayTailscale/);
-  assert.match(embeddedWorker, /owner-pwa-v0\.6\.27/);
+  assert.match(embeddedWorker, /owner-pwa-v0\.6\.28/);
   assert.match(embeddedWorker, /password-device-login/);
-  assert.match(embeddedHtml, /OWNER PWA 0\.6\.27/);
+  assert.match(embeddedHtml, /OWNER PWA 0\.6\.28/);
   assert.match(embeddedHtml, /gateway-password-login-form/);
-  assert.match(control, /^Version: 0\.6\.27$/m);
-  assert.match(installer, /solarminer-gateway_0\.6\.27_amd64\.deb/);
+  assert.match(control, /^Version: 0\.6\.28$/m);
+  assert.match(installer, /solarminer-gateway_0\.6\.28_amd64\.deb/);
   assert.match(installer, /install-tailscale\.sh/);
+  assert.equal(embeddedHtml, html);
+  assert.equal(embeddedApp, app);
+  assert.equal(embeddedWorker, serviceWorker);
+  assert.equal(embeddedCss, read("styles.css"));
 });

@@ -29,6 +29,7 @@
         <button class="nav-item" data-page="casa"><span class="nav-icon">⌂</span>Casa</button>
         <button class="nav-item" data-page="engine"><span class="nav-icon">⌘</span>Engine</button>
         <button class="nav-item" data-page="profile"><span class="nav-icon">○</span>Profile</button>
+        <button id="owner-nav-item" class="nav-item" data-page="owner" hidden><span class="nav-icon">⚙</span>Owner</button>
         <button class="nav-item" data-page="automatismos"><span class="nav-icon">⟳</span>Automatismos</button>
         <button class="nav-item" data-page="inversores"><span class="nav-icon">ϟ</span>Inversores</button>
         <button class="nav-item" data-page="baterias"><span class="nav-icon">▤</span>Baterias</button>
@@ -46,67 +47,12 @@
       <section id="gateway-status-strip" class="gateway-status-strip" aria-live="polite">
         <div class="gateway-status-dot" aria-hidden="true"></div>
         <div class="gateway-status-copy"><strong id="gateway-status-label">GATEWAY NÃO CONFIGURADO</strong><small id="gateway-status-detail">Configura o endpoint HTTPS do Gateway e inicia sessão.</small></div>
-        <button id="open-gateway-dialog" class="button secondary gateway-manage" type="button">Gateway · detalhes</button>
+        <button id="open-gateway-dialog" class="button secondary gateway-manage" type="button">Ligar Gateway</button>
       </section>
       <div id="notice" class="notice" role="status" hidden></div>
       <section id="page-content" aria-live="polite"></section>
-      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.6.27</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
-    </main>
-  </div>
-
-  <nav class="mobile-nav" id="mobile-nav" aria-label="Navegação móvel">
-    <button class="active" data-action="home"><span>⌂</span>Home</button>
-    <button data-action="profile"><span>○</span>Profile</button>
-    <button data-action="energy"><span>◍</span>Energy</button>
-    <button data-action="house"><span>◫</span>Casa</button>
-    <button data-action="devices"><span>⚙</span>Devices</button>
-    <button data-action="automations"><span>⟳</span>Automatismos</button>
-  </nav>
-
-  <dialog id="settings-dialog" class="settings-dialog">
-    <form method="dialog" class="dialog-header"><div><p class="eyebrow">DEMO · CONFIGURAÇÃO LOCAL</p><h2>Personalizar demonstração</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></form>
-    <div class="dialog-body">
-      <div class="status-banner demo-banner"><span class="demo-stamp">DEMO</span><span><strong>Demonstração com diagnóstico limitado.</strong> A aplicação pode consultar os endpoints públicos de saúde e identificação depois de uma ação explícita. Não inclui sessão autenticada nem conclui emparelhamento; a identidade do Gateway continua por validar.</span></div>
-      <section class="photo-settings" aria-labelledby="photo-settings-title">
-        <p class="eyebrow" id="photo-settings-title">PERSONALIZAÇÃO VISUAL</p>
-        <p class="field-note">Escolhe uma fotografia da propriedade. A imagem é redimensionada e guardada apenas neste browser; não é enviada para nenhum servidor.</p>
-        <label for="property-photo-file">Fotografia da propriedade</label><input id="property-photo-file" type="file" accept="image/*">
-        <button id="remove-property-photo" class="button secondary" type="button">Remover fotografia</button>
-        <div id="photo-result" class="field-note" role="status" aria-live="polite"></div>
-        <p class="eyebrow weather-setting-label">CONDIÇÃO DO CÉU · SIMULADA</p>
-        <div class="weather-options settings-weather-options" role="group" aria-label="Condição do céu simulada"><button type="button" data-sky="limpo">☀️ <span>Limpo</span></button><button type="button" data-sky="pouco nublado" class="selected">⛅ <span>Pouco nublado</span></button><button type="button" data-sky="muito nublado">☁️ <span>Muito nublado</span></button><button type="button" data-sky="tempestade">⛈️ <span>Trovoada</span></button></div>
-      </section>
-      <div class="security-callout"><strong>SIMULATED · LOCAL ONLY.</strong> Os valores e controlos energéticos são fictícios e alteram apenas a interface. O diagnóstico do Gateway é uma operação de leitura separada; não há autenticação, escritas Modbus nem comandos físicos.</div>
-      <div class="dialog-actions"><button class="button primary" type="button" id="close-demo-settings">Fechar</button></div>
-    </div>
-  </dialog>
-
-  <dialog id="weather-dialog" class="settings-dialog compact-dialog">
-    <form method="dialog" class="dialog-header"><div><p class="eyebrow">CLIMA · SIMULADO</p><h2>Condição do céu</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></form>
-    <div class="dialog-body"><p class="field-note">Estas condições são fictícias e servem apenas para experimentar a interface.</p><div class="weather-options" role="group" aria-label="Escolher condição simulada"><button type="button" data-sky="limpo">☀️ <span>Limpo</span></button><button type="button" data-sky="pouco nublado" class="selected">⛅ <span>Pouco nublado</span></button><button type="button" data-sky="muito nublado">☁️ <span>Muito nublado</span></button><button type="button" data-sky="tempestade">⛈️ <span>Trovoada</span></button></div><div class="security-callout">SIMULATED · LOCAL ONLY. Não existe ligação a um serviço meteorológico.</div></div>
-  </dialog>
-  <dialog id="production-dialog" class="settings-dialog compact-dialog">
-    <form method="dialog" class="dialog-header"><div><p class="eyebrow">PRODUÇÃO · SIMULATED</p><h2>Últimas 3h + previsão visual</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></form>
-    <div class="dialog-body"><div class="production-summary"><div><span>AGORA</span><strong>4,2 kW</strong></div><div><span>PICO</span><strong>5,1 kW</strong></div><div><span>+6H</span><strong>0,8 kW</strong></div></div><svg class="chart detail-chart" viewBox="0 0 620 220" role="img" aria-label="Curva ilustrativa de produção e previsão simulada"><defs><linearGradient id="detailFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#dcc99c" stop-opacity=".24"/><stop offset="100%" stop-color="#dcc99c" stop-opacity="0"/></linearGradient></defs><path class="chart-grid" d="M38 35H602 M38 80H602 M38 125H602 M38 170H602"/><path d="M38 160 C90 145 120 120 180 100 S260 55 330 60 L330 170 L38 170Z" fill="url(#detailFill)"/><path class="chart-line" d="M38 160 C90 145 120 120 180 100 S260 55 330 60"/><path d="M330 60 C390 72 430 105 480 132 S550 156 602 176" fill="none" stroke="#dcc99c" stroke-dasharray="8 6" stroke-width="2"/><g class="chart-label"><text x="38" y="198">−3h</text><text x="180" y="198">−1h</text><text x="320" y="198">Agora</text><text x="450" y="198">+3h</text><text x="580" y="198">+6h</text></g></svg><p class="field-note">Curva ilustrativa, não é uma previsão meteorológica nem uma medição energética real.</p></div>
-  </dialog>
-  <dialog id="more-dialog" class="settings-dialog compact-dialog"><form method="dialog" class="dialog-header"><div><p class="eyebrow">NAVEGAÇÃO</p><h2>Áreas</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></form><div class="more-links" id="more-links"></div></dialog>
-  <dialog id="gateway-dialog" class="settings-dialog">
-    <form method="dialog" class="dialog-header"><div><p class="eyebrow">LIGAÇÃO SEGURA</p><h2>SolarMiner Gateway</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></form>
-    <div class="dialog-body">
-      <div class="status-banner"><span class="demo-stamp">SEGURANÇA</span><span>A ligação só é aceite quando o browser valida o certificado HTTPS e o dispositivo conclui a autenticação criptográfica.</span></div>
-      <p class="field-note">Na rede local podes usar o IP LAN do Gateway na porta 8443. Fora de casa, o PWA tenta o endereço Tailscale configurado pelo Owner. O iPhone tem de ter Tailscale instalado e ligado ao mesmo Tailnet; TLS continua sempre validado.</p>
-      <label for="gateway-endpoint">Endpoint HTTPS principal (LAN ou Tailscale)</label><input id="gateway-endpoint" type="url" inputmode="url" placeholder="https://192.168.8.168:8443" autocomplete="off" spellcheck="false">
-      <div class="dialog-actions"><button id="gateway-check" class="button primary" type="button">Testar endpoint</button><button id="gateway-clear" class="button secondary" type="button">Desassociado / limpar</button></div>
-      <div id="gateway-result" class="connection-result" role="status" aria-live="polite">Nenhum endpoint foi testado. A PWA permanece em modo demonstração.</div>
-      <div id="gateway-session-status" class="connection-result" role="status" aria-live="polite">Sem sessão autenticada neste dispositivo.</div>
-      <form id="gateway-password-login-form" class="gateway-form-grid" hidden>
-        <p class="field-note">Inicia sessão com o utilizador e a palavra-passe já registados no Gateway. Num dispositivo novo, o Gateway regista uma identidade criptográfica neste browser após validar a palavra-passe.</p>
-        <label for="gateway-login-username">Utilizador</label><input id="gateway-login-username" autocomplete="username" maxlength="128" required>
-        <label for="gateway-login-password">Palavra-passe</label><input id="gateway-login-password" type="password" autocomplete="current-password" required>
-        <button class="button primary" type="submit">Entrar no Gateway</button>
-      </form>
-      <div class="dialog-actions"><button id="open-owner-recovery" class="button secondary" type="button">Recuperar Owner com a pen</button></div>
-      <section class="panel gateway-auth-panel" id="gateway-invite-management" hidden>
+      <section id="gateway-owner-page" class="owner-admin-page" hidden aria-labelledby="owner-page-title">
+        <div class="page-heading"><div><p class="eyebrow">ADMINISTRAÇÃO PRIVADA</p><h1 id="owner-page-title">Owner</h1><p>Utilizadores, ligações de equipamentos, Tailscale e atualizações do Gateway.</p></div></div>      <section class="panel gateway-auth-panel" id="gateway-invite-management" hidden>
         <div class="panel-header"><div><p class="eyebrow">ADMINISTRAÇÃO DO GATEWAY</p><h3>Convites de utilização única</h3></div><span class="source-tag">OWNER</span></div>
         <form id="gateway-create-invite-form" class="gateway-form-grid">
           <label>Etiqueta do convite<input id="gateway-invite-label" maxlength="120" required placeholder="Ex.: Telemóvel da família"></label>
@@ -153,6 +99,65 @@
         <div id="hardware-integrations-status" class="connection-result" role="status" aria-live="polite">Configuração apenas disponível ao Owner autenticado.</div>
         <pre id="hardware-integrations-result" class="integration-result" hidden aria-live="polite"></pre>
       </section>
+      </section>
+
+      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.6.28</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
+    </main>
+  </div>
+
+  <nav class="mobile-nav" id="mobile-nav" aria-label="Navegação móvel">
+    <button class="active" data-action="home"><span>⌂</span>Home</button>
+    <button data-action="profile"><span>○</span>Profile</button>
+    <button data-action="energy"><span>◍</span>Energy</button>
+    <button data-action="house"><span>◫</span>Casa</button>
+    <button data-action="devices"><span>⚙</span>Devices</button>
+    <button data-action="automations"><span>⟳</span>Automatismos</button>
+    <button id="owner-mobile-link" data-action="owner" hidden><span>⚙</span>Owner</button>
+  </nav>
+
+  <dialog id="settings-dialog" class="settings-dialog">
+    <form method="dialog" class="dialog-header"><div><p class="eyebrow">DEMO · CONFIGURAÇÃO LOCAL</p><h2>Personalizar demonstração</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></form>
+    <div class="dialog-body">
+      <div class="status-banner demo-banner"><span class="demo-stamp">DEMO</span><span><strong>Demonstração com diagnóstico limitado.</strong> A aplicação pode consultar os endpoints públicos de saúde e identificação depois de uma ação explícita. Não inclui sessão autenticada nem conclui emparelhamento; a identidade do Gateway continua por validar.</span></div>
+      <section class="photo-settings" aria-labelledby="photo-settings-title">
+        <p class="eyebrow" id="photo-settings-title">PERSONALIZAÇÃO VISUAL</p>
+        <p class="field-note">Escolhe uma fotografia da propriedade. A imagem é redimensionada e guardada apenas neste browser; não é enviada para nenhum servidor.</p>
+        <label for="property-photo-file">Fotografia da propriedade</label><input id="property-photo-file" type="file" accept="image/*">
+        <button id="remove-property-photo" class="button secondary" type="button">Remover fotografia</button>
+        <div id="photo-result" class="field-note" role="status" aria-live="polite"></div>
+        <p class="eyebrow weather-setting-label">CONDIÇÃO DO CÉU · SIMULADA</p>
+        <div class="weather-options settings-weather-options" role="group" aria-label="Condição do céu simulada"><button type="button" data-sky="limpo">☀️ <span>Limpo</span></button><button type="button" data-sky="pouco nublado" class="selected">⛅ <span>Pouco nublado</span></button><button type="button" data-sky="muito nublado">☁️ <span>Muito nublado</span></button><button type="button" data-sky="tempestade">⛈️ <span>Trovoada</span></button></div>
+      </section>
+      <div class="security-callout"><strong>SIMULATED · LOCAL ONLY.</strong> Os valores e controlos energéticos são fictícios e alteram apenas a interface. O diagnóstico do Gateway é uma operação de leitura separada; não há autenticação, escritas Modbus nem comandos físicos.</div>
+      <div class="dialog-actions"><button class="button primary" type="button" id="close-demo-settings">Fechar</button></div>
+    </div>
+  </dialog>
+
+  <dialog id="weather-dialog" class="settings-dialog compact-dialog">
+    <form method="dialog" class="dialog-header"><div><p class="eyebrow">CLIMA · SIMULADO</p><h2>Condição do céu</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></form>
+    <div class="dialog-body"><p class="field-note">Estas condições são fictícias e servem apenas para experimentar a interface.</p><div class="weather-options" role="group" aria-label="Escolher condição simulada"><button type="button" data-sky="limpo">☀️ <span>Limpo</span></button><button type="button" data-sky="pouco nublado" class="selected">⛅ <span>Pouco nublado</span></button><button type="button" data-sky="muito nublado">☁️ <span>Muito nublado</span></button><button type="button" data-sky="tempestade">⛈️ <span>Trovoada</span></button></div><div class="security-callout">SIMULATED · LOCAL ONLY. Não existe ligação a um serviço meteorológico.</div></div>
+  </dialog>
+  <dialog id="production-dialog" class="settings-dialog compact-dialog">
+    <form method="dialog" class="dialog-header"><div><p class="eyebrow">PRODUÇÃO · SIMULATED</p><h2>Últimas 3h + previsão visual</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></form>
+    <div class="dialog-body"><div class="production-summary"><div><span>AGORA</span><strong>4,2 kW</strong></div><div><span>PICO</span><strong>5,1 kW</strong></div><div><span>+6H</span><strong>0,8 kW</strong></div></div><svg class="chart detail-chart" viewBox="0 0 620 220" role="img" aria-label="Curva ilustrativa de produção e previsão simulada"><defs><linearGradient id="detailFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#dcc99c" stop-opacity=".24"/><stop offset="100%" stop-color="#dcc99c" stop-opacity="0"/></linearGradient></defs><path class="chart-grid" d="M38 35H602 M38 80H602 M38 125H602 M38 170H602"/><path d="M38 160 C90 145 120 120 180 100 S260 55 330 60 L330 170 L38 170Z" fill="url(#detailFill)"/><path class="chart-line" d="M38 160 C90 145 120 120 180 100 S260 55 330 60"/><path d="M330 60 C390 72 430 105 480 132 S550 156 602 176" fill="none" stroke="#dcc99c" stroke-dasharray="8 6" stroke-width="2"/><g class="chart-label"><text x="38" y="198">−3h</text><text x="180" y="198">−1h</text><text x="320" y="198">Agora</text><text x="450" y="198">+3h</text><text x="580" y="198">+6h</text></g></svg><p class="field-note">Curva ilustrativa, não é uma previsão meteorológica nem uma medição energética real.</p></div>
+  </dialog>
+  <dialog id="more-dialog" class="settings-dialog compact-dialog"><form method="dialog" class="dialog-header"><div><p class="eyebrow">NAVEGAÇÃO</p><h2>Áreas</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></form><div class="more-links" id="more-links"></div></dialog>
+  <dialog id="gateway-dialog" class="settings-dialog">
+    <form method="dialog" class="dialog-header"><div><p class="eyebrow">LIGAÇÃO SEGURA</p><h2>SolarMiner Gateway</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></form>
+    <div class="dialog-body">
+      <div class="status-banner"><span class="demo-stamp">SEGURANÇA</span><span>A ligação só é aceite quando o browser valida o certificado HTTPS e o dispositivo conclui a autenticação criptográfica.</span></div>
+      <p class="field-note">Na rede local podes usar o IP LAN do Gateway na porta 8443. Fora de casa, o PWA tenta o endereço Tailscale configurado pelo Owner. O iPhone tem de ter Tailscale instalado e ligado ao mesmo Tailnet; TLS continua sempre validado.</p>
+      <label for="gateway-endpoint">Endpoint HTTPS principal (LAN ou Tailscale)</label><input id="gateway-endpoint" type="url" inputmode="url" placeholder="https://192.168.8.168:8443" autocomplete="off" spellcheck="false">
+      <div class="dialog-actions"><button id="gateway-check" class="button primary" type="button">Testar endpoint</button><button id="gateway-clear" class="button secondary" type="button">Desassociado / limpar</button></div>
+      <div id="gateway-result" class="connection-result" role="status" aria-live="polite">Nenhum endpoint foi testado. A PWA permanece em modo demonstração.</div>
+      <div id="gateway-session-status" class="connection-result" role="status" aria-live="polite">Sem sessão autenticada neste dispositivo.</div>
+      <form id="gateway-password-login-form" class="gateway-form-grid" hidden>
+        <p class="field-note">Inicia sessão com o utilizador e a palavra-passe já registados no Gateway. Num dispositivo novo, o Gateway regista uma identidade criptográfica neste browser após validar a palavra-passe.</p>
+        <label for="gateway-login-username">Utilizador</label><input id="gateway-login-username" autocomplete="username" maxlength="128" required>
+        <label for="gateway-login-password">Palavra-passe</label><input id="gateway-login-password" type="password" autocomplete="current-password" required>
+        <button class="button primary" type="submit">Entrar no Gateway</button>
+      </form>
+      <div class="dialog-actions"><button id="open-owner-recovery" class="button secondary" type="button">Recuperar Owner com a pen</button></div>
       <div class="security-callout"><strong>Estado de confiança:</strong> o tráfego só é aceite com TLS válido e prova Ed25519 do dispositivo. Estados DEMO locais não são apresentados como comandos LIVE. A aplicação de uma atualização exige versão validada, preflight de recuperação independente e confirmação explícita de um Owner.</div>
       <div class="dialog-actions"><button class="button primary" type="button" id="close-gateway-dialog">Fechar</button></div>
     </div>

@@ -1,6 +1,6 @@
 # Contratos API — PWA v0.5.4
 
-## Gateway signed automatic updates (CODE02 0.6.27)
+## Gateway signed automatic updates (CODE02 0.6.28)
 
 The Gateway checks its configured, administrator-allowlisted GitHub release daily. It automatically queues an update only after Ed25519 manifest and package verification and a successful independent recovery preflight. The privileged update helper performs SQLite backup, staging, activation, health check and rollback. The Owner PWA can still request an immediate check or manual application and reads progress from `GET /api/v1/system/update/status`.
 
@@ -28,3 +28,7 @@ As chamadas de diagnóstico existentes continuam a ser separadas das novas área
 ## Sem endpoints inventados
 
 A PWA v0.5.4 mantém os dados de demonstração em `localStorage`. Nenhum dos contratos acima é tratado como existente, e nenhum resultado local é apresentado como gravação ou execução no Gateway.
+
+## Tailscale access and Owner page
+
+Tailscale configuration, update sources, integrations, users and invites are grouped on the dedicated Owner page. The Home page shows the energy summary and equipment readings. GET/PUT /api/v1/system/tailscale and POST /api/v1/system/tailscale/connect require an authenticated Owner; privileged Tailscale status and connection use the restricted local systemd broker rather than sudo.

@@ -1,6 +1,6 @@
 # API v1 (CODE 01)
 
-## CODE02 v0.6.27 — atualizações assinadas automáticas
+## CODE02 v0.6.28 — atualizações assinadas automáticas
 
 O `solarminer-update-check-daily.timer` verifica a origem GitHub selecionada e permitida e enfileira automaticamente uma atualização apenas se o manifesto e o pacote forem válidos e o preflight independente passar. A API sem privilégios e o serviço diário comunicam com o helper root através do socket Unix privado `solarminer-update-broker.socket`; o broker só aceita `preflight` e `enqueue` com UUID. A aplicação usa o mesmo helper privilegiado, backup SQLite, staging, health check e rollback que o endpoint Owner. `GET /api/v1/system/update/status` expõe o estado e a versão alvo. A verificação manual continua disponível na PWA Owner.
 
@@ -66,9 +66,9 @@ No HTTP endpoint accepts a recovery key or performs owner recovery. During `POST
 
 Local commands are installed as `/usr/bin/solarminer-gateway`:
 
-- `sudo solarminer-gateway recovery-setup` creates or rotates the key for an active owner who can reauthenticate with the current password and prove possession of an associated active Ed25519 device. Use after upgrading an existing A1b database that predates recovery-key provisioning.
-- `sudo solarminer-gateway recovery` consumes the offline key once, changes the owner password, invalidates sessions, revokes the owner's old device associations, registers a new device after a fresh Ed25519 challenge proof, and rotates the recovery key.
-- `sudo solarminer-gateway emergency-reset` is an independent OS-root-only path when the recovery key is lost. It requires an explicit confirmation and a protected, integrity-checked SQLite backup before mutation. It preserves the database and unrelated user data; it is not a factory reset.
+- From a root shell, `solarminer-gateway recovery-setup` creates or rotates the key for an active owner who can reauthenticate with the current password and prove possession of an associated active Ed25519 device. Use after upgrading an existing A1b database that predates recovery-key provisioning.
+- From a root shell, `solarminer-gateway recovery` consumes the offline key once, changes the owner password, invalidates sessions, revokes the owner's old device associations, registers a new device after a fresh Ed25519 challenge proof, and rotates the recovery key.
+- From a root shell, `solarminer-gateway emergency-reset` is an independent OS-root-only path when the recovery key is lost. It requires an explicit confirmation and a protected, integrity-checked SQLite backup before mutation. It preserves the database and unrelated user data; it is not a factory reset.
 
 Each command requires a TTY, root privileges, and a provably stopped `solarminer-gateway.service`. Recovery keys and passwords are read interactively without echo and are never accepted as command-line arguments or environment variables. The challenge message signed by a new device is the exact UTF-8 text printed by the command, beginning `SOLARMINER-GATEWAY-DEVICE-PROOF-V1`, followed by the purpose (`recovery` or `emergency`), owner UUID, and 64-character lowercase hex challenge, each on a separate line. Setup proofs also include the existing device UUID before the challenge.
 
@@ -159,7 +159,7 @@ The browser client uses Web Crypto Ed25519 with a non-exportable private `Crypto
 ## v0.6.20 — autorização Tailscale iniciada pela PWA Owner
 
 - `POST /api/v1/system/tailscale/connect` é exclusivo do Owner. Executa o helper fixo `solarminer-tailscale-connect` e devolve apenas um URL de autorização validado `login.tailscale.com` quando a aprovação está pendente.
-- O helper não aceita argumentos, não devolve saída bruta do comando e o sudoers permite apenas esse executável exato. O URL temporário é devolvido à sessão autenticada do Owner, mas não é escrito nos logs nem no registo de auditoria.
+- A API encaminha a chamada pelo broker root-owned, que só executa o helper fixo de Tailscale e devolve apenas o URL de autorização validado. Não usa sudoers, não devolve a saída bruta do comando e não escreve o URL temporário nos logs nem no registo de auditoria.
 - O Owner abre o link e aprova o Gateway na conta Tailscale. A inclusão do dispositivo na conta não pode ser feita silenciosamente pelo Gateway.
 
 ## v0.6.8 — integração PWA e convites QR

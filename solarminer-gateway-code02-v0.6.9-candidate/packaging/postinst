@@ -101,39 +101,24 @@ case "${1:-}" in
         echo "Current release backend is missing" >&2; exit 1
       fi
     fi
-    if [ -f /etc/sudoers.d/solarminer-update-apply ]; then
-      chmod 0440 /etc/sudoers.d/solarminer-update-apply
-      if command -v visudo >/dev/null 2>&1; then visudo -cf /etc/sudoers.d/solarminer-update-apply >/dev/null; fi
-    fi
-    if [ -f /etc/sudoers.d/solarminer-tailscale-info ]; then
-      chown root:root /etc/sudoers.d/solarminer-tailscale-info
-      chmod 0440 /etc/sudoers.d/solarminer-tailscale-info
-      if command -v visudo >/dev/null 2>&1; then visudo -cf /etc/sudoers.d/solarminer-tailscale-info >/dev/null; fi
-    fi
-    if [ -f /etc/sudoers.d/solarminer-tailscale-connect ]; then
-      chown root:root /etc/sudoers.d/solarminer-tailscale-connect
-      chmod 0440 /etc/sudoers.d/solarminer-tailscale-connect
-      if command -v visudo >/dev/null 2>&1; then visudo -cf /etc/sudoers.d/solarminer-tailscale-connect >/dev/null; fi
-    fi
     if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
       nginx -t
       systemctl daemon-reload
       systemctl enable nginx.service
       systemctl enable solarminer-gateway.service
+      systemctl disable --now solarminer-public-tls-renew.timer || true
+      systemctl stop solarminer-public-tls-renew.service || true
       systemctl enable --now solarminer-recovery.timer
       systemctl enable --now solarminer-update-broker.socket
       systemctl enable --now solarminer-update-check-daily.timer
-      systemctl enable --now solarminer-public-tls-renew.timer
       systemctl enable --now solarminer-tailscale-cert.timer
       if command -v tailscale >/dev/null 2>&1; then
         systemctl enable --now tailscaled.service
       fi
       systemctl restart nginx.service || systemctl start nginx.service
       systemctl restart solarminer-gateway.service || systemctl start solarminer-gateway.service
-      # Certificate issuance may fail until the owner forwards WAN TCP/80 and
-      # WAN TCP/443 to this Gateway. The persistent timer retries without
-      # making initial Debian package configuration fail.
-      systemctl start solarminer-public-tls-renew.service || true
+      # Public-IP certificate issuance is optional and disabled by default.
+      # Tailscale HTTPS is independent of router forwarding and CGNAT.
       if command -v tailscale >/dev/null 2>&1; then
         systemctl start solarminer-tailscale-cert.service || true
       fi

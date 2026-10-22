@@ -22,3 +22,6 @@ def test_nginx_proxies_verify_backend_using_certificate_dns_san():
     # Tailscale vhost even when the public certificate is still valid.
     assert 'if [ "$certificate_changed" -eq 0 ] && cmp -s "$work/nginx.conf" "$CONFIG";' in tailscale_script
     assert 'if [ "$cert_valid" -ne 1 ]; then' in tailscale_script
+    assert "systemctl enable --now solarminer-tailscale-cert.timer" in postinst
+    assert "systemctl disable --now solarminer-public-tls-renew.timer" in postinst
+    assert "systemctl enable --now solarminer-public-tls-renew.timer" not in postinst

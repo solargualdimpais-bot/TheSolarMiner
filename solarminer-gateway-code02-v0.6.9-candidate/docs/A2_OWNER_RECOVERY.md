@@ -48,8 +48,8 @@ On success, a single SQLite transaction changes the password verifier, increment
 Use only if the offline recovery key is also lost:
 
 ```sh
-sudo systemctl stop solarminer-gateway.service
-sudo solarminer-gateway emergency-reset
+systemctl stop solarminer-gateway.service
+solarminer-gateway emergency-reset
 ```
 
 This command requires root, a stopped service, an explicit `EMERGENCY-RESET` confirmation, a new password, and a fresh Ed25519 device proof. It creates a consistent SQLite backup using SQLite's backup API before mutation, verifies `PRAGMA integrity_check`, and stores it under `backup/emergency-<timestamp>-<id>/gateway-pre-emergency.db` relative to the database directory. The run directory is mode `0700`; the backup file is mode `0600` and root-owned when executed as root. Existing backup files/directories are not overwritten.

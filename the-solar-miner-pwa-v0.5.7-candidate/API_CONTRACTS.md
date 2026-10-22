@@ -1,8 +1,10 @@
 # Contratos API — PWA v0.5.4
 
-## Gateway signed automatic updates (CODE02 0.6.27)
+## Gateway signed automatic updates (CODE02 0.6.28)
 
 The Gateway checks its configured, administrator-allowlisted GitHub release daily. It automatically queues an update only after Ed25519 manifest and package verification and a successful independent recovery preflight. The privileged update helper performs SQLite backup, staging, activation, health check and rollback. The Owner PWA can still request an immediate check or manual application and reads progress from `GET /api/v1/system/update/status`.
+
+Gateway connection and Tailscale administration live on the authenticated Owner page. The Home dashboard shows Gateway readings using the units and field names returned by the API; it does not substitute simulated values into the live dashboard.
 
 ## Hardware integrations and EV charging (Gateway CODE02 0.6.26)
 
