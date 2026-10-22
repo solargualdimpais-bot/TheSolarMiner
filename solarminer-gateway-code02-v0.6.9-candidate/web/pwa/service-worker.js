@@ -1,4 +1,4 @@
-const CACHE_NAME = "the-solar-miner-static-v0.5.8-owner-pwa-v0.6.28-password-device-login-tailscale-hardware-integrations-ev-tesla-charging-auto-updates-owner-page-tailscale-broker-1";
+const CACHE_NAME = "the-solar-miner-static-v0.5.8-owner-pwa-v0.6.29-password-device-login-tailscale-hardware-integrations-ev-tesla-charging-auto-updates-owner-page-tailscale-broker-lan-pwa-assets-1";
 const STATIC_ASSETS = [
   "./", "./index.html", "./styles.css", "./app.js", "./gateway-connection.js",
   "./gateway-auth.js", "./app-core.js", "./workspace-ui.js", "./demo-mode.js",

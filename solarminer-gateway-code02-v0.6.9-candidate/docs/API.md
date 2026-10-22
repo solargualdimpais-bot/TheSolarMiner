@@ -1,6 +1,6 @@
 # API v1 (CODE 01)
 
-## CODE02 v0.6.28 — atualizações assinadas automáticas
+## CODE02 v0.6.29 — atualizações assinadas automáticas
 
 O `solarminer-update-check-daily.timer` verifica a origem GitHub selecionada e permitida e enfileira automaticamente uma atualização apenas se o manifesto e o pacote forem válidos e o preflight independente passar. A API sem privilégios e o serviço diário comunicam com o helper root através do socket Unix privado `solarminer-update-broker.socket`; o broker só aceita `preflight` e `enqueue` com UUID. A aplicação usa o mesmo helper privilegiado, backup SQLite, staging, health check e rollback que o endpoint Owner. `GET /api/v1/system/update/status` expõe o estado e a versão alvo. A verificação manual continua disponível na PWA Owner.
 

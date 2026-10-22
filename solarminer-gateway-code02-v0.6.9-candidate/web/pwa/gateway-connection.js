@@ -56,6 +56,14 @@ export function classifyEndpoint(urlValue) {
   return "CANDIDATE_UNCLASSIFIED";
 }
 
+/** Return the same-origin Gateway endpoint when this PWA is hosted by a Gateway. */
+export function inferHostedGatewayEndpoint(locationLike = globalThis.location) {
+  if (!locationLike || locationLike.protocol !== "https:") return "";
+  const hostname = String(locationLike.hostname || "").toLowerCase();
+  if (locationLike.port === "8443" || hostname.endsWith(".ts.net")) return locationLike.origin || "";
+  return "";
+}
+
 export async function probeGateway(urlValue, { fetchImpl = globalThis.fetch, timeoutMs = 3500, allowLocalHttp = false } = {}) {
   const base = validateGatewayUrl(urlValue, { allowLocalHttp });
   const startedAt = Date.now();

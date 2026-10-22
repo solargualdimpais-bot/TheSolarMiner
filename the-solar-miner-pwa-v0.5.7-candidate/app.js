@@ -2,7 +2,7 @@ import { CATEGORIES, DEMO_EQUIPMENT, classifyEquipment, formatReading, isSimulat
 import { DEMO_CONTROL_CONFIG, createDemoControlState, updateDemoControl, toggleDemoControl } from "./demo-mode.js";
 import { renderWorkspacePage, renderHomePreferenceLinks, renderHouseSearch, handleWorkspaceAction, handleWorkspaceChange, applyPreferences, getWorkspacePageLabel, workspace, getEditableEntity, saveEditableEntity, saveDemoWorkspace, hydrateWorkspacePhotos } from "./workspace-ui.js";
 import { renderAutomationsPage, renderSolarProductionPage, renderDemoAdminPanel, handleFeatureAction, saveAutomationForm, addDemoUser, saveDemoUserEdit, saveSolarWeather, demoFeatures } from "./features-v053.js";
-import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classifyEndpoint, PRESENCE_API_STATUS } from "./gateway-connection.js";
+import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classifyEndpoint, inferHostedGatewayEndpoint, PRESENCE_API_STATUS } from "./gateway-connection.js";
 import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, saveGatewayHardwareIntegrationConfig, readGatewayHardwareIntegrations, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging } from "./gateway-auth.js";
 
 let automationEditingId = "";
@@ -52,7 +52,12 @@ function updateGatewayStatus(connection) {
   if (dot) dot.style.background = connection.simulated ? "#b9a477" : connection.reachable ? "#d6ad64" : "#b96c62";
 }
 function gatewayResult(message) { const el = $("#gateway-result"); if (el) el.textContent = message; }
-try { const savedEndpoint = localStorage.getItem("solarminer-gateway-endpoint-v1"); if (savedEndpoint) $("#gateway-endpoint").value = savedEndpoint; } catch {}
+const gatewayHostedOrigin = inferHostedGatewayEndpoint(location);
+try {
+  const savedEndpoint = localStorage.getItem("solarminer-gateway-endpoint-v1");
+  const initialEndpoint = gatewayHostedOrigin || savedEndpoint;
+  if (initialEndpoint) $("#gateway-endpoint").value = initialEndpoint;
+} catch {}
 function currentTimeLabel(value) { return value ? new Intl.DateTimeFormat("pt-PT", { dateStyle: "short", timeStyle: "medium" }).format(new Date(value)) : "não confirmada"; }
 
 
@@ -502,7 +507,11 @@ $("#gateway-clear").addEventListener("click",async()=>{
   $("#gateway-password-login-form").hidden = true;
   gatewayResult("Endpoint removido deste browser. A identidade do dispositivo permanece guardada para poderes voltar a ligar sem palavra-passe.");
 });
-try { if (localStorage.getItem("solarminer-gateway-endpoint-v1")) setTimeout(() => $("#gateway-check").click(), 0); } catch {}
+try {
+  if (localStorage.getItem("solarminer-gateway-endpoint-v1") || gatewayHostedOrigin) {
+    setTimeout(() => $("#gateway-check").click(), 0);
+  }
+} catch {}
 const invitePanel = $("#gateway-invite-management");
 const userPanel = $("#gateway-user-management");
 const updatePanel = $("#gateway-update-management");

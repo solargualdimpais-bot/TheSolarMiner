@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CONNECTION_STATES, GatewayConnectionManager, PRESENCE_API_STATUS, classifyEndpoint, parsePairingQr, probeGateway, validateGatewayUrl } from '../gateway-connection.js';
+import { CONNECTION_STATES, GatewayConnectionManager, PRESENCE_API_STATUS, classifyEndpoint, inferHostedGatewayEndpoint, parsePairingQr, probeGateway, validateGatewayUrl } from '../gateway-connection.js';
 
 const makeQr = (code = `pair-${cryptoRandom()}` , expiresAt = Math.floor(Date.now()/1000)+300) => JSON.stringify({type:'solarminer-pairing',version:1,gateway_url:'https://solarminer-gw.example',pairing_code:code.padEnd(40,'x'),expires_at:expiresAt,single_use:true});
 let seed=0; function cryptoRandom(){ seed++; return `unique-${seed}-${Date.now()}`; }
@@ -8,6 +8,12 @@ const jsonResponse = (body,status=200) => ({ok:status>=200&&status<300,status,js
 const fakeFetch = (health={status:'ok',version:'0.6.5',bootstrap_state:'READY'},info={product:'SolarMiner Gateway',version:'0.6.5'}) => async (url,init) => { assert.equal(init.method,'GET');assert.equal(init.credentials,'omit');assert.equal(init.redirect,'error');assert.equal(init.cache,'no-store');return url.endsWith('/api/v1/health')?jsonResponse(health):jsonResponse(info); };
 
 test('1. demo mode stays explicitly simulated and disconnected',()=>{const m=new GatewayConnectionManager();assert.equal(m.state.state,CONNECTION_STATES.DEMO);assert.equal(m.state.simulated,true);assert.equal(m.state.reachable,false);});
+test('Gateway-hosted PWA infers its LAN or Tailscale same-origin endpoint',()=>{
+  assert.equal(inferHostedGatewayEndpoint({protocol:'https:',hostname:'192.168.8.168',port:'8443',origin:'https://192.168.8.168:8443'}),'https://192.168.8.168:8443');
+  assert.equal(inferHostedGatewayEndpoint({protocol:'https:',hostname:'solarminer.tailnet.ts.net',port:'',origin:'https://solarminer.tailnet.ts.net'}),'https://solarminer.tailnet.ts.net');
+  assert.equal(inferHostedGatewayEndpoint({protocol:'https:',hostname:'solargualdimpais-bot.github.io',port:'',origin:'https://solargualdimpais-bot.github.io'}),'');
+  assert.equal(inferHostedGatewayEndpoint({protocol:'http:',hostname:'192.168.8.168',port:'8443',origin:'http://192.168.8.168:8443'}),'');
+});
 test('2. remote user without an associated Gateway is clearly unassociated',()=>{const m=new GatewayConnectionManager();assert.equal(m.clear().state,CONNECTION_STATES.UNASSOCIATED);});
 test('3. valid local pairing QR is parsed as a candidate, not automatically paired',()=>{const q=parsePairingQr(makeQr());assert.equal(q.identityValidated,false);assert.equal(q.gatewayUrl,'https://solarminer-gw.example');assert.equal(q.singleUse,true);});
 test('4. expired pairing QR is rejected',()=>assert.throws(()=>parsePairingQr(makeQr(undefined,Math.floor(Date.now()/1000)-1)),/expirou/i));

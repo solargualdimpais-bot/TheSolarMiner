@@ -79,6 +79,13 @@ def test_gateway_serves_pwa_from_same_origin(tmp_path, monkeypatch):
         auth_client = client.get("/auth-client.js")
         assert auth_client.status_code == 200
         assert "Content-Security-Policy" in auth_client.headers
+        # app.js imports these modules at startup. A 404 on any one of them
+        # prevents the PWA from initializing and leaves every button inert.
+        for asset in ("gateway-connection.js", "gateway-auth.js", "workspace-ui.js", "features-v053.js", "demo-mode.js"):
+            response = client.get(f"/{asset}")
+            assert response.status_code == 200, asset
+            assert "javascript" in response.headers["content-type"], asset
+            assert "Content-Security-Policy" in response.headers, asset
         health = client.get("/api/v1/health")
         assert health.status_code == 200
         assert health.headers["Cache-Control"] == "no-store"
