@@ -66,6 +66,7 @@ cp "$ROOT/docs/CHANGELOG_V0613.md" "$STAGE/usr/share/doc/solarminer-gateway/CHAN
 cp "$ROOT/docs/CHANGELOG_V0616.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0616.md"
 cp "$ROOT/docs/CHANGELOG_V0618.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0618.md"
 cp "$ROOT/docs/CHANGELOG_V0619.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0619.md"
+cp "$ROOT/docs/CHANGELOG_V0623.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0623.md"
 cp "$ROOT/docs/DATABASE_BACKUP_AND_RESTORE.md" "$STAGE/usr/share/doc/solarminer-gateway/DATABASE_BACKUP_AND_RESTORE.md"
 cp "$ROOT/docs/UPDATE_AND_ROLLBACK.md" "$STAGE/usr/share/doc/solarminer-gateway/UPDATE_AND_ROLLBACK.md"
 cp "$ROOT/docs/INSTALL_DEBIAN_AMD64.md" "$STAGE/usr/share/doc/solarminer-gateway/INSTALL_DEBIAN_AMD64.md"

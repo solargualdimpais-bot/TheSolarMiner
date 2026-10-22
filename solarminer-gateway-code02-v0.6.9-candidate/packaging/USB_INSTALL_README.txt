@@ -1,4 +1,4 @@
-SolarMiner Gateway CODE02 0.6.22 — instalador inicial USB
+SolarMiner Gateway CODE02 0.6.23 — instalador inicial USB
 ==========================================================
 
 Requisitos: Gateway Lenovo AMD64, Debian 13 (Trixie), Python 3.13 ou posterior e acesso à Internet para os repositórios oficiais Debian e Tailscale.
@@ -11,6 +11,6 @@ O script valida manifesto, assinatura Ed25519, hash, tamanho, versão e arquitet
 
 No fim, `tailscale up` apresenta um endereço de autorização. Abre-o num dispositivo, inicia sessão na tua conta Tailscale e autoriza o Gateway. No painel de administração Tailscale ativa MagicDNS e HTTPS Certificates. Instala a app Tailscale no iPhone e liga-o à mesma conta/Tailnet. O Gateway deteta o nome `*.ts.net`, solicita o certificado HTTPS e publica o endpoint na área Owner da PWA. Não abras nem encaminhes portas no router.
 
-A pen não executa programas automaticamente ao ser inserida; em Debian, inicia o script uma vez como root. Este comando destina-se apenas a um Debian limpo. Para um Gateway já instalado com versão 0.6.10–0.6.14, usa `repair-existing-from-usb.sh` e segue `REPAIR_EXISTING_README.txt`. A chave privada de release não é incluída neste ZIP.
+A pen não executa programas automaticamente ao ser inserida; em Debian, inicia o script uma vez como root. Este comando destina-se apenas a um Debian limpo. Para um Gateway já instalado com versão 0.6.10–0.6.14 e 0.6.20, usa `repair-existing-from-usb.sh` e segue `REPAIR_EXISTING_README.txt`. A chave privada de release não é incluída neste ZIP.
 
 Na primeira ligação, usa o endpoint Tailscale detetado (a opção recomendada para evitar instalar certificados no iPhone). Só o primeiro registo com a palavra-passe definida na consola pode criar o Owner. O IP LAN `https://192.168.8.168:8443` está disponível na rede local, mas usa um certificado local próprio; o iPhone tem de confiar nesse certificado. Não existe forma de um PWA HTTPS confiar em HTTPS de IP privado sem certificado confiável. Guarda a chave de recuperação Owner, apresentada uma única vez, num ficheiro offline. O manual completo fica em /usr/share/doc/solarminer-gateway/OWNER_FIRST_BOOTSTRAP.md.

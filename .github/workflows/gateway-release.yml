@@ -203,7 +203,7 @@ jobs:
           set -eu
           ROLLBACK_ROOT="$RUNNER_TEMP/solarminer-usb-rollback"
           mkdir -p "$ROLLBACK_ROOT"
-          for VERSION in 0.6.10 0.6.11 0.6.12 0.6.13 0.6.14; do
+          for VERSION in 0.6.10 0.6.11 0.6.12 0.6.13 0.6.14 0.6.20; do
             DEST="$ROLLBACK_ROOT/$VERSION"
             mkdir -p "$DEST"
             gh release download "gateway-v$VERSION" \
@@ -247,7 +247,7 @@ jobs:
           BUNDLE="$RUNNER_TEMP/solarminer-usb-installer"
           mkdir -p "$BUNDLE"
           cp "$PACKAGE" "$MANIFEST" "$PUBLIC_KEY" "$BUNDLE/"
-          for VERSION in 0.6.10 0.6.11 0.6.12 0.6.13 0.6.14; do
+          for VERSION in 0.6.10 0.6.11 0.6.12 0.6.13 0.6.14 0.6.20; do
             cp "$RUNNER_TEMP/solarminer-usb-rollback/$VERSION/solarminer-gateway_${VERSION}_amd64.deb" "$BUNDLE/"
             cp "$RUNNER_TEMP/solarminer-usb-rollback/$VERSION/solarminer-release.json" "$BUNDLE/solarminer-release-$VERSION.json"
           done
