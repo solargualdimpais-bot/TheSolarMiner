@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, VerificationError
@@ -40,7 +41,7 @@ from . import energy_registry
 from . import updates as update_manager
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.18"
+PACKAGE_VERSION = "0.6.19"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -375,7 +376,7 @@ _CORS_ORIGINS = [item.strip().rstrip("/") for item in os.environ.get(
 ).split(",") if item.strip()]
 if _CORS_ORIGINS:
     app.add_middleware(CORSMiddleware, allow_origins=_CORS_ORIGINS, allow_credentials=False,
-                       allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+                       allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
                        allow_headers=["Authorization", "Content-Type", "Accept"])
 
 
@@ -1597,7 +1598,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.18"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.19"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(
@@ -1715,6 +1716,83 @@ def read_system_update_source(session: dict[str, Any] = Depends(current_session)
     selected = row["value"] if row and row["value"] in allowed else (allowed[0] if allowed else "")
     return {"repository_url": selected, "allowed_repositories": allowed,
             "policy": "administrative_allowlist"}
+
+
+def _read_tailscale_status() -> dict[str, Any]:
+    """Read only the sanitized local Tailscale identity through the root helper."""
+    helper = os.environ.get("SOLARMINER_TAILSCALE_INFO_HELPER", "/usr/sbin/solarminer-tailscale-info")
+    try:
+        result = subprocess.run(["/usr/bin/sudo", "-n", helper], capture_output=True, text=True,
+                                timeout=5, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return {"installed": False, "connected": False, "dns_name": None, "https_url": None}
+    if result.returncode != 0:
+        return {"installed": False, "connected": False, "dns_name": None, "https_url": None}
+    try:
+        status_data = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return {"installed": False, "connected": False, "dns_name": None, "https_url": None}
+    if not isinstance(status_data, dict):
+        return {"installed": False, "connected": False, "dns_name": None, "https_url": None}
+    return {key: status_data.get(key) for key in ("installed", "connected", "dns_name", "https_url")}
+
+
+def _normalize_tailscale_endpoint(value: Any) -> str:
+    if not isinstance(value, str) or len(value) > 253:
+        raise HTTPException(422, "invalid_tailscale_endpoint")
+    try:
+        parsed = urlsplit(value.strip())
+        hostname = (parsed.hostname or "").lower().rstrip(".")
+        port = parsed.port
+    except ValueError as exc:
+        raise HTTPException(422, "invalid_tailscale_endpoint") from exc
+    if (parsed.scheme.lower() != "https" or not hostname.endswith(".ts.net") or
+            parsed.username or parsed.password or port not in (None, 443) or
+            parsed.path not in ("", "/") or parsed.query or parsed.fragment or
+            not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.ts\.net", hostname)):
+        raise HTTPException(422, "invalid_tailscale_endpoint")
+    return f"https://{hostname}"
+
+
+@app.get("/api/v1/system/tailscale")
+def read_tailscale_access(session: dict[str, Any] = Depends(current_session)) -> dict[str, Any]:
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_only")
+        row = conn.execute("SELECT value FROM system_state WHERE key='tailscale_endpoint'").fetchone()
+    status_data = _read_tailscale_status()
+    detected = status_data.get("https_url") if status_data.get("connected") else None
+    configured = row["value"] if row else None
+    endpoint = configured or detected
+    tls_ready = bool(endpoint and Path("/etc/solarminer/tailscale.crt").is_file() and
+                     Path("/etc/solarminer/tailscale.key").is_file())
+    return {"installed": bool(status_data.get("installed")), "connected": bool(status_data.get("connected")),
+            "dns_name": status_data.get("dns_name"), "detected_endpoint": detected,
+            "configured_endpoint": configured, "endpoint": endpoint, "https_ready": tls_ready,
+            "router_ports_required": False,
+            "note": "O Gateway tem de ser autorizado no Tailnet; a emissão HTTPS exige MagicDNS e HTTPS Certificates ativos no painel Tailscale."}
+
+
+@app.put("/api/v1/system/tailscale")
+def configure_tailscale_access(payload: dict[str, Any], session: dict[str, Any] = Depends(current_session)) -> dict[str, Any]:
+    if set(payload) != {"endpoint"} or (payload["endpoint"] is not None and not isinstance(payload["endpoint"], str)):
+        raise HTTPException(422, "invalid_tailscale_endpoint_request")
+    endpoint = _normalize_tailscale_endpoint(payload["endpoint"]) if payload["endpoint"] else None
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            conn.rollback()
+            raise HTTPException(403, "owner_only")
+        if endpoint is None:
+            conn.execute("DELETE FROM system_state WHERE key='tailscale_endpoint'")
+        else:
+            conn.execute("INSERT INTO system_state(key,value) VALUES('tailscale_endpoint',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (endpoint,))
+        audit(conn, actor["user_id"], "system.tailscale.endpoint_configured", endpoint or "automatic", "success",
+              {"configured": endpoint is not None})
+        conn.commit()
+    return read_tailscale_access(session)
 
 
 @app.post("/api/v1/system/update/check")

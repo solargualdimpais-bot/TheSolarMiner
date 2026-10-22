@@ -63,7 +63,16 @@ A successful recovery invalidates all prior owner sessions and increments `crede
 
 `POST /api/v1/auth/password-device-login` accepts `username`, `password`, PEM Ed25519 `public_key_pem`, a fresh `timestamp`/`nonce` and a device signature. The signature covers UTF-8 `PASSWORD-DEVICE-LOGIN\n{username}\n{timestamp}\n{nonce}\n{sha256(password UTF-8)}\n{sha256(public-key SPKI DER)}`. The Gateway requires a valid active account, verifies the signature and password, then associates the public key with that account and issues a temporary bearer session in one SQLite transaction. Existing keys can be used only when the key is already active and associated with the same account. Authentication failures do not create device rows. Nginx throttles requests per source IP; the app limits attempts by both source IP and a keyed hash of the username, so the account limit is shared across source IPs without storing usernames in the attempt table. Plaintext passwords are neither persisted nor logged; the request must use validated HTTPS.
 
-The packaged Nginx edge listens on TCP 80/443; the app remains on loopback TCP 8443 for health checks and internal proxy traffic. See `REMOTE_ACCESS_AND_TLS.md` for the public-IP certificate workflow and network requirements.
+The app listens on TCP 8443 on the Gateway interfaces so the LAN endpoint `https://<gateway-lan-ip>:8443` works. Nginx listens on TCP 80/443 and proxies the Tailscale HTTPS endpoint to the app. The default service does not require router port forwarding. Direct LAN-IP HTTPS uses the Gateway's local certificate and requires browser trust; Tailscale uses a public certificate for the MagicDNS `*.ts.net` name.
+
+## CODE 02 v0.6.19 — Tailscale Owner access
+
+| Method | Path | Access |
+|---|---|---|
+| GET | `/api/v1/system/tailscale` | Owner; returns only installed/connected state, Gateway MagicDNS name, detected/configured HTTPS URL, and certificate readiness |
+| PUT | `/api/v1/system/tailscale` | Owner; accepts exactly `{"endpoint":"https://host.tailnet.ts.net"}` or `{"endpoint":null}` to clear the manual setting |
+
+The configured URL must be HTTPS on the standard port, have a `*.ts.net` hostname, and contain no credentials, path, query, or fragment. The Gateway stores the Owner's endpoint selection in `system_state`; it never fetches that URL. The privileged status helper invokes only the fixed `tailscale status --json` command and returns a sanitized subset, never auth keys or peer details. `PUT` is allowed by the exact-origin PWA CORS policy.
 
 ## CODE 02 v0.6.9 — verificação de atualização por repositório
 

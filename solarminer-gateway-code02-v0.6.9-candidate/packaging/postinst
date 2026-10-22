@@ -27,9 +27,9 @@ case "${1:-}" in
       install -o solarminer -g solarminer -m 0600 "$tmpdir/server.key" /var/lib/solarminer/server.key
       install -o root -g solarminer -m 0644 "$tmpdir/server.crt" /var/lib/solarminer/server.crt
     fi
-    # The app keeps its local HTTPS identity for loopback health checks. Nginx
-    # terminates public HTTPS with an automatically renewed, publicly trusted
-    # certificate for the Gateway's current WAN IPv4 address.
+    # The app serves the LAN endpoint on 8443 with its per-Gateway local TLS
+    # identity. Nginx provides public-IP HTTPS and, when joined to Tailscale,
+    # a separate MagicDNS vhost with a publicly trusted *.ts.net certificate.
     if [ ! -s /etc/solarminer/public-tls.crt ] || [ ! -s /etc/solarminer/public-tls.key ]; then
       install -o root -g root -m 0644 /var/lib/solarminer/server.crt /etc/solarminer/public-tls.crt
       install -o root -g root -m 0600 /var/lib/solarminer/server.key /etc/solarminer/public-tls.key
@@ -105,6 +105,11 @@ case "${1:-}" in
       chmod 0440 /etc/sudoers.d/solarminer-update-apply
       if command -v visudo >/dev/null 2>&1; then visudo -cf /etc/sudoers.d/solarminer-update-apply >/dev/null; fi
     fi
+    if [ -f /etc/sudoers.d/solarminer-tailscale-info ]; then
+      chown root:root /etc/sudoers.d/solarminer-tailscale-info
+      chmod 0440 /etc/sudoers.d/solarminer-tailscale-info
+      if command -v visudo >/dev/null 2>&1; then visudo -cf /etc/sudoers.d/solarminer-tailscale-info >/dev/null; fi
+    fi
     if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
       nginx -t
       systemctl daemon-reload
@@ -113,12 +118,19 @@ case "${1:-}" in
       systemctl enable --now solarminer-recovery.timer
       systemctl enable --now solarminer-update-check-daily.timer
       systemctl enable --now solarminer-public-tls-renew.timer
+      systemctl enable --now solarminer-tailscale-cert.timer
+      if command -v tailscale >/dev/null 2>&1; then
+        systemctl enable --now tailscaled.service
+      fi
       systemctl restart nginx.service || systemctl start nginx.service
       systemctl restart solarminer-gateway.service || systemctl start solarminer-gateway.service
       # Certificate issuance may fail until the owner forwards WAN TCP/80 and
       # WAN TCP/443 to this Gateway. The persistent timer retries without
       # making initial Debian package configuration fail.
       systemctl start solarminer-public-tls-renew.service || true
+      if command -v tailscale >/dev/null 2>&1; then
+        systemctl start solarminer-tailscale-cert.service || true
+      fi
     fi
     ;;
 esac

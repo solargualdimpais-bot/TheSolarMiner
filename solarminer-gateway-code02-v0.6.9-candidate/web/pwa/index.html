@@ -50,7 +50,7 @@
       </section>
       <div id="notice" class="notice" role="status" hidden></div>
       <section id="page-content" aria-live="polite"></section>
-      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.6.18</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
+      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.6.19</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
     </main>
   </div>
 
@@ -94,8 +94,8 @@
     <form method="dialog" class="dialog-header"><div><p class="eyebrow">LIGAÇÃO SEGURA</p><h2>SolarMiner Gateway</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></form>
     <div class="dialog-body">
       <div class="status-banner"><span class="demo-stamp">SEGURANÇA</span><span>A ligação só é aceite quando o browser valida o certificado HTTPS e o dispositivo conclui a autenticação criptográfica.</span></div>
-      <p class="field-note">Introduz o endpoint HTTPS do Gateway. O endereço fica guardado neste browser; um telemóvel registado volta a autenticar-se automaticamente.</p>
-      <label for="gateway-endpoint">Endpoint HTTPS do Gateway</label><input id="gateway-endpoint" type="url" inputmode="url" placeholder="gateway.exemplo" autocomplete="off" spellcheck="false">
+      <p class="field-note">Na rede local podes usar o IP LAN do Gateway na porta 8443. Fora de casa, o PWA tenta o endereço Tailscale configurado pelo Owner. O iPhone tem de ter Tailscale instalado e ligado ao mesmo Tailnet; TLS continua sempre validado.</p>
+      <label for="gateway-endpoint">Endpoint HTTPS principal (LAN ou Tailscale)</label><input id="gateway-endpoint" type="url" inputmode="url" placeholder="https://192.168.8.168:8443" autocomplete="off" spellcheck="false">
       <div class="dialog-actions"><button id="gateway-check" class="button primary" type="button">Testar endpoint</button><button id="gateway-clear" class="button secondary" type="button">Desassociado / limpar</button></div>
       <div id="gateway-result" class="connection-result" role="status" aria-live="polite">Nenhum endpoint foi testado. A PWA permanece em modo demonstração.</div>
       <div id="gateway-session-status" class="connection-result" role="status" aria-live="polite">Sem sessão autenticada neste dispositivo.</div>
@@ -132,6 +132,14 @@
         <div id="gateway-update-message" class="connection-result" role="status" aria-live="polite">A verificação só começa após ação explícita do Owner.</div>
         <div id="gateway-update-details" class="field-note" aria-live="polite"></div>
         <button id="gateway-update-apply" class="button primary" type="button" hidden disabled>Aplicar atualização verificada</button>
+      </section>
+      <section class="panel gateway-auth-panel" id="gateway-tailscale-management" hidden>
+        <div class="panel-header"><div><p class="eyebrow">ACESSO REMOTO</p><h3>Tailscale</h3></div><span class="source-tag">OWNER</span></div>
+        <p class="field-note">O Gateway instala e inicia o Tailscale durante a instalação. No terminal do Gateway, autoriza-o com a tua conta Tailscale. No painel Tailscale ativa MagicDNS e HTTPS Certificates. Instala a app Tailscale no iPhone e liga-o ao mesmo Tailnet. Não precisas de abrir portas no router nem comprar um domínio. O nome *.ts.net e o certificado são geridos pelo Tailscale.</p>
+        <label for="gateway-tailscale-endpoint">Endereço Tailscale HTTPS do Gateway</label>
+        <input id="gateway-tailscale-endpoint" type="url" inputmode="url" autocomplete="url" spellcheck="false" placeholder="https://solarminer-gateway.tailnet.ts.net" maxlength="253">
+        <div class="dialog-actions"><button id="gateway-tailscale-refresh" class="button secondary" type="button">Detetar estado</button><button id="gateway-tailscale-save" class="button primary" type="button">Guardar no Gateway</button><button id="gateway-tailscale-use" class="button secondary" type="button">Usar para ligar</button></div>
+        <div id="gateway-tailscale-status" class="connection-result" role="status" aria-live="polite">O estado Tailscale só é mostrado ao Owner autenticado.</div>
       </section>
       <div class="security-callout"><strong>Estado de confiança:</strong> o tráfego só é aceite com TLS válido e prova Ed25519 do dispositivo. Estados DEMO locais não são apresentados como comandos LIVE. A aplicação de uma atualização exige versão validada, preflight de recuperação independente e confirmação explícita de um Owner.</div>
       <div class="dialog-actions"><button class="button primary" type="button" id="close-gateway-dialog">Fechar</button></div>

@@ -33,7 +33,7 @@ if dpkg-query -W -f='${db:Status-Status}' solarminer-gateway 2>/dev/null | grep 
 fi
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-PACKAGE_NAME=solarminer-gateway_0.6.18_amd64.deb
+PACKAGE_NAME=solarminer-gateway_0.6.19_amd64.deb
 PACKAGE="$HERE/$PACKAGE_NAME"
 MANIFEST="$HERE/solarminer-release.json"
 PUBLIC_KEY="$HERE/release-pubkey.pem"
@@ -43,7 +43,7 @@ for file in "$PACKAGE" "$MANIFEST" "$PUBLIC_KEY"; do
 done
 [ "$(dpkg-deb -f "$PACKAGE" Architecture)" = amd64 ] || fail "Pacote não é amd64."
 [ "$(dpkg-deb -f "$PACKAGE" Package)" = solarminer-gateway ] || fail "Pacote inesperado."
-[ "$(dpkg-deb -f "$PACKAGE" Version)" = 0.6.18 ] || fail "Versão do pacote não corresponde ao instalador."
+[ "$(dpkg-deb -f "$PACKAGE" Version)" = 0.6.19 ] || fail "Versão do pacote não corresponde ao instalador."
 
 WORK=$(mktemp -d /tmp/solarminer-bootstrap.XXXXXX)
 CREATED_TRUST=0
@@ -82,7 +82,7 @@ try:
                 "signature_algorithm", "signature", "compatibility", "migration_requirements"}
     if not isinstance(m, dict) or not required.issubset(m):
         raise ValueError("campos obrigatórios do manifesto em falta")
-    version = "0.6.18"
+    version = "0.6.19"
     if m["schema_version"] != 1 or m["signature_algorithm"] != "Ed25519":
         raise ValueError("esquema ou algoritmo não suportado")
     if m["version"] != version or m["release_id"] != "gateway-v" + version:
@@ -119,10 +119,14 @@ PY
 openssl pkey -pubin -in "$PUBLIC_KEY" -noout >/dev/null 2>&1 || fail "Chave pública Ed25519 inválida."
 openssl pkeyutl -verify -pubin -inkey "$PUBLIC_KEY" -rawin -in "$WORK/manifest.canonical" -sigfile "$WORK/manifest.signature" >/dev/null 2>&1 || fail "Assinatura Ed25519 inválida; nada foi instalado."
 log "Assinatura e hash válidos."
-
 if [ -e /etc/solarminer/release-pubkey.pem ] || [ -e /etc/solarminer/update-sources.json ]; then
   fail "Já existem configurações SolarMiner; a instalação inicial não irá sobrescrevê-las."
 fi
+TAILSCALE_SETUP="$HERE/install-tailscale.sh"
+[ -s "$TAILSCALE_SETUP" ] && [ ! -L "$TAILSCALE_SETUP" ] || fail "Instalador oficial de Tailscale não encontrado na pen."
+log "A instalar o cliente Tailscale oficial para Debian 13 AMD64."
+sh "$TAILSCALE_SETUP" >>"$LOG" 2>&1 || fail "A instalação do Tailscale falhou. Consulta $LOG"
+
 CREATED_TRUST=1
 install -d -o root -g root -m 0755 /etc/solarminer
 install -o root -g root -m 0644 "$PUBLIC_KEY" /etc/solarminer/release-pubkey.pem
@@ -157,6 +161,10 @@ INSTALLED_PACKAGE=1
 DEBIAN_FRONTEND=noninteractive apt-get install -y "$PACKAGE" >>"$LOG" 2>&1 || fail "Instalação do pacote falhou. Consulta $LOG"
 log "A configurar a palavra-passe inicial do Owner na consola local. O que escreveres será visível e não será guardado em texto simples."
 solarminer-gateway owner-password || fail "A configuração local da palavra-passe inicial falhou. Consulta $LOG"
+if command -v tailscale >/dev/null 2>&1; then
+  log "A iniciar o Tailscale. A autorização do equipamento exige a tua conta Tailscale e será apresentada no terminal; não é guardada no log."
+  tailscale up || log "Autorização Tailscale pendente; conclui o início de sessão com o URL apresentado pelo comando tailscale up."
+fi
 chown root:solarminer /etc/solarminer/update-sources.json
 chmod 0640 /etc/solarminer/update-sources.json
 
@@ -181,7 +189,7 @@ PY
   sleep 1
 done
 [ "$attempt" -lt 30 ] || fail "Health check não passou dentro de 60 segundos."
-log "Instalação inicial SolarMiner Gateway 0.6.18 concluída."
+log "Instalação inicial SolarMiner Gateway 0.6.19 concluída."
 log "O Gateway está configurado para verificar diariamente o repositório oficial; aplicar uma atualização continua a exigir ação Owner na PWA."
 trap - EXIT HUP INT TERM
 rm -rf "$WORK"

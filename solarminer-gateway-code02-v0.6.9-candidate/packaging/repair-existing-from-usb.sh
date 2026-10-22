@@ -4,7 +4,7 @@ set -eu
 
 [ "$(id -u)" -eq 0 ] || { echo "Executa como root: sh repair-existing-from-usb.sh" >&2; exit 1; }
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-TARGET_VERSION=0.6.18
+TARGET_VERSION=0.6.19
 PACKAGE="$HERE/solarminer-gateway_${TARGET_VERSION}_amd64.deb"
 MANIFEST="$HERE/solarminer-release.json"
 PUBLIC_KEY="$HERE/release-pubkey.pem"
@@ -95,6 +95,11 @@ OLD_RELEASE="$BASE/$OLD_VERSION"
 OLD_RELEASE_NAME=$OLD_VERSION
 [ -d "$OLD_RELEASE" ] && [ ! -L "$OLD_RELEASE" ] || fail "A release instalada $OLD_VERSION não está disponível para rollback."
 [ -f "$OLD_RELEASE/usr/lib/solarminer-gateway/solarminer_gateway/app.py" ] && [ -f "$OLD_RELEASE/usr/share/solarminer/pwa/index.html" ] || fail "A release instalada está incompleta; sistema não alterado."
+
+TAILSCALE_SETUP="$HERE/install-tailscale.sh"
+[ -s "$TAILSCALE_SETUP" ] && [ ! -L "$TAILSCALE_SETUP" ] || fail "Instalador de Tailscale não encontrado na pen."
+log "A instalar/verificar Tailscale oficial antes da atualização SolarMiner."
+sh "$TAILSCALE_SETUP" >>"$LOG" 2>&1 || fail "Instalação/verificação Tailscale falhou. Consulta $LOG"
 
 BACKUP_DIR=/var/lib/solarminer/backups
 install -d -o root -g root -m 0700 "$BACKUP_DIR"

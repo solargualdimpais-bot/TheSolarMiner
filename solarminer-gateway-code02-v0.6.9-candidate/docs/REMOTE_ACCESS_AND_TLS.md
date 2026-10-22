@@ -1,36 +1,30 @@
-# Acesso à PWA por IP público e HTTPS
+# Acesso por LAN e Tailscale
 
-## O que esta versão configura
+## Endereço local
 
-O serviço SolarMiner escuta apenas em `127.0.0.1:8443`. O Nginx incluído no pacote publica a API nas portas TCP 80 e 443, limita tentativas de autenticação e encaminha pedidos para o serviço local com validação TLS. A porta 80 serve somente o desafio ACME. O Gateway tenta emitir um certificado público Let's Encrypt para o seu IPv4 público e renova-o automaticamente; os certificados de IP usam o perfil de curta duração e precisam de renovação frequente.
+O serviço Gateway escuta em `https://<ip-lan>:8443`, por exemplo `https://192.168.8.168:8443`, sem qualquer encaminhamento no router. O Gateway provisiona um certificado local autoassinado com os IPs encontrados durante a instalação. O browser tem de confiar nesse certificado; o PWA não contorna alertas nem permite ignorar erros TLS. Após formatar o Gateway, o certificado local muda.
 
-Na primeira instalação, o Gateway precisa de acesso à Internet. O router tem de encaminhar **TCP 80 para a porta 80 do Gateway** e **TCP 443 para a porta 443 do Gateway**. A reserva DHCP deve manter o IP LAN do mini PC. Não encaminhes a porta 8443 para a Internet. Após configurar as regras, o serviço tenta emitir o certificado no arranque e repete a tentativa periodicamente.
+## Acesso remoto recomendado: Tailscale
 
-## Endereço para a PWA
+O instalador USB instala o cliente Tailscale oficial para Debian 13 AMD64 e ativa o serviço. Na consola do Gateway, `tailscale up` apresenta o URL para autorizar esse dispositivo na tua conta Tailscale. A autorização é necessária: o Gateway não recebe credenciais Tailscale da PWA e não pode aderir ao Tailnet sem aprovação da conta.
 
-Usa no campo do Gateway o **IPv4 público** apresentado pelo teu router ou pelo fornecedor de Internet, sem `:8443`, por exemplo `https://203.0.113.40`. O Gateway instala certificado para o IP público que deteta. Se estiveres dentro de casa e quiseres usar o mesmo endereço, o router tem de suportar NAT loopback/hairpin; nesse caso o tráfego regressa ao Gateway e o certificado continua a corresponder ao IP.
+No painel de administração Tailscale, ativa MagicDNS e HTTPS Certificates. A aplicação Tailscale também tem de estar ligada no iPhone à mesma Tailnet. O Gateway solicita/renova um certificado público para o nome `*.ts.net` e o Nginx serve a API por TCP 443. Não é necessário comprar domínio nem abrir portas no router. O nome do dispositivo/Tailnet fica publicado no Certificate Transparency quando o certificado é emitido.
 
-Um endereço privado como `192.168.x.x` não corresponde ao certificado público do IP WAN. Para usar diretamente o IP LAN sem aviso TLS é necessário um nome de domínio apontado à rede e um certificado para esse nome, ou instalar uma CA privada em cada dispositivo. Esta implementação escolhe o acesso pelo IP público, sem instalar uma CA no iPhone.
+Na PWA Owner, a secção **Tailscale** apresenta o nome detetado, permite guardar o endpoint e selecioná-lo. O PWA guarda-o no browser para tentar automaticamente esse endpoint quando a ligação LAN principal falhar. O endpoint Tailscale exige HTTPS válido, app Tailscale ligada e sessão normal do SolarMiner; não desativa autenticação da aplicação.
 
-## Condições que dependem do router e do ISP
+Se não quiseres instalar certificado no iPhone, usa o endereço `https://<gateway>.<tailnet>.ts.net` dentro e fora de casa, mantendo Tailscale ligado. Um IP privado como `192.168.8.168` não pode ter certificado público correspondente; o acesso direto a esse IP exige que o browser confie no certificado local.
 
-- O router precisa de receber um IPv4 público e permitir encaminhamento TCP 80/443. CGNAT, bloqueio do ISP ou ausência de IPv4 público impedem acesso direto, independentemente do software.
-- O IPv4 público deve permanecer estável para o endereço guardado na PWA continuar válido. Se mudar, a rotina renova o certificado para o novo IP, mas é necessário atualizar o endpoint guardado na PWA.
-- O iPhone precisa de ligação à Internet para alcançar o endpoint. A PWA usa HTTPS e valida a cadeia e o SAN do certificado; não desativa erros TLS nem aceita certificados autoassinados.
-- Esta configuração publica a API do Gateway na Internet. Usa contas individuais e palavras-passe fortes já registadas no Gateway. Um novo browser que introduz credenciais válidas regista a sua chave Ed25519 como dispositivo dessa conta; o Gateway aplica limites de tentativas e mantém auditoria sem guardar a palavra-passe nos logs.
-
-## Verificar o estado
-
-No Gateway, como `root`, consulta:
+## Verificar o estado como root
 
 ```sh
-systemctl status nginx solarminer-gateway solarminer-public-tls-renew.timer
-journalctl -u solarminer-public-tls-renew.service -n 40 --no-pager
+systemctl status tailscaled solarminer-tailscale-cert.timer nginx solarminer-gateway
+tailscale status
 nginx -t
+journalctl -u solarminer-tailscale-cert.service -n 40 --no-pager
 ```
 
-O endpoint público só fica pronto quando o certificado estiver emitido e o Nginx o tiver carregado. O certificado local de bootstrap serve para a ligação interna entre Nginx e o serviço e não é apresentado ao browser.
+Se o cliente está ligado mas o certificado não está pronto, confirma MagicDNS e HTTPS Certificates no Admin Console. O timer tenta novamente. A porta 8443 é para acesso LAN; não a encaminhes na Internet. Tailscale não requer encaminhamento manual de portas e funciona através de CGNAT.
 
-## Limites da confirmação
+## Acesso público direto opcional
 
-O código pode automatizar o serviço, o certificado, o proxy e a autenticação. Não consegue configurar o router, remover CGNAT, escolher um IPv4 estático nem confirmar a acessibilidade externa sem dados do ISP/router. Confirma o primeiro arranque numa rede externa antes de considerar o acesso remoto validado.
+O pacote mantém uma rotina opcional para certificado público por IPv4. Esta não é necessária para Tailscale e não supera CGNAT. Não configures port forwarding para o Gateway como parte da instalação Tailscale.

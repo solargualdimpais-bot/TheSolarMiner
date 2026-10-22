@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodic SolarMiner Gateway Tailscale HTTPS certificate renewal
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=15min
+RandomizedDelaySec=1min
+Persistent=true
+Unit=solarminer-tailscale-cert.service
+
+[Install]
+WantedBy=timers.target

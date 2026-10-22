@@ -575,6 +575,55 @@ def test_create_user_failure_rolls_back_user_and_association(client):
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 
+def test_owner_can_read_and_configure_valid_tailscale_endpoint(client, monkeypatch):
+    owner, private, _ = create_owner(client)
+    headers, _ = _owner_headers(client, owner, private, nonce="owner-tailscale-endpoint-01")
+    monkeypatch.setattr(gateway, "_read_tailscale_status", lambda: {
+        "installed": True, "connected": True, "dns_name": "solarminer-gateway.tail1234.ts.net",
+        "https_url": "https://solarminer-gateway.tail1234.ts.net"})
+    status = client.get("/api/v1/system/tailscale", headers=headers)
+    assert status.status_code == 200
+    assert status.json()["detected_endpoint"] == "https://solarminer-gateway.tail1234.ts.net"
+    assert status.json()["https_ready"] is False
+    saved = client.put("/api/v1/system/tailscale", headers=headers,
+                       json={"endpoint": "https://solarminer-gateway.tail1234.ts.net/"})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["configured_endpoint"] == "https://solarminer-gateway.tail1234.ts.net"
+    assert saved.json()["endpoint"] == "https://solarminer-gateway.tail1234.ts.net"
+    cleared = client.put("/api/v1/system/tailscale", headers=headers, json={"endpoint": None})
+    assert cleared.status_code == 200
+    assert cleared.json()["configured_endpoint"] is None
+
+
+@pytest.mark.parametrize("endpoint", [
+    "http://solarminer-gateway.tail1234.ts.net",
+    "https://evil.example",
+    "https://user@solarminer-gateway.tail1234.ts.net",
+    "https://solarminer-gateway.tail1234.ts.net/path",
+    "https://solarminer-gateway.tail1234.ts.net?x=1",
+    "https://solarminer-gateway.tail1234.ts.net:8443",
+])
+def test_tailscale_endpoint_rejects_noncanonical_or_untrusted_urls(client, endpoint):
+    owner, private, _ = create_owner(client)
+    headers, _ = _owner_headers(client, owner, private, nonce="owner-tailscale-invalid-01")
+    response = client.put("/api/v1/system/tailscale", headers=headers, json={"endpoint": endpoint})
+    assert response.status_code == 422
+    assert response.json()["detail"] == "invalid_tailscale_endpoint"
+
+
+def test_non_owner_cannot_read_or_configure_tailscale(client):
+    owner, private, _ = create_owner(client)
+    member, _ = _create_member(client, owner, private, role="viewer", username="tailscale-viewer",
+                               password="tailscale-viewer-password")
+    viewer_login = login(client, owner, private, username=member["username"],
+                         password="tailscale-viewer-password", nonce="viewer-tailscale-01")
+    assert viewer_login.status_code == 200, viewer_login.text
+    headers = {"Authorization": f"Bearer {viewer_login.json()['access_token']}"}
+    assert client.get("/api/v1/system/tailscale", headers=headers).status_code == 403
+    assert client.put("/api/v1/system/tailscale", headers=headers,
+                      json={"endpoint": "https://solarminer-gateway.tail1234.ts.net"}).status_code == 403
+
+
 def test_migration_v2_upgrades_existing_v1_database_without_losing_users(tmp_path, monkeypatch):
     import sqlite3
     db_path = tmp_path / "existing-v1.db"

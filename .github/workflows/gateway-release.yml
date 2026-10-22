@@ -68,6 +68,9 @@ jobs:
           sh -n packaging/postinst
           sh -n packaging/prerm
           sh -n packaging/solarminer-public-tls-renew
+          sh -n packaging/install-tailscale.sh
+          sh -n packaging/solarminer-tailscale-info
+          sh -n packaging/solarminer-tailscale-cert
           [ "$(sed -n 's/^TARGET_VERSION=//p' packaging/repair-existing-from-usb.sh)" = "$(sed -n 's/^Version: //p' packaging/control)" ]
           ! grep -q '^VERSION=' packaging/repair-existing-from-usb.sh
 
@@ -248,6 +251,7 @@ jobs:
             cp "$RUNNER_TEMP/solarminer-usb-rollback/$VERSION/solarminer-release.json" "$BUNDLE/solarminer-release-$VERSION.json"
           done
           cp solarminer-gateway-code02-v0.6.9-candidate/packaging/install-from-usb.sh "$BUNDLE/"
+          cp solarminer-gateway-code02-v0.6.9-candidate/packaging/install-tailscale.sh "$BUNDLE/"
           cp solarminer-gateway-code02-v0.6.9-candidate/packaging/repair-existing-from-usb.sh "$BUNDLE/"
           cp solarminer-gateway-code02-v0.6.9-candidate/packaging/USB_INSTALL_README.txt "$BUNDLE/README.txt"
           cp solarminer-gateway-code02-v0.6.9-candidate/packaging/USB_REPAIR_README.txt "$BUNDLE/REPAIR_EXISTING_README.txt"

@@ -1,0 +1,25 @@
+#!/bin/sh
+set -eu
+TAILSCALE=/usr/bin/tailscale
+if [ ! -x "$TAILSCALE" ]; then
+  printf '%s\n' '{"installed":false,"connected":false,"dns_name":null,"https_url":null}'
+  exit 0
+fi
+status=$($TAILSCALE status --json 2>/dev/null) || {
+  printf '%s\n' '{"installed":true,"connected":false,"dns_name":null,"https_url":null}'
+  exit 0
+}
+printf '%s' "$status" | /usr/bin/python3 -c '
+import json, re, sys
+try:
+    data=json.load(sys.stdin)
+    self_data=data.get("Self") or {}
+    dns=(self_data.get("DNSName") or "").rstrip(".").lower()
+    valid=bool(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.ts\.net", dns))
+    connected=data.get("BackendState") == "Running" and valid
+    result={"installed":True,"connected":connected,"dns_name":dns if valid else None,
+            "https_url":"https://"+dns if connected else None}
+    print(json.dumps(result, separators=(",", ":")))
+except Exception:
+    print("{\"installed\":true,\"connected\":false,\"dns_name\":null,\"https_url\":null}")
+'

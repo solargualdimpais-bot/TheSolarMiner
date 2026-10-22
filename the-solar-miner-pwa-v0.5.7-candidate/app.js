@@ -2,8 +2,8 @@ import { CATEGORIES, DEMO_EQUIPMENT, classifyEquipment, formatReading, isSimulat
 import { DEMO_CONTROL_CONFIG, createDemoControlState, updateDemoControl, toggleDemoControl } from "./demo-mode.js";
 import { renderWorkspacePage, renderHomePreferenceLinks, renderHouseSearch, handleWorkspaceAction, handleWorkspaceChange, applyPreferences, getWorkspacePageLabel, workspace, getEditableEntity, saveEditableEntity, saveDemoWorkspace, hydrateWorkspacePhotos } from "./workspace-ui.js";
 import { renderAutomationsPage, renderSolarProductionPage, renderDemoAdminPanel, handleFeatureAction, saveAutomationForm, addDemoUser, saveDemoUserEdit, saveSolarWeather, demoFeatures } from "./features-v053.js";
-import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, PRESENCE_API_STATUS } from "./gateway-connection.js";
-import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate } from "./gateway-auth.js";
+import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classifyEndpoint, PRESENCE_API_STATUS } from "./gateway-connection.js";
+import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, configureGatewayTailscale } from "./gateway-auth.js";
 
 let automationEditingId = "";
 const state = { page: "inicio", mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], lastUpdated: null, lastMeasurementAt: null, refreshing: false, propertyPhoto: "", demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [] };
@@ -407,11 +407,23 @@ $("#close-gateway-dialog").addEventListener("click",()=>$("#gateway-dialog").clo
 $("#gateway-check").addEventListener("click",async()=>{
   const field=$("#gateway-endpoint");
   try {
-    const endpoint=validateGatewayUrl(field.value,{allowLocalHttp:location.hostname==="localhost"||location.hostname==="127.0.0.1"});
+    const primary=validateGatewayUrl(field.value,{allowLocalHttp:location.hostname==="localhost"||location.hostname==="127.0.0.1"});
+    const candidates=[primary.origin];
+    try {
+      if(classifyEndpoint(primary.origin)==="CANDIDATE_LAN") localStorage.setItem("solarminer-gateway-lan-endpoint-v1",primary.origin);
+      const localFallback=localStorage.getItem("solarminer-gateway-lan-endpoint-v1");
+      if(localFallback&&localFallback!==primary.origin)candidates.push(validateGatewayUrl(localFallback).origin);
+      const tailscaleFallback=localStorage.getItem("solarminer-gateway-tailscale-endpoint-v1");
+      if(tailscaleFallback&&tailscaleFallback!==primary.origin&&new URL(tailscaleFallback).hostname.toLowerCase().endsWith(".ts.net"))candidates.push(validateGatewayUrl(tailscaleFallback).origin);
+    } catch {}
+    let endpoint=primary, result=null;
+    for(const candidate of candidates){
+      gatewayResult(candidate===primary.origin?"A verificar /api/v1/health e /api/v1/info…":"Endpoint LAN indisponível; a tentar o endereço Tailscale…");
+      result=await gatewayManager.check(candidate);
+      if(result.reachable){endpoint=validateGatewayUrl(candidate);break;}
+    }
     field.value=endpoint.origin;
     try { localStorage.setItem("solarminer-gateway-endpoint-v1", endpoint.origin); } catch {}
-    gatewayResult("A verificar /api/v1/health e /api/v1/info…");
-    const result=await gatewayManager.check(endpoint.origin);
     if(result.reachable) {
       try {
         const bootstrap = await readGatewayBootstrapStatus(endpoint.origin);
@@ -457,7 +469,7 @@ $("#gateway-password-login-form").addEventListener("submit", async event => {
 });
 $("#gateway-clear").addEventListener("click",async()=>{
   try { await logoutGateway(); } catch {}
-  try { localStorage.removeItem("solarminer-gateway-endpoint-v1"); } catch {}
+  try { localStorage.removeItem("solarminer-gateway-endpoint-v1"); localStorage.removeItem("solarminer-gateway-lan-endpoint-v1"); localStorage.removeItem("solarminer-gateway-tailscale-endpoint-v1"); } catch {}
   $("#gateway-endpoint").value=""; gatewayManager.clear(); updateSessionUi(); resetToDemoAfterLogout();
   $("#gateway-password-login-form").hidden = true;
   gatewayResult("Endpoint removido deste browser. A identidade do dispositivo permanece guardada para poderes voltar a ligar sem palavra-passe.");
@@ -466,6 +478,7 @@ try { if (localStorage.getItem("solarminer-gateway-endpoint-v1")) setTimeout(() 
 const invitePanel = $("#gateway-invite-management");
 const userPanel = $("#gateway-user-management");
 const updatePanel = $("#gateway-update-management");
+const tailscalePanel = $("#gateway-tailscale-management");
 let verifiedGatewayUpdate = null;
 let inviteQrObjectUrl = null;
 let ownerRecoveryFingerprint = "";
@@ -496,11 +509,18 @@ function updateSessionUi() {
         refreshGatewayUpdateStatus().catch(error => showGatewayUpdateMessage(`Não foi possível consultar o estado: ${error.message}`));
       }
     }
+    if (tailscalePanel) {
+      tailscalePanel.hidden = info.user.role !== "owner";
+      if (info.user.role === "owner") refreshGatewayTailscale().catch(error => {
+        $("#gateway-tailscale-status").textContent = `Não foi possível consultar o Tailscale: ${error.message}`;
+      });
+    }
   } else {
     status.textContent = "Sem sessão ativa. Ao testar o endpoint, este dispositivo tenta autenticar-se pela identidade guardada.";
     invitePanel.hidden = true;
     userPanel.hidden = true;
     if (updatePanel) updatePanel.hidden = true;
+    if (tailscalePanel) tailscalePanel.hidden = true;
     verifiedGatewayUpdate = null;
   }
 }
@@ -680,6 +700,45 @@ $("#gateway-update-check").addEventListener("click", async () => {
 });
 $("#gateway-update-refresh").addEventListener("click", () => refreshGatewayUpdateStatus()
   .catch(error => showGatewayUpdateMessage(`Não foi possível consultar o estado: ${error.message}`)));
+async function refreshGatewayTailscale() {
+  const info=sessionInfo();
+  if(!info.authenticated || info.user.role!=="owner") throw new Error("Apenas o Owner autenticado pode gerir Tailscale.");
+  const result=await readGatewayTailscale();
+  const field=$("#gateway-tailscale-endpoint");
+  if(result.endpoint && field) field.value=result.endpoint;
+  if(result.endpoint){try{localStorage.setItem("solarminer-gateway-tailscale-endpoint-v1",result.endpoint);}catch{}}
+  else {try{localStorage.removeItem("solarminer-gateway-tailscale-endpoint-v1");}catch{}}
+  const status=$("#gateway-tailscale-status");
+  status.textContent=!result.installed ? "Cliente Tailscale não instalado. Instala a versão SolarMiner preparada para Tailscale." :
+    !result.connected ? "Tailscale instalado, mas o Gateway ainda não foi autorizado/ligado ao Tailnet. Conclui a autorização no terminal do Gateway." :
+    !result.https_ready ? `Gateway ligado ao Tailnet (${result.dns_name}), mas o certificado HTTPS ainda não está pronto. Ativa MagicDNS e HTTPS Certificates no painel Tailscale e aguarda a emissão automática.` :
+    `Tailscale ativo e HTTPS pronto: ${result.endpoint}. Não são necessárias portas no router.`;
+  return result;
+}
+$("#gateway-tailscale-refresh").addEventListener("click",()=>refreshGatewayTailscale()
+  .catch(error=>{$("#gateway-tailscale-status").textContent=`Não foi possível consultar o Tailscale: ${error.message}`;}));
+$("#gateway-tailscale-save").addEventListener("click",async()=>{
+  const button=$("#gateway-tailscale-save"), status=$("#gateway-tailscale-status"), field=$("#gateway-tailscale-endpoint");
+  const value=field.value.trim();
+  button.disabled=true; status.textContent="A guardar o endereço Tailscale no Gateway…";
+  try {
+    const result=await configureGatewayTailscale(value || null);
+    if(result.endpoint){try{localStorage.setItem("solarminer-gateway-tailscale-endpoint-v1",result.endpoint);}catch{}}
+    else {try{localStorage.removeItem("solarminer-gateway-tailscale-endpoint-v1");}catch{}}
+    status.textContent=value ? `Endereço guardado no Gateway: ${result.endpoint}.` : "Endereço manual removido; será usada a deteção automática quando estiver disponível.";
+  } catch(error){status.textContent=`Não foi possível guardar o endereço: ${error.message}`;}
+  finally{button.disabled=false;}
+});
+$("#gateway-tailscale-use").addEventListener("click",()=>{
+  const field=$("#gateway-tailscale-endpoint"), endpoint=field.value.trim();
+  if(!endpoint){$("#gateway-tailscale-status").textContent="Deteta ou guarda primeiro o endereço Tailscale.";return;}
+  try {
+    const normalized=validateGatewayUrl(endpoint).origin;
+    $("#gateway-endpoint").value=normalized;
+    try{localStorage.setItem("solarminer-gateway-endpoint-v1",normalized);}catch{}
+    $("#gateway-dialog").close(); $("#gateway-check").click();
+  } catch(error){$("#gateway-tailscale-status").textContent=error.message||"Endereço Tailscale inválido.";}
+});
 $("#gateway-update-apply").addEventListener("click", async () => {
   const info = sessionInfo(), update = verifiedGatewayUpdate;
   if (!info.authenticated || info.user.role !== "owner" || !update?.available_version || !update.activation_available) {
