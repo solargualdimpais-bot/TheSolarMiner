@@ -116,15 +116,26 @@ def test_antminer_control_rejects_missing_credentials_and_out_of_range_power(mon
         integrations.control_antminer(config, "reboot")
 
 
-def test_deye_uses_standard_identification_without_guessing_registers(monkeypatch):
+def test_deye_sg05lp3_reads_live_validated_candidate_registers_without_fc43(monkeypatch):
     monkeypatch.setattr(integrations, "probe_tcp", lambda host, port, timeout: {"state": "tcp_reachable", "host": host, "port": port})
-    def identify(host, **kwargs):
-        assert (host, kwargs["port"], kwargs["unit_id"]) == ("192.168.8.10", 502, 1)
-        return {"state": "modbus_identity_response", "objects": []}
-    monkeypatch.setattr(integrations.deye_modbus, "read_device_identification", identify)
+    monkeypatch.setattr(integrations.deye_modbus, "read_device_identification",
+                        lambda *_args, **_kwargs: pytest.fail("FC43 must be skipped for DYDA_WiBLE"))
+    reads = []
+    values = {0: (5,), 500: (2,), 653: (245,), 672: (2076, 305)}
+    def read_registers(host, **kwargs):
+        assert host == "192.168.8.10"
+        reads.append((kwargs["start_address"], kwargs["count"], kwargs["port"], kwargs["unit_id"]))
+        return type("Probe", (), {"raw_registers": values[kwargs["start_address"]]})()
+    monkeypatch.setattr(integrations.deye_modbus, "read_holding_registers", read_registers)
     result = integrations.read_deye({"host": "192.168.8.10", "port": 502, "unit_id": 1, "model": "SUN-15K-SG05LP3-EU-SM2"})
-    assert result["metrics_decoded"] is False
-    assert result["connection_state"] == "modbus_identity_response"
+    assert reads == [(0, 1, 502, 1), (500, 1, 502, 1), (653, 1, 502, 1), (672, 2, 502, 1)]
+    assert result["metrics_decoded"] is True
+    assert result["connection_state"] == "mapped_registers_response"
+    assert result["device_type_code"] == 5
+    assert result["status_code"] == 2
+    assert [(metric["field"], metric["value"], metric["unit"]) for metric in result["metrics"]] == [
+        ("load_total_power", 245, "W"), ("pv1_input_power", 2076, "W"), ("pv2_input_power", 305, "W")]
+    assert result["register_map"]["status"] == "COMMUNITY_MAP_LIVE_READS_CONFIRMED_NOT_MANUFACTURER_VALIDATED"
     assert result["trust"] == "LIVE_UNVERIFIED"
     assert result["control_commands_sent"] is False
 

@@ -1,4 +1,4 @@
-SolarMiner Gateway 0.6.34 — reparar Gateway instalado através de USB
+SolarMiner Gateway 0.6.35 — reparar Gateway instalado através de USB
 
 Usa este procedimento num Gateway Debian 13 amd64 que já tenha SolarMiner instalado e cuja chave pública de release esteja em /etc/solarminer/release-pubkey.pem.
 

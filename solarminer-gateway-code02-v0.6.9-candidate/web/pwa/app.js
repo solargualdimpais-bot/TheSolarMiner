@@ -593,6 +593,8 @@ async function refreshHardwareIntegrationConfig() {
 function hardwareConnectionSummary(result) {
   const names = { deye: "Deye", antminer: "Antminer" };
   const stateText = {
+    mapped_registers_response: "Registos Deye responderam; leituras do mapa candidato disponíveis para validação",
+    mapped_register_read_failed: "Ligação Modbus ativa, mas a leitura do mapa candidato falhou",
     modbus_identity_response: "Modbus respondeu; mapa de dados ainda não validado",
     modbus_register_probe_response: "Modbus respondeu à leitura FC03 de diagnóstico; valor descartado e mapa de dados ainda não validado",
     modbus_exception_response: "O equipamento respondeu por Modbus, mas rejeitou a consulta de identificação",

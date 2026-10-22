@@ -415,6 +415,49 @@ def probe_tcp(host: str, port: int, timeout: float = 2.0) -> dict[str, Any]:
         raise RuntimeError(reason) from exc
 
 
+_DEYE_SG05LP3_MODEL = "SUN-15K-SG05LP3-EU-SM2"
+_DEYE_SG05LP3_MAP_SOURCE = "https://github.com/mxbode/Deye-SUN-SG05LP3-EU-SM2-Modbus-TSV"
+_DEYE_SG05LP3_MAP_SHA256 = "ba9e0b87ed37cc28ed9fc1493a07d9b26d6dc4d15fc95b1786424e85d99b9c48"
+
+
+def _read_deye_sg05lp3_candidate_map(host: str, port: int, unit: int) -> dict[str, Any]:
+    """Read a small, read-only SG05LP3 candidate map, using 4xxxx-to-zero-based offsets.
+
+    This community map has been checked against live Modbus responses for the
+    configured SUN-15K-SG05LP3-EU-SM2 endpoint, but is not manufacturer-certified.
+    Avoid FC43 here: the DYDA_WiBLE logger can time out FC43 and then fail to
+    serve the immediate fallback request. FC03 reads against known map offsets
+    work reliably and avoid the unsupported identification probe.
+    """
+    def read(reference_address: int, count: int) -> tuple[int, ...]:
+        # Map references use holding-register notation (40001 == PDU offset 0).
+        offset = reference_address - 40001
+        result = deye_modbus.read_holding_registers(host, start_address=offset, count=count,
+                                                     port=port, unit_id=unit, timeout=2.0)
+        return result.raw_registers
+
+    device_type = read(40001, 1)[0]
+    status_code = read(40501, 1)[0]
+    load_power_w = read(40654, 1)[0]
+    pv_power = read(40673, 2)
+    metrics = [
+        {"field": "load_total_power", "register": 40654, "raw_value": load_power_w, "value": load_power_w, "unit": "W"},
+        {"field": "pv1_input_power", "register": 40673, "raw_value": pv_power[0], "value": pv_power[0], "unit": "W"},
+        {"field": "pv2_input_power", "register": 40674, "raw_value": pv_power[1], "value": pv_power[1], "unit": "W"},
+    ]
+    return {
+        "device_type_code": device_type,
+        "status_code": status_code,
+        "metrics": metrics,
+        "register_map": {
+            "source": _DEYE_SG05LP3_MAP_SOURCE,
+            "sha256": _DEYE_SG05LP3_MAP_SHA256,
+            "status": "COMMUNITY_MAP_LIVE_READS_CONFIRMED_NOT_MANUFACTURER_VALIDATED",
+            "address_convention": "40001_based_reference_converted_to_zero_based_PDU_offset",
+        },
+    }
+
+
 def read_deye(config: dict[str, Any]) -> dict[str, Any]:
     host, port, unit = config["host"], config["port"], config.get("unit_id", 1)
     # FC43/MEI 14 is optional in Modbus devices. Some inverter firmware only
@@ -423,6 +466,29 @@ def read_deye(config: dict[str, Any]) -> dict[str, Any]:
     # deliberately discarded: this is transport/protocol detection, not a
     # verified Deye metric or register map.
     tcp = probe_tcp(host, port, timeout=2.0)
+    if str(config.get("model", "")).strip().upper() == _DEYE_SG05LP3_MODEL:
+        try:
+            mapped = _read_deye_sg05lp3_candidate_map(host, port, unit)
+            return {"host": host, "port": port, "unit_id": unit, "model": config.get("model"),
+                    "tcp": tcp, "protocol": "Modbus TCP FC03 read-only",
+                    "probe_method": "SG05LP3 community map; FC43 skipped",
+                    "connection_state": "mapped_registers_response", "modbus_identity": None,
+                    "device_type_code": mapped["device_type_code"], "status_code": mapped["status_code"],
+                    "metrics": mapped["metrics"], "register_map": mapped["register_map"],
+                    "metrics_decoded": True, "trust": "LIVE_UNVERIFIED",
+                    "reason": "community_map_registers_responded; manufacturer_map_and_field_semantics_unverified",
+                    "diagnostic_detail": "Registos Modbus responderam. Os valores usam um mapa comunitário candidato; confirmar semântica e compatibilidade com a Deye antes de os usar em automações.",
+                    "web_ui_credentials_apply_to_modbus": False, "control_commands_sent": False}
+        except deye_modbus.ModbusError as exc:
+            return {"host": host, "port": port, "unit_id": unit, "model": config.get("model"),
+                    "tcp": tcp, "protocol": "Modbus TCP FC03 read-only",
+                    "probe_method": "SG05LP3 community map; FC43 skipped",
+                    "connection_state": "mapped_register_read_failed", "metrics_decoded": False,
+                    "register_map": {"source": _DEYE_SG05LP3_MAP_SOURCE, "sha256": _DEYE_SG05LP3_MAP_SHA256,
+                                     "status": "COMMUNITY_MAP_NOT_FULLY_VALIDATED"},
+                    "web_ui_credentials_apply_to_modbus": False,
+                    "diagnostic_detail": f"A leitura Modbus do mapa candidato falhou ({type(exc).__name__}); FC43 não foi enviado.",
+                    "reason": "mapped_register_read_failed", "trust": "UNAVAILABLE", "control_commands_sent": False}
     probe_method = "FC43/MEI14"
 
     def fc03_fallback(fc43_error: str) -> tuple[str, dict[str, Any] | None, str]:

@@ -1,18 +1,18 @@
 # API v1 (CODE 01)
 
-## CODE02 v0.6.34 — controlo Owner do Braiins OS
+## CODE02 v0.6.35 — controlo Owner do Braiins OS
 
 `POST /api/v1/integrations/antminer/control` é exclusivo do Owner autenticado. Aceita apenas `{"action":"set_power_target","watt":N}`, `{"action":"pause"}`, `{"action":"stop"}` ou `{"action":"start"}`. O servidor revalida o papel Owner, chama apenas endpoints fixos da REST API Braiins OS e regista a ação e resultado na auditoria sem palavra-passe nem token. O alvo está limitado a 1–2900 W e a resposta devolve os watts que o firmware confirmou. As credenciais são enviadas na configuração Owner e guardadas no ficheiro privado do Gateway, nunca devolvidas. A ligação ao minerador usa REST HTTP em rede privada; requer Braiins OS 25.07 ou mais recente. A porta CGMiner 4028 continua apenas de leitura.
 
-Para Deye, a resposta de diagnóstico explicita os timeouts de FC43/FC03 e confirma que as credenciais da página web não se aplicam à ligação Modbus TCP.
+Para o Deye `SUN-15K-SG05LP3-EU-SM2`, o Gateway usa o mapa comunitário candidato versionado em `docs/deye/SG05LP3-register-map-community.tsv`, converte referências 4xxxx em offsets Modbus e lê estado, potência total da carga e potência FV1/FV2 somente por FC03. Salta FC43 porque o logger DYDA_WiBLE 1.7.2 não respondeu a essa função e a tentativa seguida de FC03 também expirou; FC03 isolado respondeu ao teste físico. Os valores continuam marcados `LIVE_UNVERIFIED`; as credenciais da página web não se aplicam ao Modbus TCP.
 
-## Error reporting (CODE02 0.6.34)
+## Error reporting (CODE02 0.6.33)
 
 There is no PWA endpoint for log upload. The Gateway queues sanitized application `ERROR` records locally and, when the owner has configured a repository-scoped GitHub token, a systemd timer submits batches as GitHub issues. Configuration and privacy details are in `ERROR_REPORTING.md`.
 
-## CODE02 v0.6.34 — diagnóstico de hardware
+## CODE02 v0.6.35 — diagnóstico de hardware
 
-`POST /api/v1/integrations/hardware/read` returns per-device diagnostics. Deye uses FC43 identification and a one-register FC03 fallback when FC43 is rejected or times out; the diagnostic register value is discarded. Tuya Cloud failures are isolated per configured device ID. Antminer model identity remains unverified by the API response.
+`POST /api/v1/integrations/hardware/read` returns per-device diagnostics. For `SUN-15K-SG05LP3-EU-SM2`, Deye reads a limited set of candidate registers using FC03 and skips FC43. Results identify the community map source and remain `LIVE_UNVERIFIED`. Tuya Cloud failures are isolated per configured device ID. Antminer model identity remains unverified by the API response.
 
 ## CODE02 v0.6.31 — estado e diagnóstico de recuperação de atualização
 
