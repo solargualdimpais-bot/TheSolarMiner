@@ -1,4 +1,4 @@
-SolarMiner Gateway CODE02 0.6.16 — instalador inicial USB
+SolarMiner Gateway CODE02 0.6.17 — instalador inicial USB
 ==========================================================
 
 Requisitos: Gateway Lenovo AMD64, Debian 13 (Trixie) ou posterior, Python 3.13 ou posterior e acesso à Internet para os repositórios oficiais Debian.
@@ -11,4 +11,4 @@ O script valida manifesto, assinatura Ed25519, hash, tamanho, versão e arquitet
 
 A pen não executa programas automaticamente ao ser inserida; em Debian, inicia o script uma vez como root. Este comando destina-se apenas a um Debian limpo. Para um Gateway já instalado com versão 0.6.10–0.6.14, usa `repair-existing-from-usb.sh` e segue `REPAIR_EXISTING_README.txt`. A chave privada de release não é incluída neste ZIP.
 
-Depois da instalação, abre a PWA no iPhone, introduz o endpoint HTTPS e testa-o. Se ainda não existir Owner, a PWA abre a janela inicial: introduz o nome e a palavra-passe que escolheste na consola do Gateway. O manual completo fica em /usr/share/doc/solarminer-gateway/OWNER_FIRST_BOOTSTRAP.md.
+Depois da instalação, abre a PWA no iPhone, introduz o endpoint HTTPS e testa-o. Se ainda não existir Owner, a PWA abre a janela inicial: introduz o nome e a palavra-passe que escolheste na consola do Gateway. Guarda a chave de recuperação Owner, apresentada uma única vez, num ficheiro para a pen dedicada. Essa chave é um segredo revogável para recuperação; não ignora TLS nem substitui a autenticação normal. A gestão de contas reais fica disponível na secção Owner da PWA. O manual completo fica em /usr/share/doc/solarminer-gateway/OWNER_FIRST_BOOTSTRAP.md.

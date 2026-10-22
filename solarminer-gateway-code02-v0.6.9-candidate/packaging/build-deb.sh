@@ -28,6 +28,7 @@ cp "$ROOT/docs/TLS_TRUST.md" "$STAGE/usr/share/doc/solarminer-gateway/TLS_TRUST.
 cp "$ROOT/docs/API.md" "$STAGE/usr/share/doc/solarminer-gateway/API.md"
 cp "$ROOT/docs/A1B_SECURITY.md" "$STAGE/usr/share/doc/solarminer-gateway/A1B_SECURITY.md"
 cp "$ROOT/docs/A2_OWNER_RECOVERY.md" "$STAGE/usr/share/doc/solarminer-gateway/A2_OWNER_RECOVERY.md"
+cp "$ROOT/docs/OWNER_USB_AND_ACCESS.md" "$STAGE/usr/share/doc/solarminer-gateway/OWNER_USB_AND_ACCESS.md"
 cp "$ROOT/docs/OWNER_FIRST_BOOTSTRAP.md" "$STAGE/usr/share/doc/solarminer-gateway/OWNER_FIRST_BOOTSTRAP.md"
 cp "$ROOT/docs/CODE02_CONNECTOR_MANAGER.md" "$STAGE/usr/share/doc/solarminer-gateway/CODE02_CONNECTOR_MANAGER.md"
 cp "$ROOT/docs/deye/README.md" "$STAGE/usr/share/doc/solarminer-gateway/DEYE_MODBUS_READ_ONLY.md"

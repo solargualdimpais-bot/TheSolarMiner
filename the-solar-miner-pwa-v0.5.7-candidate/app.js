@@ -3,7 +3,7 @@ import { DEMO_CONTROL_CONFIG, createDemoControlState, updateDemoControl, toggleD
 import { renderWorkspacePage, renderHomePreferenceLinks, renderHouseSearch, handleWorkspaceAction, handleWorkspaceChange, applyPreferences, getWorkspacePageLabel, workspace, getEditableEntity, saveEditableEntity, saveDemoWorkspace, hydrateWorkspacePhotos } from "./workspace-ui.js";
 import { renderAutomationsPage, renderSolarProductionPage, renderDemoAdminPanel, handleFeatureAction, saveAutomationForm, addDemoUser, saveDemoUserEdit, saveSolarWeather, demoFeatures } from "./features-v053.js";
 import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, PRESENCE_API_STATUS } from "./gateway-connection.js";
-import { bootstrapGatewayOwner, readGatewayBootstrapStatus, loginGateway, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, logoutGateway, readGatewayEnergy, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate } from "./gateway-auth.js";
 
 let automationEditingId = "";
 const state = { page: "inicio", mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], lastUpdated: null, lastMeasurementAt: null, refreshing: false, propertyPhoto: "", demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [] };
@@ -442,9 +442,11 @@ $("#gateway-clear").addEventListener("click",async()=>{
 });
 try { if (localStorage.getItem("solarminer-gateway-endpoint-v1")) setTimeout(() => $("#gateway-check").click(), 0); } catch {}
 const invitePanel = $("#gateway-invite-management");
+const userPanel = $("#gateway-user-management");
 const updatePanel = $("#gateway-update-management");
 let verifiedGatewayUpdate = null;
 let inviteQrObjectUrl = null;
+let ownerRecoveryFingerprint = "";
 function markGatewayAuthenticated() {
   const info = sessionInfo();
   if (!info.authenticated) return;
@@ -459,7 +461,11 @@ function updateSessionUi() {
     const presence = presenceInfo();
     status.textContent = `Sessão autenticada: ${info.user.username} (${info.user.role}) · token apenas em memória · presença da sessão: ${presence.state || "unknown"}; não prova presença física.`;
     invitePanel.hidden = info.user.role !== "owner";
-    if (info.user.role === "owner") refreshInviteList().catch(error => { $("#gateway-invite-list").textContent = `Não foi possível consultar convites: ${error.message}`; });
+    userPanel.hidden = info.user.role !== "owner";
+    if (info.user.role === "owner") {
+      refreshInviteList().catch(error => { $("#gateway-invite-list").textContent = `Não foi possível consultar convites: ${error.message}`; });
+      refreshGatewayUsers().catch(error => { $("#gateway-user-list").textContent = `Não foi possível consultar utilizadores: ${error.message}`; });
+    }
     if (updatePanel) {
       updatePanel.hidden = info.user.role !== "owner";
       if (info.user.role === "owner") {
@@ -471,6 +477,7 @@ function updateSessionUi() {
   } else {
     status.textContent = "Sem sessão ativa. Ao testar o endpoint, este dispositivo tenta autenticar-se pela identidade guardada.";
     invitePanel.hidden = true;
+    userPanel.hidden = true;
     if (updatePanel) updatePanel.hidden = true;
     verifiedGatewayUpdate = null;
   }
@@ -483,6 +490,7 @@ $("#gateway-bootstrap-form").addEventListener("submit", async event => {
       username: $("#gateway-bootstrap-username").value.trim(), password: passwordField.value });
     passwordField.value = "";
     $("#gateway-bootstrap-recovery-key").value = result.recovery_key;
+    ownerRecoveryFingerprint = result.gatewayFingerprint || "";
     $("#gateway-bootstrap-recovery").hidden = false;
     $("#gateway-endpoint").value = result.gatewayUrl;
     $("#gateway-bootstrap-result").textContent = "Owner registado. A palavra-passe de configuração foi consumida e este telemóvel ficou associado. Guarda a chave de recuperação offline.";
@@ -492,6 +500,64 @@ $("#gateway-bootstrap-form").addEventListener("submit", async event => {
 $("#gateway-copy-recovery-key").addEventListener("click", async () => {
   try { await navigator.clipboard.writeText($("#gateway-bootstrap-recovery-key").value); $("#gateway-bootstrap-result").textContent = "Chave de recuperação copiada. Guarda-a offline."; }
   catch { $("#gateway-bootstrap-result").textContent = "A cópia automática foi recusada; seleciona a chave e guarda-a offline."; }
+});
+$("#gateway-download-recovery-key").addEventListener("click", () => {
+  const key = $("#gateway-bootstrap-recovery-key").value;
+  if (!key) return;
+  downloadOwnerRecoveryFile(key, ownerRecoveryFingerprint, "solarminer-owner-recovery-key.txt");
+  $("#gateway-bootstrap-result").textContent = "Ficheiro da chave de recuperação descarregado. Copia-o para a pen Owner e apaga as cópias temporárias do computador.";
+});
+function downloadOwnerRecoveryFile(key, fingerprint, filename) {
+  if (!key) return;
+  const blob = new Blob([`SolarMiner Owner Recovery Key\nGateway Ed25519 fingerprint: ${fingerprint || "not-recorded"}\nGuardar offline. Este segredo pode iniciar o fluxo de recuperação do Owner.\n\n${key}\n`], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+$("#open-owner-recovery").addEventListener("click", () => {
+  $("#gateway-recovery-fingerprint").value = ownerRecoveryFingerprint || "";
+  $("#gateway-owner-recovery-dialog").showModal();
+});
+$("#gateway-recovery-file").addEventListener("change", async event => {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  try {
+    const contents = await file.text();
+    const { key, fingerprint } = parseOwnerRecoveryFile(contents);
+    $("#gateway-recovery-key").value = key;
+    if (fingerprint) $("#gateway-recovery-fingerprint").value = fingerprint;
+    $("#gateway-recovery-result").textContent = "Ficheiro lido. Confirma o utilizador e define uma nova palavra-passe para recuperar o Owner.";
+  } catch (error) { $("#gateway-recovery-result").textContent = error.message; }
+});
+$("#gateway-owner-recovery-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const newPassword = $("#gateway-recovery-password").value;
+  const repeat = $("#gateway-recovery-password-repeat").value;
+  const output = $("#gateway-recovery-result");
+  if (newPassword !== repeat) { output.textContent = "As novas palavras-passe não coincidem."; return; }
+  output.textContent = "A verificar a identidade TLS e a concluir a recuperação no Gateway…";
+  try {
+    const result = await recoverGatewayOwner({ gatewayUrl: $("#gateway-endpoint").value,
+      username: $("#gateway-recovery-username").value.trim(), recoveryKey: $("#gateway-recovery-key").value.trim(),
+      newPassword, mac: $("#gateway-recovery-mac").value.trim(),
+      expectedGatewayFingerprint: $("#gateway-recovery-fingerprint").value.trim() });
+    ownerRecoveryFingerprint = result.gatewayFingerprint || "";
+    $("#gateway-recovery-new-key").value = result.recovery_key;
+    $("#gateway-recovery-new-key-panel").hidden = false;
+    $("#gateway-recovery-password").value = "";
+    $("#gateway-recovery-password-repeat").value = "";
+    $("#gateway-recovery-key").value = "";
+    $("#gateway-recovery-file").value = "";
+    output.textContent = "Acesso Owner recuperado. A chave antiga foi consumida; descarrega e guarda já a chave nova na pen.";
+    markGatewayAuthenticated(); updateSessionUi(); await refreshGatewayReadings();
+  } catch (error) { $("#gateway-recovery-password").value = ""; $("#gateway-recovery-password-repeat").value = ""; output.textContent = `Recuperação não concluída: ${error.message}`; }
+});
+$("#gateway-download-new-recovery-key").addEventListener("click", () => {
+  downloadOwnerRecoveryFile($("#gateway-recovery-new-key").value, ownerRecoveryFingerprint, "solarminer-owner-recovery-key.txt");
+  $("#gateway-recovery-result").textContent = "Nova chave descarregada. Substitui o ficheiro antigo na pen; a chave antiga já não funciona.";
 });
 function gatewayUpdateFailureText(code) {
   const messages = {
@@ -619,6 +685,43 @@ async function refreshInviteList() {
   if (!result.invites?.length) { target.textContent = "Não existem convites registados."; return; }
   target.innerHTML = result.invites.map(item => `<div class="invite-row"><div><strong>${esc(item.label)}</strong><p>${esc(item.role)} · ${esc(item.state)} · expira ${esc(currentTimeLabel(new Date(item.expires_at * 1000).toISOString()))}</p></div>${item.state === "pending" ? `<button type="button" class="button secondary" data-revoke-invite="${esc(item.invite_id)}">Revogar</button>` : ""}</div>`).join("");
 }
+async function refreshGatewayUsers() {
+  const target = $("#gateway-user-list");
+  target.textContent = "A consultar utilizadores reais no Gateway…";
+  const { users = [] } = await listGatewayUsers();
+  if (!users.length) { target.textContent = "O Gateway não devolveu utilizadores."; return; }
+  target.innerHTML = users.map(user => {
+    const self = user.id === sessionInfo().user?.id;
+    const availableRoles = user.role === "owner" ? ["owner", "admin", "operator", "viewer"] : ["admin", "operator", "viewer"];
+    const roleOptions = availableRoles.map(role => `<option value="${role}" ${user.role === role ? "selected" : ""}>${role}</option>`).join("");
+    const statusOptions = ["active", "revoked"].map(status => `<option value="${status}" ${user.status === status ? "selected" : ""}>${status === "active" ? "Ativo" : "Revogado"}</option>`).join("");
+    return `<div class="invite-row gateway-user-row" data-gateway-user="${esc(user.id)}"><div><strong>${esc(user.username)}</strong><p>${esc(user.role)} · ${user.status === "active" ? "Ativo" : "Revogado"}${self ? " · sessão atual" : ""}</p></div><label>Papel<select data-user-role ${self ? "disabled" : ""}>${roleOptions}</select><button type="button" class="button secondary" data-save-role ${self ? "disabled" : ""}>Guardar papel</button></label><label>Estado<select data-user-status ${self ? "disabled" : ""}>${statusOptions}</select><button type="button" class="button secondary" data-save-status ${self ? "disabled" : ""}>Guardar estado</button></label></div>`;
+  }).join("");
+}
+$("#gateway-refresh-users").addEventListener("click", () => refreshGatewayUsers().catch(error => { $("#gateway-user-list").textContent = `Erro: ${error.message}`; }));
+$("#gateway-user-list").addEventListener("click", async event => {
+  const button = event.target.closest("[data-save-role], [data-save-status]");
+  if (!button || button.disabled) return;
+  const row = button.closest("[data-gateway-user]");
+  const userId = row.dataset.gatewayUser;
+  const isRoleChange = button.hasAttribute("data-save-role");
+  const role = row.querySelector("[data-user-role]").value;
+  const status = row.querySelector("[data-user-status]").value;
+  if (isRoleChange && role === "owner" && !confirm("Dar papel Owner concede controlo administrativo completo. Confirmas?")) return;
+  if (!isRoleChange && status === "revoked" && !confirm("Revogar este utilizador e invalidar as sessões?")) return;
+  const currentPassword = window.prompt("Confirma a palavra-passe atual do Owner para guardar esta alteração:");
+  if (currentPassword === null || !currentPassword) return;
+  button.disabled = true;
+  try {
+    if (isRoleChange) await updateGatewayUserRole(userId, role, currentPassword);
+    else await updateGatewayUserStatus(userId, status, currentPassword);
+    gatewayResult("Acesso atualizado no Gateway e registado na auditoria.");
+    await refreshGatewayUsers();
+  } catch (error) {
+    gatewayResult(`Não foi possível guardar os acessos: ${error.message}`);
+    await refreshGatewayUsers().catch(() => {});
+  } finally { button.disabled = false; }
+});
 $("#gateway-refresh-invites").addEventListener("click", () => refreshInviteList().catch(error => { $("#gateway-invite-list").textContent = `Erro: ${error.message}`; }));
 $("#gateway-create-invite-form").addEventListener("submit", async event => {
   event.preventDefault();

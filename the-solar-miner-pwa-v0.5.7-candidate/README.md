@@ -1,4 +1,4 @@
-# The Solar Miner PWA v0.5.7 (refinamento de interface)
+# The Solar Miner PWA v0.5.8 (gestão Owner e recuperação offline)
 
 Incremental correction on top of v0.5.3. The prior release remains preserved.
 
@@ -16,6 +16,12 @@ All new automation and user administration remains DEMO-only. No Gateway endpoin
 Requires Node.js. Run `npm test`; for static preview run `npm run serve` and open `http://127.0.0.1:4173`.
 
 For Netlify, publish the contents of `the-solar-miner-pwa-v0.5.7-deployment.zip` at the site root. See `NETLIFY_DEPLOY.md`.
+
+## Incremento v0.5.8 — acessos Owner e recuperação offline
+
+- Gestão real de utilizadores do Gateway na sessão Owner: listar, alterar papel e ativar/revogar contas, sempre com reautenticação e auditoria no backend.
+- Download da chave de recuperação apresentada apenas uma vez, para armazenamento numa pen offline dedicada.
+- Detalhes e limites em `OWNER_USB_AND_ACCESS.md`.
 
 ## Incremento v0.5.7 — interface
 

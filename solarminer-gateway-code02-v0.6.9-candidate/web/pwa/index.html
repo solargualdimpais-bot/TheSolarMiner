@@ -50,7 +50,7 @@
       </section>
       <div id="notice" class="notice" role="status" hidden></div>
       <section id="page-content" aria-live="polite"></section>
-      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.6.16</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
+      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.6.17</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
     </main>
   </div>
 
@@ -99,6 +99,7 @@
       <div class="dialog-actions"><button id="gateway-check" class="button primary" type="button">Testar endpoint</button><button id="gateway-clear" class="button secondary" type="button">Desassociado / limpar</button></div>
       <div id="gateway-result" class="connection-result" role="status" aria-live="polite">Nenhum endpoint foi testado. A PWA permanece em modo demonstração.</div>
       <div id="gateway-session-status" class="connection-result" role="status" aria-live="polite">Sem sessão autenticada neste dispositivo.</div>
+      <div class="dialog-actions"><button id="open-owner-recovery" class="button secondary" type="button">Recuperar Owner com a pen</button></div>
       <section class="panel gateway-auth-panel" id="gateway-invite-management" hidden>
         <div class="panel-header"><div><p class="eyebrow">ADMINISTRAÇÃO DO GATEWAY</p><h3>Convites de utilização única</h3></div><span class="source-tag">OWNER</span></div>
         <form id="gateway-create-invite-form" class="gateway-form-grid">
@@ -109,6 +110,12 @@
         </form>
         <div id="gateway-invite-created" hidden class="invite-created"><p class="field-note">QR de convite. Mostra-o apenas à pessoa autorizada; contém um segredo de utilização única.</p><img id="gateway-invite-qr" alt="QR Code do convite SolarMiner" width="240" height="240"><p id="gateway-invite-expiry" class="field-note"></p><textarea id="gateway-invite-payload" rows="4" readonly aria-label="Conteúdo de reserva do QR"></textarea><button class="button secondary" type="button" id="gateway-copy-invite">Copiar conteúdo do convite</button></div>
         <div id="gateway-invite-list" class="invite-list" aria-live="polite">A lista só é carregada numa sessão Owner autenticada.</div>
+      </section>
+      <section class="panel gateway-auth-panel" id="gateway-user-management" hidden>
+        <div class="panel-header"><div><p class="eyebrow">ADMINISTRAÇÃO DO GATEWAY</p><h3>Utilizadores e acessos reais</h3></div><span class="source-tag">OWNER</span></div>
+        <p class="field-note">Esta lista vem da base de dados do Gateway. Alterações de papel ou estado exigem novamente a palavra-passe do Owner e são registadas na auditoria. A proteção impede remover ou despromover o último Owner ativo.</p>
+        <div class="dialog-actions"><button class="button secondary" type="button" id="gateway-refresh-users">Atualizar utilizadores</button></div>
+        <div id="gateway-user-list" class="invite-list" aria-live="polite">A lista só é carregada numa sessão Owner autenticada.</div>
       </section>
       <section class="panel gateway-auth-panel" id="gateway-update-management" hidden>
         <div class="panel-header"><div><p class="eyebrow">SOFTWARE DO GATEWAY</p><h3>Atualizações assinadas</h3></div><span class="source-tag">OWNER</span></div>
@@ -133,8 +140,27 @@
         <label>Palavra-passe inicial do Gateway<input id="gateway-bootstrap-password" type="password" autocomplete="current-password" minlength="8" maxlength="128" required></label>
         <button class="button primary" type="submit">Registar primeiro Owner</button>
       </form>
-      <div id="gateway-bootstrap-recovery" hidden class="invite-created"><strong>Chave de recuperação — guardar offline agora</strong><p class="field-note">Esta chave é apresentada uma única vez e não fica guardada na PWA.</p><textarea id="gateway-bootstrap-recovery-key" rows="3" readonly></textarea><button class="button secondary" type="button" id="gateway-copy-recovery-key">Copiar chave de recuperação</button></div>
+      <div id="gateway-bootstrap-recovery" hidden class="invite-created"><strong>Chave de recuperação — guardar offline agora</strong><p class="field-note">Esta chave é apresentada uma única vez e não fica guardada na PWA. Guarda o ficheiro na pen Owner. Contém um segredo em texto simples. Não ignora TLS nem autentica automaticamente.</p><textarea id="gateway-bootstrap-recovery-key" rows="3" readonly></textarea><button class="button secondary" type="button" id="gateway-copy-recovery-key">Copiar chave de recuperação</button><button class="button secondary" type="button" id="gateway-download-recovery-key">Guardar ficheiro para a pen</button></div>
       <div id="gateway-bootstrap-result" class="connection-result" role="status" aria-live="polite"></div>
+    </div>
+  </dialog>
+  <dialog id="gateway-owner-recovery-dialog" class="settings-dialog compact-dialog">
+    <form method="dialog" class="dialog-header"><div><p class="eyebrow">RECUPERAÇÃO OWNER</p><h2>Restaurar acesso pelo ficheiro da pen</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></form>
+    <div class="dialog-body">
+      <p class="field-note">Seleciona o ficheiro `solarminer-owner-recovery-key.txt` da pen. A chave só é enviada ao Gateway pelo fluxo autenticado por desafio Ed25519 e é consumida/substituída após a recuperação.</p>
+      <form id="gateway-owner-recovery-form" class="gateway-form-grid">
+        <label>Nome de utilizador Owner<input id="gateway-recovery-username" autocomplete="username" required maxlength="128"></label>
+        <label>Ficheiro da pen<input id="gateway-recovery-file" type="file" accept=".txt,text/plain" required></label>
+        <label>Chave de recuperação<textarea id="gateway-recovery-key" rows="3" required autocomplete="off" spellcheck="false"></textarea></label>
+        <label>Fingerprint Ed25519 do Gateway<input id="gateway-recovery-fingerprint" autocomplete="off" spellcheck="false" placeholder="Lida do ficheiro quando disponível"></label>
+        <label>Nova palavra-passe Owner<input id="gateway-recovery-password" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required></label>
+        <label>Repete a nova palavra-passe<input id="gateway-recovery-password-repeat" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required></label>
+        <label>MAC metadata (opcional)<input id="gateway-recovery-mac" value="00:00:00:00:00:00" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" required></label>
+        <button class="button primary" type="submit">Recuperar acesso Owner</button>
+      </form>
+      <p class="field-note">O MAC é apenas metadata declarada, não prova identidade. Se não o souberes, mantém `00:00:00:00:00:00` como valor não verificado.</p>
+      <div id="gateway-recovery-result" class="connection-result" role="status" aria-live="polite"></div>
+      <div id="gateway-recovery-new-key-panel" hidden class="invite-created"><strong>Nova chave — a anterior foi consumida</strong><textarea id="gateway-recovery-new-key" rows="3" readonly></textarea><button id="gateway-download-new-recovery-key" class="button secondary" type="button">Descarregar para substituir o ficheiro da pen</button></div>
     </div>
   </dialog>
   <dialog id="context-editor" class="settings-dialog context-editor" aria-labelledby="context-editor-title">

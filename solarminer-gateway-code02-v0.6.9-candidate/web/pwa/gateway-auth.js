@@ -221,6 +221,13 @@ export async function checkGatewayUpdate(repositoryUrl) {
 export async function readGatewayUpdateStatus() {
   return gatewayApi("/api/v1/system/update/status");
 }
+export function parseOwnerRecoveryFile(contents) {
+  if (typeof contents !== "string" || contents.length > 4096) throw new Error("O ficheiro de recuperação é inválido ou demasiado grande.");
+  const key = contents.match(/\bSMR1(?:-[A-Z2-7]{4}){13}\b/i)?.[0];
+  if (!key) throw new Error("O ficheiro não contém uma chave SolarMiner reconhecida.");
+  const fingerprint = contents.match(/Gateway Ed25519 fingerprint:\s*([0-9a-f]{64})\b/i)?.[1] || "";
+  return { key: key.toUpperCase(), fingerprint: fingerprint.toLowerCase() };
+}
 export async function applyGatewayUpdate(version) {
   if (typeof version !== "string" || !version) throw new Error("Versão de atualização inválida.");
   return gatewayApi("/api/v1/system/update/apply", { method: "POST", body: { version, confirm: true } });
@@ -230,6 +237,19 @@ export async function createGatewayInvite({ role, label }) {
   return result;
 }
 export async function listGatewayInvites() { return gatewayApi("/api/v1/invites"); }
+export async function listGatewayUsers() { return gatewayApi("/api/v1/users"); }
+export async function updateGatewayUserRole(userId, role, currentPassword) {
+  if (!/^[0-9a-f-]{36}$/i.test(userId)) throw new Error("Identificador de utilizador inválido.");
+  if (!['owner', 'admin', 'operator', 'viewer'].includes(role)) throw new Error("Papel inválido.");
+  if (typeof currentPassword !== "string" || !currentPassword) throw new Error("Introduz a palavra-passe atual do Owner.");
+  return gatewayApi(`/api/v1/users/${encodeURIComponent(userId)}/role`, { method: "PATCH", body: { role, current_password: currentPassword } });
+}
+export async function updateGatewayUserStatus(userId, status, currentPassword) {
+  if (!/^[0-9a-f-]{36}$/i.test(userId)) throw new Error("Identificador de utilizador inválido.");
+  if (!['active', 'revoked'].includes(status)) throw new Error("Estado inválido.");
+  if (typeof currentPassword !== "string" || !currentPassword) throw new Error("Introduz a palavra-passe atual do Owner.");
+  return gatewayApi(`/api/v1/users/${encodeURIComponent(userId)}/status`, { method: "PATCH", body: { status, current_password: currentPassword } });
+}
 export async function readGatewayEnergy() {
   const [status, categories, equipment] = await Promise.all([
     gatewayApi("/api/v1/status"), gatewayApi("/api/v1/energy/categories"), gatewayApi("/api/v1/energy/equipment")

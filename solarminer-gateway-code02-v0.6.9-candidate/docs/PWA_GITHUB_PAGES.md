@@ -37,6 +37,14 @@ O Gateway disponibiliza APIs de leitura/identidade, administração e atualizaç
 
 O Gateway que ainda não tem Owner e apresenta `recovery required` não deve ser atualizado pelo fluxo online enquanto o estado de recuperação da instalação anterior estiver bloqueado. A atualização remota 0.6.12 falhou porque o nome do asset `.deb` publicado não coincidia com o nome assinado no manifesto; por isso o pacote não foi aplicado e o Gateway permaneceu na 0.6.10. A versão 0.6.14 do script USB também tinha um defeito: `/etc/os-release` substituía a variável `VERSION` destinada ao pacote Debian, fazendo a validação recusar um pacote que era realmente 0.6.14. A 0.6.15 separa esses valores e inclui uma verificação no workflow para impedir regressão.
 
+## Owner USB e gestão de utilizadores — 0.6.17
+
+A PWA Owner lista agora as contas reais do Gateway e permite alterar o papel ou o estado de cada conta através das rotas existentes. Cada alteração pede novamente a palavra-passe Owner; as ações são auditadas e o Gateway protege o último Owner ativo. Convites continuam a ser o fluxo de adesão de novos utilizadores/dispositivos.
+
+No primeiro registo Owner, a chave de recuperação de uso único pode ser descarregada como ficheiro e guardada numa pen dedicada. A chave é texto simples e deve ser protegida fisicamente. Não é uma chave de assinatura de release, não instala código, não ignora TLS nem inicia sessão automaticamente. Após recuperação, o Gateway consome a chave antiga; guarda a nova chave no dispositivo offline.
+
+Não edites diretamente o SQLite num PC. Usa a PWA para alterações normais de utilizadores; usa o backup SQLite e os comandos locais descritos no manual de recuperação apenas para manutenção offline.
+
 No Debian 13 amd64, inicia sessão como `root`, monta a pen em `/mnt/solarminer-usb` e executa `sh /mnt/solarminer-usb/repair-existing-from-usb.sh`. Depois de confirmar que o script terminou com health check válido, se ainda não houver Owner, define a palavra-passe de bootstrap local:
 
 ```sh
