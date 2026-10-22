@@ -1,6 +1,6 @@
 # API v1 (CODE 01)
 
-## CODE02 v0.6.39 — engine de cargas flexíveis
+## CODE02 v0.6.40 — áreas Live da PWA e controlo Tuya de nível
 
 - `POST /api/v1/integrations/tuya/switch` — Owner-only; recebe exatamente `{"device_id":"...","on":true|false}` para um dispositivo Tuya configurado com `switch_code`. O Gateway valida a configuração, executa o comando pela API HTTPS Tuya, tenta ler o estado e regista o resultado na auditoria sem segredos.
 - `PUT /api/v1/energy/engine/config` — Owner-only; além da bateria agrega `battery_banks` (até 8), `loads` (até 64) e `automation` (ativação, comissionamento, confirmação do mapa, margem e intervalo mínimo de 300 s).
@@ -48,6 +48,7 @@ O `solarminer-update-check-daily.timer` verifica a origem GitHub selecionada e p
 ## CODE02 v0.6.26 — integrações de hardware e carregamento EV
 
 - `GET /api/v1/integrations/hardware`, `PUT /api/v1/integrations/hardware` e `POST /api/v1/integrations/hardware/read` são reservados ao Owner autenticado.
+- A PWA pode guardar um fornecedor de cada vez com o `PUT` anterior e consulta cada um separadamente através de `POST /api/v1/integrations/hardware/deye/read`, `/antminer/read` ou `/tuya/read`. A leitura Tuya aceita `device_id` opcional. Todos os endpoints individuais voltam a validar o papel Owner e não enviam comandos de controlo.
 - Deye Modbus TCP primeiro verifica o transporte e envia FC43/MEI14 Read Device Identification, sem adivinhar um registo FC03. O estado diferencia IP não configurado, TCP inacessível, resposta Modbus de exceção, timeout e resposta de identidade. Ainda não há métricas Deye descodificadas.
 - Antminer verifica TCP e envia pedidos JSON BOSminer com newline para `summary`, `stats`, `devs`. O estado distingue porta alcançável de API que não respondeu. Não existe API de escrita ou controlo de potência nesta versão.
 - Tuya Cloud usa credenciais Access ID/Secret armazenadas no ficheiro privado do Gateway; os segredos nunca são devolvidos pela API.

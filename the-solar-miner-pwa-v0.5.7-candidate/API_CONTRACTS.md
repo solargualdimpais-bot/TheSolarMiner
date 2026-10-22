@@ -1,14 +1,18 @@
-# Contratos API — PWA v0.5.7 / Gateway CODE02 v0.6.39
+# Contratos API — PWA v0.5.9 / Gateway CODE02 v0.6.40
 
-## Cargas configuráveis (Gateway 0.6.39)
+## Cargas configuráveis (Gateway 0.6.40)
 
 O Owner guarda até 8 `battery_banks` e 64 `loads` por `PUT /api/v1/energy/engine/config`. `kind` aceita `miner`, `water_heater`, `underfloor_heating`, `ev_charger` ou `generic`; `control_type` aceita `tuya_smart`, `tuya_breaker`, `antminer_braiins`, `tesla_fleet` ou `manual`. Os registos suportam vários AQS e cargas de aquecimento sem alteração do código. A amostra com mais de 90 segundos bloqueia o despacho automático. O ciclo corre na cadência guardada no Gateway quando o Owner ativa a opção, com validação física do mapa obrigatória.
 
 O Owner pode testar um interruptor registado através de `POST /api/v1/integrations/tuya/switch` com `{ "device_id": "...", "on": true }`. A PWA pede confirmação, o Gateway verifica Owner e dispositivo previamente configurado, e o resultado declara se o estado foi confirmado. Segredos Tuya não são devolvidos.
 
-## Engine energético (Gateway 0.6.38)
+## Navegação Owner e operações individuais por equipamento
 
-Após autenticação, a PWA consulta `GET /api/v1/energy/engine?history_hours=24`. Apresenta histórico de FV, cargas, bateria e SOC, contadores Deye e projeção indicativa de FV. O Owner pode guardar no Gateway capacidade instalada e SOC mínimo/máximo através de `PUT /api/v1/energy/engine/config`. A energia em kWh fica indisponível até a capacidade ser configurada. A projeção não usa meteorologia nem controla equipamentos; os dados permanecem `LIVE_UNVERIFIED`.
+A área Owner tem separadores para Acessos, Atualizações, Tailscale, Gateway e Equipamentos. Dentro de Equipamentos, Deye, Antminer e Tuya/MOES também são separados. Cada botão de guardar envia apenas a configuração daquele fornecedor por `PUT /api/v1/integrations/hardware`, preservando os restantes blocos no Gateway. As leituras usam `POST /api/v1/integrations/hardware/{provider}/read` e consultam apenas o fornecedor selecionado; Tuya aceita `device_id` opcional para limitar a leitura a um dispositivo. Estes endpoints exigem Owner e não enviam comandos de controlo. Os comandos Tuya e Braiins continuam em ações próprias com confirmação explícita.
+
+## Engine energético e meteorologia (Gateway 0.6.40)
+
+Após autenticação, a PWA consulta `GET /api/v1/energy/engine?history_hours=24`. A resposta `forecast.weather` contém `state`, `provider`, `fetched_at` e a condição horária mais próxima em `current` (`observed_at`, temperatura, sensação térmica, humidade, nebulosidade, vento em km/h e `weather_code` WMO). O Home mostra temperatura, condição, detalhe meteorológico compacto e, no cartão adjacente, produção FV atual com tendência histórica. Não usa valores meteorológicos de demonstração no modo Live. O Owner indica a cidade/localidade em `site_location_name` através de `PUT /api/v1/energy/engine/config`; o Gateway resolve-a para coordenadas internamente via Open-Meteo Geocoding. A potência FV instalada e SOC mínimo/máximo também são configuráveis nesse endpoint. Os dados meteorológicos são consultados pelo Gateway e conservados em cache por 15 minutos. Valores de previsão não são medições meteorológicas locais.
 
 ## Braiins OS Owner control (Gateway 0.6.36)
 
@@ -28,14 +32,21 @@ Gateway connection and Tailscale administration live on the authenticated Owner 
 
 The Owner PWA calls `GET /api/v1/integrations/hardware`, `PUT /api/v1/integrations/hardware`, and `POST /api/v1/integrations/hardware/read` through the authenticated Gateway client for Deye, Antminer and Tuya only. Tesla Fleet configuration and charging-state reads are part of **Energy → EV charger**: `GET/PUT /api/v1/energy/ev/tesla` and `POST /api/v1/energy/ev/tesla/read`. The Owner role is required. Tuya secrets and the Tesla refresh token are sent only over the authenticated Gateway connection, cleared from the form after save, and never returned. Tesla responses contain charging data for the selected vehicle only. They exclude location, climate, driving and unrelated vehicle metadata. The integration is read-only; it does not start, stop or schedule charging. EV strategies X/Y/Z remain local configuration until a Gateway energy engine and a supported Tesla command flow are implemented.
 
-## Endpoints efetivamente utilizados pela PWA existente
+## Endpoints utilizados pela PWA autenticada
 
 | Método | Endpoint | Utilização |
 |---|---|---|
-| GET | `/api/v1/health` | Diagnóstico explícito de saúde/versão |
-| GET | `/api/v1/info` | Diagnóstico explícito de identificação do serviço |
+| GET | `/api/v1/energy/engine?history_hours=24` | Home, histórico, previsão e estado energético |
+| GET/PUT | `/api/v1/energy/engine/config` | Cidade, potência FV, bateria e automação (escrita Owner) |
+| GET/PUT | `/api/v1/integrations/hardware` | Configuração de equipamentos pelo Owner |
+| POST | `/api/v1/integrations/hardware/{provider}/read` | Leitura individual de Deye, Antminer ou Tuya |
+| POST | `/api/v1/integrations/tuya/switch` | ON/OFF Owner para um datapoint configurado |
+| POST | `/api/v1/integrations/tuya/level` | Nível/posição Owner de 0–100% |
+| GET/PUT | `/api/v1/energy/ev/tesla` | Configuração Tesla Fleet Owner |
+| POST | `/api/v1/energy/ev/tesla/read` | Leitura do estado de carregamento |
+| GET | `/api/v1/health`, `/api/v1/info` | Saúde, versão e identificação |
 
-As chamadas de diagnóstico existentes continuam a ser separadas das novas áreas locais. O incremento v0.5.4 não acrescenta chamadas API.
+O modo Live usa respostas do Gateway. Dados simulados são usados apenas no modo de demonstração sem sessão real.
 
 ## Contratos necessários que não foram encontrados no CODE 02 v0.6.5 inspecionado
 

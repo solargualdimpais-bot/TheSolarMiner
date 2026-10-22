@@ -8,6 +8,7 @@ const auth = read("gateway-auth.js");
 const app = read("app.js");
 const html = read("index.html");
 const manifest = read("manifest.webmanifest");
+  const packageJson = JSON.parse(read("package.json"));
 const serviceWorker = read("service-worker.js");
 
 test("Owner user management uses authenticated Gateway endpoints with reauthentication", () => {
@@ -23,8 +24,14 @@ test("Owner user management uses authenticated Gateway endpoints with reauthenti
 test("Gateway administration is on an Owner-only page and live Home uses Gateway readings", () => {
   const home = app.match(/function renderOverview\(\) \{([\s\S]*?)\r?\n\}\r?\nfunction renderCategory/);
   assert.ok(home, "renderOverview must remain a distinct dashboard renderer");
-  assert.match(home[1], /liveReadingMetric\("Inversor"/);
-  assert.match(home[1], /liveReadingMetric\("Bateria"/);
+  assert.match(home[1], /liveSolarHomeMetric\(\)/);
+  assert.match(home[1], /liveBatteryHomeMetric\(\)/);
+  assert.match(home[1], /liveMinerHomeMetric\(\)/);
+  assert.match(app, /liveHomeMetric\("Painéis"/);
+  assert.match(app, /battery_output_power/);
+  assert.match(app, /miner_hashrate_5s_ghs/);
+  assert.match(app, /miner_power_limit_w/);
+  assert.match(app, /provider === "deye" \|\| provider === "antminer"/);
   assert.doesNotMatch(home[1], /Gestão do Gateway|gateway-update-management|gateway-tailscale-management/);
   assert.match(html, /id="gateway-owner-page" class="owner-admin-page" hidden/);
   assert.match(html, /id="owner-nav-item" class="nav-item" data-page="owner" hidden/);
@@ -52,8 +59,9 @@ test("Owner recovery file parser accepts a generated key and rejects malformed/o
 });
 
 test("new PWA static cache version is changed and USB limitations are documented", () => {
-  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.8-/);
-  assert.match(manifest, /v0\.5\.8/);
+  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.9-/);
+  assert.match(manifest, /v0\.5\.9/);
+  assert.equal(packageJson.version, "0.5.9");
   const docs = read("OWNER_USB_AND_ACCESS.md");
   assert.match(docs, /texto simples/);
   assert.match(docs, /não valida certificados TLS/);
@@ -68,6 +76,7 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   const embeddedAuth = embedded("gateway-auth.js");
   const embeddedWorker = embedded("service-worker.js");
   const embeddedCss = embedded("styles.css");
+  const embeddedManifest = embedded("manifest.webmanifest");
   const control = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/packaging/control", import.meta.url), "utf8");
   const installer = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/packaging/install-from-usb.sh", import.meta.url), "utf8");
   assert.match(embeddedHtml, /gateway-user-management/);
@@ -83,12 +92,14 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   assert.match(embeddedAuth, /\/api\/v1\/system\/tailscale/);
   assert.match(embeddedAuth, /\/api\/v1\/system\/tailscale\/connect/);
   assert.match(embeddedApp, /startGatewayTailscale/);
-  assert.match(embeddedWorker, /owner-pwa-v0\.6\.39/);
+  assert.match(embeddedApp, /liveHomeMetric\("Painéis"/);
+  assert.match(embeddedApp, /liveMinerHomeMetric\(\)/);
+  assert.match(embeddedWorker, /static-v0\.5\.9-live-areas-tuya-level/);
   assert.match(embeddedWorker, /password-device-login/);
-  assert.match(embeddedHtml, /OWNER PWA 0\.6\.39/);
+  assert.match(embeddedHtml, /OWNER PWA 0\.5\.9/);
   assert.match(embeddedHtml, /gateway-password-login-form/);
-  assert.match(control, /^Version: 0\.6\.39$/m);
-  assert.match(installer, /solarminer-gateway_0\.6\.39_amd64\.deb/);
+  assert.match(control, /^Version: 0\.6\.40$/m);
+  assert.match(installer, /solarminer-gateway_0\.6\.40_amd64\.deb/);
   assert.match(embeddedApp, /RECOVERY_BLOCKED/);
   assert.match(embeddedApp, /rollbackFailure/);
   assert.match(installer, /install-tailscale\.sh/);
@@ -96,4 +107,5 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   assert.equal(embeddedApp, app);
   assert.equal(embeddedWorker, serviceWorker);
   assert.equal(embeddedCss, read("styles.css"));
+  assert.equal(embeddedManifest, manifest);
 });

@@ -5,6 +5,11 @@ import json
 import math
 import re
 import sqlite3
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -12,11 +17,55 @@ from . import energy_registry
 
 ENGINE_CONFIG_KEY = "energy_engine_config"
 DEFAULT_CONFIG: dict[str, Any] = {
+    "site_location_name": None, "site_latitude": None, "site_longitude": None,
+    "pv_capacity_kw": None, "pv_system_efficiency": 0.85,
     "battery_capacity_kwh": None, "minimum_soc_percent": 20.0, "maximum_soc_percent": 100.0,
     "battery_banks": [], "loads": [],
     "automation": {"enabled": False, "commissioned": False, "surplus_margin_w": 250,
                    "decision_interval_seconds": 300, "deye_map_verified": False},
 }
+_WEATHER_CACHE: dict[str, Any] = {"key": None, "expires_at": 0.0, "value": None}
+_WEATHER_LOCK = threading.Lock()
+
+
+def resolve_site_location(location_name: str) -> dict[str, Any]:
+    """Resolve a user-entered city on the Gateway using the fixed Open-Meteo geocoder."""
+    if not isinstance(location_name, str) or not 2 <= len(location_name.strip()) <= 120:
+        raise ValueError("invalid_site_location_name")
+    query = urllib.parse.urlencode({"name": location_name.strip(), "count": 10, "language": "pt", "format": "json"})
+    request = urllib.request.Request(
+        f"https://geocoding-api.open-meteo.com/v1/search?{query}",
+        headers={"Accept": "application/json", "User-Agent": "SolarMiner-Gateway/location"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            raw = response.read(65_537)
+        if len(raw) > 65_536:
+            raise ValueError("site_location_response_too_large")
+        payload = json.loads(raw.decode("utf-8"))
+    except (OSError, TimeoutError, urllib.error.URLError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("site_location_lookup_failed") from exc
+    results = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(results, list):
+        raise ValueError("site_location_not_found")
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        latitude, longitude = result.get("latitude"), result.get("longitude")
+        name, country = result.get("name"), result.get("country")
+        if (isinstance(latitude, (int, float)) and not isinstance(latitude, bool)
+                and isinstance(longitude, (int, float)) and not isinstance(longitude, bool)
+                and math.isfinite(latitude) and math.isfinite(longitude)
+                and -90 <= latitude <= 90 and -180 <= longitude <= 180
+                and isinstance(name, str) and isinstance(country, str)):
+            admin = result.get("admin1")
+            label_parts = [name]
+            if isinstance(admin, str) and admin and admin.casefold() != name.casefold():
+                label_parts.append(admin)
+            label_parts.append(country)
+            return {"site_location_name": ", ".join(label_parts),
+                    "site_latitude": float(latitude), "site_longitude": float(longitude)}
+    raise ValueError("site_location_not_found")
 
 
 def get_config(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -33,11 +82,32 @@ def get_config(conn: sqlite3.Connection) -> dict[str, Any]:
 
 
 def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, Any]:
-    allowed = {"battery_capacity_kwh", "minimum_soc_percent", "maximum_soc_percent", "battery_banks", "loads", "automation"}
+    allowed = {"site_location_name", "site_latitude", "site_longitude", "pv_capacity_kw", "pv_system_efficiency",
+               "battery_capacity_kwh", "minimum_soc_percent", "maximum_soc_percent", "battery_banks", "loads", "automation"}
     if not isinstance(payload, dict) or set(payload) - allowed:
         raise ValueError("unknown_energy_engine_setting")
     existing = get_config(conn)
     merged = {**existing, **payload}
+    location_name = merged.get("site_location_name")
+    if location_name is not None and (not isinstance(location_name, str) or not 2 <= len(location_name.strip()) <= 120):
+        raise ValueError("invalid_site_location_name")
+    latitude, longitude = merged.get("site_latitude"), merged.get("site_longitude")
+    if (latitude is None) != (longitude is None):
+        raise ValueError("site_coordinates_must_be_set_together")
+    if latitude is not None and (isinstance(latitude, bool) or not isinstance(latitude, (int, float))
+                                 or not math.isfinite(latitude) or not -90 <= latitude <= 90):
+        raise ValueError("invalid_site_latitude")
+    if longitude is not None and (isinstance(longitude, bool) or not isinstance(longitude, (int, float))
+                                  or not math.isfinite(longitude) or not -180 <= longitude <= 180):
+        raise ValueError("invalid_site_longitude")
+    pv_capacity = merged.get("pv_capacity_kw")
+    if pv_capacity is not None and (isinstance(pv_capacity, bool) or not isinstance(pv_capacity, (int, float))
+                                    or not math.isfinite(pv_capacity) or not 0.1 <= pv_capacity <= 1000):
+        raise ValueError("invalid_pv_capacity_kw")
+    pv_efficiency = merged.get("pv_system_efficiency", 0.85)
+    if (isinstance(pv_efficiency, bool) or not isinstance(pv_efficiency, (int, float))
+            or not math.isfinite(pv_efficiency) or not 0.5 <= pv_efficiency <= 1.2):
+        raise ValueError("invalid_pv_system_efficiency")
     capacity = merged.get("battery_capacity_kwh")
     minimum = merged.get("minimum_soc_percent", 20)
     maximum = merged.get("maximum_soc_percent", 100)
@@ -158,7 +228,12 @@ def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, 
     if isinstance(interval, bool) or not isinstance(interval, int) or not 300 <= interval <= 3600:
         raise ValueError("invalid_decision_interval_seconds")
     normalized_automation["enabled"] = bool(normalized_automation["enabled"] and normalized_automation["commissioned"] and normalized_automation["deye_map_verified"])
-    result = {"battery_capacity_kwh": float(capacity) if capacity is not None else None,
+    result = {"site_location_name": location_name.strip() if isinstance(location_name, str) else None,
+              "site_latitude": float(latitude) if latitude is not None else None,
+              "site_longitude": float(longitude) if longitude is not None else None,
+              "pv_capacity_kw": float(pv_capacity) if pv_capacity is not None else None,
+              "pv_system_efficiency": float(pv_efficiency),
+              "battery_capacity_kwh": float(capacity) if capacity is not None else None,
               "minimum_soc_percent": float(minimum), "maximum_soc_percent": float(maximum),
               "battery_banks": normalized_banks, "loads": normalized_loads, "automation": normalized_automation}
     conn.execute("INSERT INTO system_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -173,6 +248,288 @@ def _reading_map(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 def _number(readings: dict[str, dict[str, Any]], field: str) -> float | None:
     value = readings.get(field, {}).get("value")
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else None
+
+
+def _solar_weather(latitude: float | None, longitude: float | None) -> dict[str, Any] | None:
+    """Fetch hourly solar radiation from the fixed Open-Meteo forecast API, cached for 15 minutes."""
+    if latitude is None or longitude is None:
+        return None
+    cache_key = f"{latitude:.5f},{longitude:.5f}"
+    with _WEATHER_LOCK:
+        if _WEATHER_CACHE["key"] == cache_key and _WEATHER_CACHE["expires_at"] > time.monotonic():
+            return _WEATHER_CACHE["value"]
+        query = urllib.parse.urlencode({
+            "latitude": f"{latitude:.5f}", "longitude": f"{longitude:.5f}",
+            "hourly": "shortwave_radiation,temperature_2m,apparent_temperature,relative_humidity_2m,cloud_cover,wind_speed_10m,weather_code", "past_hours": 4,
+            "forecast_hours": 7, "timezone": "UTC", "temperature_unit": "celsius", "wind_speed_unit": "kmh",
+        })
+        request = urllib.request.Request(
+            f"https://api.open-meteo.com/v1/forecast?{query}",
+            headers={"Accept": "application/json", "User-Agent": "SolarMiner-Gateway/energy-forecast"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=4) as response:
+                raw = response.read(262_145)
+            if len(raw) > 262_144:
+                raise ValueError("weather_response_too_large")
+            payload = json.loads(raw.decode("utf-8"))
+            hourly = payload.get("hourly") if isinstance(payload, dict) else None
+            times = hourly.get("time") if isinstance(hourly, dict) else None
+            radiation = hourly.get("shortwave_radiation") if isinstance(hourly, dict) else None
+            temperature = hourly.get("temperature_2m") if isinstance(hourly, dict) else None
+            apparent_temperature = hourly.get("apparent_temperature") if isinstance(hourly, dict) else None
+            humidity = hourly.get("relative_humidity_2m") if isinstance(hourly, dict) else None
+            cloud_cover = hourly.get("cloud_cover") if isinstance(hourly, dict) else None
+            wind_speed = hourly.get("wind_speed_10m") if isinstance(hourly, dict) else None
+            weather_codes = hourly.get("weather_code") if isinstance(hourly, dict) else None
+            if not isinstance(times, list) or not isinstance(radiation, list) or len(times) != len(radiation) or len(times) > 16:
+                raise ValueError("weather_response_invalid")
+            if temperature is None:
+                temperature = [None] * len(times)
+            if apparent_temperature is None:
+                apparent_temperature = [None] * len(times)
+            if humidity is None:
+                humidity = [None] * len(times)
+            if cloud_cover is None:
+                cloud_cover = [None] * len(times)
+            if wind_speed is None:
+                wind_speed = [None] * len(times)
+            if weather_codes is None:
+                weather_codes = [None] * len(times)
+            optional_arrays = (temperature, apparent_temperature, humidity, cloud_cover, wind_speed, weather_codes)
+            if any(not isinstance(values, list) or len(values) != len(times) for values in optional_arrays):
+                raise ValueError("weather_response_invalid")
+            points = []
+            for stamp, value, temp, feels, humidity_value, cloud_value, wind, code in zip(
+                    times, radiation, temperature, apparent_temperature, humidity, cloud_cover, wind_speed, weather_codes):
+                if not isinstance(stamp, str):
+                    continue
+                if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 2000):
+                    continue
+                if temp is not None and (isinstance(temp, bool) or not isinstance(temp, (int, float)) or not math.isfinite(temp) or not -100 <= temp <= 70):
+                    temp = None
+                for value_name, optional_value, low, high in (("feels", feels, -100, 70), ("humidity", humidity_value, 0, 100),
+                                                               ("cloud", cloud_value, 0, 100), ("wind", wind, 0, 400)):
+                    if optional_value is not None and (isinstance(optional_value, bool) or not isinstance(optional_value, (int, float))
+                                                       or not math.isfinite(optional_value) or not low <= optional_value <= high):
+                        if value_name == "feels": feels = None
+                        elif value_name == "humidity": humidity_value = None
+                        elif value_name == "cloud": cloud_value = None
+                        else: wind = None
+                if code is not None and (isinstance(code, bool) or not isinstance(code, int) or not 0 <= code <= 99):
+                    code = None
+                try:
+                    parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    continue
+                points.append({"observed_at": parsed.astimezone(timezone.utc).isoformat(timespec="minutes"),
+                               "shortwave_radiation_w_m2": float(value) if value is not None else None,
+                               "temperature_c": float(temp) if temp is not None else None,
+                               "apparent_temperature_c": float(feels) if feels is not None else None,
+                               "relative_humidity_percent": humidity_value,
+                               "cloud_cover_percent": cloud_value,
+                               "wind_speed_kmh": float(wind) if wind is not None else None,
+                               "weather_code": code})
+            if not points:
+                raise ValueError("weather_data_empty")
+            result = {"provider": "Open-Meteo", "state": "available", "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "hourly": points}
+        except (OSError, TimeoutError, urllib.error.URLError, ValueError, UnicodeError, json.JSONDecodeError):
+            result = {"provider": "Open-Meteo", "state": "unavailable", "hourly": []}
+        _WEATHER_CACHE.update({"key": cache_key, "expires_at": time.monotonic() + 900, "value": result})
+        return result
+
+
+def _learn_solar_performance(conn: sqlite3.Connection, weather: dict[str, Any], inverter: dict[str, Any] | None,
+                             battery: dict[str, Any] | None, capacity_kw: float,
+                             baseline_efficiency: float, maximum_soc_percent: float) -> dict[str, Any]:
+    """Persist a bounded EMA comparing irradiance with hourly MPPT telemetry."""
+    key = "energy_engine_solar_performance"
+    row = conn.execute("SELECT value FROM system_state WHERE key=?", (key,)).fetchone()
+    try:
+        model = json.loads(row[0]) if row else {}
+    except (TypeError, json.JSONDecodeError):
+        model = {}
+    ratio = model.get("performance_ratio", 1.0)
+    if isinstance(ratio, bool) or not isinstance(ratio, (int, float)) or not math.isfinite(ratio):
+        ratio = 1.0
+    ratio = max(0.1, min(1.2, float(ratio)))
+    processed = set(model.get("processed_hours", [])) if isinstance(model.get("processed_hours"), list) else set()
+    profiles = model.get("mppt_voltage_profiles") if isinstance(model.get("mppt_voltage_profiles"), dict) else {}
+    candidate_events = model.get("curtailment_candidates") if isinstance(model.get("curtailment_candidates"), list) else []
+    accepted = 0
+    possible_curtailment = 0
+    if inverter:
+        for point in weather.get("hourly", []):
+            stamp_text = point.get("observed_at")
+            try:
+                stamp = datetime.fromisoformat(str(stamp_text).replace("Z", "+00:00"))
+                if stamp.tzinfo is None:
+                    stamp = stamp.replace(tzinfo=timezone.utc)
+                stamp = stamp.astimezone(timezone.utc)
+            except (TypeError, ValueError):
+                continue
+            hour_key = stamp.replace(minute=0, second=0, microsecond=0).isoformat(timespec="minutes")
+            radiation = point.get("shortwave_radiation_w_m2")
+            # Open-Meteo's hourly radiation is the mean for the preceding hour.
+            if hour_key in processed or stamp > datetime.now(timezone.utc) - timedelta(minutes=20):
+                continue
+            if not isinstance(radiation, (int, float)) or isinstance(radiation, bool) or radiation < 120:
+                processed.add(hour_key)
+                continue
+            start = (stamp - timedelta(hours=1)).isoformat(timespec="microseconds")
+            finish = stamp.isoformat(timespec="microseconds")
+            # Use each MPPT's own power channel so tracking behavior is not
+            # hidden inside a total. Voltage/current averages are retained as
+            # diagnostics; V×I is not substituted for inverter-reported watts.
+            fields = ("pv1_input_power", "pv2_input_power", "pv1_voltage", "pv1_current",
+                      "pv2_voltage", "pv2_current")
+            channel_values: dict[str, list[float]] = {}
+            for field in fields:
+                rows = conn.execute("SELECT value_json FROM energy_readings WHERE equipment_id=? AND field=? AND observed_at>? AND observed_at<=? AND trust IN ('LIVE_UNVERIFIED','PHYSICALLY_CORROBORATED')",
+                                    (inverter["id"], field, start, finish)).fetchall()
+                values: list[float] = []
+                for value_row in rows:
+                    try:
+                        value = json.loads(value_row[0])
+                        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+                            values.append(float(value))
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        continue
+                channel_values[field] = values
+            if min(len(channel_values.get(field, [])) for field in fields) < 10:
+                continue
+            mppt1_kw = sum(channel_values["pv1_input_power"]) / len(channel_values["pv1_input_power"]) / 1000
+            mppt2_kw = sum(channel_values["pv2_input_power"]) / len(channel_values["pv2_input_power"]) / 1000
+            actual_kw = mppt1_kw + mppt2_kw
+            mppt_sample = {
+                "mppt1_power_kw": round(mppt1_kw, 3), "mppt2_power_kw": round(mppt2_kw, 3),
+                "mppt1_voltage_v": round(sum(channel_values["pv1_voltage"]) / len(channel_values["pv1_voltage"]), 2),
+                "mppt1_current_a": round(sum(channel_values["pv1_current"]) / len(channel_values["pv1_current"]), 2),
+                "mppt2_voltage_v": round(sum(channel_values["pv2_voltage"]) / len(channel_values["pv2_voltage"]), 2),
+                "mppt2_current_a": round(sum(channel_values["pv2_current"]) / len(channel_values["pv2_current"]), 2),
+            }
+            potential_kw = capacity_kw * float(radiation) / 1000 * baseline_efficiency
+            if potential_kw < 0.2:
+                processed.add(hour_key)
+                continue
+            observed_ratio = max(0.1, min(1.2, actual_kw / potential_kw))
+            def hourly_average(equipment: dict[str, Any] | None, field: str) -> float | None:
+                if not equipment:
+                    return None
+                context_rows = conn.execute("SELECT value_json FROM energy_readings WHERE equipment_id=? AND field=? AND observed_at>? AND observed_at<=? AND trust IN ('LIVE_UNVERIFIED','PHYSICALLY_CORROBORATED')",
+                                            (equipment["id"], field, start, finish)).fetchall()
+                context_values = []
+                for context_row in context_rows:
+                    try:
+                        context_value = json.loads(context_row[0])
+                        if isinstance(context_value, (int, float)) and not isinstance(context_value, bool) and math.isfinite(context_value):
+                            context_values.append(float(context_value))
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        continue
+                return sum(context_values) / len(context_values) if len(context_values) >= 10 else None
+            historical_soc = hourly_average(battery, "battery_soc")
+            historical_charge_w = hourly_average(battery, "battery_charge_power")
+            historical_load_w = hourly_average(inverter, "load_total_power")
+            irradiance_bin = str(min(10, max(0, int(float(radiation) // 100))))
+            profile = profiles.get(irradiance_bin, {}) if isinstance(profiles.get(irradiance_bin), dict) else {}
+            voltage_support = False
+            voltage_profile_available = False
+            for channel in ("mppt1", "mppt2"):
+                baseline_voltage = profile.get(f"{channel}_voltage_v")
+                baseline_current = profile.get(f"{channel}_current_a")
+                observed_voltage = mppt_sample[f"{channel}_voltage_v"]
+                observed_current = mppt_sample[f"{channel}_current_a"]
+                if (isinstance(baseline_voltage, (int, float)) and isinstance(baseline_current, (int, float))
+                        and profile.get("samples", 0) >= 2 and baseline_voltage > 0 and baseline_current >= 0.5):
+                    voltage_profile_available = True
+                    # A sustained rise from this channel's learned voltage,
+                    # paired with a current collapse, is a voltage signature
+                    # consistent with the inverter moving away from MPP.
+                    if observed_voltage >= baseline_voltage * 1.025 and observed_current <= baseline_current * 0.70:
+                        voltage_support = True
+            # In an off-grid installation, high modeled potential plus low PV
+            # output while the battery is full and household demand is low is
+            # evidence of possible inverter curtailment. Keep it as a separate
+            # label and do not train panel performance downward from it.
+            curtailed = (observed_ratio < 0.70 and historical_soc is not None
+                         and historical_soc >= maximum_soc_percent - 2
+                         and historical_charge_w is not None and historical_charge_w <= 150
+                         and historical_load_w is not None and historical_load_w < max(500, (potential_kw - actual_kw) * 1000))
+            if curtailed:
+                event = {
+                    "hour": hour_key, "observed_performance_ratio": round(observed_ratio, 4),
+                    "weather_potential_kw": round(potential_kw, 3), "measured_mppt_power_kw": round(actual_kw, 3),
+                    "battery_soc_percent": round(historical_soc, 2), "battery_charge_power_w": round(historical_charge_w, 1),
+                    "house_load_power_w": round(historical_load_w, 1), **mppt_sample,
+                    "mppt_voltage_support": voltage_support if voltage_profile_available else None,
+                    "state": "POSSIBLE_CURTAILMENT_VOLTAGE_SUPPORTED" if voltage_support else "POSSIBLE_CURTAILMENT_CONTEXT_ONLY",
+                }
+                candidate_events = [item for item in candidate_events if item.get("hour") != hour_key]
+                candidate_events.append(event)
+                candidate_events = candidate_events[-720:]
+                model["last_curtailment_candidate"] = event
+                model["curtailment_candidates"] = candidate_events
+                for channel in ("mppt1", "mppt2"):
+                    supported_voltages = [item.get(f"{channel}_voltage_v") for item in candidate_events
+                                          if item.get("mppt_voltage_support") is True
+                                          and isinstance(item.get(f"{channel}_voltage_v"), (int, float))]
+                    if supported_voltages:
+                        model.setdefault("mppt_empirical_curtailment_voltage_v", {})[channel] = round(
+                            sum(supported_voltages) / len(supported_voltages), 2)
+                model["possible_curtailment_hours"] = int(model.get("possible_curtailment_hours", 0)) + 1
+                processed.add(hour_key)
+                possible_curtailment += 1
+                continue
+            count = int(model.get("sample_count", 0)) if isinstance(model.get("sample_count", 0), int) else 0
+            ratio = observed_ratio if count == 0 else max(0.1, min(1.2, ratio * 0.8 + observed_ratio * 0.2))
+            model["sample_count"] = count + 1
+            model["last_sample_at"] = hour_key
+            model["last_mppt_sample"] = {
+                **mppt_sample,
+                "measured_total_kw": round(actual_kw, 3), "weather_potential_kw": round(potential_kw, 3),
+                "observed_performance_ratio": round(observed_ratio, 4),
+                "interpretation": "observed_output_may_include_curtailment",
+            }
+            if observed_ratio >= 0.70:
+                previous = profiles.get(irradiance_bin, {}) if isinstance(profiles.get(irradiance_bin), dict) else {}
+                samples = int(previous.get("samples", 0)) if isinstance(previous.get("samples", 0), int) else 0
+                alpha = 1.0 if samples == 0 else 0.2
+                profiles[irradiance_bin] = {
+                    "samples": samples + 1,
+                    **{f"{channel}_{metric}": round((1-alpha)*float(previous.get(f"{channel}_{metric}", mppt_sample[f"{channel}_{metric}"])) + alpha*mppt_sample[f"{channel}_{metric}"], 3)
+                       for channel in ("mppt1", "mppt2") for metric in ("voltage_v", "current_a")},
+                }
+                model["mppt_voltage_profiles"] = profiles
+                operating_voltage = model.setdefault("mppt_lowest_observed_operating_voltage_v", {})
+                for channel in ("mppt1", "mppt2"):
+                    voltage = mppt_sample[f"{channel}_voltage_v"]
+                    current = mppt_sample[f"{channel}_current_a"]
+                    power = mppt_sample[f"{channel}_power_kw"]
+                    if current >= 0.5 and power >= 0.1:
+                        prior_min = operating_voltage.get(channel)
+                        operating_voltage[channel] = round(min(float(prior_min), voltage) if isinstance(prior_min, (int, float)) else voltage, 2)
+            model["last_mppt_voltage_analysis"] = {
+                "irradiance_bin_w_m2": irradiance_bin, "reference_samples": profile.get("samples", 0),
+                "voltage_signature_supported": voltage_support if voltage_profile_available else None,
+                "classification": "EMPIRICAL_ESTIMATE_NOT_MANUFACTURER_CUTOFF",
+            }
+            processed.add(hour_key)
+            accepted += 1
+    model.update({"performance_ratio": round(ratio, 4), "processed_hours": sorted(processed)[-720:],
+                  "baseline_efficiency": baseline_efficiency, "capacity_kw": capacity_kw})
+    conn.execute("INSERT INTO system_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                 (key, json.dumps(model, separators=(",", ":"))))
+    return {"performance_ratio": ratio, "sample_count": int(model.get("sample_count", 0)),
+            "last_sample_at": model.get("last_sample_at"), "new_samples": accepted,
+            "possible_curtailment_hours": int(model.get("possible_curtailment_hours", 0)),
+            "new_curtailment_candidates": possible_curtailment,
+            "last_curtailment_candidate": model.get("last_curtailment_candidate"),
+            "mppt_voltage_profiles": profiles,
+            "mppt_empirical_curtailment_voltage_v": model.get("mppt_empirical_curtailment_voltage_v", {}),
+            "mppt_lowest_observed_operating_voltage_v": model.get("mppt_lowest_observed_operating_voltage_v", {}),
+            "recent_curtailment_candidates": candidate_events[-24:]}
 
 
 def _series(conn: sqlite3.Connection, equipment_ids: list[str], field: str, since: str, limit: int = 3000) -> list[dict[str, Any]]:
@@ -200,7 +557,8 @@ def _linear_forecast(series: list[dict[str, Any]], current: float | None, max_va
         if -60 <= age_seconds <= 3 * 3600 and math.isfinite(value):
             points.append((stamp.timestamp() / 3600, value / 1000 if item.get("unit") == "W" else value))
     result: dict[str, Any] = {"method": "linear_regression_last_3h", "confidence": "INSUFFICIENT_HISTORY",
-                              "one_hour_value": None, "three_hour_value": None, "slope_per_hour": None,
+                              "one_hour_value": None, "three_hour_value": None, "six_hour_value": None,
+                              "hourly_values": [], "slope_per_hour": None,
                               "unit": series[-1].get("unit") if series else None}
     if len(points) < 3 or points[-1][0] - points[0][0] < (10 / 60):
         return result
@@ -214,9 +572,15 @@ def _linear_forecast(series: list[dict[str, Any]], current: float | None, max_va
     base = current / 1000 if current is not None and series[-1].get("unit") == "W" else current
     if base is None:
         base = ys[-1]
+    hourly_values = [{"hours_ahead": hour,
+                      "value": round(max(0.0, min(max_value, intercept + slope * (now.timestamp() / 3600 + hour))), 3),
+                      "unit": "kW" if series[-1].get("unit") == "W" else series[-1].get("unit"),
+                      "forecast_at": (now + timedelta(hours=hour)).isoformat(timespec="minutes")}
+                     for hour in range(1, 7)]
     result.update({"confidence": "LOW_INDICATIVE", "slope_per_hour": round(slope, 3),
-                   "one_hour_value": round(max(0.0, min(max_value, intercept + slope * (now.timestamp() / 3600 + 1))), 3),
-                   "three_hour_value": round(max(0.0, min(max_value, intercept + slope * (now.timestamp() / 3600 + 3))), 3),
+                   "one_hour_value": hourly_values[0]["value"],
+                   "three_hour_value": hourly_values[2]["value"],
+                   "six_hour_value": hourly_values[5]["value"], "hourly_values": hourly_values,
                    "baseline": round(base, 3)})
     return result
 
@@ -324,7 +688,9 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
     config = get_config(conn)
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=history_hours)).isoformat(timespec="microseconds")
     ids = [e["id"] for e in (inverter, battery) if e]
-    series_fields = ("pv_total_power", "load_total_power", "battery_output_power", "battery_soc")
+    series_fields = ("pv_total_power", "pv1_input_power", "pv1_voltage", "pv1_current",
+                     "pv2_input_power", "pv2_voltage", "pv2_current", "load_total_power",
+                     "battery_output_power", "battery_soc")
     history = {field: _series(conn, ids, field, cutoff) for field in series_fields}
     pv = _number(inverter_readings, "pv_total_power")
     load = _number(inverter_readings, "load_total_power")
@@ -355,6 +721,52 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
     forecast = _linear_forecast(history["pv_total_power"], pv, 15.0)
     load_forecast = _linear_forecast(history["load_total_power"], load, 100.0)
     soc_forecast = _linear_forecast(history["battery_soc"], soc, 100.0)
+    weather = _solar_weather(config.get("site_latitude"), config.get("site_longitude"))
+    weather_current: dict[str, Any] | None = None
+    if weather and weather.get("state") == "available":
+        now = datetime.now(timezone.utc)
+        weather_points = []
+        for point in weather.get("hourly", []):
+            try:
+                stamp = datetime.fromisoformat(str(point.get("observed_at", "")).replace("Z", "+00:00"))
+                if stamp.tzinfo is None:
+                    stamp = stamp.replace(tzinfo=timezone.utc)
+            except (TypeError, ValueError):
+                continue
+            if point.get("temperature_c") is not None or point.get("weather_code") is not None:
+                weather_points.append((abs((stamp - now).total_seconds()), stamp, point))
+        if weather_points:
+            _, stamp, point = min(weather_points, key=lambda item: item[0])
+            weather_current = {"observed_at": stamp.astimezone(timezone.utc).isoformat(timespec="minutes"),
+                               "temperature_c": point.get("temperature_c"),
+                               "apparent_temperature_c": point.get("apparent_temperature_c"),
+                               "relative_humidity_percent": point.get("relative_humidity_percent"),
+                               "cloud_cover_percent": point.get("cloud_cover_percent"),
+                               "wind_speed_kmh": point.get("wind_speed_kmh"),
+                               "weather_code": point.get("weather_code")}
+    potential_points: list[dict[str, Any]] = []
+    solar_expected_points: list[dict[str, Any]] = []
+    solar_model: dict[str, Any] = {"performance_ratio": None, "sample_count": 0, "new_samples": 0}
+    if weather and weather.get("state") == "available" and config.get("pv_capacity_kw") is not None:
+        peak_kw = float(config["pv_capacity_kw"])
+        efficiency = float(config.get("pv_system_efficiency", 0.85))
+        solar_model = _learn_solar_performance(conn, weather, inverter, battery, peak_kw, efficiency, max_soc)
+        now = datetime.now(timezone.utc)
+        for point in weather["hourly"]:
+            radiation = point.get("shortwave_radiation_w_m2")
+            if not isinstance(radiation, (int, float)) or isinstance(radiation, bool):
+                continue
+            stamp = datetime.fromisoformat(point["observed_at"].replace("Z", "+00:00"))
+            hours = (stamp - now).total_seconds() / 3600
+            if -3.1 <= hours <= 6.1:
+                potential_kw = round(peak_kw * radiation / 1000 * efficiency, 3)
+                potential_points.append({"observed_at": point["observed_at"], "value": potential_kw,
+                                         "unit": "kW", "segment": "historical" if hours <= 0 else "forecast"})
+        for point in potential_points:
+            if point["segment"] == "forecast":
+                solar_expected_points.append({**point, "value": round(point["value"] * solar_model["performance_ratio"], 3)})
+    elif weather:
+        weather = {**weather, "state": "needs_pv_capacity"}
     battery_voltage = _number(battery_readings, "battery_voltage")
     max_charge_current = _number(battery_readings, "battery_max_charge_current")
     max_discharge_current = _number(battery_readings, "battery_max_discharge_current")
@@ -399,9 +811,20 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
             "configuration": config,
             "current": current,
             "latest_readings": {**inverter_readings, **battery_readings},
-            "forecast": {"solar_power": forecast, "load_power": load_forecast,
-                         "battery_soc": soc_forecast, "weather_adjusted": False,
-                         "notice": "Estimativa indicativa baseada apenas em leituras históricas de FV; não inclui meteorologia nem comanda equipamentos."},
+            "forecast": {"weather": {"state": weather.get("state") if weather else "location_not_configured",
+                         "provider": weather.get("provider") if weather else None,
+                         "fetched_at": weather.get("fetched_at") if weather else None, "current": weather_current},
+                         "solar_power": forecast, "solar_expected": {"hourly_values": solar_expected_points,
+                         "confidence": "LOW_INDICATIVE" if solar_expected_points else "UNAVAILABLE"},
+                         "solar_potential": {"state": weather.get("state") if weather else "location_not_configured",
+                         "provider": weather.get("provider") if weather else None,
+                         "hourly_values": potential_points,
+                         "capacity_kw": config.get("pv_capacity_kw"),
+                         "efficiency_factor": config.get("pv_system_efficiency", 0.85),
+                         "adaptive_model": solar_model},
+                         "load_power": load_forecast, "battery_soc": soc_forecast,
+                         "weather_adjusted": bool(potential_points),
+                         "notice": "O Gateway compara, uma vez por hora, a produção Deye medida com a radiação prevista para essa hora e guarda um fator de desempenho suavizado no SQLite. Esse fator ajusta previsões futuras; a linha de potencial meteorológico permanece separada. Consumo é extrapolação indicativa do histórico. Não controla equipamentos."},
             "history": history,
             "dispatch": dispatch,
             "dispatch_execution": dispatch_execution,

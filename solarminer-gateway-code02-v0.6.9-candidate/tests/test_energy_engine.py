@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -102,6 +103,42 @@ def test_live_half_minute_sample_overrides_current_without_changing_history():
     assert result["latest_readings"]["pv_total_power"]["observed_at"] == fresh
     assert result["latest_readings"]["pv_total_power"]["trust"] == "LIVE_UNVERIFIED"
     assert [point["value"] for point in result["history"]["pv_total_power"]] == [1000]
+
+
+def test_history_exposes_each_mppt_and_curtailed_hour_does_not_train_panels_down():
+    conn = database()
+    inverter = energy_registry.upsert_equipment(conn, {"category": "inversores", "name": "Deye"}, "deye-inverter-test")
+    battery = energy_registry.upsert_equipment(conn, {"category": "baterias", "name": "Battery"}, "deye-battery-test")
+    stamp = (datetime.now(timezone.utc) - timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    weather = {"hourly": [{"observed_at": stamp.isoformat(), "shortwave_radiation_w_m2": 700}]}
+    conn.execute("INSERT INTO system_state(key,value) VALUES(?,?)", ("energy_engine_solar_performance", json.dumps({
+        "performance_ratio": 1.0, "sample_count": 3,
+        "mppt_voltage_profiles": {"7": {"samples": 3, "mppt1_voltage_v": 390, "mppt1_current_a": 5,
+                                          "mppt2_voltage_v": 385, "mppt2_current_a": 5}},
+    })))
+    for index in range(12):
+        observed = (stamp - timedelta(minutes=55) + timedelta(minutes=index * 4)).isoformat(timespec="microseconds")
+        for field, value, unit in (("pv1_input_power", 500, "W"), ("pv2_input_power", 500, "W"),
+                                   ("pv1_voltage", 410, "V"), ("pv1_current", 1.3, "A"),
+                                   ("pv2_voltage", 405, "V"), ("pv2_current", 1.3, "A"),
+                                   ("load_total_power", 100, "W")):
+            insert_reading(conn, inverter["id"], field, value, unit, observed)
+        insert_reading(conn, battery["id"], "battery_soc", 100, "%", observed)
+        insert_reading(conn, battery["id"], "battery_charge_power", 0, "W", observed)
+
+    model = energy_engine._learn_solar_performance(conn, weather, inverter, battery, 8.0, 0.85, 100.0)
+    assert model["possible_curtailment_hours"] == 1
+    assert model["new_curtailment_candidates"] == 1
+    assert model["sample_count"] == 3
+    assert model["last_curtailment_candidate"]["mppt_voltage_support"] is True
+    assert model["last_curtailment_candidate"]["state"] == "POSSIBLE_CURTAILMENT_VOLTAGE_SUPPORTED"
+    assert model["mppt_empirical_curtailment_voltage_v"]["mppt1"] == 410
+
+    result = energy_engine.build_summary(conn)
+    assert len(result["history"]["pv1_voltage"]) == 12
+    assert len(result["history"]["pv1_current"]) == 12
+    assert len(result["history"]["pv2_voltage"]) == 12
+    assert len(result["history"]["pv2_current"]) == 12
 
 
 def test_stale_in_memory_sample_blocks_dispatch_even_if_owner_enabled_it():

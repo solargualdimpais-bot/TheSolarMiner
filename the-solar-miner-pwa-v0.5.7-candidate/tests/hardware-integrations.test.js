@@ -8,20 +8,36 @@ test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV 
   const html = read("../index.html");
   const app = read("../app.js");
   const auth = read("../gateway-auth.js");
-  for (const id of ["gateway-hardware-management", "hardware-deye-host", "hardware-antminer-host", "hardware-antminer-username", "hardware-antminer-password", "hardware-antminer-rest-port", "antminer-power-target", "antminer-pause", "antminer-stop", "antminer-start", "hardware-tuya-client-secret", "hardware-integrations-read"]) assert.match(html, new RegExp(`id="${id}"`));
+  for (const id of ["gateway-hardware-management", "hardware-deye-host", "hardware-antminer-host", "hardware-antminer-username", "hardware-antminer-password", "hardware-antminer-rest-port", "antminer-power-target", "antminer-pause", "antminer-stop", "antminer-start", "hardware-tuya-client-secret", "deye-save", "deye-read", "antminer-save", "antminer-read", "tuya-save", "tuya-device-list", "owner-open-gateway"]) assert.match(html, new RegExp(`id="${id}"`));
+  for (const tab of ["access", "updates", "tailscale", "gateway", "equipment"]) assert.match(html, new RegExp(`data-owner-tab="${tab}"`));
+  for (const tab of ["deye", "antminer", "tuya"]) assert.match(html, new RegExp(`data-owner-device="${tab}"`));
   const workspace = read("../workspace-ui.js");
   for (const id of ["ev-tesla-refresh-token", "ev-tesla-vehicle-id", "ev-tesla-save", "ev-tesla-read"]) assert.match(workspace, new RegExp(`id="${id}"`));
   assert.match(app, /info\.user\.role !== "owner"/);
   assert.match(app, /saveGatewayHardwareIntegrationConfig/);
-  assert.match(app, /readGatewayHardwareIntegrations/);
+  assert.match(app, /readGatewayHardwareProvider/);
+  assert.match(app, /saveGatewayHardwareIntegrationConfig\(\{ \[provider\]: payload \}\)/);
   assert.match(app, /hardware-tuya-client-secret"\)\.value = ""/);
-  assert.match(auth, /\/api\/v1\/integrations\/hardware\/read/);
+  assert.match(auth, /\/api\/v1\/integrations\/hardware\/\$\{provider\}\/read/);
   assert.match(auth, /\/api\/v1\/integrations\/antminer\/control/);
+  assert.match(auth, /\/api\/v1\/integrations\/tuya\/level/);
+  assert.match(app, /controlGatewayTuyaLevel/);
+  assert.match(app, /data-favorite-level/);
   assert.match(auth, /"set_power_target", "pause", "stop", "start"/);
   assert.match(app, /if \(!confirm\(prompt\)\) return/);
   assert.match(auth, /\/api\/v1\/energy\/ev\/tesla\/read/);
   assert.doesNotMatch(app, /hardware-tesla-(?:region|client-id|refresh-token|vehicles)/);
   assert.doesNotMatch(auth, /tuya.*localStorage/i);
+});
+
+test("live navigation renders Gateway data without the demo renderer overriding operational pages", () => {
+  const app = read("../app.js");
+  assert.match(app, /state\.mode!=="SIMULATED"&&liveAreaPages\.includes/);
+  assert.match(app, /state\.mode!=="SIMULATED"&&liveUtilityPages\.includes/);
+  assert.match(app, /state\.mode === "SIMULATED" && state\.page === "automatismos"/);
+  assert.match(app, /state\.mode === "SIMULATED" && state\.page === "producao"/);
+  assert.match(app, /state\.mode === "SIMULATED" && state\.page === "profile"/);
+  assert.match(app, /Gateway ainda não forneceu equipamentos ou leituras/);
 });
 
 test("Gateway embedded PWA has the exact same integration UI and client", () => {

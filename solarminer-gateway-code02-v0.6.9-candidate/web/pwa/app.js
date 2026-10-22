@@ -3,23 +3,31 @@ import { DEMO_CONTROL_CONFIG, createDemoControlState, updateDemoControl, toggleD
 import { renderWorkspacePage, renderHomePreferenceLinks, renderHouseSearch, handleWorkspaceAction, handleWorkspaceChange, applyPreferences, getWorkspacePageLabel, workspace, getEditableEntity, saveEditableEntity, saveDemoWorkspace, hydrateWorkspacePhotos } from "./workspace-ui.js";
 import { renderAutomationsPage, renderSolarProductionPage, renderDemoAdminPanel, handleFeatureAction, saveAutomationForm, addDemoUser, saveDemoUserEdit, saveSolarWeather, demoFeatures } from "./features-v053.js";
 import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classifyEndpoint, inferHostedGatewayEndpoint, PRESENCE_API_STATUS } from "./gateway-connection.js";
-import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, saveGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, saveGatewayHardwareIntegrationConfig, readGatewayHardwareIntegrations, controlGatewayAntminer, controlGatewayTuyaSwitch, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, saveGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, controlGatewayAntminer, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging } from "./gateway-auth.js";
 
 let automationEditingId = "";
-const state = { page: "inicio", mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], energyEngine: null, tuyaDevices: [], lastUpdated: null, lastMeasurementAt: null, refreshing: false, propertyPhoto: "", demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [] };
+const state = { page: "inicio", mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], energyEngine: null, tuyaDevices: [], tuyaReadings: [], lastUpdated: null, lastMeasurementAt: null, refreshing: false, propertyPhoto: "", demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [] };
+let lastTuyaReadAt=0;
 const $ = (selector) => document.querySelector(selector);
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+const userFacingSaveError = (error) => { const message=String(error?.message||""); if(message.includes("site_location_not_found")) return "O Gateway não encontrou essa cidade. Escreve cidade e país, por exemplo, Coimbra, Portugal."; if(message.includes("site_location_lookup_failed")) return "O Gateway não conseguiu consultar o serviço de localização. Verifica a ligação à Internet e tenta novamente."; return message||"Não foi possível guardar as alterações."; };
 const pageLabel = (id) => id === "inicio" ? "Visão geral" : id === "owner" ? "Owner" : (CATEGORIES.find(c => c.id === id)?.label || getWorkspacePageLabel(id) || "Mais áreas");
 const timeLabel = (value) => value ? new Intl.DateTimeFormat("pt-PT", { dateStyle: "short", timeStyle: "medium" }).format(new Date(value)) : "Sem atualização";
 let editorContext=null, editorPhoto=undefined, editorPhotoFile=null;
 function openContextEditor(type,id){
   const entity=getEditableEntity(type,id);if(!entity){return;}
   editorContext={type,id};editorPhoto=type==='house'?(entity.photo||''):type==='room'?(entity.customPhoto||''):(entity.customPhoto||'');editorPhotoFile=null;
-  const title=({house:'Editar identidade da casa',room:'Editar divisão',device:'Editar dispositivo',floor:'Editar piso'})[type]||'Editar elemento';
-  $('#context-editor-title').textContent=title;$('#context-editor-status').textContent='DEMO · alterações locais neste browser; sem gravação no Gateway.';
+  const title=({house:'Casa',room:'Editar divisão',device:'Editar dispositivo',floor:'Editar piso'})[type]||'Editar elemento';
+  $('#context-editor-title').textContent=title;$('#context-editor-status').textContent=type==='house'?'O nome e a fotografia ficam neste browser; a localização é guardada no Gateway.':'';
+  $('#context-editor .dialog-header .eyebrow').textContent=type==='house'?'CASA · LOCALIZAÇÃO · FOTOGRAFIA':'PERSONALIZAÇÃO';
+  $('#context-editor-form .field-note').textContent=type==='house'?'Altera os três dados da propriedade. A localização é usada pelo Gateway para identificar o local do inversor, dos painéis e do próprio Gateway.':'Pré-visualiza e confirma antes de guardar. As alterações ficam apenas neste browser/instalação PWA; não são enviadas ao Gateway.';
+  $('#context-editor-form [type="submit"]').textContent=type==='house'?'Guardar':'Guardar localmente';
   const floorOptions=workspace.house.floors.map(f=>`<option value="${esc(f.id)}" ${f.id===(entity.__floorId||workspace.house.activeFloor)?'selected':''}>${esc(f.name)}</option>`).join('');
   let fields='';
-  if(type==='house')fields=`<label class="ws-field">Nome da casa<input name="name" maxlength="100" required value="${esc(entity.name||'A Minha Casa')}"></label><label class="ws-field">Descrição (opcional)<textarea name="description" maxlength="300" rows="3">${esc(entity.description||'')}</textarea></label>`;
+  if(type==='house'){
+    const cfg=state.energyEngine?.configuration||{}, owner=sessionInfo().authenticated&&sessionInfo().user?.role==='owner';
+    fields=`<label class="ws-field">Nome da casa<input name="name" maxlength="100" required value="${esc(entity.name||'A Minha Casa')}"></label>${owner?`<label class="ws-field">Cidade ou localidade<input name="siteLocationName" type="text" maxlength="120" value="${esc(cfg.site_location_name??'')}" placeholder="Ex.: Coimbra, Portugal" autocomplete="address-level2"></label><p class="field-note">O Gateway converte a cidade em coordenadas para consultar meteorologia e calcular o potencial solar.</p>`:`<p class="field-note">Inicia sessão como Owner para editar a localização guardada no Gateway.</p>`}`;
+  }
   if(type==='floor')fields=`<label class="ws-field">Nome do piso<input name="name" maxlength="100" required value="${esc(entity.name||'')}"></label>`;
   if(type==='room')fields=`<label class="ws-field">Nome da divisão<input name="name" maxlength="100" required value="${esc(entity.name||'')}"></label><label class="ws-field">Piso associado<select name="floorId">${floorOptions}</select></label>`;
   if(type==='device'){
@@ -36,7 +44,7 @@ function readAndCompressImage(file){return new Promise((resolve,reject)=>{if(!fi
 $('#context-editor-cancel').addEventListener('click',()=>$('#context-editor').close());
 $('#context-editor-fields').addEventListener('change',async e=>{if(e.target.id!=='context-editor-file')return;const file=e.target.files?.[0];if(!file)return;try{editorPhoto=await readAndCompressImage(file);const img=$('#context-editor-preview-image');img.src=editorPhoto;$('#context-editor-preview').hidden=false;$('#context-editor-status').textContent='Pré-visualização pronta. Ainda não foi guardada.';}catch(error){$('#context-editor-status').textContent=error.message;}});
 $('#context-editor-fields').addEventListener('click',e=>{if(e.target.id!=='context-editor-remove-photo')return;editorPhoto='';editorPhotoFile=null;$('#context-editor-preview').hidden=true;$('#context-editor-preview-image').removeAttribute('src');$('#context-editor-status').textContent='A imagem será removida quando guardares.';});
-$('#context-editor-form').addEventListener('submit',e=>{e.preventDefault();if(!editorContext)return;const form=e.currentTarget;const values={name:form.elements.name?.value,description:form.elements.description?.value};if(editorContext.type==='room'){values.floorId=form.elements.floorId?.value;}if(editorContext.type==='device'){const pair=(form.elements.roomTarget?.value||'').split('|');values.floorId=pair[0];values.roomId=pair[1];}if(['house','room','device'].includes(editorContext.type))values.photo=editorPhoto;const ok=saveEditableEntity(editorContext.type,editorContext.id,values);if(ok){if(editorContext.type==='house'){state.propertyPhoto=workspace.house.photo||'';}$('#context-editor').close();render();const n=$('#notice');n.hidden=false;n.textContent='Alteração guardada apenas neste browser (DEMO). O Gateway não foi alterado.';setTimeout(()=>n.hidden=true,5000);}else $('#context-editor-status').textContent='Não foi possível guardar a alteração local.';});
+$('#context-editor-form').addEventListener('submit',async e=>{e.preventDefault();if(!editorContext)return;const form=e.currentTarget,submit=form.querySelector('[type="submit"]');submit.disabled=true;try{const values={name:form.elements.name?.value,description:form.elements.description?.value??getEditableEntity(editorContext.type,editorContext.id)?.description};if(editorContext.type==='room')values.floorId=form.elements.floorId?.value;if(editorContext.type==='device'){const pair=(form.elements.roomTarget?.value||'').split('|');values.floorId=pair[0];values.roomId=pair[1];}if(['house','room','device'].includes(editorContext.type))values.photo=editorPhoto;const locationName=editorContext.type==='house'&&form.elements.siteLocationName?form.elements.siteLocationName.value.trim():'';const locationSaved=Boolean(locationName);if(locationSaved){const result=await saveGatewayEnergyEngineConfig({site_location_name:locationName});state.siteLocationName=result.site_location_name||locationName;}const ok=saveEditableEntity(editorContext.type,editorContext.id,values);if(!ok)throw new Error('Não foi possível guardar os dados da casa.');if(editorContext.type==='house')state.propertyPhoto=workspace.house.photo||'';$('#context-editor').close();render();const n=$('#notice');n.hidden=false;n.textContent=editorContext.type==='house'?(locationSaved?'Nome e fotografia guardados neste browser; cidade guardada no Gateway.':'Nome e fotografia guardados neste browser.'):'Alteração guardada apenas neste browser; o Gateway não foi alterado.';setTimeout(()=>n.hidden=true,5000);if(locationSaved)await refreshGatewayReadings();}catch(error){$('#context-editor-status').textContent=userFacingSaveError(error);}finally{submit.disabled=false;}});
 
 
 const gatewayManager = new GatewayConnectionManager({ onState: updateGatewayStatus });
@@ -75,9 +83,6 @@ function freshness() {
     $("#freshness-label").textContent = "Dados de demonstração · não são leituras reais";
     $("#mode-chip").textContent = "DEMO · SIMULATED";
     $("#mode-chip").className = "mode-chip simulated";
-    $("#connection-title").textContent = "Demonstração ativa";
-    $("#connection-detail").textContent = "Dados locais · sem ligação física";
-    $("#connection-summary .pulse").style.background = "var(--gold)";
     return;
   }
   const labels = {
@@ -90,9 +95,6 @@ function freshness() {
   $("#freshness-label").textContent = item[1];
   $("#mode-chip").textContent = item[0];
   $("#mode-chip").className = `mode-chip ${state.dataStatus.toLowerCase()}`;
-  $("#connection-title").textContent = item[2];
-  $("#connection-detail").textContent = item[3];
-  $("#connection-summary .pulse").style.background = item[4];
 }
 function normalizeGatewayEquipment(items) {
   return items.map(item => ({
@@ -129,8 +131,11 @@ async function refreshGatewayReadings() {
     state.equipment = normalizeGatewayEquipment(result.equipment);
     state.energyEngine = result.engine || null;
     if (sessionInfo().user?.role === "owner") {
-      try { const hardware = await readGatewayHardwareIntegrationConfig(); state.tuyaDevices = hardware.tuya?.devices || []; }
-      catch { state.tuyaDevices = []; }
+      try {
+        const hardware = await readGatewayHardwareIntegrationConfig(); state.tuyaDevices = hardware.tuya?.devices || [];
+        if (state.tuyaDevices.length && Date.now()-lastTuyaReadAt>=300_000) { const readings = await readGatewayHardwareProvider("tuya"); state.tuyaReadings = readings.tuya || []; lastTuyaReadAt=Date.now(); }
+        else if(!state.tuyaDevices.length) { state.tuyaReadings = []; lastTuyaReadAt=0; }
+      } catch { /* Keep last successful values visible with their original timestamp. */ }
     }
     state.mode = "LIVE";
     state.dataStatus = classifyGatewayReadings(state.equipment, Math.max(90 * 1000, (result.engine?.sampling_interval_seconds || 30) * 3 * 1000));
@@ -154,7 +159,7 @@ async function refreshGatewayReadings() {
 }
 function resetToDemoAfterLogout() {
   state.mode = "DISCONNECTED"; state.dataStatus = "UNAVAILABLE"; state.dataError = null; state.energyEngine = null;
-  state.equipment = []; state.lastUpdated = null; state.lastMeasurementAt = null; render();
+  state.equipment = []; state.tuyaDevices=[];state.tuyaReadings=[];lastTuyaReadAt=0;state.lastUpdated = null; state.lastMeasurementAt = null; render();
 }
 function renderLiveEnergyEngine() {
   const data = state.energyEngine;
@@ -171,7 +176,9 @@ function renderLiveEnergyEngine() {
   const readingTile=(field,label)=>{const item=readings[field];return `<div class="detail-item"><small>${esc(label)}</small><strong>${item?`${esc(item.value)} ${esc(item.unit||"")}`:"—"}</strong><small>${item?`${esc(item.trust)} · ${esc(timeLabel(item.observed_at))}`:"Sem leitura"}</small></div>`;};
   const dispatchRows=(data.dispatch?.actions||[]).map(action=>`<div class="detail-item"><small>${esc(action.name||action.load_id)}</small><strong>${esc(action.state)}</strong><small>${Number.isFinite(action.target_power_w)?`${esc(action.target_power_w)} W · `:""}${esc(action.control_type||"")}</small></div>`).join("");
   const execution=data.dispatch_execution;
+  const solarSiteConfig=ownerConfig?`<section class="panel feature-panel"><div class="panel-header"><div><p class="eyebrow">SISTEMA FV · GUARDADO NO GATEWAY</p><h2>Previsão solar adaptativa</h2></div><span class="source-tag">OWNER</span></div><p>A localização é definida no cartão da casa no Home. Indica aqui a potência nominal total dos painéis. O Gateway guarda as leituras dos dois MPPTs, compara-as com a radiação meteorológica local e atualiza gradualmente o modelo. Reduções compatíveis com limitação do inversor serão assinaladas como possíveis curtailments, não como confirmação.</p><div class="ws-config-grid"><label class="feature-field">Potência nominal FV (kWp)<input id="engine-pv-capacity" type="number" min="0.1" max="1000" step="0.01" value="${esc(data.configuration?.pv_capacity_kw??"")}" placeholder="Ex.: 8.94"></label></div><div class="ws-actions"><button class="button primary" id="engine-save-site-config">Guardar potência FV</button><span id="engine-site-config-status" class="ws-inline-note"></span></div><p class="field-note">A previsão meteorológica é uma estimativa. O Gateway só aprende com amostras históricas que já existam na sua base de dados.</p></section>`:"";
   return `<div class="page-heading"><div><p class="eyebrow">ENERGY / ENGINE</p><h1>Engine energético</h1><p>Dados e cálculos processados no Gateway. Leituras do mapa Deye permanecem LIVE_UNVERIFIED.</p></div><button class="button secondary" id="engine-refresh">Atualizar ↻</button></div>
+  ${solarSiteConfig}
   <div class="ws-kpi-grid"><article class="ws-kpi"><small>SOC da bateria</small><strong>${number(current.battery_soc_percent,0)} <em>%</em></strong><span>${esc(data.trust)} · ${esc(time)}${current.battery_at_configured_maximum?" · LIMITE MÁXIMO ATINGIDO":""}</span></article><article class="ws-kpi"><small>Energia acima do SOC mínimo</small><strong>${number(current.battery_energy_available_kwh_above_minimum,2)} <em>kWh</em></strong><span>${current.battery_capacity_kwh == null ? "Configura capacidade total para calcular" : `Espaço até máximo: ${number(current.battery_charge_headroom_kwh_to_maximum,2)} kWh · reserva ${number(current.minimum_soc_percent,0)}–${number(current.maximum_soc_percent,0)}%`}</span></article><article class="ws-kpi"><small>Produção FV atual</small><strong>${number(current.pv_power_w == null ? null : current.pv_power_w/1000,2)} <em>kW</em></strong><span>PV1 + PV2 · medida</span></article><article class="ws-kpi"><small>Consumo atual</small><strong>${number(current.load_power_w == null ? null : current.load_power_w/1000,2)} <em>kW</em></strong><span>Canal de cargas Deye</span></article></div>
   <section class="panel feature-panel"><div class="panel-header"><div><p class="eyebrow">HISTÓRICO GUARDADO NO GATEWAY · ÚLTIMAS 24 H</p><h2>Produção e tendência de FV · kW</h2></div><span class="source-tag">${esc(series.length)} amostras</span></div>${points.length?`<svg viewBox="0 0 620 220" class="chart solar-potential-chart" role="img" aria-label="Histórico de potência fotovoltaica lido pelo Gateway"><path class="chart-grid" d="M40 35H600 M40 80H600 M40 125H600 M40 180H600"/><path d="${path}" class="chart-line" fill="none"/><g class="chart-label"><text x="40" y="202">mais antigo</text><text x="510" y="202">agora</text></g></svg>`:`<div class="empty-state">Ainda não há amostras suficientes. O Gateway começa a guardá-las depois de configurar o Deye.</div>`}<div class="ws-kpi-grid"><article class="ws-kpi"><small>Potência FV estimada +1 h</small><strong>${number(forecast.one_hour_value,2)} <em>kW</em></strong><span>${esc(forecastLabel)}</span></article><article class="ws-kpi"><small>Potência FV estimada +3 h</small><strong>${number(forecast.three_hour_value,2)} <em>kW</em></strong><span>Regressão linear · limitada a 15 kW</span></article><article class="ws-kpi"><small>Consumo estimado +1 h</small><strong>${number(data.forecast?.load_power?.one_hour_value,2)} <em>kW</em></strong><span>Histórico de cargas · baixa confiança</span></article><article class="ws-kpi"><small>SOC estimado +1 h</small><strong>${number(data.forecast?.battery_soc?.one_hour_value,1)} <em>%</em></strong><span>Tendência histórica simples · baixa confiança</span></article></div><p class="field-note">${esc(data.forecast?.notice || "")} ${esc(data.limits?.notice || "")}</p></section>
   <section class="panel feature-panel"><div class="panel-header"><div><p class="eyebrow">MAPA DE REGISTOS DEYE · LEITURAS RECENTES</p><h2>FV, bateria e contadores</h2></div><span class="source-tag">LIVE_UNVERIFIED</span></div><div class="device-detail-grid telemetry-grid">${readingTile("pv1_input_power","Potência FV 1")}${readingTile("pv1_voltage","Tensão FV 1")}${readingTile("pv1_current","Corrente FV 1")}${readingTile("pv2_input_power","Potência FV 2")}${readingTile("pv2_voltage","Tensão FV 2")}${readingTile("pv2_current","Corrente FV 2")}${readingTile("battery_voltage","Tensão bateria")}${readingTile("battery_output_current","Corrente bateria")}${readingTile("battery_output_power","Potência bateria")}${readingTile("battery_temperature","Temperatura bateria")}${readingTile("pv_daily_energy","Energia FV hoje")}${readingTile("pv_total_energy","Energia FV acumulada")}${readingTile("load_daily_energy","Consumo hoje")}${readingTile("load_total_energy","Consumo acumulado")}${readingTile("battery_daily_charge_energy","Carga da bateria hoje")}${readingTile("battery_daily_discharge_energy","Descarga da bateria hoje")}${readingTile("battery_max_charge_current","Limite configurado de carga")}${readingTile("battery_max_discharge_current","Limite configurado de descarga")}<div class="detail-item"><small>Potência máxima de carga calculada</small><strong>${number(current.battery_configured_max_charge_power_kw,2)} kW</strong><small>Estimativa a partir da tensão e limite configurado</small></div><div class="detail-item"><small>Potência máxima de descarga calculada</small><strong>${number(current.battery_configured_max_discharge_power_kw,2)} kW</strong><small>Estimativa a partir da tensão e limite configurado</small></div></div><p class="field-note">As potências derivadas multiplicam tensão medida pelos limites configurados no inversor; são estimativas de configuração, não limites dinâmicos do BMS. O mapa candidato continua por validar para o firmware exato.</p></section>
@@ -209,14 +216,68 @@ function liveReadingMetric(label, categoryId, icon) {
     : "Sem leitura válida do Gateway";
   return metric(label, value, reading?.unit || "", icon, detail);
 }
+function liveMetricReading(equipment, field) {
+  return (equipment?.readings || []).find(reading => reading?.field === field) || null;
+}
+function liveHomeMetric(label, value, unit, icon, detail, extra = "") {
+  const formatted = typeof value === "number" && Number.isFinite(value)
+    ? new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 2 }).format(value)
+    : value === null || value === undefined ? "—" : String(value);
+  return `<article class="metric-card"><div class="metric-top"><span>${esc(label)}</span><span class="metric-symbol">${icon}</span></div><div class="metric-value">${esc(formatted)} <small>${esc(unit)}</small></div><div class="metric-sub">${esc(detail)}</div>${extra}</article>`;
+}
+function liveSolarHomeMetric() {
+  const equipment = state.equipment.find(item => item.category === "inversores" && !isSimulated(item));
+  const reading = liveMetricReading(equipment, "pv_total_power");
+  return liveHomeMetric("Painéis", reading?.value, reading?.unit || "W", "ϟ",
+    reading ? `Produção FV · ${reading.trust || "UNKNOWN"}` : "Sem leitura de produção FV do Gateway");
+}
+function liveBatteryHomeMetric() {
+  const equipment = state.equipment.find(item => item.category === "baterias" && !isSimulated(item));
+  const soc = liveMetricReading(equipment, "battery_soc");
+  const rawPower = liveMetricReading(equipment, "battery_output_power");
+  // The Deye candidate map reports negative while charging and positive while discharging.
+  // Home presents the user-requested convention: charge positive, discharge negative.
+  const signedPower = typeof rawPower?.value === "number" ? -rawPower.value : null;
+  const flowClass = signedPower === null ? "" : signedPower < 0 ? "discharge" : signedPower > 0 ? "charge" : "idle";
+  const flowLabel = signedPower === null ? "Potência da bateria sem leitura"
+    : `${signedPower > 0 ? "+" : ""}${new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 1 }).format(signedPower)} ${rawPower.unit || "W"} · ${signedPower < 0 ? "a descarregar" : signedPower > 0 ? "a carregar" : "sem fluxo"}`;
+  const formattedSoc = typeof soc?.value === "number" ? new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 1 }).format(soc.value) : "—";
+  const trust = soc?.trust || rawPower?.trust || "UNKNOWN";
+  return `<article class="metric-card"><div class="metric-top"><span>Bateria</span><span class="metric-symbol">▤</span></div><div class="metric-value">${esc(formattedSoc)} <small>${soc ? "%" : ""}</small></div><div class="metric-sub">${esc(soc ? `Estado de carga · ${trust}` : "Sem leitura de SOC do Gateway")}</div><div class="metric-sub battery-flow ${flowClass}">${esc(flowLabel)}</div></article>`;
+}
+function liveMinerHomeMetric() {
+  const equipment = state.equipment.find(item => item.category === "mineradoras" && !isSimulated(item));
+  const currentHash = liveMetricReading(equipment, "miner_hashrate_5s_ghs") || liveMetricReading(equipment, "miner_hashrate_avg_ghs");
+  const hashThs = typeof currentHash?.value === "number" ? currentHash.value / 1000 : null;
+  const hashUnit = hashThs === null ? "" : "TH/s";
+  const minerPower = liveMetricReading(equipment, "miner_power_w");
+  const powerLimit = liveMetricReading(equipment, "miner_power_limit_w");
+  const sub = [
+    minerPower ? `Consumo ${new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 0 }).format(minerPower.value)} W` : null,
+    powerLimit ? `Limite reportado ${new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 0 }).format(powerLimit.value)} W` : null,
+    !currentHash && equipment?.connection_state === "CONNECTED" ? "API ligada · hashrate indisponível" : null,
+    !equipment ? "Sem leitura da Antminer" : null,
+  ].filter(Boolean).join(" · ");
+  const detail = currentHash ? `${currentHash.field === "miner_hashrate_5s_ghs" ? "Taxa atual" : "Taxa média"} · ${currentHash.trust || "UNKNOWN"}` : "Hashrate sem leitura do Gateway";
+  const extra = sub ? `<div class="metric-sub miner-power-details">${esc(sub)}</div>` : "";
+  return liveHomeMetric("Mineradora", hashThs, hashUnit, "▦", detail, extra);
+}
 function chart() {
   if (state.mode !== "SIMULATED") {
-    const samples=state.energyEngine?.history?.pv_total_power||[];
-    const points=samples.map((item,i)=>({x:i,y:Number(item.value)/(item.unit==="W"?1000:1)})).filter(p=>Number.isFinite(p.y));
-    if(!points.length)return `<div class="empty-state">O Gateway ainda não guardou amostras históricas de produção.</div>`;
-    const max=Math.max(1,...points.map(p=>p.y));
-    const d=points.map((p,i)=>`${i?"L":"M"}${42+(points.length>1?p.x/(points.length-1)*563:0)} ${145-p.y/max*120}`).join(" ");
-    return `<svg class="chart" viewBox="0 0 620 190" role="img" aria-label="Histórico real de produção solar"><path class="chart-grid" d="M42 25H605 M42 65H605 M42 105H605 M42 145H605"/><path class="chart-line" d="${d}"/><g class="chart-label"><text x="42" y="166">24 h atrás</text><text x="530" y="166">agora · kW</text></g></svg>`;
+    const engine=state.energyEngine||{},history=engine.history||{},forecast=engine.forecast||{},now=Date.now(),start=now-3*3600000,end=now+6*3600000;
+    const point=(item,forcedUnit)=>{const stamp=Date.parse(item.observed_at||item.forecast_at||"");let value=Number(item.value);if(!Number.isFinite(stamp)||!Number.isFinite(value))return null;if((item.unit||forcedUnit)==="W")value/=1000;return {stamp,value};};
+    const historical=field=>(history[field]||[]).map(item=>point(item)).filter(p=>p&&p.stamp>=start&&p.stamp<=now);
+    const future=items=>(items||[]).map(item=>point(item)).filter(p=>p&&p.stamp>=now&&p.stamp<=end);
+    const pv=[...historical("pv_total_power"),...future(forecast.solar_expected?.hourly_values)].sort((a,b)=>a.stamp-b.stamp);
+    const load=[...historical("load_total_power"),...future(forecast.load_power?.hourly_values)].sort((a,b)=>a.stamp-b.stamp);
+    const potential=(forecast.solar_potential?.hourly_values||[]).map(item=>point(item)).filter(p=>p&&p.stamp>=start&&p.stamp<=end).sort((a,b)=>a.stamp-b.stamp);
+    const all=[...pv,...load,...potential];
+    if(!all.length)return `<div class="empty-state">Ainda não há leituras ou previsão. Configura a localização e a potência FV na área Owner.</div>`;
+    const max=Math.max(1,...all.map(p=>p.value)),x=stamp=>45+Math.max(0,Math.min(1,(stamp-start)/(end-start)))*555,y=value=>178-Math.max(0,value)/max*145;
+    const path=items=>items.map((p,i)=>`${i?"L":"M"}${x(p.stamp).toFixed(1)} ${y(p.value).toFixed(1)}`).join(" ");
+    const weather=forecast.solar_potential||{},status=weather.state==="available"?"Previsão solar meteorológica ativa":weather.state==="needs_pv_capacity"?"Indica a potência nominal FV no Owner":weather.state==="unavailable"?"Serviço meteorológico indisponível":"Configura a localização no Owner";
+    const rows=(forecast.solar_potential?.hourly_values||[]).filter(item=>item.segment==="forecast").map((potentialPoint,index)=>{const exp=forecast.solar_expected?.hourly_values?.[index],cons=forecast.load_power?.hourly_values?.[index];const time=new Date(potentialPoint.observed_at).toLocaleTimeString("pt-PT",{hour:"2-digit",minute:"2-digit"});return `<tr><th scope="row">${esc(time)}</th><td>${exp?`${esc(exp.value)} kW`:"—"}</td><td>${esc(cons?cons.value:"—")} ${cons?"kW":""}</td><td>${esc(potentialPoint.value)} kW</td></tr>`;}).join("");
+    return `<svg class="chart solar-window-chart" viewBox="0 0 620 215" role="img" aria-label="Produção FV, consumo e potencial solar: três horas medidas e seis horas de previsão"><path class="chart-grid" d="M45 33H600 M45 70H600 M45 106H600 M45 142H600 M45 178H600"/><path d="${path(pv)}" fill="none" stroke="#dcc99c" stroke-width="2.5"/><path d="${path(load)}" fill="none" stroke="#a9c7d9" stroke-width="2.5"/><path d="${path(potential)}" fill="none" stroke="#b8df9c" stroke-width="2.5" stroke-dasharray="6 4"/><path d="M230 25V182" stroke="#8f897a" stroke-dasharray="3 4"/><g class="chart-label"><text x="45" y="201">−3 h</text><text x="218" y="201">agora</text><text x="414" y="201">+3 h</text><text x="570" y="201">+6 h</text></g></svg><div class="solar-chart-legend"><span><i class="solar-legend-pv"></i>FV medida / prevista</span><span><i class="solar-legend-load"></i>Consumo medido / previsto</span><span><i class="solar-legend-potential"></i>Potencial FV pela meteorologia</span></div><p class="field-note">${esc(status)}. Previsão de consumo: tendência linear das últimas três horas, indicativa. Previsão FV esperada: potencial meteorológico ajustado ao desempenho recente; linha tracejada verde: potência potencial calculada.</p>${rows?`<div class="solar-forecast-table-wrap"><table class="solar-forecast-table"><thead><tr><th>Hora</th><th>FV prevista</th><th>Consumo previsto</th><th>Potencial FV</th></tr></thead><tbody>${rows}</tbody></table></div>`:""}`;
   }
   return `<svg class="chart" viewBox="0 0 620 190" role="img" aria-label="Gráfico ilustrativo de produção solar simulada"><defs><linearGradient id="areaFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#dcc99c" stop-opacity=".30"/><stop offset="100%" stop-color="#dcc99c" stop-opacity="0"/></linearGradient></defs><path class="chart-grid" d="M42 25H605 M42 65H605 M42 105H605 M42 145H605"/><path class="chart-area" d="M42 128 C75 125 90 111 122 118 S168 92 198 97 S245 70 276 82 S320 42 350 58 S399 72 430 47 S475 35 505 49 S565 28 605 37 L605 146 L42 146Z"/><path class="chart-line" d="M42 128 C75 125 90 111 122 118 S168 92 198 97 S245 70 276 82 S320 42 350 58 S399 72 430 47 S475 35 505 49 S565 28 605 37"/><g class="chart-label"><text x="42" y="166">08:00</text><text x="176" y="166">10:00</text><text x="309" y="166">12:00</text><text x="443" y="166">14:00</text><text x="575" y="166">16:00</text><text x="42" y="15">kW · CURVA ILUSTRATIVA</text></g></svg>`;
 }
@@ -248,13 +309,31 @@ function miniChart() {
   return `<svg class="mini-chart" viewBox="0 0 300 58" role="img" aria-label="Gráfico ilustrativo de produção solar simulada"><path d="M0 51 C25 49 38 40 62 43 S100 20 128 30 S170 7 198 16 S240 27 300 5 L300 58 L0 58Z" fill="#dcc99c" fill-opacity=".13"/><path d="M0 51 C25 49 38 40 62 43 S100 20 128 30 S170 7 198 16 S240 27 300 5" fill="none" stroke="#dcc99c" stroke-width="1.8" stroke-linecap="round"/></svg>`;
 }
 function allDemoDevices(){return workspace.house.floors.flatMap(f=>f.rooms.flatMap(r=>r.devices.map(d=>({...d,room:r.name,floor:f.name,roomId:r.id,floorId:f.id}))));}
+function favoriteMeta(){try{return JSON.parse(localStorage.getItem("solarminer.home-favorite-meta.v1")||"{}")}catch{return {}}}
+function saveFavoriteMeta(value){localStorage.setItem("solarminer.home-favorite-meta.v1",JSON.stringify(value))}
 function favoriteDeviceCards() {
-  const all=allDemoDevices(); const favorites=Array.isArray(workspace.prefs.favoriteDeviceIds)?workspace.prefs.favoriteDeviceIds:['dev-light-living','dev-blind-living'];
-  workspace.prefs.favoriteDeviceIds=favorites.filter(id=>all.some(d=>d.id===id));
-  const selected=all.filter(d=>workspace.prefs.favoriteDeviceIds.includes(d.id));
-  const deviceIcon=d=>d.type==='blind'?'▥':d.type==='light'?'✦':d.type==='socket'?'⌁':d.type==='sensor'?'⌁':'⌂';
-  const deviceState=d=>d.state===true?'Ligado':d.state===false?'Desligado':d.state==='open'?'Aberto':d.state==='closed'?'Fechado':'Sem estado';
-  return `<div class="favorite-manage"><label for="home-favorite-add">Adicionar favorito</label><select id="home-favorite-add"><option value="">Escolher dispositivo…</option>${all.filter(d=>!workspace.prefs.favoriteDeviceIds.includes(d.id)).map(d=>`<option value="${esc(d.id)}">${esc(d.name)} · ${esc(d.room)}</option>`).join('')}</select><button type="button" class="button secondary" id="home-favorite-add-button">Adicionar</button></div>${selected.length?selected.map(d=>`<article class="favorite-device"><div class="favorite-device-icon" aria-hidden="true">${deviceIcon(d)}</div><div class="favorite-device-info"><strong>${esc(d.name)}</strong><span>${esc(d.room)} · ${esc(d.floor)}</span><small>DEMO · CONTROLO LOCAL</small></div><div class="favorite-device-actions"><span class="favorite-state ${d.state===true||d.state==='open'?'on':d.state===false||d.state==='closed'?'off':'unknown'}">${deviceState(d)}</span><button type="button" class="favorite-control" data-favorite-toggle="${esc(d.id)}" aria-label="${d.type==='blind'?'Alternar estore':'Alternar '+esc(d.name)}">${d.type==='blind'?(d.state==='open'?'Fechar':'Abrir'):(d.state===true?'Desligar':'Ligar')}</button></div><button type="button" class="favorite-remove" data-favorite-remove="${esc(d.id)}" aria-label="Remover ${esc(d.name)} dos favoritos">×</button></article>`).join(''):'<p class="field-note">Ainda não há favoritos. Escolhe um dispositivo acima.</p>'}`;
+  const user=sessionInfo().user, isOwner=user?.role==="owner"&&sessionInfo().authenticated;
+  if(state.mode!=="LIVE") return `<div class="favorite-device-grid"><p class="field-note">Os dispositivos favoritos aparecem aqui quando o Gateway está ligado.</p></div>`;
+  const all=state.tuyaDevices||[], favorites=Array.isArray(workspace.prefs.favoriteDeviceIds)?workspace.prefs.favoriteDeviceIds:[];
+  workspace.prefs.favoriteDeviceIds=favorites.filter(id=>all.some(device=>device.device_id===id));
+  const meta=favoriteMeta(), readings=state.tuyaReadings||[];
+  const rows=all.filter(device=>workspace.prefs.favoriteDeviceIds.includes(device.device_id)).map(device=>{
+    const details=meta[device.device_id]||{}, status=readings.find(item=>item.device_id===device.device_id), values=status?.status||[];
+    const sw=values.find(item=>item.code===device.switch_code)?.value;
+    const level=values.find(item=>item.code===device.level_code)?.value;
+    const isLevel=Boolean(device.level_code), percent=isLevel&&Number.isFinite(Number(level))?Math.max(0,Math.min(100,Math.round((Number(level)-Number(device.level_min||0))/(Number(device.level_max||100)-Number(device.level_min||0))*100))):null;
+    return {device,details,status,sw,isLevel,percent};
+  });
+  return `<div class="favorite-manage"><span>Os dispositivos configurados no Gateway podem ser fixados aqui.</span>${isOwner?`<button type="button" class="favorite-add-button" id="home-favorite-plus" aria-label="Adicionar dispositivo ou favorito" title="Adicionar">＋</button>`:""}</div><div class="favorite-device-grid">${rows.map(({device,details,status,sw,isLevel,percent})=>{
+    const binary=typeof sw==="boolean", stateLabel=status?.connection_state==="failed"?"Sem ligação":isLevel?(percent===null?"Sem leitura":`${percent}%`):binary?(sw?"Ligado":"Desligado"):"Sem leitura";
+    const icon=isLevel?(details.kind==="blind"?"▥":"◐"):"⌁", place=[details.room,details.floor].filter(Boolean).join(" · ")||"Localização por definir";
+    return `<article class="favorite-device" data-favorite-device="${esc(device.device_id)}"><div class="favorite-device-icon" aria-hidden="true">${icon}</div><div class="favorite-device-info"><strong>${esc(details.label||device.name)}</strong><span>${esc(place)}</span><small>${esc(details.kind==="blind"?"ESTORE":isLevel?"DIMMER":"INTERRUPTOR / DISJUNTOR")}</small><p class="favorite-status-note" data-favorite-status="${esc(device.device_id)}">${esc(status?.connection_state==="failed"?"Gateway sem resposta Tuya":isLevel&&percent!==null?`Posição / nível ${percent}%`:binary?`Estado atual: ${stateLabel}`:"Leitura indisponível")}</p></div><div class="favorite-device-actions">${isLevel&&device.level_code?`<button type="button" class="favorite-state ${percent===null?"unknown":"on"}" data-favorite-level-open="${esc(device.device_id)}">${percent===null?"—":`${percent}%`}</button><input class="favorite-level" type="range" min="0" max="100" step="1" value="${percent??0}" data-favorite-level="${esc(device.device_id)}" aria-label="Ajustar ${esc(details.label||device.name)}" hidden>`:binary&&device.switch_code?`<button type="button" class="favorite-state ${sw?"on":"off"}" data-favorite-toggle="${esc(device.device_id)}" aria-pressed="${sw}">${sw?"ON":"OFF"}</button>`:`<span class="favorite-state unknown">${esc(stateLabel)}</span>`}</div>${isOwner?`<button type="button" class="favorite-remove" data-favorite-remove="${esc(device.device_id)}" aria-label="Remover ${esc(details.label||device.name)} dos favoritos">×</button>`:""}</article>`;
+  }).join("")}${!rows.length?`<p class="field-note">Ainda não há dispositivos favoritos. Usa ＋ para adicionar um dispositivo Tuya configurado no Gateway ou registar um novo.</p>`:""}</div>`;
+}
+function openFavoriteDialog(){
+  const devices=state.tuyaDevices||[], favorites=workspace.prefs.favoriteDeviceIds||[], available=devices.filter(device=>!favorites.includes(device.device_id));
+  const dialog=document.createElement("dialog"); dialog.className="home-device-dialog"; dialog.innerHTML=`<form method="dialog" class="home-device-dialog-card"><button class="home-dialog-close" aria-label="Fechar">×</button><p class="eyebrow">DISPOSITIVOS FAVORITOS</p><h2>Adicionar dispositivo</h2><div class="home-device-actions"><button type="button" class="button secondary" id="home-existing-device">Adicionar favorito existente</button><button type="button" class="button primary" id="home-new-device">Registar novo Tuya / MOES</button></div><div id="home-favorite-existing" hidden><label>Dispositivo configurado<select id="home-favorite-select"><option value="">Escolher dispositivo…</option>${available.map(device=>`<option value="${esc(device.device_id)}">${esc(device.name)}</option>`).join("")}</select></label><label>Divisão<input id="home-favorite-room" maxlength="80" placeholder="Sala de estar"></label><label>Piso<input id="home-favorite-floor" maxlength="80" placeholder="Rés-do-chão"></label><button type="button" class="button primary" id="home-add-existing">Adicionar aos favoritos</button></div><div id="home-favorite-new" hidden><label>ID do dispositivo Tuya<input id="home-new-id" maxlength="128" autocomplete="off"></label><label>Nome<input id="home-new-name" maxlength="120" placeholder="Luz do teto"></label><label>Tipo<select id="home-new-kind"><option value="switch">Interruptor / disjuntor</option><option value="dimmer">Luz regulável</option><option value="blind">Estore / persiana</option></select></label><label>Código ON/OFF (opcional)<input id="home-new-switch-code" maxlength="64" placeholder="switch_1"></label><label>Código de nível / posição<input id="home-new-level-code" maxlength="64" placeholder="bright_value ou position"></label><div class="home-level-range"><label>Valor mínimo Tuya<input id="home-new-level-min" type="number" min="0" max="99999" value="0"></label><label>Valor máximo Tuya<input id="home-new-level-max" type="number" min="1" max="100000" value="100"></label></div><label>Divisão<input id="home-new-room" maxlength="80" placeholder="Sala de estar"></label><label>Piso<input id="home-new-floor" maxlength="80" placeholder="Rés-do-chão"></label><button type="button" class="button primary" id="home-register-device">Guardar no Gateway e adicionar</button></div><p id="home-device-dialog-status" role="status"></p></form>`;
+  $("#page-content").append(dialog); dialog.addEventListener("close",()=>dialog.remove()); dialog.showModal();
 }
 function openProductionDialog(){
   const dialog=$("#production-dialog");
@@ -295,16 +374,17 @@ function renderOverview() {
   if (state.mode !== "SIMULATED") {
     const cards = state.equipment.map(card).join("") || `<div class="empty-state">Ainda não há equipamentos ou leituras registados no Gateway. Não são apresentados valores de demonstração nesta PWA.</div>`;
     const updated = state.lastUpdated ? `Atualizado ${currentTimeLabel(state.lastUpdated)}` : "À espera de leituras";
-    return `<div class="page-heading"><div><p class="eyebrow">ENERGIA DA PROPRIEDADE</p><h1>Home</h1><p>Produção solar, bateria, mineradoras e carregamento do veículo num só resumo.</p></div><div class="date-block"><strong>${esc(state.dataStatus)}</strong><br>${esc(updated)}</div></div>
-      <div class="metric-grid">${liveReadingMetric("Inversor", "inversores", "ϟ")}${liveReadingMetric("Bateria", "baterias", "▤")}${liveReadingMetric("Mineradora", "mineradoras", "▦")}${liveReadingMetric("Veículo elétrico", "ev", "↗")}</div>
-      <div class="content-grid"><section class="panel chart-panel"><div class="panel-header"><div><p class="eyebrow">HISTÓRICO</p><h2>Produção FV · 24 horas</h2><p>Leituras recolhidas automaticamente pelo Gateway.</p></div><span class="source-tag">${esc(state.dataStatus)}</span></div>${chart()}</section><section class="panel flow-panel"><div class="panel-header"><div><p class="eyebrow">AGORA</p><h2>Equipamentos ativos</h2></div><button class="text-link" type="button" id="live-refresh">Atualizar ↻</button></div>${flowPanel()}</section></div>
+    return `${renderHomePhotoHero()}<div class="page-heading home-page-heading"><div><p class="eyebrow">ENERGIA DA PROPRIEDADE</p><h1>Home</h1></div><div class="date-block"><strong>${esc(state.dataStatus)}</strong><br>${esc(updated)}</div></div><div class="home-weather-row">${renderHomeWeatherCard()}${renderHomeProductionCard()}</div>
+      <section class="panel home-favorites"><div class="favorite-heading"><div><p class="eyebrow">CONTROLO RÁPIDO</p><h2>Dispositivos favoritos</h2></div></div>${favoriteDeviceCards()}</section>
+      <div class="metric-grid">${liveSolarHomeMetric()}${liveBatteryHomeMetric()}${liveMinerHomeMetric()}${liveReadingMetric("Veículo elétrico", "ev", "↗")}</div>
+      <div class="content-grid"><section class="panel chart-panel"><div class="panel-header"><div><p class="eyebrow">HISTÓRICO + PREVISÃO</p><h2>Energia · 3 h medidas + 6 h previstas</h2><p>Produção FV, consumo e potencial solar calculado.</p></div><span class="source-tag">${esc(state.dataStatus)}</span></div>${chart()}</section><section class="panel flow-panel"><div class="panel-header"><div><p class="eyebrow">AGORA</p><h2>Equipamentos ativos</h2></div><button class="text-link" type="button" id="live-refresh">Atualizar ↻</button></div>${flowPanel()}</section></div>
       <div class="section-heading section-heading-spaced"><div><p class="eyebrow">INSTALAÇÃO</p><h2>Equipamentos e leituras</h2></div><span class="muted-inline">${state.equipment.length} equipamentos</span></div><div class="equipment-grid">${cards}</div>`;
   }
   const totals = demoTotals();
   const allCards = state.equipment.map(card).join("") || `<div class="empty-state">Ainda não existem equipamentos configurados no Gateway.</div>`;
   const photoStyle = state.propertyPhoto ? "has-property-photo" : "photo-placeholder";
   const sky = skyData();
-  return `<section class="property-hero ${photoStyle}" id="property-hero" data-ws-editable="house" tabindex="0" aria-label="Casa. Duplo clique para abrir detalhe; mantenha premido para editar"><div class="hero-shade"></div><div class="hero-content"><div class="reference-hero-top"><span class="hero-kicker"><i></i> <span id="home-property-name">${esc(workspace.house.name || "A Minha Casa")}</span></span><button class="hero-photo-button" id="hero-photo-settings">EDITAR CASA</button></div><div><h1>${esc(workspace.house.name || "A Minha Casa")}</h1><p>${esc(workspace.house.description || "Identidade da propriedade · DEMO")}</p></div></div><div class="hero-caption"><span>DEMO ONLY</span><strong>${state.propertyPhoto ? "Fotografia personalizada" : "Personaliza a fotografia"}</strong></div></section>
+  return `${renderHomePhotoHero()}
   ${renderHomePreferenceLinks()}
   ${state.mode === "SIMULATED" ? `<div class="status-banner demo-banner"><span class="demo-stamp">DEMO</span><span><strong>Ambiente demonstrativo ativo.</strong> Todos os valores e controlos são simulados. Nada é enviado para equipamentos físicos, nem existem escritas Modbus.</span></div>` : ""}
   <div class="reference-home-grid"><button type="button" class="reference-card weather-card" id="open-weather"><span class="label">CLIMA · SIMULADO</span><strong class="reference-big" id="weather-temperature">${sky.temp}</strong><span class="weather-condition"><b id="weather-icon">${sky.icon}</b><span><strong id="weather-label">${sky.label}</strong><small id="weather-feels">Sensação ${sky.feel}</small></span></span><span class="weather-chip" id="weather-chip">${sky.label}</span></button><button type="button" class="reference-card production-card" id="open-production"><span class="label">PRODUÇÃO <small>detalhe ↗</small></span><strong class="production-value">4,2 <small>kW</small></strong><span class="label">AGORA · ${esc(sky.label.toUpperCase())}</span>${miniChart()}<span class="reference-demo-note">CURVA SIMULADA</span></button>
@@ -314,6 +394,34 @@ function renderOverview() {
   <div class="content-grid"><section class="panel chart-panel"><div class="panel-header"><div><p class="eyebrow">FLUXO DE ENERGIA</p><h2>Produção ao longo do dia</h2><p>${state.mode === "SIMULATED" ? "Curva visual fictícia para explorar o design" : "Histórico indisponível no contrato API atual"}</p></div><span class="source-tag">${state.mode === "SIMULATED" ? "SIMULATED" : esc(state.dataStatus)}</span></div>${chart()}<div class="legend"><span><i></i>Produção solar</span><span><i class="blue-dot"></i>Consumo total</span></div></section><section class="panel flow-panel"><div class="panel-header"><div><p class="eyebrow">ESTADO ATUAL</p><h2>Onde está a energia</h2></div><button class="text-link" data-page="baterias">Ver sistema ↗</button></div>${flowPanel()}</section></div>
   <div class="section-heading section-heading-spaced"><div><p class="eyebrow">SEIS ÁREAS INTEGRADAS</p><h2>Explore a sua instalação</h2></div><span class="muted-inline">${state.equipment.length} perfis · ${state.mode}</span></div><div class="equipment-grid">${allCards}</div>
   ${state.mode === "SIMULATED" ? `<section class="panel demo-shortcuts"><div><p class="eyebrow">EXPERIMENTE</p><h2>Configure cenários sem risco</h2><p>Entre em qualquer área para experimentar os controlos locais. Os valores não são enviados para o Gateway.</p></div><button class="button secondary" data-page="ev">Experimentar controlos <span>↗</span></button></section>` : ""}`;
+}
+function renderHomePhotoHero() {
+  const photo = workspace.house.photo || state.propertyPhoto;
+  const photoStyle = photo ? "has-property-photo" : "photo-placeholder";
+  return `<section class="property-hero ${photoStyle} live-property-hero" id="property-hero" aria-label="Fotografia e identificação da casa"><div class="hero-shade"></div><div class="hero-content"><h1 class="home-property-name">${esc(workspace.house.name || "A Minha Casa")}</h1></div><button class="home-edit-trigger" id="hero-photo-settings" type="button" aria-label="Editar nome, localização e fotografia da casa" title="Editar casa">✎</button></section>`;
+}
+function weatherConditionLabel(code) {
+  const labels = {0:"Céu limpo",1:"Maioritariamente limpo",2:"Parcialmente nublado",3:"Encoberto",45:"Nevoeiro",48:"Nevoeiro com geada",51:"Chuvisco ligeiro",53:"Chuvisco moderado",55:"Chuvisco intenso",56:"Chuvisco gelado ligeiro",57:"Chuvisco gelado intenso",61:"Chuva ligeira",63:"Chuva moderada",65:"Chuva intensa",66:"Chuva gelada ligeira",67:"Chuva gelada intensa",71:"Neve ligeira",73:"Neve moderada",75:"Neve intensa",77:"Grãos de neve",80:"Aguaceiros ligeiros",81:"Aguaceiros moderados",82:"Aguaceiros violentos",85:"Queda de neve ligeira",86:"Queda de neve intensa",95:"Trovoada",96:"Trovoada com granizo ligeiro",99:"Trovoada com granizo intenso"};
+  return Number.isInteger(code) ? (labels[code] || "Condição indisponível") : "Condição indisponível";
+}
+function renderHomeWeatherCard() {
+  const weather = state.energyEngine?.forecast?.weather, current = weather?.current;
+  const temperature = Number.isFinite(current?.temperature_c) ? `${Number(current.temperature_c).toLocaleString("pt-PT", {maximumFractionDigits:1})} °C` : "— °C";
+  const condition = current ? weatherConditionLabel(current.weather_code) : weather?.state === "location_not_configured" ? "Configura a localização" : "A aguardar previsão";
+  const details=[];
+  if(Number.isFinite(current?.apparent_temperature_c))details.push(`Sensação ${Number(current.apparent_temperature_c).toLocaleString("pt-PT",{maximumFractionDigits:1})} °C`);
+  if(Number.isFinite(current?.relative_humidity_percent))details.push(`Humidade ${Math.round(current.relative_humidity_percent)}%`);
+  if(Number.isFinite(current?.cloud_cover_percent))details.push(`Nuvens ${Math.round(current.cloud_cover_percent)}%`);
+  if(Number.isFinite(current?.wind_speed_kmh))details.push(`Vento ${Number(current.wind_speed_kmh).toLocaleString("pt-PT",{maximumFractionDigits:0})} km/h`);
+  return `<article class="home-weather-card" aria-label="Previsão meteorológica do Gateway"><p class="eyebrow">METEOROLOGIA · GATEWAY</p><div class="home-weather-values"><strong>${esc(temperature)}</strong><span>${esc(condition)}</span></div><p class="home-weather-details">${details.length?details.map(esc).join(" · "):"Sem detalhes meteorológicos disponíveis"}</p></article>`;
+}
+function renderHomeProductionCard() {
+  const engine=state.energyEngine||{},current=engine.current||{},raw=Number(current.pv_power_w);
+  const power=Number.isFinite(raw)?`${(raw/1000).toLocaleString("pt-PT",{minimumFractionDigits:2,maximumFractionDigits:2})} kW`:"— kW";
+  const cutoff=Date.now()-3*60*60*1000;
+  const points=(engine.history?.pv_total_power||[]).filter(item=>Number.isFinite(Number(item.value))&&Date.parse(item.observed_at)>=cutoff).map(item=>Number(item.value)/(item.unit==="W"?1000:1));
+  const max=Math.max(.1,...points),path=points.map((value,index)=>`${index?"L":"M"}${points.length>1?Math.round(index/(points.length-1)*236)+2:120} ${48-Math.max(0,value)/max*40}`).join(" ");
+  return `<article class="home-production-card" aria-label="Produção solar atual"><p class="eyebrow">PRODUÇÃO FV · AGORA</p><strong class="home-production-value">${esc(power)}</strong>${points.length>1?`<svg class="home-production-chart" viewBox="0 0 240 54" role="img" aria-label="Tendência recente da potência solar medida"><path d="${path}"/></svg>`:`<div class="home-production-chart-empty">${points.length?"A recolher tendência":"À espera de histórico do Gateway"}</div>`}</article>`;
 }
 function renderCategory(categoryId) {
   const category = CATEGORIES.find(c => c.id === categoryId);
@@ -326,6 +434,32 @@ function renderCategory(categoryId) {
   ${demoControlPanel(categoryId)}
   <div class="section-heading section-heading-spaced"><div><p class="eyebrow">DETALHE</p><h2>Estado e proveniência</h2></div><span class="source-tag">${state.mode}</span></div>
   ${equipment.length ? equipment.map(item=>`<section class="panel detail-panel"><div class="panel-header"><div><h2>${esc(item.name)}</h2><p>Informação de origem e estado</p></div><span class="source-tag">${isSimulated(item)?"SIMULATED":esc(item.readings?.[0]?.trust||"UNKNOWN")}</span></div><div class="device-detail-grid"><div class="detail-item"><small>Fabricante / modelo</small><strong>${esc([item.manufacturer,item.model].filter(Boolean).join(" · ")||"Não definido")}</strong></div><div class="detail-item"><small>Ligação</small><strong>${esc(item.connection_state||"UNKNOWN")}</strong></div><div class="detail-item"><small>Última comunicação</small><strong>${esc(timeLabel(item.last_communication_at))}</strong></div><div class="detail-item"><small>Origem</small><strong>${esc(item.source||item.readings?.[0]?.source||"API_GATEWAY")}</strong></div><div class="detail-item"><small>Confiança</small><strong>${esc(item.readings?.[0]?.trust||"UNKNOWN")}</strong></div><div class="detail-item"><small>Leitura principal</small><strong>${esc(reading.value)} ${esc(reading.unit)}</strong></div></div><div class="status-banner demo-banner"><span class="demo-stamp">INFO</span><span>Leituras registadas pelo Gateway. Valores Deye identificados como LIVE_UNVERIFIED até validação adicional do modelo e logger.</span></div>${item.readings?.length ? `<div class="device-detail-grid telemetry-grid">${item.readings.map(value=>`<div class="detail-item"><small>${esc(value.evidence?.label || value.field)}</small><strong>${esc(formatReading(value).value)} ${esc(value.unit || "")}</strong><small>${esc(value.field)}${value.evidence?.register ? ` · registo ${esc(value.evidence.register)}` : ""}</small></div>`).join("")}</div>` : ""}</section>`).join("") : `<div class="empty-state">Não existem equipamentos nesta área no Gateway. Nenhum valor foi inventado.</div>`}`;
+}
+function renderGatewayArea(page) {
+  const labels={energia:"Energia",inversores:"Inversores",baterias:"Baterias","paineis-solares":"Painéis solares",mineradoras:"Mineradoras",ev:"Carregador EV",aqs:"AQS","soalho-radiante":"Soalho radiante"};
+  const categories=page==="paineis-solares"?["inversores"]:[page], items=state.equipment.filter(item=>categories.includes(item.category));
+  const engine=state.energyEngine||{}, readings=engine.latest_readings||{};
+  const metrics=page==="energia"?[
+    ["Produção FV",engine.current?.pv_power_w,"W"],["Consumo",engine.current?.load_power_w,"W"],["SOC bateria",engine.current?.battery_soc_percent,"%"],["Potência bateria",engine.current?.battery_power_w,"W"]
+  ]:page==="paineis-solares"?[
+    ["Produção FV",engine.current?.pv_power_w,"W"],["MPPT 1 · potência",readings.pv1_input_power?.value,readings.pv1_input_power?.unit||"W"],["MPPT 2 · potência",readings.pv2_input_power?.value,readings.pv2_input_power?.unit||"W"],["Potencial solar",engine.forecast?.solar_potential?.hourly_values?.find(point=>point.segment==="forecast")?.value,"kW"]
+  ]:page==="baterias"?[
+    ["SOC",engine.current?.battery_soc_percent,"%"],["Potência assinada",engine.current?.battery_power_w,"W"],["A carregar",engine.current?.battery_charge_power_w,"W"],["A descarregar",engine.current?.battery_discharge_power_w,"W"]
+  ]:page==="inversores"?[
+    ["Saída do inversor",readings.inverter_power_total?.value,readings.inverter_power_total?.unit||"W"],["Consumo das cargas",engine.current?.load_power_w,"W"],["Frequência",readings.grid_frequency?.value,readings.grid_frequency?.unit||"Hz"],["Estado",items[0]?.connection_state||"Sem equipamento"]
+  ]:[];
+  const metricCard=([name,value,unit])=>`<article class="ws-kpi"><small>${esc(name)}</small><strong>${value===null||value===undefined||!Number.isFinite(Number(value))?"—":esc(new Intl.NumberFormat("pt-PT",{maximumFractionDigits:2}).format(Number(value)))} <em>${esc(unit||"")}</em></strong><span>${state.dataStatus==="LIVE"?"Gateway · valor observado":"Sem leitura atual"}</span></article>`;
+  const equipmentCards=items.map(item=>`<section class="panel detail-panel gateway-area-device"><div class="panel-header"><div><p class="eyebrow">${esc(item.manufacturer||"EQUIPAMENTO")}${item.model?` · ${esc(item.model)}`:""}</p><h2>${esc(item.name)}</h2></div><span class="source-tag">${esc(item.connection_state||item.status||"UNKNOWN")}</span></div><div class="device-detail-grid"><div class="detail-item"><small>Ligação</small><strong>${esc(item.connection_state||"Desconhecida")}</strong></div><div class="detail-item"><small>Última leitura</small><strong>${esc(timeLabel(item.last_communication_at))}</strong></div><div class="detail-item"><small>Protocolo</small><strong>${esc(item.protocol||"Não indicado")}</strong></div><div class="detail-item"><small>Confiança</small><strong>${esc(item.trust_summary?.LIVE_UNVERIFIED?"LIVE_UNVERIFIED":"Ver por leitura")}</strong></div></div>${item.readings?.length?`<div class="device-detail-grid telemetry-grid">${item.readings.map(value=>`<div class="detail-item"><small>${esc(value.evidence?.label||value.field)}</small><strong>${esc(formatReading(value).value)} ${esc(value.unit||"")}</strong><small>${esc(value.trust||"UNKNOWN")}${value.evidence?.register?` · registo ${esc(value.evidence.register)}`:""}</small></div>`).join("")}</div>`:`<div class="empty-state">O dispositivo está registado, mas o Gateway ainda não tem leituras guardadas.</div>`}</section>`).join("");
+  const description=page==="paineis-solares"?"Produção e canais MPPT medidos pelo inversor Deye.":page==="inversores"?"Estado do inversor e potência entregue às cargas.":page==="baterias"?"SOC, potência assinada e limites que o Gateway observou.":"Dados e leituras atuais fornecidos pelo Gateway autenticado.";
+  return `${page!=="energia"?`<div class="ws-horizontal-tabs energy-tabs" role="tablist" aria-label="Áreas energéticas">${[["inversores","Inversores"],["baterias","Baterias"],["paineis-solares","Painéis"],["ev","Carregador EV"],["aqs","AQS"],["mineradoras","Mineradoras"],["soalho-radiante","Soalho radiante"]].map(([id,label])=>`<button role="tab" aria-selected="${page===id}" class="${page===id?"selected":""}" data-page="${id}">${label}</button>`).join("")}</div>`:""}<div class="page-heading"><div><p class="eyebrow">GATEWAY · DADOS REAIS</p><h1>${esc(labels[page]||page)}</h1><p>${esc(description)}</p></div><button class="button secondary" id="gateway-area-refresh">Atualizar ↻</button></div><div class="ws-kpi-grid">${metrics.map(metricCard).join("")}</div>${page==="energia"?`<section class="panel"><div class="panel-header"><div><p class="eyebrow">INSTALAÇÃO</p><h2>Explorar áreas</h2></div></div><div class="ws-area-grid">${[["inversores","Inversores"],["baterias","Baterias"],["paineis-solares","Painéis solares"],["mineradoras","Mineradoras"],["ev","Carregador EV"],["aqs","AQS"],["soalho-radiante","Soalho radiante"]].map(([id,label])=>`<button class="ws-area-card" data-page="${id}"><span class="ws-area-icon">◉</span><span><strong>${label}</strong><small>Ver estado e leituras do Gateway</small></span><span class="ws-arrow">↗</span></button>`).join("")}</div></section>`:""}${page!=="energia"?(equipmentCards||`<div class="empty-state">O Gateway ainda não forneceu equipamentos ou leituras para esta área. Confirma a configuração correspondente na página Owner e volta a atualizar.</div>`):""}`;
+}
+function renderGatewayUtilityPage(page){
+  if(page==="automatismos"||page==="producao")return renderLiveEnergyEngine();
+  const items=state.equipment||[];
+  const user=sessionInfo().user||{};
+  if(page==="profile")return `<div class="page-heading"><div><p class="eyebrow">CONTA DO GATEWAY</p><h1>Perfil</h1><p>Identidade e permissões confirmadas pelo Gateway nesta sessão.</p></div></div><section class="panel"><div class="device-detail-grid"><div class="detail-item"><small>Utilizador</small><strong>${esc(user.username||"—")}</strong></div><div class="detail-item"><small>Papel</small><strong>${esc(user.role||"—")}</strong></div><div class="detail-item"><small>Sessão</small><strong>${sessionInfo().authenticated?"Autenticada":"Sem sessão"}</strong></div><div class="detail-item"><small>Gateway</small><strong>${esc(state.mode==="LIVE"?"Ligado":"Indisponível")}</strong></div></div><p class="field-note">Permissões, utilizadores e dispositivos autorizados são geridos no Gateway. Preferências visuais deste browser não alteram essas permissões.</p><button class="button secondary" id="profile-open-gateway" type="button">Gerir ligação</button></section>`;
+  const cards=items.map(item=>`<article class="panel detail-panel"><div class="panel-header"><div><p class="eyebrow">${esc(item.category||"EQUIPAMENTO")}</p><h2>${esc(item.name)}</h2></div><span class="source-tag">${esc(item.connection_state||item.status||"UNKNOWN")}</span></div><p>${esc([item.manufacturer,item.model,item.protocol].filter(Boolean).join(" · ")||"Sem detalhes de fabricante/modelo")}</p>${item.readings?.length?`<div class="device-detail-grid telemetry-grid">${item.readings.map(reading=>`<div class="detail-item"><small>${esc(reading.evidence?.label||reading.field)}</small><strong>${esc(formatReading(reading).value)} ${esc(reading.unit||"")}</strong><small>${esc(reading.trust||"UNKNOWN")}</small></div>`).join("")}</div>`:`<div class="empty-state">Sem leituras registadas.</div>`}</article>`).join("");
+  return `<div class="page-heading"><div><p class="eyebrow">INVENTÁRIO · GATEWAY</p><h1>${page==="casa"?"Casa":"Dispositivos"}</h1><p>Equipamentos recebidos da base de dados do Gateway, agrupados nesta vista.</p></div><button class="button secondary" id="gateway-area-refresh">Atualizar ↻</button></div><div class="equipment-grid">${cards||`<div class="empty-state">O Gateway ainda não tem equipamentos registados. Configura uma integração na área Owner.</div>`}</div>`;
 }
 function render() {
   freshness();
@@ -345,22 +479,24 @@ function render() {
     }
   }
   const workspacePage = renderWorkspacePage(state.page);
-  const gatewayBackedPages = ["inicio", "engine", ...CATEGORIES.map(c => c.id)];
+  const liveAreaPages=["energia","inversores","baterias","paineis-solares","mineradoras","ev","aqs","soalho-radiante"];
+  const liveUtilityPages=["casa","devices","profile","automatismos","producao"];
+  const gatewayBackedPages = ["inicio", "engine", ...CATEGORIES.map(c => c.id), ...liveAreaPages, ...liveUtilityPages];
   let pageHtml;
   if (state.mode !== "SIMULATED" && !gatewayBackedPages.includes(state.page)) {
     pageHtml = `<div class="page-heading"><div><p class="eyebrow">FUNÇÃO NÃO DISPONÍVEL NO GATEWAY ATUAL</p><h1>${esc(pageLabel(state.page))}</h1><p>Esta área ainda não tem um contrato de dados ou comandos físicos no Gateway. Para evitar confusão, a sessão autenticada não apresenta controlos ou valores de demonstração aqui.</p></div></div><div class="empty-state">Sem dados reais fornecidos pelo Gateway para esta área. A administração está na página Owner.</div>`;
   } else {
-    pageHtml = state.page === "inicio" ? renderOverview() : state.page === "engine" && state.mode !== "SIMULATED" ? renderLiveEnergyEngine() : (workspacePage || (CATEGORIES.some(c=>c.id===state.page) ? renderCategory(state.page) : renderOverview()));
+    pageHtml = state.page === "inicio" ? renderOverview() : state.mode!=="SIMULATED"&&liveAreaPages.includes(state.page)?renderGatewayArea(state.page):state.mode!=="SIMULATED"&&liveUtilityPages.includes(state.page)?renderGatewayUtilityPage(state.page):state.page === "engine" && state.mode !== "SIMULATED" ? renderLiveEnergyEngine() : (workspacePage || (CATEGORIES.some(c=>c.id===state.page) ? renderCategory(state.page) : renderOverview()));
     if (state.page === "engine" && sessionInfo().user?.role === "owner") pageHtml = pageHtml.replace('<label class="feature-field">Cargas flexíveis', `${renderLoadBuilder()}<label class="feature-field">Cargas flexíveis`);
-    if(state.page === "automatismos") pageHtml = renderAutomationsPage(workspace, automationEditingId);
-    if(state.page === "producao") pageHtml = renderSolarProductionPage();
-    if(state.page === "profile") pageHtml += renderDemoAdminPanel();
+    if(state.mode === "SIMULATED" && state.page === "automatismos") pageHtml = renderAutomationsPage(workspace, automationEditingId);
+    if(state.mode === "SIMULATED" && state.page === "producao") pageHtml = renderSolarProductionPage();
+    if(state.mode === "SIMULATED" && state.page === "profile") pageHtml += renderDemoAdminPanel();
   }
   $("#page-content").innerHTML = pageHtml;
   applyPreferences();
   applyLiveFontScale();
   const hero = $("#property-hero");
-  if (hero && (workspace.house.photo || state.propertyPhoto)) hero.style.backgroundImage = `linear-gradient(90deg, rgba(9,9,9,.88) 0%, rgba(9,9,9,.62) 58%, rgba(9,9,9,.22) 100%), url("${workspace.house.photo || state.propertyPhoto}")`;
+  if (hero && (workspace.house.photo || state.propertyPhoto)) hero.style.backgroundImage = `linear-gradient(90deg, rgba(9,9,9,.66) 0%, rgba(9,9,9,.38) 58%, rgba(9,9,9,.12) 100%), url("${workspace.house.photo || state.propertyPhoto}")`;
   if (state.page === "casa" && workspace.house.photo) document.documentElement.style.setProperty("--house-background-image", `url("${workspace.house.photo}")`); else document.documentElement.style.removeProperty("--house-background-image");
   document.querySelectorAll("[data-page]").forEach(el => el.classList.toggle("active", el.dataset.page === state.page));
   const mobilePage = { home: "inicio", house: "casa", profile: "profile", energy: "energia", devices: "devices", automations: "automatismos", owner: "owner" };
@@ -374,7 +510,7 @@ function navigate(page) {
   if (!["inicio", ...CATEGORIES.map(c=>c.id), "energia", "casa", "profile", "engine", "devices", "paineis-solares", "automatismos", "producao", "owner"].includes(page)) return;
   state.page = page; render(); if(page==="casa" && workspace.house.restoreScroll){const y=Number(workspace.house.returnScrollY||0);workspace.house.restoreScroll=false;requestAnimationFrame(()=>window.scrollTo({top:y,behavior:"auto"}));}else window.scrollTo({top:0,behavior:"smooth"});
 }
-function populateMore() { $("#more-links").innerHTML = [{id:"energia",label:"Energia",icon:"◉"},{id:"casa",label:"Casa",icon:"⌂"},{id:"engine",label:"Engine",icon:"⌘"},{id:"profile",label:"Profile",icon:"○"},{id:"devices",label:"Devices",icon:"⚙"},{id:"automatismos",label:"Automatismos",icon:"⟳"},{id:"producao",label:"Produção solar",icon:"☼"},...CATEGORIES,{id:"paineis-solares",label:"Painéis solares",icon:"☼"}].map(c=>`<button data-page="${esc(c.id)}"><span>${esc(c.icon)}</span>${esc(c.label)}<span class="more-arrow">↗</span></button>`).join("") + `<button id="more-settings"><span>⚙</span>Personalizar demonstração<span class="more-arrow">↗</span></button>`; $("#more-settings").addEventListener("click",()=>{$("#more-dialog").close();$("#settings-dialog").showModal();}); }
+function populateMore() { $("#more-links").innerHTML = [{id:"energia",label:"Energia",icon:"◉"},{id:"casa",label:"Casa",icon:"⌂"},{id:"engine",label:"Engine",icon:"⌘"},{id:"profile",label:"Profile",icon:"○"},{id:"devices",label:"Dispositivos",icon:"⚙"},{id:"automatismos",label:"Automatismos",icon:"⟳"},{id:"producao",label:"Produção solar",icon:"☼"},...CATEGORIES,{id:"paineis-solares",label:"Painéis solares",icon:"☼"}].map(c=>`<button data-page="${esc(c.id)}"><span>${esc(c.icon)}</span>${esc(c.label)}<span class="more-arrow">↗</span></button>`).join("") + (state.mode==="SIMULATED"?`<button id="more-settings"><span>⚙</span>Personalizar demonstração<span class="more-arrow">↗</span></button>`:""); $("#more-settings")?.addEventListener("click",()=>{$("#more-dialog").close();$("#settings-dialog").showModal();}); }
 
 document.querySelectorAll(".sidebar [data-page]").forEach(el=>el.addEventListener("click",()=>navigate(el.dataset.page)));
 window.addEventListener("solar-workspace-updated",(event)=>{if(event.detail?.photosHydrated){state.propertyPhoto=workspace.house.photo||state.propertyPhoto||readStoredPhoto();}render();if(event.detail?.persisted===false||event.detail?.photosPersisted===false){setTimeout(()=>{const notice=$("#notice");notice.hidden=false;notice.textContent="O browser não confirmou a gravação local. Mantém esta página aberta e verifica as permissões/armazenamento do browser.";},0);}});
@@ -389,7 +525,32 @@ $('#page-content').addEventListener('contextmenu',e=>{const target=e.target.clos
 $('#page-content').addEventListener('keydown',e=>{if(e.key!=='F10'||!e.shiftKey)return;const target=e.target.closest('[data-ws-editable]');if(!target)return;e.preventDefault();const context=editTargetFrom(target);if(context)openContextEditor(context.type,context.id);});
 $('#page-content').addEventListener('click',e=>{if(Date.now()<suppressClickUntil){e.preventDefault();e.stopImmediatePropagation();return;}const target=e.target.closest('[data-ws-editable]');if(!target||(e.target.closest('button,input,select,textarea,a,[role="switch"]')&&!e.target.closest('.ws-room-image,.ws-device-open,.ws-floor-tabs [data-ws-editable],.ws-horizontal-tabs [data-ws-editable]')))return;const context=editTargetFrom(target);if(!context)return;if(context.type==='room'){workspace.house.returnScrollY=window.scrollY;const floor=target.dataset.floor,room=target.dataset.room;handleWorkspaceAction('open-room',{dataset:{wsAction:'open-room',floor,room}});navigate('casa');}else if(context.type==='device'){workspace.house.returnScrollY=window.scrollY;const device=target.dataset.device;handleWorkspaceAction('open-device',{dataset:{wsAction:'open-device',device}});navigate('casa');}else if(context.type==='house')navigate('casa');},true);
 $('#page-content').addEventListener('dblclick',e=>{const target=e.target.closest('[data-ws-editable]');if(!target)return;const context=editTargetFrom(target);if(context?.type==='room'){handleWorkspaceAction('open-room',{dataset:{wsAction:'open-room',floor:target.dataset.floor,room:target.dataset.room}});navigate('casa');}else if(context?.type==='device'){handleWorkspaceAction('open-device',{dataset:{wsAction:'open-device',device:target.dataset.device}});navigate('casa');}});
-$('#page-content').addEventListener('click',e=>{const toggle=e.target.closest('[data-favorite-toggle]');if(toggle){toggleFavoriteDevice(toggle.dataset.favoriteToggle);return;}const remove=e.target.closest('[data-favorite-remove]');if(remove){workspace.prefs.favoriteDeviceIds=(workspace.prefs.favoriteDeviceIds||['dev-light-living','dev-blind-living']).filter(id=>id!==remove.dataset.favoriteRemove);saveDemoWorkspace();render();return;}if(e.target.closest('#home-favorite-add-button')){const select=$('#home-favorite-add');if(select?.value){workspace.prefs.favoriteDeviceIds=[...new Set([...(workspace.prefs.favoriteDeviceIds||['dev-light-living','dev-blind-living']),select.value])];saveDemoWorkspace();render();}return;}});
+$('#page-content').addEventListener('click',async e=>{
+  if(e.target.closest('#profile-open-gateway')){$('#gateway-dialog').showModal();return;}
+  const toggle=e.target.closest('[data-favorite-toggle]');
+  if(toggle){
+    if(sessionInfo().user?.role!=="owner"){showFeatureNotice("Só o Owner pode controlar dispositivos.");return;}
+    const deviceId=toggle.dataset.favoriteToggle, device=state.tuyaDevices.find(item=>item.device_id===deviceId), reading=state.tuyaReadings.find(item=>item.device_id===deviceId), value=(reading?.status||[]).find(item=>item.code===device?.switch_code)?.value;
+    if(typeof value!=="boolean"){showFeatureNotice("O estado atual do dispositivo não está disponível; atualiza a leitura antes de comandar.");return;}
+    toggle.disabled=true;try{const result=await controlGatewayTuyaSwitch(deviceId,!value);if(!result.state_confirmed)showFeatureNotice("O comando foi aceite, mas o Gateway ainda não confirmou o estado físico.");lastTuyaReadAt=0;await refreshGatewayReadings();}catch(error){showFeatureNotice(`Falha ao controlar o dispositivo: ${error.message}`);}finally{toggle.disabled=false;}return;
+  }
+  const remove=e.target.closest('[data-favorite-remove]');if(remove){workspace.prefs.favoriteDeviceIds=(workspace.prefs.favoriteDeviceIds||[]).filter(id=>id!==remove.dataset.favoriteRemove);saveDemoWorkspace();render();return;}
+  if(e.target.closest('#home-favorite-plus')){if(sessionInfo().user?.role!=="owner"){showFeatureNotice("Só o Owner pode gerir dispositivos favoritos.");return;}openFavoriteDialog();return;}
+  const levelOpen=e.target.closest('[data-favorite-level-open]');if(levelOpen){if(sessionInfo().user?.role!=="owner"){showFeatureNotice("Só o Owner pode controlar dispositivos.");return;}const slider=$(`[data-favorite-level="${CSS.escape(levelOpen.dataset.favoriteLevelOpen)}"]`);if(slider){slider.hidden=false;slider.focus();}return;}
+  if(e.target.closest('#home-existing-device')){$('#home-favorite-existing').hidden=false;$('#home-favorite-new').hidden=true;return;}
+  if(e.target.closest('#home-new-device')){$('#home-favorite-new').hidden=false;$('#home-favorite-existing').hidden=true;return;}
+  if(e.target.closest('#home-add-existing')){const id=$('#home-favorite-select').value;if(!id){$('#home-device-dialog-status').textContent="Escolhe um dispositivo.";return;}const details=favoriteMeta();details[id]={...(details[id]||{}),room:$('#home-favorite-room').value.trim(),floor:$('#home-favorite-floor').value.trim()};saveFavoriteMeta(details);workspace.prefs.favoriteDeviceIds=[...new Set([...(workspace.prefs.favoriteDeviceIds||[]),id])];saveDemoWorkspace();e.target.closest('dialog')?.close();render();return;}
+  if(e.target.closest('#home-register-device')){
+    const status=$('#home-device-dialog-status'),id=$('#home-new-id').value.trim(),name=$('#home-new-name').value.trim(),kind=$('#home-new-kind').value,switchCode=$('#home-new-switch-code').value.trim(),levelCode=$('#home-new-level-code').value.trim();
+    if(!id||!name||(!switchCode&&!levelCode)){status.textContent="Indica o ID, o nome e pelo menos um código de função Tuya.";return;}
+    if((kind==="dimmer"||kind==="blind")&&!levelCode){status.textContent="Para dimmer ou estore, indica o código Tuya do nível/posição.";return;}
+    const min=Number($('#home-new-level-min').value),max=Number($('#home-new-level-max').value);if(levelCode&&(!Number.isInteger(min)||!Number.isInteger(max)||min<0||max<=min)){status.textContent="O intervalo Tuya mínimo e máximo é inválido.";return;}
+    status.textContent="A guardar a configuração no Gateway…";
+    try{const config=await readGatewayHardwareIntegrationConfig();const devices=[...(config.tuya?.devices||[]).filter(item=>item.device_id!==id),{device_id:id,name,...(switchCode?{switch_code:switchCode}:{}),...(levelCode?{level_code:levelCode,level_min:min,level_max:max}:{})}];await saveGatewayHardwareIntegrationConfig({tuya:{region:config.tuya?.region||"eu_central",client_id:config.tuya?.client_id||undefined,devices}});const details=favoriteMeta();details[id]={label:name,kind,room:$('#home-new-room').value.trim(),floor:$('#home-new-floor').value.trim()};saveFavoriteMeta(details);workspace.prefs.favoriteDeviceIds=[...new Set([...(workspace.prefs.favoriteDeviceIds||[]),id])];saveDemoWorkspace();lastTuyaReadAt=0;e.target.closest('dialog')?.close();await refreshGatewayReadings();}catch(error){status.textContent=`Não foi possível guardar no Gateway: ${error.message}`;}return;
+  }
+});
+const favoriteLevelTimers=new Map();
+$('#page-content').addEventListener('input',e=>{const slider=e.target.closest('[data-favorite-level]');if(!slider)return;const id=slider.dataset.favoriteLevel;clearTimeout(favoriteLevelTimers.get(id));favoriteLevelTimers.set(id,setTimeout(async()=>{slider.hidden=true;if(sessionInfo().user?.role!=="owner")return;slider.disabled=true;const status=$(`[data-favorite-status="${CSS.escape(id)}"]`);if(status)status.textContent=`A enviar nível ${slider.value}%…`;try{const result=await controlGatewayTuyaLevel(id,Number(slider.value));if(status)status.textContent=`Comando ${result.command_accepted?"aceite":"não confirmado"}; estado físico aguarda nova leitura.`;lastTuyaReadAt=0;}catch(error){if(status)status.textContent=`Falha no comando: ${error.message}`;}finally{slider.disabled=false;await refreshGatewayReadings();}},1000));});
 
 $("#mobile-nav").addEventListener("click", e => {
   const button=e.target.closest("button[data-action]"); if(!button) return;
@@ -417,6 +578,7 @@ $("#page-content").addEventListener("change", e => {
 });
 $("#page-content").addEventListener("click", async e => {
   if(e.target.closest("#engine-refresh")){refreshGatewayReadings();return;}
+  if(e.target.closest("#gateway-area-refresh")){refreshGatewayReadings();return;}
   if(e.target.closest("#engine-add-load")){
     const status=$("#engine-equipment-config-status");
     try{
@@ -465,6 +627,13 @@ $("#page-content").addEventListener("click", async e => {
     if((capacity!==null&&(!Number.isFinite(capacity)||capacity<0.1||capacity>10000))||!Number.isFinite(minimum)||!Number.isFinite(maximum)||minimum<0||maximum>100||minimum>=maximum){status.textContent="Verifica a capacidade (0,1–10000 kWh) e os limites SOC (mínimo abaixo do máximo até 100%).";button.disabled=false;return;}
     saveGatewayEnergyEngineConfig({battery_capacity_kwh:capacity,minimum_soc_percent:minimum,maximum_soc_percent:maximum}).then(async()=>{status.textContent="Configuração guardada no Gateway.";await refreshGatewayReadings();}).catch(error=>{status.textContent=`Não foi possível guardar: ${error.message}`;}).finally(()=>{const current=$("#engine-save-config");if(current)current.disabled=false;});return;
   }
+  if(e.target.closest("#engine-save-site-config")){
+    const button=e.target.closest("#engine-save-site-config"),status=$("#engine-site-config-status");
+    const capacityText=$("#engine-pv-capacity").value.trim(),capacity=capacityText===""?null:Number(capacityText);
+    if(capacity!==null&&(!Number.isFinite(capacity)||capacity<0.1||capacity>1000)){status.textContent="Indica a potência FV entre 0,1 e 1000 kWp.";return;}
+    button.disabled=true;status.textContent="A guardar configuração no Gateway…";
+    saveGatewayEnergyEngineConfig({pv_capacity_kw:capacity}).then(async()=>{status.textContent="Potência FV guardada no Gateway.";await refreshGatewayReadings();}).catch(error=>{status.textContent=`Não foi possível guardar: ${error.message}`;}).finally(()=>{const current=$("#engine-save-site-config");if(current)current.disabled=false;});return;
+  }
   const feature=e.target.closest('[data-feature-action]'); if(feature){const action=feature.dataset.featureAction,id=feature.dataset.id||'';if(action==='new-rule'){automationEditingId='';render();return;}if(action==='edit-rule'){automationEditingId=id;render();return;}if(action==='cancel-edit'){automationEditingId='';render();return;}if(action==='add-condition'){const box=$('#extra-conditions');if(box){const row=document.createElement('div');row.className='feature-extra-row';row.innerHTML='<label class="feature-field">Condição adicional<select name="extra"><option value="nobody">Não está ninguém em casa (simulado)</option><option value="weather">Temperatura exterior inferior a 12 °C (simulado)</option><option value="fresh">Dados atualizados (simulado)</option><option value="none">Sem condição adicional</option></select></label><button type="button" class="button secondary" data-feature-action="remove-condition">Remover</button>';box.appendChild(row);}return;}if(action==='remove-condition'){const row=feature.closest('.feature-extra-row');if(row&&$('#extra-conditions .feature-extra-row')?.parentElement?.children.length>1)row.remove();else if(row){const select=row.querySelector('select');if(select)select.value='none';}return;}const result=handleFeatureAction(action,id,workspace);if(result?.edit!==undefined){automationEditingId=result.edit;render();return;}if(result?.cancel){automationEditingId='';render();return;}if(result?.rerender)render();if(result?.message)showFeatureNotice(result.message);return;}
   const workspaceButton=e.target.closest("[data-ws-action]");
   if(workspaceButton){if(['open-room','open-device'].includes(workspaceButton.dataset.wsAction))workspace.house.returnScrollY=window.scrollY;const result=handleWorkspaceAction(workspaceButton.dataset.wsAction,workspaceButton);if(result?.edit)openContextEditor(result.edit.type,result.edit.id);if(result?.navigate)navigate(result.navigate);if(result?.message){const notice=$("#notice");notice.hidden=false;notice.textContent=result.message;setTimeout(()=>{notice.hidden=true;},3500);}if(result?.rerender)render();return;}
@@ -485,7 +654,7 @@ document.querySelectorAll("[data-sky]").forEach(button=>button.addEventListener(
 $("#production-dialog").addEventListener("change",e=>{if(e.target.id!=="solar-weather")return;saveSolarWeather(e.target.value);openProductionDialog();});
 
 $("#more-links").addEventListener("click",e=>{const btn=e.target.closest("[data-page]");if(btn){$("#more-dialog").close();navigate(btn.dataset.page);}});
-$("#open-settings").addEventListener("click",()=>$("#settings-dialog").showModal());
+$("#open-settings").addEventListener("click",()=>state.mode==="SIMULATED"?$("#settings-dialog").showModal():navigate("profile"));
 $("#close-demo-settings").addEventListener("click",()=>$("#settings-dialog").close());
 $("#refresh-button").addEventListener("click",()=>{if(sessionInfo().authenticated) refreshGatewayReadings(); else render();});
 $("#page-content").addEventListener("input",e=>{
@@ -533,7 +702,7 @@ $("#page-content").addEventListener("click",e=>{
 });
 $("#page-content").addEventListener("change",e=>handleWorkspaceChange(e));
 state.propertyPhoto=workspace.house.photo || readStoredPhoto(); if(state.propertyPhoto && !workspace.house.photo){workspace.house.photo=state.propertyPhoto;saveDemoWorkspace();}try{localStorage.removeItem("solar-miner-demo-property-photo-v1");}catch{}
-$("#open-gateway-dialog").addEventListener("click",()=>$("#gateway-dialog").showModal());
+$("#mode-chip").addEventListener("click",()=>$("#gateway-dialog").showModal());
 $("#close-gateway-dialog").addEventListener("click",()=>$("#gateway-dialog").close());
 $("#gateway-check").addEventListener("click",async()=>{
   const field=$("#gateway-endpoint");
@@ -615,6 +784,39 @@ const userPanel = $("#gateway-user-management");
 const updatePanel = $("#gateway-update-management");
 const tailscalePanel = $("#gateway-tailscale-management");
 const hardwarePanel = $("#gateway-hardware-management");
+let activeOwnerTab = "access";
+let activeOwnerDevice = "deye";
+function selectOwnerTab(name) {
+  activeOwnerTab = name;
+  document.querySelectorAll("[data-owner-tab]").forEach(button => {
+    const selected = button.dataset.ownerTab === name;
+    button.classList.toggle("selected", selected);
+    button.setAttribute("aria-selected", String(selected));
+  });
+  document.querySelectorAll("[data-owner-panel]").forEach(panel => {
+    panel.hidden = panel.dataset.ownerPanel !== name || !sessionInfo().authenticated || sessionInfo().user.role !== "owner";
+  });
+}
+function selectOwnerDevice(name) {
+  activeOwnerDevice = name;
+  document.querySelectorAll("[data-owner-device]").forEach(button => {
+    const selected = button.dataset.ownerDevice === name;
+    button.classList.toggle("selected", selected);
+    button.setAttribute("aria-selected", String(selected));
+  });
+  document.querySelectorAll("[data-device-panel]").forEach(panel => { panel.hidden = panel.dataset.devicePanel !== name; });
+}
+document.querySelector(".owner-tabs")?.addEventListener("click", event => {
+  const tab = event.target.closest("[data-owner-tab]");
+  if (tab) selectOwnerTab(tab.dataset.ownerTab);
+});
+document.querySelector(".owner-device-tabs")?.addEventListener("click", event => {
+  const tab = event.target.closest("[data-owner-device]");
+  if (tab) selectOwnerDevice(tab.dataset.ownerDevice);
+});
+$("#owner-open-gateway")?.addEventListener("click", () => $("#gateway-dialog").showModal());
+$("#owner-gateway-status").textContent = "Configura e autentica a ligação pelo botão acima.";
+$("#owner-nav-item").addEventListener("click", () => selectOwnerTab(activeOwnerTab));
 let verifiedGatewayUpdate = null;
 let inviteQrObjectUrl = null;
 let ownerRecoveryFingerprint = "";
@@ -657,7 +859,7 @@ function updateSessionUi() {
     if (hardwarePanel) {
       hardwarePanel.hidden = info.user.role !== "owner";
       if (info.user.role === "owner") refreshHardwareIntegrationConfig().catch(error => {
-        $("#hardware-integrations-status").textContent = `Não foi possível carregar a configuração: ${error.message}`;
+        $("#deye-status").textContent = `Não foi possível carregar a configuração: ${error.message}`;
       });
     }
   } else {
@@ -669,6 +871,8 @@ function updateSessionUi() {
     if (hardwarePanel) hardwarePanel.hidden = true;
     verifiedGatewayUpdate = null;
   }
+  selectOwnerTab(activeOwnerTab);
+  selectOwnerDevice(activeOwnerDevice);
 }
 async function refreshHardwareIntegrationConfig() {
   const config = await readGatewayHardwareIntegrationConfig();
@@ -684,69 +888,102 @@ async function refreshHardwareIntegrationConfig() {
   $("#hardware-tuya-region").value = tuya.region || "eu_central";
   $("#hardware-tuya-client-id").value = tuya.client_id || "";
   $("#hardware-tuya-client-secret").value = "";
-  $("#hardware-tuya-devices").value = (tuya.devices || []).map(device => `${device.device_id} | ${device.name}${device.switch_code ? ` | ${device.switch_code}` : ""}`).join("\n");
-  const tuyaSelect = $("#hardware-tuya-control-device");
-  if (tuyaSelect) tuyaSelect.innerHTML = `<option value="">Escolhe um interruptor configurado</option>${(tuya.devices || []).filter(device => device.switch_code).map(device => `<option value="${esc(device.device_id)}">${esc(device.name)} · ${esc(device.device_id)}</option>`).join("")}`;
-  $("#hardware-integrations-status").textContent = `Configuração carregada · Deye ${deye.host ? "definido" : "por configurar"} · Antminer ${miner.host ? "definido" : "por configurar"}; credenciais ${config.antminer_control_configured ? "guardadas no Gateway" : "por configurar"} · Tuya ${tuya.configured ? "configurado; segredo oculto" : "por configurar"}.`;
+  $("#hardware-tuya-devices").value = (tuya.devices || []).map(device => `${device.device_id} | ${device.name}${device.switch_code ? ` | ${device.switch_code}` : ""}${device.level_code ? ` | ${device.level_code} | ${device.level_min ?? 0} | ${device.level_max ?? 100}` : ""}`).join("\n");
+  $("#deye-status").textContent = deye.host ? `Deye configurado em ${deye.host}:${deye.port || 502}, Unit ID ${deye.unit_id ?? 1}.` : "Deye ainda não configurado.";
+  $("#antminer-status").textContent = miner.host ? `Antminer configurada em ${miner.host}:${miner.port || 4028}. Credenciais de controlo ${config.antminer_control_configured ? "guardadas no Gateway" : "por configurar"}.` : "Antminer ainda não configurada.";
+  $("#tuya-status").textContent = tuya.configured ? "Conta Tuya configurada; segredo oculto no Gateway." : "Conta Tuya ainda não configurada.";
+  renderTuyaDeviceCards(tuya.devices || []);
   return config;
 }
-function hardwareConnectionSummary(result) {
-  const names = { deye: "Deye", antminer: "Antminer" };
-  const stateText = {
-    mapped_registers_response: "Registos Deye responderam; leituras do mapa candidato disponíveis para validação",
-    mapped_register_read_failed: "Ligação Modbus ativa, mas a leitura do mapa candidato falhou",
-    modbus_identity_response: "Modbus respondeu; mapa de dados ainda não validado",
-    modbus_register_probe_response: "Modbus respondeu à leitura FC03 de diagnóstico; valor descartado e mapa de dados ainda não validado",
-    modbus_exception_response: "O equipamento respondeu por Modbus, mas rejeitou a consulta de identificação",
-    modbus_timeout: "TCP acessível, mas o Modbus não respondeu; a palavra-passe da página web não autentica Modbus. Confirmar Link 2 Modbus TCP ativo e Unit ID",
-    invalid_modbus_response: "A porta respondeu, mas a resposta não correspondeu ao Modbus esperado",
-    modbus_transport_error: "Falha de transporte durante a consulta Modbus",
-    api_responded: "API da Antminer respondeu",
-    tcp_reachable_api_failed: "Porta 4028 acessível, mas a API BOSminer não respondeu corretamente",
-    tcp_unreachable: "Gateway não conseguiu abrir ligação TCP ao equipamento",
-    failed: "Ligação falhou"
-  };
-  return ["deye", "antminer"].map(key => {
-    const device = result[key], configured = result.configuration?.[key] === "configured";
-    if (!configured) return `${names[key]}: IP ainda não guardado no Gateway`;
-    const state = device?.connection_state || "failed";
-    const reason = device?.reason ? ` (${device.reason})` : "";
-    const quality = key === "deye" ? (device?.quality_checks || []).filter(check => check.state !== "consistent") : [];
-    const qualityText = quality.length ? ` · validar ${quality.map(check => ({
-      device_type: "tipo Modbus diferente do protocolo (0x0500)",
-      grid_voltage_and_frequency: "tensão/frequência da rede a zero",
-      pv1_power_vs_voltage_current: "coerência MPPT 1",
-      pv2_power_vs_voltage_current: "coerência MPPT 2"
-    })[check.field] || check.field).join(", ")}` : "";
-    return `${names[key]}: ${stateText[state] || state}${reason}${qualityText}`;
-  }).join(" · ");
+function renderTuyaDeviceCards(devices) {
+  const list = $("#tuya-device-list");
+  if (!list) return;
+  list.innerHTML = devices.length ? devices.map(device => `<article class="tuya-device-card" data-tuya-device="${esc(device.device_id)}"><h4>${esc(device.name)}</h4><p class="field-note">${esc(device.device_id)}${device.switch_code ? ` · ${esc(device.switch_code)}` : " · sem código de interruptor"}</p><div class="dialog-actions"><button type="button" class="button secondary" data-tuya-read="${esc(device.device_id)}">Ler este dispositivo</button>${device.switch_code ? `<button type="button" class="button secondary" data-tuya-switch="on" data-device-id="${esc(device.device_id)}">Ligar</button><button type="button" class="button secondary" data-tuya-switch="off" data-device-id="${esc(device.device_id)}">Desligar</button>` : ""}</div><div class="connection-result" data-tuya-status="${esc(device.device_id)}" role="status" aria-live="polite">Sem leitura recente.</div><pre class="integration-result" data-tuya-result="${esc(device.device_id)}" hidden></pre></article>`).join("") : `<p class="field-note">Ainda não há dispositivos Tuya configurados.</p>`;
 }
-$("#hardware-integrations-save").addEventListener("click", async () => {
-  const info = sessionInfo(), button = $("#hardware-integrations-save"), status = $("#hardware-integrations-status");
-  if (!info.authenticated || info.user.role !== "owner") { status.textContent = "Só o Owner autenticado pode alterar as ligações."; return; }
-  button.disabled = true; status.textContent = "A guardar a configuração privada no Gateway…";
+function setProviderResult(provider, result) {
+  const payload = result[provider];
+  const output = $(`#${provider}-result`), status = $(`#${provider}-status`);
+  if (output) { output.textContent = JSON.stringify(payload ?? result, null, 2); output.hidden = false; }
+  if (status) {
+    const stateText = payload?.connection_state || (provider === "tuya" && payload?.length ? "api_responded" : "failed");
+    const reason = payload?.reason ? ` · ${payload.reason}` : "";
+    const metricText = provider === "deye" && payload?.metrics ? ` · ${payload.metrics.length} leituras recebidas; não validadas pelo fabricante` : "";
+    const minerText = provider === "antminer" && payload?.responses ? " · API respondeu; comandos não enviados" : "";
+    status.textContent = `${provider === "deye" ? "Deye" : provider === "antminer" ? "Antminer" : "Tuya"}: ${stateText}${reason}${metricText}${minerText}`;
+  }
+}
+function ownerCanManageHardware(statusSelector) {
+  const info = sessionInfo();
+  if (!info.authenticated || info.user.role !== "owner") {
+    const status = $(statusSelector);
+    if (status) status.textContent = "Só o Owner autenticado pode gerir este equipamento.";
+    return false;
+  }
+  return true;
+}
+async function saveHardwareProvider(provider, payload, button, statusId) {
+  if (!ownerCanManageHardware(`#${statusId}`)) return;
+  button.disabled = true;
+  $(`#${statusId}`).textContent = "A guardar apenas esta configuração no Gateway…";
   try {
-    const deyeHost = $("#hardware-deye-host").value.trim(), minerHost = $("#hardware-antminer-host").value.trim();
-    const tuyaRows = $("#hardware-tuya-devices").value.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-    const tuyaDevices = tuyaRows.map(line => { const [rawId, rawName, rawCode] = line.split("|"); const device_id = (rawId || "").trim(); return { device_id, name: (rawName || "").trim() || `Tuya ${device_id}`, ...(rawCode?.trim() ? { switch_code: rawCode.trim() } : {}) }; });
-    const tuyaClient = $("#hardware-tuya-client-id").value.trim(), tuyaSecret = $("#hardware-tuya-client-secret").value;
-    const payload = {
-      deye: { enabled: Boolean(deyeHost), host: deyeHost, port: Number($("#hardware-deye-port").value), unit_id: Number($("#hardware-deye-unit").value), model: "SUN-15K-SG05LP3-EU-SM2" },
-      antminer: { enabled: Boolean(minerHost), host: minerHost, port: Number($("#hardware-antminer-port").value), rest_port: Number($("#hardware-antminer-rest-port").value), username: $("#hardware-antminer-username").value.trim(), password: $("#hardware-antminer-password").value, model: "S19K Pro" }
-    };
-    if (tuyaRows.length || tuyaClient || tuyaSecret) {
-      payload.tuya = { region: $("#hardware-tuya-region").value, client_id: tuyaClient || undefined, client_secret: tuyaSecret || undefined, devices: tuyaDevices };
-    }
-    const saved = await saveGatewayHardwareIntegrationConfig(payload);
-    $("#hardware-tuya-client-secret").value = "";
-    $("#hardware-antminer-password").value = "";
-    status.textContent = `Ligações guardadas no Gateway. Credenciais do minerador: ${saved.antminer_control_configured ? "configuradas" : "por configurar"}. Segredos não são devolvidos à PWA.`;
-  } catch (error) { status.textContent = `Não foi possível guardar: ${error.message}`; }
+    const saved = await saveGatewayHardwareIntegrationConfig({ [provider]: payload });
+    if (provider === "antminer") $("#hardware-antminer-password").value = "";
+    if (provider === "tuya") $("#hardware-tuya-client-secret").value = "";
+    $(`#${statusId}`).textContent = provider === "antminer"
+      ? `Antminer guardada. Credenciais de controlo ${saved.antminer_control_configured ? "configuradas no Gateway" : "por configurar"}.`
+      : provider === "tuya" ? "Configuração Tuya guardada no Gateway; segredo oculto." : "Configuração Deye guardada no Gateway.";
+    if (provider === "tuya") await refreshHardwareIntegrationConfig();
+  } catch (error) { $(`#${statusId}`).textContent = `Não foi possível guardar: ${error.message}`; }
   finally { button.disabled = false; }
+}
+function parseTuyaDevices() {
+  return $("#hardware-tuya-devices").value.split(/\r?\n/).map(line => line.trim()).filter(Boolean).map(line => {
+    const [rawId, rawName, rawCode, rawLevelCode, rawLevelMin, rawLevelMax] = line.split("|");
+    const device_id = (rawId || "").trim();
+    return { device_id, name: (rawName || "").trim() || `Tuya ${device_id}`, ...(rawCode?.trim() ? { switch_code: rawCode.trim() } : {}), ...(rawLevelCode?.trim() ? { level_code: rawLevelCode.trim(), level_min: Number(rawLevelMin?.trim() || 0), level_max: Number(rawLevelMax?.trim() || 100) } : {}) };
+  });
+}
+$("#deye-save").addEventListener("click", event => {
+  const host = $("#hardware-deye-host").value.trim();
+  saveHardwareProvider("deye", { enabled: Boolean(host), host, port: Number($("#hardware-deye-port").value), unit_id: Number($("#hardware-deye-unit").value), model: "SUN-15K-SG05LP3-EU-SM2" }, event.currentTarget, "deye-status");
+});
+$("#antminer-save").addEventListener("click", event => {
+  const host = $("#hardware-antminer-host").value.trim();
+  saveHardwareProvider("antminer", { enabled: Boolean(host), host, port: Number($("#hardware-antminer-port").value), rest_port: Number($("#hardware-antminer-rest-port").value), username: $("#hardware-antminer-username").value.trim(), password: $("#hardware-antminer-password").value, model: "S19K Pro" }, event.currentTarget, "antminer-status");
+});
+$("#tuya-save").addEventListener("click", event => {
+  const devices = parseTuyaDevices();
+  saveHardwareProvider("tuya", { region: $("#hardware-tuya-region").value, client_id: $("#hardware-tuya-client-id").value.trim() || undefined, client_secret: $("#hardware-tuya-client-secret").value || undefined, devices }, event.currentTarget, "tuya-status");
+});
+async function readHardwareProvider(provider, deviceId = undefined, statusSelector = `#${provider}-status`, resultSelector = `#${provider}-result`) {
+  if (!ownerCanManageHardware(statusSelector)) return;
+  const status = $(statusSelector), output = $(resultSelector);
+  status.textContent = `A consultar apenas ${provider === "deye" ? "o Deye" : provider === "antminer" ? "a Antminer" : "o dispositivo Tuya selecionado"}…`;
+  if (output) output.hidden = true;
+  try {
+    const result = await readGatewayHardwareProvider(provider, deviceId);
+    if (provider === "tuya") {
+      const device = result.tuya?.[0];
+      status.textContent = `${device?.name || "Tuya"}: ${device?.connection_state || "sem resposta"}${device?.reason ? ` · ${device.reason}` : ""}`;
+      if (output) { output.textContent = JSON.stringify(device || result, null, 2); output.hidden = false; }
+    } else setProviderResult(provider, result);
+    if (provider === "deye" || provider === "antminer") await refreshGatewayReadings();
+  } catch (error) { status.textContent = `Leitura falhou: ${error.message}`; }
+}
+$("#deye-read").addEventListener("click", () => readHardwareProvider("deye"));
+$("#antminer-read").addEventListener("click", () => readHardwareProvider("antminer"));
+$("#tuya-device-list").addEventListener("click", async event => {
+  const read = event.target.closest("[data-tuya-read]"), toggle = event.target.closest("[data-tuya-switch]");
+  if (read) {
+    const id = read.dataset.tuyaRead;
+    read.disabled = true;
+    await readHardwareProvider("tuya", id, `[data-tuya-status="${CSS.escape(id)}"]`, `[data-tuya-result="${CSS.escape(id)}"]`);
+    read.disabled = false;
+  } else if (toggle) await sendTuyaSwitch(toggle.dataset.deviceId, toggle.dataset.tuyaSwitch === "on", toggle);
 });
 async function sendAntminerControl(action) {
-  const info = sessionInfo(), status = $("#hardware-integrations-status");
-  if (!info.authenticated || info.user.role !== "owner") { status.textContent = "Só o Owner autenticado pode controlar o Antminer."; return; }
+  const status = $("#antminer-status");
+  if (!ownerCanManageHardware("#antminer-status")) return;
   const labels = { set_power_target: "alterar o alvo de potência", pause: "pausar a mineração", stop: "parar a mineração", start: "iniciar a mineração" };
   const watt = Number($("#hardware-antminer-watt").value);
   if (action === "set_power_target" && (!Number.isInteger(watt) || watt < 1 || watt > 2900)) { status.textContent = "Indica um alvo entre 1 e 2900 W."; return; }
@@ -758,47 +995,26 @@ async function sendAntminerControl(action) {
   try {
     const result = await controlGatewayAntminer(action, watt);
     status.textContent = action === "set_power_target" ? `Comando aceite pelo Braiins OS: alvo aplicado ${result.applied_watt} W.` : `Comando “${labels[action]}” aceite pelo Braiins OS.`;
-  } catch (error) {
-    status.textContent = `O Gateway não conseguiu executar o comando: ${error.message}`;
-  } finally { buttons.forEach(button => { button.disabled = false; }); }
+  } catch (error) { status.textContent = `O Gateway não conseguiu executar o comando: ${error.message}`; }
+  finally { buttons.forEach(button => { button.disabled = false; }); }
 }
 $("#antminer-power-target").addEventListener("click", () => sendAntminerControl("set_power_target"));
 $("#antminer-pause").addEventListener("click", () => sendAntminerControl("pause"));
 $("#antminer-stop").addEventListener("click", () => sendAntminerControl("stop"));
 $("#antminer-start").addEventListener("click", () => sendAntminerControl("start"));
-async function sendTuyaSwitch(on) {
-  const info = sessionInfo(), status = $("#hardware-integrations-status"), deviceId = $("#hardware-tuya-control-device").value;
-  if (!info.authenticated || info.user.role !== "owner") { status.textContent = "Só o Owner autenticado pode comandar interruptores Tuya."; return; }
-  if (!deviceId) { status.textContent = "Escolhe um dispositivo Tuya com código de interruptor configurado."; return; }
-  const deviceName = $("#hardware-tuya-control-device").selectedOptions[0]?.textContent || deviceId;
-  if (!window.confirm(`Confirmas que queres ${on ? "ligar" : "desligar"} ${deviceName}?`)) return;
-  const buttons = [$("#tuya-switch-on"), $("#tuya-switch-off")];
-  buttons.forEach(button => { button.disabled = true; });
-  status.textContent = `A enviar comando para ${deviceName}…`;
+async function sendTuyaSwitch(deviceId, on, button) {
+  if (!ownerCanManageHardware("#tuya-status")) return;
+  const card = button.closest(".tuya-device-card"), name = card.querySelector("h4")?.textContent || deviceId;
+  if (!window.confirm(`Confirmas que queres ${on ? "ligar" : "desligar"} ${name}?`)) return;
+  const buttons = [...card.querySelectorAll("button[data-tuya-switch]")]; buttons.forEach(item => { item.disabled = true; });
+  const status = card.querySelector("[data-tuya-status]"); status.textContent = `A enviar comando para ${name}…`;
   try {
     const result = await controlGatewayTuyaSwitch(deviceId, on);
-    status.textContent = result.state_confirmed
-      ? `Estado confirmado: ${deviceName} está ${on ? "ligado" : "desligado"}.`
-      : `A Tuya aceitou o comando para ${deviceName}, mas o estado físico não foi confirmado.`;
-  } catch (error) { status.textContent = `O Gateway não conseguiu executar o comando Tuya: ${error.message}`; }
-  finally { buttons.forEach(button => { button.disabled = false; }); }
+    status.textContent = result.state_confirmed ? `Estado confirmado: ${name} está ${on ? "ligado" : "desligado"}.` : `Comando aceite para ${name}, mas o estado físico não foi confirmado.`;
+  } catch (error) { status.textContent = `Falha no comando Tuya: ${error.message}`; }
+  finally { buttons.forEach(item => { item.disabled = false; }); }
 }
-$("#tuya-switch-on").addEventListener("click", () => sendTuyaSwitch(true));
-$("#tuya-switch-off").addEventListener("click", () => sendTuyaSwitch(false));
-$("#hardware-integrations-read").addEventListener("click", async () => {
-  const info = sessionInfo(), button = $("#hardware-integrations-read"), status = $("#hardware-integrations-status"), output = $("#hardware-integrations-result");
-  if (!info.authenticated || info.user.role !== "owner") { status.textContent = "Só o Owner autenticado pode iniciar a leitura."; return; }
-  button.disabled = true; output.hidden = true; status.textContent = "A consultar os equipamentos a partir do Gateway…";
-  try {
-    const result = await readGatewayHardwareIntegrations();
-    output.textContent = JSON.stringify(result, null, 2);
-    output.hidden = false;
-    const summary = hardwareConnectionSummary(result);
-    status.textContent = `${summary}${result.errors?.length ? ` · ${result.errors.length} erro(s) detalhado(s) abaixo` : ""}. Nenhum comando de controlo foi enviado.`;
-    await refreshGatewayReadings();
-  } catch (error) { status.textContent = `A leitura falhou: ${error.message}`; }
-  finally { button.disabled = false; }
-});
+
 async function refreshTeslaEvConfig() {
   const status = $("#ev-tesla-status"), info = sessionInfo();
   if (!status) return;
@@ -1210,6 +1426,7 @@ updateGatewayStatus(gatewayManager.state);
 if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js").catch(()=>{});
 render();
 hydrateWorkspacePhotos();
+if (sessionInfo().authenticated) refreshGatewayReadings();
 setInterval(() => {
   if (document.visibilityState === "visible" && sessionInfo().authenticated && !state.refreshing) {
     refreshGatewayReadings();

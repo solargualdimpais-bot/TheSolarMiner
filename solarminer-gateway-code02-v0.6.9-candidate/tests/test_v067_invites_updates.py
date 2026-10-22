@@ -381,6 +381,81 @@ def test_hardware_integration_config_is_owner_only_and_secrets_are_redacted(clie
     assert client.post("/api/v1/integrations/hardware/read", headers=admin_headers, json={}).status_code == 403
     assert client.post("/api/v1/integrations/antminer/control", headers=admin_headers,
                        json={"action": "stop"}).status_code == 403
+    assert client.post("/api/v1/integrations/hardware/deye/read", headers=admin_headers, json={}).status_code == 403
+    assert client.post("/api/v1/integrations/hardware/antminer/read", headers=admin_headers, json={}).status_code == 403
     assert client.get("/api/v1/energy/ev/tesla", headers=admin_headers).status_code == 403
     assert client.put("/api/v1/energy/ev/tesla", headers=admin_headers, json={}).status_code == 403
     assert client.post("/api/v1/energy/ev/tesla/read", headers=admin_headers, json={}).status_code == 403
+
+
+def test_hardware_provider_read_is_independent_and_owner_only(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(gateway.hardware_integrations, "_data_dir", lambda: tmp_path / "gateway-data")
+    headers = {"Authorization": f"Bearer {owner_session(client)}"}
+    saved = client.put("/api/v1/integrations/hardware", headers=headers, json={
+        "deye": {"host": "192.168.8.10", "port": 502, "unit_id": 1, "model": "other"},
+        "antminer": {"host": "192.168.8.69", "port": 4028, "rest_port": 80, "model": "S19K Pro"},
+        "tuya": {"region": "eu_central", "client_id": "tuya-client-id", "client_secret": "tuya-secret-123", "devices": [
+            {"device_id": "tuya_device_a", "name": "AQS", "switch_code": "switch_1"},
+            {"device_id": "tuya_device_b", "name": "Soalho", "switch_code": "switch_1"},
+        ]},
+    })
+    assert saved.status_code == 200
+    monkeypatch.setattr(gateway.hardware_integrations, "read_deye", lambda config: {
+        "connection_state": "mapped_registers_response", "metrics": [], "host": config["host"],
+    })
+    monkeypatch.setattr(gateway.hardware_integrations, "read_antminer", lambda host, port: {
+        "connection_state": "api_responded", "host": host, "port": port,
+        "data": {
+            "summary": {"SUMMARY": [{"GHS 5s": 120000, "GHS av": 118000}]},
+            "tunerstatus": {"TUNERSTATUS": [{"ApproximateMinerPowerConsumption": 2300, "PowerLimit": 2500}]},
+        }, "control_commands_sent": False,
+    })
+    seen_tuya_configs = []
+    monkeypatch.setattr(gateway.hardware_integrations, "read_tuya", lambda config: (
+        seen_tuya_configs.append([device["device_id"] for device in config["devices"]]) or [
+            {"device_id": device["device_id"], "name": device["name"], "connection_state": "api_responded"}
+            for device in config["devices"]
+        ]
+    ))
+    deye = client.post("/api/v1/integrations/hardware/deye/read", headers=headers, json={})
+    assert deye.status_code == 200 and deye.json()["provider"] == "deye"
+    miner = client.post("/api/v1/integrations/hardware/antminer/read", headers=headers, json={})
+    assert miner.status_code == 200 and miner.json()["antminer"]["connection_state"] == "api_responded"
+    miner_equipment = client.get("/api/v1/energy/equipment?category=mineradoras", headers=headers).json()["equipment"]
+    miner_readings = {reading["field"]: reading["value"] for reading in miner_equipment[0]["readings"]}
+    assert miner_readings["miner_hashrate_5s_ghs"] == 120000
+    assert miner_readings["miner_power_w"] == 2300
+    assert miner_readings["miner_power_limit_w"] == 2500
+    tuya = client.post("/api/v1/integrations/hardware/tuya/read", headers=headers, json={"device_id": "tuya_device_b"})
+    assert tuya.status_code == 200 and len(tuya.json()["tuya"]) == 1
+    assert seen_tuya_configs == [["tuya_device_b"]]
+    assert client.post("/api/v1/integrations/hardware/tuya/read", headers=headers,
+                       json={"device_id": "not_configured"}).status_code == 404
+    assert client.post("/api/v1/integrations/hardware/unknown/read", headers=headers, json={}).status_code == 404
+    assert client.post("/api/v1/integrations/hardware/deye/read", headers=headers,
+                       json={"device_id": "unexpected"}).status_code == 422
+
+
+def test_tuya_level_command_is_owner_only_and_rejects_invalid_payload(client, monkeypatch):
+    token = owner_session(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    calls = []
+    monkeypatch.setattr(gateway.hardware_integrations, "control_tuya_level",
+                        lambda *args: calls.append(args) or {"command_accepted": True})
+    invalid = client.post("/api/v1/integrations/tuya/level", headers=headers,
+                          json={"device_id": "configured-device", "percent": 101})
+    assert invalid.status_code == 422
+    assert calls == []
+    accepted = client.post("/api/v1/integrations/tuya/level", headers=headers,
+                           json={"device_id": "configured-device", "percent": 50})
+    assert accepted.status_code == 200
+    assert len(calls) == 1 and calls[0][1:] == ("configured-device", 50)
+    with gateway.db() as conn:
+        account_id = conn.execute("SELECT account_id FROM users WHERE username=?", ("owner-v067",)).fetchone()[0]
+        conn.execute("INSERT INTO users(id,account_id,username,password_hash,role,status,created_at) VALUES(?,?,?,?, 'owner','active',?)",
+                     ("second-active-owner", account_id, "second-owner", "unused-test-hash", int(time.time())))
+        conn.execute("UPDATE users SET role='viewer' WHERE username=?", ("owner-v067",))
+    denied = client.post("/api/v1/integrations/tuya/level", headers=headers,
+                         json={"device_id": "configured-device", "percent": 50})
+    assert denied.status_code in (401, 403)
+    assert len(calls) == 1

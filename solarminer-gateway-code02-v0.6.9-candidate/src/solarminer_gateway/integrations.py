@@ -40,6 +40,7 @@ TESLA_API_BASES = {
 TESLA_AUTH_URL = "https://fleet-auth.prd.vn.cloud.tesla.com/oauth2/v3/token"
 MAX_CONFIG_BYTES = 32_768
 CGMINER_COMMANDS = ("summary", "stats", "devs")
+CGMINER_OPTIONAL_READ_COMMANDS = ("tunerstatus",)
 _TESLA_EV_READ_LOCK = threading.Lock()
 
 
@@ -100,7 +101,7 @@ def public_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
         "deye": {k: config.get("deye", {}).get(k) for k in ("host", "port", "unit_id", "model") if config.get("deye", {}).get(k) is not None},
         "antminer": {k: config.get("antminer", {}).get(k) for k in ("host", "port", "rest_port", "model") if config.get("antminer", {}).get(k) is not None},
         "antminer_control_configured": bool(config.get("antminer", {}).get("username") and config.get("antminer", {}).get("password")),
-        "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": [{"device_id": x.get("device_id"), "name": x.get("name"), "switch_code": x.get("switch_code")} for x in tuya.get("devices", []) if isinstance(x, dict)], "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
+        "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": [{"device_id": x.get("device_id"), "name": x.get("name"), "switch_code": x.get("switch_code"), "level_code": x.get("level_code"), "level_min": x.get("level_min", 0), "level_max": x.get("level_max", 100)} for x in tuya.get("devices", []) if isinstance(x, dict)], "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
         "secrets_returned": False,
     }
 
@@ -193,6 +194,12 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
             if switch_code is not None:
                 if not isinstance(switch_code, str) or not 1 <= len(switch_code) <= 64 or not all(c.isalnum() or c in "_-" for c in switch_code): raise ValueError("invalid_tuya_switch_code")
                 normalized_device["switch_code"] = switch_code
+            level_code = device.get("level_code")
+            if level_code is not None:
+                if not isinstance(level_code, str) or not 1 <= len(level_code) <= 64 or not all(c.isalnum() or c in "_-" for c in level_code): raise ValueError("invalid_tuya_level_code")
+                level_min, level_max = device.get("level_min", 0), device.get("level_max", 100)
+                if isinstance(level_min, bool) or not isinstance(level_min, int) or isinstance(level_max, bool) or not isinstance(level_max, int) or not 0 <= level_min < level_max <= 100000: raise ValueError("invalid_tuya_level_range")
+                normalized_device.update({"level_code": level_code, "level_min": level_min, "level_max": level_max})
             normalized.append(normalized_device)
         if normalized and (not client_id or not client_secret): raise ValueError("tuya_credentials_required")
         result["tuya"] = {"region": region, "client_id": client_id, "client_secret": client_secret, "devices": normalized}
@@ -345,11 +352,39 @@ def control_tuya_switch(config: dict[str, Any], device_id: str, on: bool) -> dic
             "control_command_sent": True}
 
 
+def control_tuya_level(config: dict[str, Any], device_id: str, percent: int) -> dict[str, Any]:
+    """Set a configured Tuya dimmer/cover datapoint from 0–100 percent."""
+    if isinstance(percent, bool) or not isinstance(percent, int) or not 0 <= percent <= 100:
+        raise ValueError("tuya_level_percent_out_of_range")
+    if not isinstance(config, dict) or not config.get("client_id") or not config.get("client_secret"):
+        raise RuntimeError("tuya_credentials_required")
+    device = next((item for item in config.get("devices", []) if isinstance(item, dict) and item.get("device_id") == device_id), None)
+    if device is None:
+        raise ValueError("tuya_device_not_configured")
+    code = device.get("level_code")
+    low, high = device.get("level_min", 0), device.get("level_max", 100)
+    if not isinstance(code, str) or not code or isinstance(low, bool) or isinstance(high, bool) or not isinstance(low, int) or not isinstance(high, int) or not 0 <= low < high <= 100000:
+        raise ValueError("tuya_level_function_not_configured")
+    target = round(low + (high - low) * percent / 100)
+    auth = _tuya_request(config, "/v1.0/token?grant_type=1")
+    token = (auth.get("result") or {}).get("access_token")
+    if not isinstance(token, str) or not token:
+        raise RuntimeError("tuya_token_missing")
+    path = f"/v1.0/iot-03/devices/{urllib.parse.quote(device_id, safe='')}/commands"
+    response = _tuya_request(config, path, token, method="POST", payload={"commands": [{"code": code, "value": target}]})
+    if response.get("result") is not True:
+        raise RuntimeError("tuya_command_not_accepted")
+    return {"device_id": device_id, "level_code": code, "requested_percent": percent, "requested_value": target,
+            "command_accepted": True, "control_command_sent": True, "state_confirmed": False,
+            "connection_state": "command_accepted_state_unconfirmed"}
+
+
 def read_antminer(host: str, port: int = 4028, timeout: float = 2.0) -> dict[str, Any]:
     address = _private_ip(host)
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535: raise ValueError("invalid_port")
     responses = {}
-    for command in CGMINER_COMMANDS:
+    optional_commands = []
+    for command in (*CGMINER_COMMANDS, *CGMINER_OPTIONAL_READ_COMMANDS):
         # Braiins OS documents a newline-terminated JSON request (the newline
         # comes from `echo`). NUL-terminating this frame can leave BOSminer
         # waiting for a complete request and makes an open API look offline.
@@ -368,14 +403,23 @@ def read_antminer(host: str, port: int = 4028, timeout: float = 2.0) -> dict[str
                     chunks.append(part); total += len(part)
                     if b"\0" in part: break
         except (OSError, TimeoutError) as exc:
+            if command in CGMINER_OPTIONAL_READ_COMMANDS:
+                continue
             raise RuntimeError(f"antminer_{command}_connection_failed") from exc
         raw = b"".join(chunks).split(b"\0", 1)[0].strip()
-        if not raw: raise RuntimeError(f"antminer_{command}_empty_response")
+        if not raw:
+            if command in CGMINER_OPTIONAL_READ_COMMANDS: continue
+            raise RuntimeError(f"antminer_{command}_empty_response")
         try: response = json.loads(raw.decode("utf-8", "replace"))
-        except json.JSONDecodeError as exc: raise RuntimeError(f"antminer_{command}_invalid_json") from exc
-        if not isinstance(response, dict): raise RuntimeError(f"antminer_{command}_invalid_response")
+        except json.JSONDecodeError as exc:
+            if command in CGMINER_OPTIONAL_READ_COMMANDS: continue
+            raise RuntimeError(f"antminer_{command}_invalid_json") from exc
+        if not isinstance(response, dict):
+            if command in CGMINER_OPTIONAL_READ_COMMANDS: continue
+            raise RuntimeError(f"antminer_{command}_invalid_response")
         responses[command] = response
-    return {"host": address, "port": port, "configured_model": "S19K Pro", "model_identity_verified": False, "protocol": "BOSminer CGMiner-compatible read-only", "connection_state": "api_responded", "commands": list(CGMINER_COMMANDS), "data": responses, "trust": "LIVE_UNVERIFIED", "control_commands_sent": False, "observed_at": time.time()}
+        if command in CGMINER_OPTIONAL_READ_COMMANDS: optional_commands.append(command)
+    return {"host": address, "port": port, "configured_model": "S19K Pro", "model_identity_verified": False, "protocol": "BOSminer CGMiner-compatible read-only", "connection_state": "api_responded", "commands": list(CGMINER_COMMANDS), "optional_commands": optional_commands, "data": responses, "trust": "LIVE_UNVERIFIED", "control_commands_sent": False, "observed_at": time.time()}
 
 
 _BOS_CONTROL_ACTIONS = {

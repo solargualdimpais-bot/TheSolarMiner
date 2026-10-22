@@ -1,16 +1,7 @@
-# Publicar The Solar Miner PWA v0.5.8 no Netlify
+# Publicar The Solar Miner PWA v0.5.9
 
-## Publicação
+O repositório publica automaticamente a PWA em GitHub Pages pelo workflow `pwa-pages.yml`. Para alojamento Netlify, publica o conteúdo desta pasta com `index.html` na raiz e HTTPS ativo.
 
-1. Obter a árvore `the-solar-miner-pwa-v0.5.7-candidate` da branch aprovada do repositório.
-2. Publicar o conteúdo dessa pasta como site estático, selecionando como diretório de publicação a pasta que contém `index.html`. Não usar o ZIP v0.5.4 citado em instruções antigas.
-3. Confirmar que o site está em HTTPS. A PWA usa Web Crypto, IndexedDB e service worker, que requerem contexto seguro.
-4. Abrir o URL no iPhone, recarregar e instalar no ecrã inicial. Fechar e reabrir para permitir que o service worker `the-solar-miner-static-v0.5.8` atualize os recursos.
-5. Confirmar a gestão Owner de utilizadores reais e o download da chave de recuperação descritos no README v0.5.8.
-6. Validar separadamente a ligação ao Gateway. O Gateway tem de ser alcançável por HTTPS, com certificado e nome/IP confiáveis pelo browser e SAN correspondente. O browser não permite ignorar erros de certificado.
+A PWA precisa alcançar o Gateway através de HTTPS cujo certificado seja confiável pelo browser e cujo nome/IP conste no certificado. A PWA não ignora erros TLS nem aceita endpoints arbitrários sem validar a identidade do Gateway.
 
-## Limites
-
-A PWA pode mostrar valores sintéticos e funcionalidades DEMO. Os controlos de equipamentos não enviam comandos físicos; automatismos, administração, favoritos e preferências locais não representam estado sincronizado do Gateway. Fotos e preferências ficam no armazenamento local do browser. Safari/iPhone real e instalação PWA física ainda não foram validados para esta candidata.
-
-Consulte `API_CONTRACTS.md`, `BACKEND_DEPENDENCIES.md` e `INVITE_IDENTITY_V067.md` para dependências e fluxo de identidade/convites.
+Após publicar, atualiza a PWA instalada e confirma que o rodapé indica 0.5.9. A fotografia e os metadados de favoritos ficam no armazenamento local do browser; configurações, telemetria e comandos suportados são tratados pelo Gateway autenticado. Consulta `API_CONTRACTS.md` e `CHANGELOG_V059.md`.

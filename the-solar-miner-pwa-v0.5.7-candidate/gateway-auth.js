@@ -339,6 +339,11 @@ export async function saveGatewayHardwareIntegrationConfig(config) {
 export async function readGatewayHardwareIntegrations() {
   return gatewayApi("/api/v1/integrations/hardware/read", { method: "POST", body: {} });
 }
+export async function readGatewayHardwareProvider(provider, deviceId) {
+  if (!["deye", "antminer", "tuya"].includes(provider)) throw new Error("Equipamento inválido.");
+  const body = deviceId ? { device_id: deviceId } : {};
+  return gatewayApi(`/api/v1/integrations/hardware/${provider}/read`, { method: "POST", body });
+}
 export async function controlGatewayAntminer(action, watt) {
   if (!["set_power_target", "pause", "stop", "start"].includes(action)) throw new Error("Ação Antminer inválida.");
   const body = { action };
@@ -351,6 +356,10 @@ export async function controlGatewayAntminer(action, watt) {
 export async function controlGatewayTuyaSwitch(deviceId, on) {
   if (typeof deviceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(deviceId) || typeof on !== "boolean") throw new Error("Comando Tuya inválido.");
   return gatewayApi("/api/v1/integrations/tuya/switch", { method: "POST", body: { device_id: deviceId, on } });
+}
+export async function controlGatewayTuyaLevel(deviceId, percent) {
+  if (typeof deviceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(deviceId) || !Number.isInteger(percent) || percent < 0 || percent > 100) throw new Error("Comando Tuya percentual inválido.");
+  return gatewayApi("/api/v1/integrations/tuya/level", { method: "POST", body: { device_id: deviceId, percent } });
 }
 export async function readGatewayTeslaEvConfig() {
   return gatewayApi("/api/v1/energy/ev/tesla");

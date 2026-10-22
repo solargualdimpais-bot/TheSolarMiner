@@ -56,9 +56,10 @@ def test_antminer_uses_only_allowlisted_read_commands(monkeypatch):
 
     monkeypatch.setattr(integrations.socket, "create_connection", lambda *_args, **_kwargs: FakeSocket())
     response = integrations.read_antminer("192.168.8.20")
-    assert calls == ["summary", "stats", "devs"]
+    assert calls == ["summary", "stats", "devs", "tunerstatus"]
     assert response["control_commands_sent"] is False
     assert response["commands"] == ["summary", "stats", "devs"]
+    assert response["optional_commands"] == ["tunerstatus"]
     assert response["configured_model"] == "S19K Pro"
     assert response["model_identity_verified"] is False
     assert all(frame.endswith(b"\n") for frame in frames)
@@ -351,6 +352,35 @@ def test_tuya_switch_control_rejects_unconfigured_device_without_request(monkeyp
     with pytest.raises(ValueError, match="tuya_device_not_configured"):
         integrations.control_tuya_switch({"client_id": "client", "client_secret": "private-secret", "devices": []},
                                           "unlisted", True)
+    assert calls == []
+
+
+def test_tuya_level_control_maps_percent_to_configured_range_and_reads_back(monkeypatch):
+    calls = []
+    def fake_request(config, path, token=None, *, method="GET", payload=None):
+        calls.append((path, method, payload))
+        if path.startswith("/v1.0/token"):
+            return {"result": {"access_token": "short-lived"}}
+        if path.endswith("/commands"):
+            return {"result": True}
+        return {"result": [{"code": "position", "value": 540}]}
+    monkeypatch.setattr(integrations, "_tuya_request", fake_request)
+    result = integrations.control_tuya_level({
+        "client_id": "client", "client_secret": "private-secret", "region": "eu_central",
+        "devices": [{"device_id": "device_123", "name": "Estore", "level_code": "position", "level_min": 10, "level_max": 1010}],
+    }, "device_123", 50)
+    assert calls[1] == ("/v1.0/iot-03/devices/device_123/commands", "POST",
+                        {"commands": [{"code": "position", "value": 510}]})
+    assert result["command_accepted"] is True
+    assert result["state_confirmed"] is False
+    assert "private-secret" not in json.dumps(result)
+
+
+def test_tuya_level_control_rejects_unconfigured_device_without_request(monkeypatch):
+    calls = []
+    monkeypatch.setattr(integrations, "_tuya_request", lambda *a, **k: calls.append((a, k)))
+    with pytest.raises(ValueError, match="tuya_device_not_configured"):
+        integrations.control_tuya_level({"client_id": "client", "client_secret": "secret", "devices": []}, "unlisted", 25)
     assert calls == []
 
 

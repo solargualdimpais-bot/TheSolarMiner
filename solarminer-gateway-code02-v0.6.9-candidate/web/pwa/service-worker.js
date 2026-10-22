@@ -1,4 +1,4 @@
-const CACHE_NAME = "the-solar-miner-static-v0.5.8-owner-pwa-v0.6.39-flex-loads";
+const CACHE_NAME = "the-solar-miner-static-v0.5.9-live-areas-tuya-level-weather";
 const STATIC_ASSETS = [
   "./", "./index.html", "./styles.css", "./app.js", "./gateway-connection.js",
   "./gateway-auth.js", "./app-core.js", "./workspace-ui.js", "./demo-mode.js",

@@ -55,7 +55,7 @@ test('DEMO mode and simulated fixtures are explicit', () => {
   const html = read('index.html');
   const app = read('app.js');
   const core = read('app-core.js');
-  assert.match(html, /DEMO · SIMULATED/);
+  assert.match(app, /DEMO · SIMULATED/);
   assert.match(app, /mode: "SIMULATED"/);
   assert.match(app, /NÃO.*comandos|Nada é enviado para equipamentos físicos/s);
   assert.match(core, /DEMO_FIXTURE/);
@@ -103,16 +103,17 @@ test('Meta reference visual elements and basic interactions are present', () => 
   assert.match(html, /Home<\/button>[\s\S]*Profile<\/button>[\s\S]*Energy<\/button>[\s\S]*Casa<\/button>[\s\S]*Devices<\/button>/);
 });
 
-test('reference-inspired weather, chart and device controls remain local-only', () => {
+test('live Home uses Gateway weather, solar history and owner-controlled Tuya favorites', () => {
   const app = read('app.js');
   const html = read('index.html');
   const runtime = ['index.html','app.js','app-core.js','demo-mode.js'].map(read).join('\n');
   assert.match(app, /SIMULATED/);
-  assert.match(app, /state\.favoriteDevices/);
-  assert.match(app, /state\.sky/);
-  assert.match(html, /Condição do céu/);
+  assert.match(app, /forecast\?\.weather/);
+  assert.match(app, /engine\.history\?\.pv_total_power/);
+  assert.match(app, /controlGatewayTuyaSwitch/);
+  assert.match(app, /controlGatewayTuyaLevel/);
+  assert.match(app, /sessionInfo\(\)\.user\?\.role!=="owner"/);
   assert.doesNotMatch(runtime, /cdn\.jsdelivr\.net|chart\.js/i);
-  assert.doesNotMatch(runtime, /XMLHttpRequest|WebSocket|GatewayApiClient|writeRegister|writeCoil|\/api\/v1\/commands/i);
   assert.match(runtime, /CONNECTION_STATES/);
-  assert.match(runtime, /DEMONSTRAÇÃO — SEM LIGAÇÃO AO GATEWAY/);
+  assert.match(app, /state\.mode!=="SIMULATED"&&liveAreaPages\.includes/);
 });

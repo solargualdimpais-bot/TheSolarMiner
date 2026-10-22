@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import asyncio
 import json
 import logging
@@ -47,7 +48,7 @@ from . import updates as update_manager
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.39"
+PACKAGE_VERSION = "0.6.40"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -925,6 +926,9 @@ def energy_engine_configure(payload: dict[str, Any], session: dict[str, Any] = D
         try:
             configured_tuya = hardware_integrations.load_config().get("tuya", {}).get("devices", [])
             proposed_loads = payload.get("loads", energy_engine.get_config(conn).get("loads", []))
+            config_payload = dict(payload)
+            if "site_location_name" in config_payload:
+                config_payload.update(energy_engine.resolve_site_location(config_payload.pop("site_location_name")))
             tuya_by_id = {item.get("device_id"): item for item in configured_tuya if isinstance(item, dict)}
             if not isinstance(proposed_loads, list):
                 raise ValueError("invalid_flexible_loads")
@@ -935,7 +939,7 @@ def energy_engine_configure(payload: dict[str, Any], session: dict[str, Any] = D
                     device = tuya_by_id.get(load.get("tuya_device_id"))
                     if not device or device.get("switch_code") != load.get("tuya_switch_code"):
                         raise ValueError("load_tuya_device_or_switch_code_not_configured")
-            result = energy_engine.save_config(conn, payload)
+            result = energy_engine.save_config(conn, config_payload)
             audit(conn, session["user_id"], "energy.engine.configure", "energy-engine", "success", {
                 "battery_capacity_kwh_configured": result["battery_capacity_kwh"] is not None,
                 "minimum_soc_percent": result["minimum_soc_percent"],
@@ -1047,6 +1051,68 @@ def _persist_deye_telemetry(conn: sqlite3.Connection, deye: dict[str, Any] | Non
     return persisted
 
 
+def _persist_antminer_telemetry(conn: sqlite3.Connection, miner: dict[str, Any] | None) -> int:
+    """Store only documented, read-only Braiins/CGMiner measurements."""
+    if not isinstance(miner, dict) or miner.get("connection_state") != "api_responded":
+        return 0
+    host = miner.get("host")
+    if not isinstance(host, str) or not host:
+        return 0
+    data = miner.get("data") if isinstance(miner.get("data"), dict) else {}
+    summary_rows = (data.get("summary") or {}).get("SUMMARY", []) if isinstance(data.get("summary"), dict) else []
+    tuner_rows = (data.get("tunerstatus") or {}).get("TUNERSTATUS", []) if isinstance(data.get("tunerstatus"), dict) else []
+    summary = summary_rows[0] if isinstance(summary_rows, list) and summary_rows and isinstance(summary_rows[0], dict) else {}
+    tuner = tuner_rows[0] if isinstance(tuner_rows, list) and tuner_rows and isinstance(tuner_rows[0], dict) else {}
+    metrics: list[tuple[str, Any, str | None, str]] = []
+
+    def numeric(value: Any) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            return None
+        return float(value)
+
+    power = numeric(tuner.get("ApproximateMinerPowerConsumption"))
+    if power is not None and power >= 0:
+        metrics.append(("miner_power_w", round(power, 1), "W", "TUNERSTATUS.ApproximateMinerPowerConsumption"))
+    limit = numeric(tuner.get("PowerLimit"))
+    if limit is not None and limit >= 0:
+        metrics.append(("miner_power_limit_w", round(limit, 1), "W", "TUNERSTATUS.PowerLimit"))
+    for suffix, keys in (("avg", ("GHS av", "MHS av")), ("5s", ("GHS 5s", "MHS 5s"))):
+        gh_value = numeric(summary.get(keys[0]))
+        source_field = keys[0]
+        if gh_value is None:
+            mh_value = numeric(summary.get(keys[1]))
+            gh_value = mh_value / 1000 if mh_value is not None else None
+            source_field = keys[1]
+        if gh_value is not None and gh_value >= 0:
+            metrics.append((f"miner_hashrate_{suffix}_ghs", round(gh_value, 3), "GH/s", f"SUMMARY.{source_field}"))
+
+    identity = hashlib.sha256(host.encode("utf-8")).hexdigest()[:16]
+    equipment_id = f"braiins-antminer-{identity}"
+    observed_at = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    try:
+        timestamp = miner.get("observed_at")
+        if isinstance(timestamp, (int, float)) and not isinstance(timestamp, bool) and math.isfinite(float(timestamp)):
+            observed_at = datetime.fromtimestamp(float(timestamp), timezone.utc).isoformat(timespec="microseconds")
+    except (OverflowError, OSError, ValueError):
+        pass
+    energy_registry.upsert_equipment(conn, {
+        "category": "mineradoras", "name": "Antminer S19K Pro", "manufacturer": "Bitmain",
+        "model": "S19K Pro", "protocol": "Braiins OS CGMiner-compatible read-only",
+        "connection_state": "CONNECTED", "status": "CONFIGURED",
+        "declared_capabilities": ["read-only mining telemetry"],
+        "implemented_capabilities": ["CGMiner summary/stats/devs", "Braiins tuner status when available"],
+        "verified_capabilities": [], "limitations": ["Model identity is configured, not verified by the API response."],
+        "config": {"host": host, "port": miner.get("port", 4028), "trust": "LIVE_UNVERIFIED"},
+    }, equipment_id=equipment_id)
+    for field, value, unit, api_field in metrics:
+        energy_registry.add_reading(conn, equipment_id, {
+            "field": field, "value": value, "unit": unit, "observed_at": observed_at,
+            "source": "BRAIINS_CGMINER_READ_ONLY", "trust": "LIVE_UNVERIFIED",
+            "evidence": {"api_field": api_field, "control_commands_sent": False},
+        })
+    return len(metrics)
+
+
 @app.post("/api/v1/integrations/hardware/read")
 def hardware_integrations_read(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
     with db() as conn:
@@ -1056,6 +1122,7 @@ def hardware_integrations_read(session: dict[str, Any] = Depends(require_permiss
             result = hardware_integrations.collect(hardware_integrations.load_config())
             conn.execute("BEGIN")
             result["energy_readings_persisted"] = _persist_deye_telemetry(conn, result.get("deye"))
+            result["antminer_energy_readings_persisted"] = _persist_antminer_telemetry(conn, result.get("antminer"))
             for item in result.get("errors", []):
                 LOG.error("Hardware integration failure provider=%s reason=%s",
                           item.get("provider", "unknown"), item.get("reason", "unknown"))
@@ -1073,6 +1140,61 @@ def hardware_integrations_read(session: dict[str, Any] = Depends(require_permiss
             conn.rollback()
             LOG.error("Hardware integration read failed (%s)", type(exc).__name__)
             raise HTTPException(503, "integration_read_unavailable") from exc
+
+
+@app.post("/api/v1/integrations/hardware/{provider}/read")
+def hardware_provider_read(provider: str, payload: dict[str, Any] | None = None,
+                           session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Read exactly one configured provider (and optionally one Tuya device)."""
+    if provider not in {"deye", "antminer", "tuya"}:
+        raise HTTPException(404, "hardware_provider_not_found")
+    payload = payload or {}
+    if set(payload) - {"device_id"}:
+        raise HTTPException(422, "hardware_provider_read_payload_invalid")
+    if provider != "tuya" and payload.get("device_id") is not None:
+        raise HTTPException(422, "hardware_provider_read_payload_invalid")
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        config = hardware_integrations.load_config()
+        item = config.get(provider, {})
+        try:
+            if provider == "deye":
+                if not item.get("host"):
+                    raise HTTPException(409, "deye_not_configured")
+                result: dict[str, Any] = {"deye": hardware_integrations.read_deye(item)}
+                metrics_saved = _persist_deye_telemetry(conn, result["deye"])
+                result["energy_readings_persisted"] = metrics_saved
+            elif provider == "antminer":
+                if not item.get("host"):
+                    raise HTTPException(409, "antminer_not_configured")
+                result = {"antminer": hardware_integrations.read_antminer(item["host"], item.get("port", 4028))}
+                result["energy_readings_persisted"] = _persist_antminer_telemetry(conn, result["antminer"])
+            else:
+                if not item.get("devices"):
+                    raise HTTPException(409, "tuya_not_configured")
+                device_id = payload.get("device_id")
+                tuya_config = item
+                if device_id is not None:
+                    if not isinstance(device_id, str) or not any(d.get("device_id") == device_id for d in item["devices"]):
+                        raise HTTPException(404, "tuya_device_not_configured")
+                    tuya_config = {**item, "devices": [d for d in item["devices"] if d.get("device_id") == device_id]}
+                result = {"tuya": hardware_integrations.read_tuya(tuya_config)}
+            result["provider"] = provider
+            result["collected_at"] = datetime.now(timezone.utc).isoformat()
+            audit(conn, session["user_id"], f"hardware.{provider}.read", "gateway", "success", {
+                "device_id": payload.get("device_id") if provider == "tuya" else None,
+                "control_commands_sent": False,
+            })
+            conn.commit()
+            return result
+        except HTTPException:
+            raise
+        except (OSError, ValueError, RuntimeError, json.JSONDecodeError, sqlite3.Error) as exc:
+            conn.rollback()
+            LOG.error("Hardware provider read failed provider=%s (%s)", provider, type(exc).__name__)
+            raise HTTPException(503, f"{provider}_read_unavailable") from exc
 
 
 @app.post("/api/v1/integrations/antminer/control")
@@ -1143,6 +1265,36 @@ def tuya_switch_control(payload: dict[str, Any], session: dict[str, Any] = Depen
             LOG.error("Tuya switch control failed (%s)", type(exc).__name__)
             audit(conn, session["user_id"], "hardware.tuya.switch", device_id, "failed", {"reason": type(exc).__name__, "control_command_sent": False})
             raise HTTPException(502, "tuya_switch_control_failed") from exc
+
+
+@app.post("/api/v1/integrations/tuya/level")
+def tuya_level_control(payload: dict[str, Any], session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Owner-only percentage command for a configured Tuya level datapoint."""
+    with db() as conn:
+        _require_owner(session, conn)
+        if not isinstance(payload, dict) or set(payload) != {"device_id", "percent"}:
+            raise HTTPException(422, "tuya_level_payload_invalid")
+        device_id, percent = payload.get("device_id"), payload.get("percent")
+        if not isinstance(device_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", device_id) or isinstance(percent, bool) or not isinstance(percent, int) or not 0 <= percent <= 100:
+            raise HTTPException(422, "tuya_level_payload_invalid")
+        try:
+            config = hardware_integrations.load_config().get("tuya", {})
+            result = hardware_integrations.control_tuya_level(config, device_id, percent)
+            audit(conn, session["user_id"], "hardware.tuya.level", device_id, "accepted", {
+                "requested_percent": percent, "control_command_sent": True, "state_confirmed": False,
+            })
+            return result
+        except ValueError as exc:
+            audit(conn, session["user_id"], "hardware.tuya.level", device_id, "rejected", {"reason": str(exc)[:120]})
+            raise HTTPException(422, str(exc)) from exc
+        except RuntimeError as exc:
+            reason = str(exc)[:120]
+            audit(conn, session["user_id"], "hardware.tuya.level", device_id, "failed", {"reason": reason, "control_command_sent": False})
+            raise HTTPException(502, reason) from exc
+        except (OSError, json.JSONDecodeError) as exc:
+            LOG.error("Tuya level control failed (%s)", type(exc).__name__)
+            audit(conn, session["user_id"], "hardware.tuya.level", device_id, "failed", {"reason": type(exc).__name__, "control_command_sent": False})
+            raise HTTPException(502, "tuya_level_control_failed") from exc
 
 
 def _require_owner(session: dict[str, Any], conn) -> None:
@@ -2126,7 +2278,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.39"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.40"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(
