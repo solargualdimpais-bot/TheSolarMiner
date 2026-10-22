@@ -1,8 +1,8 @@
 # Contratos API — PWA v0.5.4
 
-## Hardware integrations (Gateway CODE02 0.6.24)
+## Hardware integrations (Gateway CODE02 0.6.25)
 
-The Owner PWA calls `GET /api/v1/integrations/hardware`, `PUT /api/v1/integrations/hardware`, and `POST /api/v1/integrations/hardware/read` through the authenticated Gateway client. The Owner role is required. The Tuya Access Secret is sent only over the authenticated Gateway connection, held in the form until save, cleared from the field after save, and never returned by the Gateway. Device endpoints accept private IP literals only. Results remain read-only; no device control API is called.
+The Owner PWA calls `GET /api/v1/integrations/hardware`, `PUT /api/v1/integrations/hardware`, and `POST /api/v1/integrations/hardware/read` through the authenticated Gateway client. The Owner role is required. Tuya Access Secret and Tesla refresh token are sent only over the authenticated Gateway connection, held in the form until save, cleared after save, and never returned by the Gateway. Device endpoints accept private IP literals only. Results remain read-only; no device control API is called.
 
 ## Endpoints efetivamente utilizados pela PWA existente
 

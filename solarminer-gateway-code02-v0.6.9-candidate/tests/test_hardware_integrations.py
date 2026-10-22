@@ -85,3 +85,58 @@ def test_tuya_request_uses_fixed_https_region_and_does_not_log_or_return_secret(
     assert captured["headers"]["sign_method"] == "HMAC-SHA256"
     assert captured["headers"]["client_id"] == "client-id"
     assert "secret-value-123" not in json.dumps(captured)
+
+
+def test_tesla_config_keeps_credentials_private_and_validates_selected_vehicle_ids():
+    config = integrations.validate_config({"tesla": {
+        "region": "europe", "client_id": "tesla-client",
+        "refresh_token": "refresh-token-value", "vehicle_ids": ["12345678901234567", "5YJ3E1EA7KF000001"],
+    }}, existing={})
+    public = integrations.public_config(config)
+    assert public["tesla"]["configured"] is True
+    assert public["tesla"]["vehicle_ids"] == ["12345678901234567", "5YJ3E1EA7KF000001"]
+    assert "refresh-token-value" not in json.dumps(public)
+
+
+@pytest.mark.parametrize("region,vehicle_ids", [("other", ["123"]), ("europe", []), ("europe", ["../other"])])
+def test_tesla_config_rejects_invalid_region_or_vehicle_ids(region, vehicle_ids):
+    with pytest.raises(ValueError):
+        integrations.validate_config({"tesla": {
+            "region": region, "client_id": "tesla-client",
+            "refresh_token": "refresh-token-value", "vehicle_ids": vehicle_ids,
+        }}, existing={})
+
+
+def test_tesla_read_refreshes_token_and_returns_only_selected_non_location_data(monkeypatch):
+    calls = []
+
+    def fake_http(url, *, token=None, form=None):
+        calls.append((url, token, form))
+        if form:
+            return {"access_token": "short-lived", "refresh_token": "rotated-refresh"}
+        if url.endswith("/api/1/vehicles"):
+            return {"response": [
+                {"id": 123, "id_s": "123", "vin": "VIN0001", "display_name": "Solar Tesla", "state": "online"},
+                {"id": 456, "id_s": "456", "vin": "VIN0002", "display_name": "Other Tesla", "state": "online"},
+            ]}
+        return {"response": {
+            "charge_state": {"battery_level": 80}, "climate_state": {"is_climate_on": False},
+            "vehicle_state": {"odometer": 1234, "location": "must-not-return"},
+            "vehicle_config": {"car_type": "model3"}, "drive_state": {"latitude": 1.0},
+        }}
+
+    monkeypatch.setattr(integrations, "_tesla_http", fake_http)
+    persisted = []
+    result, rotated = integrations.read_tesla({
+        "region": "europe", "client_id": "client",
+        "refresh_token": "old-refresh", "vehicle_ids": ["123"],
+    }, persisted.append)
+    assert rotated == "rotated-refresh"
+    assert persisted == ["rotated-refresh"]
+    assert len(result["vehicles"]) == 1
+    assert result["vehicles"][0]["name"] == "Solar Tesla"
+    assert "location" not in json.dumps(result)
+    assert "latitude" not in json.dumps(result)
+    assert result["control_commands_sent"] is False
+    assert all(call[1] != "old-refresh" for call in calls)
+    assert calls[-1][0].endswith("/api/1/vehicles/123/vehicle_data")

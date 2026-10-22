@@ -544,7 +544,12 @@ async function refreshHardwareIntegrationConfig() {
   $("#hardware-tuya-client-id").value = tuya.client_id || "";
   $("#hardware-tuya-client-secret").value = "";
   $("#hardware-tuya-devices").value = (tuya.devices || []).map(device => `${device.device_id} | ${device.name}`).join("\n");
-  $("#hardware-integrations-status").textContent = `Configuração carregada · Deye ${deye.host ? "definido" : "por configurar"} · Antminer ${miner.host ? "definido" : "por configurar"} · Tuya ${tuya.configured ? "configurado; segredo oculto" : "por configurar"}.`;
+  const tesla = config.tesla || {};
+  $("#hardware-tesla-region").value = tesla.region || "europe";
+  $("#hardware-tesla-client-id").value = tesla.client_id || "";
+  $("#hardware-tesla-refresh-token").value = "";
+  $("#hardware-tesla-vehicles").value = (tesla.vehicle_ids || []).join("\n");
+  $("#hardware-integrations-status").textContent = `Configuração carregada · Deye ${deye.host ? "definido" : "por configurar"} · Antminer ${miner.host ? "definido" : "por configurar"} · Tuya ${tuya.configured ? "configurado; segredo oculto" : "por configurar"} · Tesla ${tesla.configured ? "configurado; tokens ocultos" : "por configurar"}.`;
   return config;
 }
 $("#hardware-integrations-save").addEventListener("click", async () => {
@@ -556,6 +561,8 @@ $("#hardware-integrations-save").addEventListener("click", async () => {
     const tuyaRows = $("#hardware-tuya-devices").value.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
     const tuyaDevices = tuyaRows.map(line => { const [device_id, ...nameParts] = line.split("|"); return { device_id: device_id.trim(), name: nameParts.join("|").trim() || `Tuya ${device_id.trim()}` }; });
     const tuyaClient = $("#hardware-tuya-client-id").value.trim(), tuyaSecret = $("#hardware-tuya-client-secret").value;
+    const teslaVehicles = $("#hardware-tesla-vehicles").value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+    const teslaClient = $("#hardware-tesla-client-id").value.trim(), teslaRefresh = $("#hardware-tesla-refresh-token").value;
     const payload = {
       deye: { enabled: Boolean(deyeHost), host: deyeHost, port: Number($("#hardware-deye-port").value), unit_id: Number($("#hardware-deye-unit").value), model: "other" },
       antminer: { enabled: Boolean(minerHost), host: minerHost, port: Number($("#hardware-antminer-port").value), model: "S19K Pro" }
@@ -563,9 +570,13 @@ $("#hardware-integrations-save").addEventListener("click", async () => {
     if (tuyaRows.length || tuyaClient || tuyaSecret) {
       payload.tuya = { region: $("#hardware-tuya-region").value, client_id: tuyaClient || undefined, client_secret: tuyaSecret || undefined, devices: tuyaDevices };
     }
+    if (teslaVehicles.length || teslaClient || teslaRefresh) {
+      payload.tesla = { region: $("#hardware-tesla-region").value, client_id: teslaClient || undefined, refresh_token: teslaRefresh || undefined, vehicle_ids: teslaVehicles };
+    }
     const saved = await saveGatewayHardwareIntegrationConfig(payload);
     $("#hardware-tuya-client-secret").value = "";
-    status.textContent = `Ligações guardadas no Gateway. Segredos nunca são devolvidos à PWA. Tuya: ${saved.tuya?.configured ? "credenciais guardadas" : "não configurado"}.`;
+    $("#hardware-tesla-refresh-token").value = "";
+    status.textContent = `Ligações guardadas no Gateway. Segredos nunca são devolvidos à PWA. Tuya: ${saved.tuya?.configured ? "configurado" : "por configurar"}; Tesla Fleet: ${saved.tesla?.configured ? "configurado" : "por configurar"}.`;
   } catch (error) { status.textContent = `Não foi possível guardar: ${error.message}`; }
   finally { button.disabled = false; }
 });

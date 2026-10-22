@@ -1,6 +1,6 @@
 # Acesso remoto por Tailscale
 
-O pacote SolarMiner 0.6.24 instala o cliente Tailscale oficial para Debian 13 AMD64, ativa `tailscaled`, cria um verificador de estado de leitura para a PWA e agenda a emissão/renovação do certificado HTTPS do MagicDNS. O Gateway não cria uma conta Tailscale, não guarda uma auth key e não instala Tailscale no iPhone.
+O pacote SolarMiner 0.6.25 instala o cliente Tailscale oficial para Debian 13 AMD64, ativa `tailscaled`, cria um verificador de estado de leitura para a PWA e agenda a emissão/renovação do certificado HTTPS do MagicDNS. O Gateway não cria uma conta Tailscale, não guarda uma auth key e não instala Tailscale no iPhone.
 
 ## Primeira instalação
 

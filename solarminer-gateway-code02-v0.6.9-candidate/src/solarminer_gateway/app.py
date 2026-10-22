@@ -42,7 +42,7 @@ from . import integrations as hardware_integrations
 from . import updates as update_manager
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.24"
+PACKAGE_VERSION = "0.6.25"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -688,8 +688,8 @@ def hardware_integrations_configure(payload: dict[str, Any], session: dict[str, 
             updated = hardware_integrations.validate_config(payload, old)
             result = hardware_integrations.save_config(updated)
             audit(conn, session["user_id"], "hardware.integrations.configure", "gateway", "success", {
-                "providers": sorted(k for k in ("deye", "antminer", "tuya") if k in payload),
-                "tuya_secret_returned": False,
+                "providers": sorted(k for k in ("deye", "antminer", "tuya", "tesla") if k in payload),
+                "provider_secrets_returned": False,
             })
             return result
         except ValueError as exc:
@@ -710,6 +710,7 @@ def hardware_integrations_read(session: dict[str, Any] = Depends(require_permiss
                 "deye_connected": result["deye"] is not None,
                 "antminer_connected": result["antminer"] is not None,
                 "tuya_device_count": len(result["tuya"]),
+                "tesla_vehicle_count": len((result.get("tesla") or {}).get("vehicles", [])),
                 "errors": [{"provider": e["provider"], "reason": e["reason"]} for e in result["errors"]],
                 "control_commands_sent": False,
             })
@@ -1650,7 +1651,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.24"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.25"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

@@ -4,11 +4,11 @@ import { readFileSync } from "node:fs";
 
 const read = path => readFileSync(new URL(path, import.meta.url), "utf8");
 
-test("Owner hardware setup exposes Deye, Antminer and Tuya read-only fields", () => {
+test("Owner hardware setup exposes Deye, Antminer, Tuya and Tesla read-only fields", () => {
   const html = read("../index.html");
   const app = read("../app.js");
   const auth = read("../gateway-auth.js");
-  for (const id of ["gateway-hardware-management", "hardware-deye-host", "hardware-antminer-host", "hardware-tuya-client-secret", "hardware-integrations-read"]) assert.match(html, new RegExp(`id="${id}"`));
+  for (const id of ["gateway-hardware-management", "hardware-deye-host", "hardware-antminer-host", "hardware-tuya-client-secret", "hardware-tesla-refresh-token", "hardware-tesla-vehicles", "hardware-integrations-read"]) assert.match(html, new RegExp(`id="${id}"`));
   assert.match(app, /info\.user\.role !== "owner"/);
   assert.match(app, /saveGatewayHardwareIntegrationConfig/);
   assert.match(app, /readGatewayHardwareIntegrations/);
