@@ -1,8 +1,8 @@
 # Contratos API — PWA v0.5.4
 
-## Gateway hardware connectivity diagnostics (CODE02 0.6.30)
+## Gateway hardware connectivity diagnostics (CODE02 0.6.32)
 
-`POST /api/v1/integrations/hardware/read` returns a `configuration` object and per-device `connection_state`. `not_configured` means the Owner has not saved an IP. Deye distinguishes TCP reachability from its FC43/MEI14 Modbus identification result; Antminer distinguishes TCP reachability from a BOSminer API response. This endpoint sends no control commands.
+`POST /api/v1/integrations/hardware/read` returns a `configuration` object and per-device `connection_state`. Deye uses FC43/MEI14 with a read-only FC03 fallback after FC43 rejection or timeout and discards diagnostic values. Antminer reports its configured model as unverified. Tuya Cloud status is isolated by device ID; one failing ID does not discard successful reads for others. MOES is supported only when exposed through the configured Tuya Cloud project. Shelly has no Gateway driver. This endpoint sends no control commands.
 
 ## Gateway signed automatic updates (CODE02 0.6.29)
 

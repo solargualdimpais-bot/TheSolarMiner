@@ -591,6 +591,7 @@ function hardwareConnectionSummary(result) {
   const names = { deye: "Deye", antminer: "Antminer" };
   const stateText = {
     modbus_identity_response: "Modbus respondeu; mapa de dados ainda não validado",
+    modbus_register_probe_response: "Modbus respondeu à leitura FC03 de diagnóstico; valor descartado e mapa de dados ainda não validado",
     modbus_exception_response: "O equipamento respondeu por Modbus, mas rejeitou a consulta de identificação",
     modbus_timeout: "IP/porta acessíveis, mas sem resposta Modbus; confirmar Unit ID e serviço Modbus",
     invalid_modbus_response: "A porta respondeu, mas a resposta não correspondeu ao Modbus esperado",
@@ -618,7 +619,7 @@ $("#hardware-integrations-save").addEventListener("click", async () => {
     const tuyaDevices = tuyaRows.map(line => { const [device_id, ...nameParts] = line.split("|"); return { device_id: device_id.trim(), name: nameParts.join("|").trim() || `Tuya ${device_id.trim()}` }; });
     const tuyaClient = $("#hardware-tuya-client-id").value.trim(), tuyaSecret = $("#hardware-tuya-client-secret").value;
     const payload = {
-      deye: { enabled: Boolean(deyeHost), host: deyeHost, port: Number($("#hardware-deye-port").value), unit_id: Number($("#hardware-deye-unit").value), model: "other" },
+      deye: { enabled: Boolean(deyeHost), host: deyeHost, port: Number($("#hardware-deye-port").value), unit_id: Number($("#hardware-deye-unit").value), model: "SUN-15K-SG05LP3-EU-SM2" },
       antminer: { enabled: Boolean(minerHost), host: minerHost, port: Number($("#hardware-antminer-port").value), model: "S19K Pro" }
     };
     if (tuyaRows.length || tuyaClient || tuyaSecret) {

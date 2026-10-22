@@ -1,37 +1,46 @@
-# Ligações de leitura de equipamentos
+# Integrações de equipamentos: suporte e diagnóstico
 
-Esta versão disponibiliza configuração Owner e leituras iniciadas no Gateway para Deye, Antminer S19K Pro e Tuya Cloud. Tesla Fleet foi movida para **Energia → Carregador EV** e serve exclusivamente para ler o estado de carregamento do veículo. A API genérica de hardware não executa comandos de controlo.
+Este documento descreve o código presente nesta candidata. Configurar um IP, nome ou marca não significa que o dispositivo esteja suportado. Só Deye, Antminer via API BOSminer, Tuya Cloud e Tesla Fleet têm código de integração. MOES pode usar a integração Tuya Cloud quando o equipamento estiver associado ao projeto Tuya e autorizado; Shelly ainda não tem driver no Gateway.
 
-## Configuração na PWA
+## Deye SUN-15K-SG05LP3-EU-SM2
 
-Abre **Owner → Ligações de leitura** numa sessão Owner autenticada para Deye, Antminer e Tuya. Configura Tesla em **Energia → Carregador EV**.
+A PWA Owner guarda IP, porta TCP (502 por omissão) e Unit ID. O Gateway verifica TCP, tenta a identificação Modbus padrão FC43/MEI14 e, se o equipamento responder com exceção ou exceder o timeout dessa função, tenta uma única leitura FC03 no endereço base 0. O valor lido é descartado e nunca é apresentado como métrica. O fallback distingue firmware que não implementa FC43 de falha de rede/Modbus. Um timeout, Unit ID incorreto, serviço Modbus desativado, porta inacessível ou outra rede/VLAN continuam a impedir leitura.
 
-- **Deye trifásico de 15 kW · Modbus TCP:** indica o IP LAN do inversor, porta Modbus e Unit ID. A ligação confirma primeiro TCP e envia a função padrão Read Device Identification (FC43/MEI 14), sem adivinhar um endereço de registo. Uma resposta de exceção também prova que o equipamento recebeu a consulta Modbus. Ainda não existe mapa de registos confirmado para a variante exata e o firmware, pelo que não são apresentados valores de potência, energia ou tensão.
-- **Antminer S19K Pro com Braiins OS:** indica o IP LAN e a porta da API BOSminer (predefinição 4028). O Gateway confirma TCP e envia JSON terminado em nova linha, conforme o exemplo oficial, para `summary`, `stats` e `devs`, uma chamada por ligação. A configuração CGMiner read-only é compatível com estas consultas. Esta versão não aplica alvos de potência nem envia comandos de controlo.
-- **Tuya Cloud:** escolhe a região da conta/projeto, indica o Client ID/Access ID, Client Secret/Access Secret e os IDs dos dispositivos (um por linha na PWA). A configuração suporta até 50 dispositivos. O projeto Tuya tem de estar associado à conta e ter permissões para consultar o estado. A PWA não guarda o segredo no browser nem o recebe de volta.
-- Os requisitos Tesla, os campos usados e os limites de carregamento constam em [`EV_TESLA_CHARGING.md`](EV_TESLA_CHARGING.md).
+Não está incorporado um mapa de registos confirmado para a variante e revisão de firmware exatas. Por isso não se mostram potência, energia, tensão ou comandos de controlo. O probe FC03 serve apenas para confirmar resposta Modbus e não substitui um mapa validado.
 
-Carrega **Guardar ligações** e, depois, **Ler equipamentos agora**. O resultado informa separadamente se o IP foi guardado, se a porta TCP está acessível e se a API ou o Modbus respondeu. Assim, uma resposta vazia deixa de confundir equipamento não configurado com ligação falhada. Valores Tuya e Antminer são `LIVE_UNVERIFIED` até comparação física. O painel não os apresenta como dados fisicamente corroborados. A leitura Tesla acontece no painel EV, separada das integrações genéricas.
+## Antminer S19K Pro com Braiins OS
 
-## Endpoints
+A PWA configura IP privado e porta 4028. O Gateway confirma TCP e consulta `summary`, `stats` e `devs` através da API CGMiner compatível do BOSminer, usando um pedido JSON terminado em nova linha. Cada comando usa uma ligação separada. A resposta comprova que uma API respondeu, mas o Gateway não verifica a identidade física do modelo; `configured_model` é o modelo indicado pelo Owner.
 
-- `GET /api/v1/integrations/hardware` — Owner; devolve endereços, IDs e estado de configuração, sem segredos.
-- `PUT /api/v1/integrations/hardware` — Owner; valida e guarda configuração em `hardware-integrations.json` dentro de `SOLARMINER_DATA_DIR`, com modo POSIX `0600`.
-- `POST /api/v1/integrations/hardware/read` — Owner; executa leituras limitadas, devolve resultados e erros sem expor credenciais.
+As leituras são apenas de monitorização. Esta integração não muda potência, perfil do tuner, pools, estado de mineração ou comandos CGMiner. A API CGMiner em modo read-only pode responder às consultas; se a API estiver desativada, protegida ou inacessível, a leitura falha. A API pública BOSminer mais recente também oferece interfaces REST/gRPC, que ainda não estão implementadas neste Gateway.
 
-As credenciais Tuya e Tesla são guardadas no Gateway com permissões do utilizador de serviço, não cifradas separadamente. Restringe o acesso ao Gateway e às cópias do seu diretório de dados. Nunca coloques segredos ou tokens em tickets, logs ou capturas de ecrã. O Gateway regista apenas fornecedor, resultado, erros sem segredos e a indicação de que comandos de controlo não foram enviados.
+## Tuya e MOES via Tuya Cloud
 
-## Limitações e validação
+O Gateway assina chamadas Cloud com Client ID/Secret, escolhe o endpoint regional configurado, obtém token e consulta `/v1.0/devices/{id}/status`. O segredo permanece no Gateway. Até 50 IDs podem ser configurados.
 
-- O acesso Tuya depende de credenciais próprias e permissões da conta/projeto. Esta versão consulta a API Cloud e não implementa chaves locais Tuya.
-- O probe de identidade Modbus Deye pode não ser suportado pelo firmware; nesse caso o painel diferencia TCP acessível de identificação Modbus rejeitada ou sem resposta. A descodificação de métricas fica desativada até obter o mapa específico, revisão de firmware e validação com leituras do equipamento.
-- A ligação real da API BOSminer ao S19K Pro depende de a porta 4028 aceitar ligações do Gateway. O teste simulado não comprova acesso ao hardware; o resultado real distingue porta inacessível de API sem resposta.
-- A configuração Tuya exige credenciais próprias e permissões da conta/projeto.
-- Não há integração de comandos de escrita, nem aplicação de receitas ou controlos elétricos.
+MOES não é um protocolo de rede uniforme. Um equipamento MOES só funciona nesta integração se a conta/projeto Tuya Cloud aplicável o expuser, as permissões de API estiverem ativas e o ID pertencer ao projeto. A marca MOES ou a utilização da app Smart Life, isoladamente, não garantem acesso. Não existe integração Tuya LAN/local nem controlo de equipamentos nesta candidata.
 
-## Referências
+Os resultados e erros são isolados por ID: um dispositivo sem acesso não elimina a leitura dos outros. Falhas na autenticação Cloud afetam a consulta inteira. Erros reportam identificadores de falha e não devolvem credenciais ou tokens.
 
-- Tuya, [Autenticação Cloud](https://developer.tuya.com/en/docs/iot/authentication-method) e [assinatura de pedidos](https://developer.tuya.com/en/docs/iot/new-app-singnature).
-- Tuya, [regiões e estrutura dos pedidos](https://developer.tuya.com/en/docs/iot/api-request).
-- BITMAIN, [especificações oficiais do Antminer S19K Pro](https://support.bitmain.com/hc/en-us/articles/23833956049049-S19K-Pro-Specifications).
-- Deye, [manuais oficiais](https://www.deyeinverter.com/download/product-manual/). O manual consultado não foi usado para inferir um mapa Modbus TCP para o Gateway.
+## Shelly
+
+Não há driver Shelly, campos de configuração, endpoint, descoberta ou leitura Shelly no Gateway atual. A documentação oficial separa a API HTTP de Gen1 da API JSON-RPC de Gen2/Gen3/Gen4, e os componentes variam por modelo. Assim, o Gateway não pode declarar que qualquer Shelly foi configurado ou ligado. A integração terá de ser implementada e validada por família/modelo antes de ser ativada.
+
+## Tesla Fleet
+
+Tesla é configurado em Energia → Carregador EV e só lê dados de carregamento do veículo selecionado. Requer uma app Fleet autorizada, token e permissões Tesla. Não envia comandos de carregamento, nem executa as estratégias X/Y/Z. Ver [`EV_TESLA_CHARGING.md`](EV_TESLA_CHARGING.md).
+
+## API e acesso
+
+- `GET /api/v1/integrations/hardware` — Owner; devolve configuração não secreta.
+- `PUT /api/v1/integrations/hardware` — Owner; valida e guarda Deye, Antminer e Tuya.
+- `POST /api/v1/integrations/hardware/read` — Owner; consulta os dispositivos configurados e devolve estado/erro por dispositivo sempre que possível.
+- `GET/PUT /api/v1/energy/ev/tesla` e `POST /api/v1/energy/ev/tesla/read` — Owner; configuração/leitura Tesla.
+
+## Referências oficiais consultadas
+
+- Tuya: [autenticação Cloud](https://developer.tuya.com/en/docs/iot/authentication-method), [assinatura de pedidos](https://developer.tuya.com/en/docs/iot/new-app-singnature) e [regiões e endpoints](https://developer.tuya.com/en/docs/iot/api-request).
+- Shelly: [API HTTP Gen1](https://shelly-api-docs.shelly.cloud/gen1/), [RPC Gen2+](https://shelly-api-docs.shelly.cloud/gen2/General/RPCProtocol/) e [canais RPC](https://shelly-api-docs.shelly.cloud/gen2/General/RPCChannels/).
+- Braiins: [API BOSminer](https://academy.braiins.com/braiins-os/papi-bosminer) e [API pública BOS](https://academy.braiins.com/braiins-os/papi-about).
+- Tesla: [Fleet API e scopes](https://developer.tesla.com/docs/fleet-api/authentication/overview).
+- Deye: [manuais oficiais](https://www.deyeinverter.com/download/product-manual/). O manual não foi usado para inventar um mapa Modbus.

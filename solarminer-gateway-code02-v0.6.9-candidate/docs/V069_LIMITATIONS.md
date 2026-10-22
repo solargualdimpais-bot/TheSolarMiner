@@ -1,9 +1,10 @@
-# Limitações conhecidas CODE02 v0.6.9 candidate
+# Limitações conhecidas da candidata atual
 
-- O código do pipeline e os testes automatizados foram implementados, mas o pacote não foi instalado num host Debian/systemd real. A candidata necessita de ensaio de instalação limpa e upgrade a partir da versão efetivamente instalada.
-- O updater só fica disponível quando `/etc/solarminer/release-pubkey.pem` é provisionada com chave pública confiável, o certificado TLS local existe, `current` aponta para uma release válida, a base de dados existe e `solarminer-recovery.timer` está ativo. Caso contrário, apply falha fechado com HTTP 503.
-- A verificação da API e o helper root revalidam a assinatura, mas o provisionamento da chave e a gestão da rotação são responsabilidade operacional a validar no host.
-- Os testes de pipeline criam pacotes `.deb` descartáveis e simulam systemd; não validam `sudoers`, unidades reais, reboot, corte de energia nem o comportamento de dpkg no Gateway físico.
-- Não foi executada instalação física, validação visual Safari/iPhone, QR nativo, IndexedDB/CryptoKey real ou instalação PWA no ecrã inicial.
-- PROFILE e favoritos não sincronizam com o backend; comandos físicos continuam DEMO/local.
-- Fase E — Deye Modbus, Tuya LAN, Shelly, Antminer, MOES e produção solar/MPPT — continua adiada. Não foram adicionados drivers, registos Modbus ou comandos físicos.
+- A candidata ainda necessita de instalação e validação funcional no Gateway físico do utilizador.
+- O updater depende de chave Ed25519 confiável, allowlist administrativa, certificado TLS, release ativa, base de dados e serviço de recuperação. Qualquer preflight inválido falha fechado.
+- Deye: não há mapa de registos confirmado para modelo e firmware exatos; não são expostas métricas nem escritas Modbus.
+- Antminer: existe leitura BOSminer CGMiner compatível; a identidade física do modelo e os comandos de potência não são validados nem enviados.
+- Tuya: integração Cloud de leitura, dependente de credenciais, região, permissões e associação do dispositivo ao projeto configurado. MOES só funciona se estiver efetivamente exposto por esse projeto.
+- Shelly: não há driver nem formulário de configuração.
+- Tesla Fleet: leitura do estado de carregamento; não há controlo do veículo nem motor energético X/Y/Z.
+- Testes simulados confirmam o comportamento do software, mas não comprovam comunicação com os equipamentos físicos do utilizador.

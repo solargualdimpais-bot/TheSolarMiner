@@ -219,7 +219,9 @@ def _json_request(url: str, headers: dict[str, str], timeout: float = 8.0) -> di
     try: value = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc: raise RuntimeError("tuya_invalid_json") from exc
     if not isinstance(value, dict) or value.get("success") is not True:
-        raise RuntimeError("tuya_api_rejected_request")
+        code = value.get("code") if isinstance(value, dict) else None
+        safe_code = str(code)[:32] if isinstance(code, (str, int)) and str(code).replace("_", "").replace("-", "").isalnum() else None
+        raise RuntimeError(f"tuya_api_rejected_request:{safe_code}" if safe_code else "tuya_api_rejected_request")
     return value
 
 
@@ -247,9 +249,19 @@ def read_tuya(config: dict[str, Any]) -> list[dict[str, Any]]:
     output = []
     for item in config.get("devices", []):
         device_id = item["device_id"]
-        result = _tuya_request(config, f"/v1.0/devices/{urllib.parse.quote(device_id, safe='')}/status", token).get("result")
-        if not isinstance(result, list): raise RuntimeError("tuya_status_invalid")
-        output.append({"device_id": device_id, "name": item["name"], "status": result, "source": "TUYA_CLOUD_READ_ONLY", "trust": "LIVE_UNVERIFIED", "observed_at": time.time()})
+        try:
+            result = _tuya_request(config, f"/v1.0/devices/{urllib.parse.quote(device_id, safe='')}/status", token).get("result")
+            if not isinstance(result, list):
+                raise RuntimeError("tuya_status_invalid")
+            output.append({"device_id": device_id, "name": item["name"], "status": result,
+                           "connection_state": "api_responded", "source": "TUYA_CLOUD_READ_ONLY",
+                           "trust": "LIVE_UNVERIFIED", "observed_at": time.time()})
+        except (RuntimeError, ValueError) as exc:
+            # Keep failures isolated per device. A stale ID or missing Tuya
+            # permission must not discard successful results for other devices.
+            output.append({"device_id": device_id, "name": item["name"],
+                           "connection_state": "failed", "reason": str(exc)[:120],
+                           "source": "TUYA_CLOUD_READ_ONLY", "trust": "UNAVAILABLE"})
     return output
 
 
@@ -283,7 +295,7 @@ def read_antminer(host: str, port: int = 4028, timeout: float = 2.0) -> dict[str
         except json.JSONDecodeError as exc: raise RuntimeError(f"antminer_{command}_invalid_json") from exc
         if not isinstance(response, dict): raise RuntimeError(f"antminer_{command}_invalid_response")
         responses[command] = response
-    return {"host": address, "port": port, "model": "S19K Pro", "protocol": "BOSminer CGMiner-compatible read-only", "connection_state": "api_responded", "commands": list(CGMINER_COMMANDS), "data": responses, "trust": "LIVE_UNVERIFIED", "control_commands_sent": False, "observed_at": time.time()}
+    return {"host": address, "port": port, "configured_model": "S19K Pro", "model_identity_verified": False, "protocol": "BOSminer CGMiner-compatible read-only", "connection_state": "api_responded", "commands": list(CGMINER_COMMANDS), "data": responses, "trust": "LIVE_UNVERIFIED", "control_commands_sent": False, "observed_at": time.time()}
 
 
 def probe_tcp(host: str, port: int, timeout: float = 2.0) -> dict[str, Any]:
@@ -311,24 +323,48 @@ def probe_tcp(host: str, port: int, timeout: float = 2.0) -> dict[str, Any]:
 
 def read_deye(config: dict[str, Any]) -> dict[str, Any]:
     host, port, unit = config["host"], config["port"], config.get("unit_id", 1)
-    # The installed configuration has no provenance-verified Deye register
-    # map. FC03 register 0 was an invented connectivity check and can be
-    # rejected even when the inverter is reachable. Probe with standard
-    # Modbus device identification instead; never report guessed telemetry.
+    # FC43/MEI 14 is optional in Modbus devices. Some inverter firmware only
+    # implements FC03, so retry with a harmless, single-register read at the
+    # base address if device identification is unsupported. The value is
+    # deliberately discarded: this is transport/protocol detection, not a
+    # verified Deye metric or register map.
     tcp = probe_tcp(host, port, timeout=2.0)
+    probe_method = "FC43/MEI14"
+
+    def fc03_fallback(fc43_error: str) -> tuple[str, dict[str, Any] | None, str]:
+        try:
+            read = deye_modbus.read_holding_registers(host, start_address=0, count=1,
+                                                       port=port, unit_id=unit, timeout=2.0)
+            return ("modbus_register_probe_response",
+                    {"function_code": read.function_code, "register_count": read.register_count,
+                     "value_discarded": True, "fc43_result": fc43_error},
+                    "modbus_reachable_model_register_map_not_verified")
+        except deye_modbus.ModbusExceptionResponse as exc:
+            return ("modbus_exception_response",
+                    {"function_code": exc.function_code, "exception_code": exc.exception_code,
+                     "fc43_result": fc43_error},
+                    "device_replied_to_modbus_but_rejected_identification_and_base_register_probe")
+        except deye_modbus.ModbusTimeout:
+            return ("modbus_timeout", {"fc43_result": fc43_error},
+                    "modbus_identification_failed_then_register_probe_timed_out")
+        except deye_modbus.ModbusProtocolError as exc:
+            return ("invalid_modbus_response", {"error": str(exc), "fc43_result": fc43_error},
+                    "invalid_modbus_response_during_register_probe")
+        except deye_modbus.ModbusError as exc:
+            return ("modbus_transport_error", {"error": str(exc), "fc43_result": fc43_error},
+                    "modbus_transport_error_during_register_probe")
+
     try:
         identity = deye_modbus.read_device_identification(host, port=port, unit_id=unit, timeout=2.0)
         modbus_state = identity["state"]
         identity_data = identity
         reason = "model_register_map_not_verified"
     except deye_modbus.ModbusExceptionResponse as exc:
-        modbus_state = "modbus_exception_response"
-        identity_data = {"function_code": exc.function_code, "exception_code": exc.exception_code}
-        reason = "device_replied_but_read_device_identification_is_not_supported_or_rejected"
+        probe_method = "FC03 fallback after FC43 exception"
+        modbus_state, identity_data, reason = fc03_fallback(f"exception:{exc.exception_code}")
     except deye_modbus.ModbusTimeout:
-        modbus_state = "modbus_timeout"
-        identity_data = None
-        reason = "modbus_probe_timeout_check_unit_id_and_device_modbus_service"
+        probe_method = "FC03 fallback after FC43 timeout"
+        modbus_state, identity_data, reason = fc03_fallback("timeout")
     except deye_modbus.ModbusProtocolError as exc:
         modbus_state = "invalid_modbus_response"
         identity_data = {"error": str(exc)}
@@ -339,7 +375,8 @@ def read_deye(config: dict[str, Any]) -> dict[str, Any]:
         reason = "modbus_transport_error"
     return {"host": host, "port": port, "unit_id": unit, "model": config.get("model"),
             "tcp": tcp,
-            "protocol": "Modbus TCP FC43/MEI14 read-only identification probe",
+            "protocol": "Modbus TCP read-only protocol probe",
+            "probe_method": probe_method,
             "connection_state": modbus_state, "modbus_identity": identity_data,
             "metrics_decoded": False, "reason": reason, "trust": "LIVE_UNVERIFIED",
             "control_commands_sent": False}
@@ -433,8 +470,16 @@ def collect(config: dict[str, Any]) -> dict[str, Any]:
                                    "connection_state": "tcp_reachable_api_failed" if reason.startswith("antminer_") else "tcp_unreachable",
                                    "reason": reason}
     if config.get("tuya", {}).get("devices"):
-        try: result["tuya"] = read_tuya(config["tuya"])
+        try:
+            result["tuya"] = read_tuya(config["tuya"])
+            result["configuration"]["tuya"] = "configured"
+            for device in result["tuya"]:
+                if device.get("connection_state") == "failed":
+                    result["errors"].append({"provider": "tuya", "device_id": device["device_id"],
+                                             "reason": device["reason"]})
         except Exception as exc: result["errors"].append({"provider": "tuya", "reason": str(exc)[:160]})
+    else:
+        result["configuration"]["tuya"] = "not_configured"
     return result
 
 

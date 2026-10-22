@@ -56,6 +56,8 @@ def test_antminer_uses_only_allowlisted_read_commands(monkeypatch):
     assert calls == ["summary", "stats", "devs"]
     assert response["control_commands_sent"] is False
     assert response["commands"] == ["summary", "stats", "devs"]
+    assert response["configured_model"] == "S19K Pro"
+    assert response["model_identity_verified"] is False
     assert all(frame.endswith(b"\n") for frame in frames)
 
 
@@ -72,9 +74,45 @@ def test_deye_uses_standard_identification_without_guessing_registers(monkeypatc
     assert result["control_commands_sent"] is False
 
 
+def test_deye_falls_back_to_read_only_fc03_when_identification_is_unsupported(monkeypatch):
+    monkeypatch.setattr(integrations, "probe_tcp", lambda host, port, timeout: {"state": "tcp_reachable", "host": host, "port": port})
+    def identify(*_args, **_kwargs):
+        raise integrations.deye_modbus.ModbusExceptionResponse(0x2B, 1)
+    class RegisterProbe:
+        function_code = 3
+        register_count = 1
+        raw_registers = (12345,)
+    monkeypatch.setattr(integrations.deye_modbus, "read_device_identification", identify)
+    def read_registers(host, **kwargs):
+        assert host == "192.168.8.10"
+        assert kwargs["start_address"] == 0 and kwargs["count"] == 1
+        return RegisterProbe()
+    monkeypatch.setattr(integrations.deye_modbus, "read_holding_registers", read_registers)
+    result = integrations.read_deye({"host": "192.168.8.10", "port": 502, "unit_id": 1, "model": "other"})
+    assert result["connection_state"] == "modbus_register_probe_response"
+    assert result["probe_method"] == "FC03 fallback after FC43 exception"
+    assert result["metrics_decoded"] is False
+    assert result["modbus_identity"]["value_discarded"] is True
+    assert result["control_commands_sent"] is False
+
+
+def test_deye_falls_back_to_fc03_when_fc43_silently_times_out(monkeypatch):
+    monkeypatch.setattr(integrations, "probe_tcp", lambda host, port, timeout: {"state": "tcp_reachable", "host": host, "port": port})
+    monkeypatch.setattr(integrations.deye_modbus, "read_device_identification",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(integrations.deye_modbus.ModbusTimeout("timeout")))
+    monkeypatch.setattr(integrations.deye_modbus, "read_holding_registers", lambda *_args, **_kwargs: type(
+        "Probe", (), {"function_code": 3, "register_count": 1, "raw_registers": (999,)}
+    )())
+    result = integrations.read_deye({"host": "192.168.8.10", "port": 502, "unit_id": 1, "model": "other"})
+    assert result["connection_state"] == "modbus_register_probe_response"
+    assert result["probe_method"] == "FC03 fallback after FC43 timeout"
+    assert result["modbus_identity"]["fc43_result"] == "timeout"
+    assert "raw_registers" not in json.dumps(result)
+
+
 def test_empty_hardware_configuration_is_reported_as_unconfigured():
     result = integrations.collect({})
-    assert result["configuration"] == {"deye": "not_configured", "antminer": "not_configured"}
+    assert result["configuration"] == {"deye": "not_configured", "antminer": "not_configured", "tuya": "not_configured"}
     assert result["deye"] is None and result["antminer"] is None
     assert result["errors"] == []
 
@@ -94,6 +132,43 @@ def test_tuya_request_uses_fixed_https_region_and_does_not_log_or_return_secret(
     assert captured["headers"]["sign_method"] == "HMAC-SHA256"
     assert captured["headers"]["client_id"] == "client-id"
     assert "secret-value-123" not in json.dumps(captured)
+
+
+def test_tuya_api_error_code_is_preserved_but_message_and_credentials_are_not(monkeypatch):
+    class FakeResponse:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def read(self, _limit): return json.dumps({
+            "success": False, "code": 1004, "msg": "sign invalid secret-value-123"
+        }).encode()
+    class FakeOpener:
+        def open(self, *_args, **_kwargs): return FakeResponse()
+    monkeypatch.setattr(integrations.urllib.request, "build_opener", lambda *_args: FakeOpener())
+    with pytest.raises(RuntimeError, match="tuya_api_rejected_request:1004") as exc:
+        integrations._json_request("https://openapi.tuyaeu.com/v1.0/token?grant_type=1", {})
+    assert "secret-value-123" not in str(exc.value)
+
+
+def test_tuya_reports_devices_individually_when_one_status_request_fails(monkeypatch):
+    calls = []
+    def request(config, path, token=None):
+        calls.append((path, token))
+        if path == "/v1.0/token?grant_type=1":
+            return {"success": True, "result": {"access_token": "temporary-token"}}
+        if "bad-device" in path:
+            raise RuntimeError("tuya_http_404")
+        return {"success": True, "result": [{"code": "switch", "value": True}]}
+    monkeypatch.setattr(integrations, "_tuya_request", request)
+    result = integrations.read_tuya({
+        "region": "eu_central", "client_id": "client", "client_secret": "secret-value-123",
+        "devices": [{"device_id": "good-device", "name": "Good"},
+                    {"device_id": "bad-device", "name": "Bad"}],
+    })
+    assert [item["connection_state"] for item in result] == ["api_responded", "failed"]
+    assert result[0]["status"] == [{"code": "switch", "value": True}]
+    assert result[1]["reason"] == "tuya_http_404"
+    assert len(calls) == 3
 
 
 def test_tesla_config_keeps_credentials_private_and_validates_selected_vehicle_ids():
