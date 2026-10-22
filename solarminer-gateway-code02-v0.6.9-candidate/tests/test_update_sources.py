@@ -69,6 +69,34 @@ def test_load_update_source_resolves_only_administrator_allowlisted_repo(tmp_pat
     assert source["package_origins"] == {"https://github.com", "https://release-assets.githubusercontent.com"}
 
 
+def test_load_update_source_matches_installer_allowlist_case_insensitively(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = tmp_path / "sources.json"
+    repository = "https://github.com/solargualdimpais-bot/TheSolarMiner"
+    _write_allowlist(config, repository=repository)
+    _trusted_test_stat(config, monkeypatch)
+
+    source = updates.load_update_source("https://github.com/solargualdimpais-bot/TheSolarMiner", config)
+
+    assert source["repository_url"] == "https://github.com/solargualdimpais-bot/thesolarminer"
+
+
+def test_load_update_source_rejects_case_ambiguous_allowlist_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = tmp_path / "sources.json"
+    repo_a = "https://github.com/solargualdimpais-bot/TheSolarMiner"
+    repo_b = "https://github.com/solargualdimpais-bot/thesolarminer"
+    entry = {
+        "manifest_url": "https://github.com/solargualdimpais-bot/TheSolarMiner/releases/latest/download/solarminer-release.json",
+        "manifest_origins": ["https://github.com", "https://release-assets.githubusercontent.com"],
+        "package_origins": ["https://github.com", "https://release-assets.githubusercontent.com"],
+    }
+    config.write_text(json.dumps({"repositories": {repo_a: entry, repo_b: entry}}), encoding="utf-8")
+    config.chmod(0o644)
+    _trusted_test_stat(config, monkeypatch)
+
+    with pytest.raises(updates.UpdateValidationError, match="repository_not_allowlisted"):
+        updates.load_update_source(repo_a, config)
+
+
 def test_load_update_source_rejects_repository_not_allowlisted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = tmp_path / "sources.json"
     _write_allowlist(config)

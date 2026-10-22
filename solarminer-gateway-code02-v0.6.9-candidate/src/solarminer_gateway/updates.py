@@ -95,7 +95,17 @@ def load_update_source(repository_url: str, path: str | Path = DEFAULT_UPDATE_SO
         raise UpdateValidationError("update_source_configuration_unavailable") from exc
     if not isinstance(document, dict) or set(document) != {"repositories"} or not isinstance(document["repositories"], dict):
         raise UpdateValidationError("update_source_configuration_invalid")
-    entry = document["repositories"].get(repository)
+    matching_entries = []
+    for configured_repository, configured_entry in document["repositories"].items():
+        try:
+            normalized_configured_repository = normalize_github_repository_url(configured_repository)
+        except UpdateValidationError:
+            continue
+        if normalized_configured_repository == repository:
+            matching_entries.append(configured_entry)
+    if len(matching_entries) != 1:
+        raise UpdateValidationError("repository_not_allowlisted")
+    entry = matching_entries[0]
     if not isinstance(entry, dict) or set(entry) != {"manifest_url", "manifest_origins", "package_origins"}:
         raise UpdateValidationError("repository_not_allowlisted")
     manifest_url = entry["manifest_url"]

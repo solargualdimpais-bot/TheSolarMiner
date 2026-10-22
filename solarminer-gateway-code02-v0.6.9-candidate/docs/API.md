@@ -131,6 +131,11 @@ The browser client uses Web Crypto Ed25519 with a non-exportable private `Crypto
 
 `POST /api/v1/presence/heartbeat` creates or refreshes the caller's presence for 120 seconds. Persisted writes are throttled to at most one every five seconds per user/device pair. The Gateway generates `last_seen_at` and `expires_at`. Response states are `online`; `GET /api/v1/presence/me` returns `unknown` when no record exists, `online` before expiry, and `offline` after expiry. `connection_method` is always `unknown` in this increment; the client cannot claim LAN/REMOTE. Presence transitions are audited. Authenticated logout removes the current user/device presence. No API claims physical presence.
 
+## v0.6.22 — correção da allowlist do repositório oficial
+
+- A comparação da allowlist do repositório GitHub usa URLs canónicos sem distinguir maiúsculas/minúsculas, compatível com `TheSolarMiner` guardado pelo instalador.
+- Entradas duplicadas que diferem apenas em maiúsculas/minúsculas continuam bloqueadas.
+
 ## v0.6.21 — correção do proxy HTTPS para LAN e Tailscale
 
 - O Nginx valida o certificado TLS interno do backend com o nome DNS `localhost`, que está incluído no SAN do certificado provisionado no Gateway.
