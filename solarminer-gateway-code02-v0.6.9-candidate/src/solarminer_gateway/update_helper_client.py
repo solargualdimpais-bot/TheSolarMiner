@@ -15,7 +15,11 @@ def request(action: str, operation_id: str | None = None) -> dict[str, Any]:
         raise ValueError("update_broker_action_invalid")
     payload: dict[str, str] = {"action": action}
     if action == "enqueue":
-        if not isinstance(operation_id, str) or str(uuid.UUID(operation_id)) != operation_id:
+        try:
+            valid_operation_id = isinstance(operation_id, str) and str(uuid.UUID(operation_id)) == operation_id
+        except (ValueError, AttributeError):
+            valid_operation_id = False
+        if not valid_operation_id:
             raise ValueError("update_operation_id_invalid")
         payload["operation_id"] = operation_id
     elif operation_id is not None:
