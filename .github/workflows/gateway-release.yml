@@ -86,10 +86,12 @@ jobs:
           install -m 0644 packaging/solarminer-update-broker.socket "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-update-broker.socket"
           install -m 0755 packaging/solarminer-recovery "$VERIFY_ROOT/usr/bin/solarminer-recovery"
           install -m 0755 packaging/solarminer-update-broker "$VERIFY_ROOT/usr/bin/solarminer-update-broker"
+          install -m 0755 /usr/bin/true "$VERIFY_ROOT/usr/bin/true"
+          install -m 0755 /usr/bin/true "$VERIFY_ROOT/usr/bin/python3"
           for TARGET in sysinit local-fs sockets network-online; do
             printf '[Unit]\nDescription=Verification placeholder target\n' > "$VERIFY_ROOT/usr/lib/systemd/system/$TARGET.target"
           done
-          printf '[Unit]\nDescription=Verification placeholder Gateway service\n' > "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-gateway.service"
+          printf '[Unit]\nDescription=Verification placeholder Gateway service\n[Service]\nExecStart=/usr/bin/true\n' > "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-gateway.service"
           systemd-analyze --root="$VERIFY_ROOT" verify solarminer-recovery.service solarminer-error-report.service solarminer-error-report.timer solarminer-update-broker.socket solarminer-update-broker@.service
 
       - name: Run Gateway tests
