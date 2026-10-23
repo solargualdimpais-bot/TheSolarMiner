@@ -8,7 +8,7 @@ test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV 
   const html = read("../index.html");
   const app = read("../app.js");
   const auth = read("../gateway-auth.js");
-  for (const id of ["gateway-hardware-management", "hardware-deye-host", "hardware-antminer-host", "hardware-antminer-username", "hardware-antminer-password", "hardware-antminer-rest-port", "antminer-power-target", "antminer-pause", "antminer-stop", "antminer-start", "hardware-tuya-client-secret", "deye-save", "deye-read", "antminer-save", "antminer-read", "tuya-save", "tuya-device-list", "owner-open-gateway"]) assert.match(html, new RegExp(`id="${id}"`));
+  for (const id of ["gateway-hardware-management", "hardware-deye-host", "hardware-antminer-host", "hardware-antminer-username", "hardware-antminer-password", "hardware-antminer-rest-port", "antminer-power-target", "antminer-pause", "antminer-stop", "antminer-start", "hardware-tuya-client-secret", "hardware-tuya-uid", "deye-save", "deye-read", "antminer-save", "antminer-read", "tuya-save", "tuya-sync", "tuya-device-list", "owner-open-gateway"]) assert.match(html, new RegExp(`id="${id}"`));
   for (const tab of ["access", "updates", "tailscale", "gateway", "equipment"]) assert.match(html, new RegExp(`data-owner-tab="${tab}"`));
   for (const tab of ["deye", "antminer", "tuya"]) assert.match(html, new RegExp(`data-owner-device="${tab}"`));
   const workspace = read("../workspace-ui.js");
@@ -21,6 +21,8 @@ test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV 
   assert.match(auth, /\/api\/v1\/integrations\/hardware\/\$\{provider\}\/read/);
   assert.match(auth, /\/api\/v1\/integrations\/antminer\/control/);
   assert.match(auth, /\/api\/v1\/integrations\/tuya\/level/);
+  assert.match(auth, /\/api\/v1\/integrations\/tuya\/sync/);
+  assert.match(app, /syncGatewayTuyaDevices/);
   assert.match(app, /controlGatewayTuyaLevel/);
   assert.match(app, /data-favorite-level/);
   assert.match(auth, /"set_power_target", "pause", "stop", "start"/);

@@ -49,7 +49,7 @@ from . import updates as update_manager
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.42"
+PACKAGE_VERSION = "0.6.43"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -1024,6 +1024,64 @@ def hardware_integrations_configure(payload: dict[str, Any], session: dict[str, 
         except (OSError, json.JSONDecodeError) as exc:
             LOG.error("Hardware integration configuration save failed (%s)", type(exc).__name__)
             raise HTTPException(500, "integration_config_save_failed") from exc
+
+
+@app.post("/api/v1/integrations/tuya/sync")
+def tuya_devices_sync(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Owner-triggered Tuya inventory sync; local keys remain Gateway-only."""
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        try:
+            config = hardware_integrations.load_config()
+            tuya = config.get("tuya", {})
+            if not tuya.get("client_id") or not tuya.get("client_secret"):
+                raise HTTPException(409, "tuya_not_configured")
+            if not tuya.get("uid"):
+                raise HTTPException(409, "tuya_uid_required")
+            synced = hardware_integrations.synchronize_tuya_devices(tuya)
+            current = {item.get("device_id"): item for item in tuya.get("devices", [])
+                       if isinstance(item, dict) and isinstance(item.get("device_id"), str)}
+            imported = {item["device_id"]: item for item in synced["devices"]}
+            # Keep locally managed items and previously cached disconnected
+            # entries. Mark cloud-missing entries rather than silently deleting
+            # their private keys or user mappings.
+            for device_id, item in current.items():
+                if device_id not in imported:
+                    if item.get("cloud_source") == "TUYA_PROJECT":
+                        imported[device_id] = {**item, "cloud_missing": True}
+                    else:
+                        imported[device_id] = item
+            tuya["devices"] = list(imported.values())
+            config["tuya"] = tuya
+            hardware_integrations.save_config(config)
+            audit(conn, session["user_id"], "hardware.tuya.sync", "gateway", "success", {
+                "device_count": synced["device_count"],
+                "local_keys_available": synced["local_keys_available"],
+                "schema_failures": synced["schema_failures"],
+                "cloud_pages": synced["pages"],
+                "secrets_returned": False,
+            })
+            conn.commit()
+            return {"inventory": hardware_integrations.public_config(config)["tuya"],
+                    "device_count": synced["device_count"],
+                    "local_keys_available": synced["local_keys_available"],
+                    "schema_failures": synced["schema_failures"],
+                    "secrets_returned": False}
+        except HTTPException:
+            raise
+        except (ValueError, RuntimeError) as exc:
+            reason = str(exc)[:120]
+            audit(conn, session["user_id"], "hardware.tuya.sync", "gateway", "failed", {
+                "reason": reason, "secrets_returned": False,
+            })
+            conn.commit()
+            raise HTTPException(502, reason) from exc
+        except (OSError, json.JSONDecodeError, sqlite3.Error) as exc:
+            conn.rollback()
+            LOG.error("Tuya device sync failed (%s)", type(exc).__name__)
+            raise HTTPException(503, "tuya_sync_unavailable") from exc
 
 
 def _persist_deye_telemetry(conn: sqlite3.Connection, deye: dict[str, Any] | None) -> int:
@@ -2301,7 +2359,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.42"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.43"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(
@@ -2514,9 +2572,13 @@ def read_gateway_console(session: dict[str, Any] = Depends(current_session)) -> 
             raise HTTPException(403, "owner_only")
         audit(conn, actor["user_id"], "system.console.logs_read", "allowlisted_gateway_services", "success",
               {"characters": len(logs), "truncated": result.get("truncated") is True})
+    services = result.get("services")
+    resources = result.get("resources")
     return {"state": "available", "captured_at": utcnow(), "logs": logs,
+            "services": services if isinstance(services, dict) else {},
+            "resources": resources if isinstance(resources, dict) else {},
             "truncated": result.get("truncated") is True,
-            "scope": "Allowlisted Gateway, update, Tailscale and Nginx service logs from the last two hours."}
+            "scope": "Allowlisted Gateway service status, CPU/RAM/storage metrics and service logs; recent Tailscale/Nginx setup log tail."}
 
 
 @app.post("/api/v1/system/tailscale/connect")

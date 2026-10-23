@@ -346,6 +346,9 @@ export async function saveGatewayHardwareIntegrationConfig(config) {
   if (!config || typeof config !== "object") throw new Error("Configuração de equipamentos inválida.");
   return gatewayApi("/api/v1/integrations/hardware", { method: "PUT", body: config });
 }
+export async function syncGatewayTuyaDevices() {
+  return gatewayApi("/api/v1/integrations/tuya/sync", { method: "POST", body: {} });
+}
 export async function readGatewayHardwareIntegrations() {
   return gatewayApi("/api/v1/integrations/hardware/read", { method: "POST", body: {} });
 }

@@ -600,12 +600,19 @@ def test_owner_can_read_redacted_gateway_console_logs(client, monkeypatch):
     headers, _ = _owner_headers(client, owner, private, nonce="owner-console-logs-01")
     monkeypatch.setattr(gateway.update_helper_client, "request", lambda action: {
         "status": "ok", "logs": "2026-10-22 INFO service started", "truncated": False,
-        "scope": "allowlisted_services_last_2_hours"} if action == "diagnostics" else {})
+        "services": {"gateway": "active", "nginx": "active"},
+        "resources": {"cpu_percent": 4.2, "cpu_count": 6,
+                       "memory": {"total_bytes": 100, "used_bytes": 40, "available_bytes": 60, "used_percent": 40.0},
+                       "disk": {"path": "/var/lib/solarminer", "total_bytes": 1000, "used_bytes": 250,
+                                "free_bytes": 750, "used_percent": 25.0}},
+        "scope": "allowlisted_services_last_2_hours_plus_tailscale_setup_log_tail"} if action == "diagnostics" else {})
     response = client.get("/api/v1/system/console", headers=headers)
     assert response.status_code == 200, response.text
     assert response.json()["state"] == "available"
     assert response.json()["logs"] == "2026-10-22 INFO service started"
     assert response.json()["truncated"] is False
+    assert response.json()["services"]["gateway"] == "active"
+    assert response.json()["resources"]["memory"]["used_percent"] == 40.0
 
 
 def test_non_owner_cannot_read_gateway_console(client, monkeypatch):
@@ -1309,7 +1316,7 @@ def test_site_profile_is_shared_and_owner_only_for_writes(client):
     owner_headers = {"Authorization": f"Bearer {owner_login.json()['access_token']}"}
     import base64
     image = "data:image/jpeg;base64," + base64.b64encode(b"\xff\xd8\xffimage\xff\xd9").decode("ascii")
-    profile = {"name": "Casa Solar", "photo_data_url": image, "photo_opacity": 0.38, "floors": [
+    profile = {"name": "Casa Solar", "photo_data_url": image, "photo_opacity": 0.38, "photo_position_x": 50, "photo_position_y": 50, "photo_zoom": 1.0, "photo_vignette": 0.35, "floors": [
         {"id": "floor-ground", "name": "Rés do chão", "rooms": [{"id": "room-living", "name": "Sala"}]}
     ]}
     saved = client.put("/api/v1/site/profile", headers=owner_headers, json=profile)

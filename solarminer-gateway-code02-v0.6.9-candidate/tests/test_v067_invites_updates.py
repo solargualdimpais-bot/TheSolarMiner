@@ -436,6 +436,102 @@ def test_hardware_provider_read_is_independent_and_owner_only(client, monkeypatc
                        json={"device_id": "unexpected"}).status_code == 422
 
 
+def test_tuya_cloud_inventory_sync_stores_local_key_only_on_gateway(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(gateway.hardware_integrations, "_data_dir", lambda: tmp_path / "gateway-data")
+    headers = {"Authorization": f"Bearer {owner_session(client)}"}
+    local_key = "private-tuya-local-key-value"
+    monkeypatch.setattr(gateway.hardware_integrations, "synchronize_tuya_devices", lambda config: {
+        "devices": [{"device_id": "tuya_cloud_1", "name": "AQS", "category": "cz",
+                     "product_id": "product-1", "product_name": "Smart Plug", "online": False,
+                     "ip": "192.168.8.40", "cloud_source": "TUYA_PROJECT", "local_key": local_key,
+                     "functions": [{"code": "switch_1", "type": "Boolean"}],
+                     "status_spec": [{"code": "cur_power", "type": "Integer"}],
+                     "current_status": [], "last_synced_at": 123}],
+        "device_count": 1, "local_keys_available": 1, "schema_failures": 0, "pages": 1,
+    })
+    saved = client.put("/api/v1/integrations/hardware", headers=headers, json={
+        "tuya": {"region": "eu_central", "client_id": "tuya-client-id",
+                 "client_secret": "tuya-secret-123", "uid": "tuya-user-123", "devices": []},
+    })
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["tuya"]["uid"] == "tuya-user-123"
+    synced = client.post("/api/v1/integrations/tuya/sync", headers=headers, json={})
+    assert synced.status_code == 200, synced.text
+    assert synced.json()["device_count"] == 1
+    assert synced.json()["local_keys_available"] == 1
+    assert synced.json()["inventory"]["devices"][0]["device_id"] == "tuya_cloud_1"
+    assert synced.json()["inventory"]["devices"][0]["local_key_available"] is True
+    assert local_key not in synced.text
+    stored = gateway.hardware_integrations.load_config()["tuya"]["devices"][0]
+    assert stored["local_key"] == local_key
+    assert stored["functions"][0]["code"] == "switch_1"
+    assert stored["status_spec"][0]["code"] == "cur_power"
+
+
+def test_tuya_sync_requires_uid_and_owner(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(gateway.hardware_integrations, "_data_dir", lambda: tmp_path / "gateway-data")
+    owner_headers = {"Authorization": f"Bearer {owner_session(client)}"}
+    client.put("/api/v1/integrations/hardware", headers=owner_headers, json={
+        "tuya": {"region": "eu_central", "client_id": "tuya-client-id",
+                 "client_secret": "tuya-secret-123", "devices": []},
+    })
+    missing_uid = client.post("/api/v1/integrations/tuya/sync", headers=owner_headers, json={})
+    assert missing_uid.status_code == 409
+    assert missing_uid.json()["detail"] == "tuya_uid_required"
+    # Existing hardware route coverage asserts role separation; this route has
+    # the same explicit revalidation, so exercise a revoked/non-owner session.
+    with gateway.db() as conn:
+        row = conn.execute("SELECT account_id FROM users WHERE username='owner-v067'").fetchone()
+        conn.execute("INSERT INTO users(id,account_id,username,password_hash,role,status,created_at) VALUES(?,?,?,?, 'admin','active',?)",
+                     ("tuya-admin", row[0], "tuya-admin", "unused", int(time.time())))
+        _, public = keypair()
+        der = serialization.load_pem_public_key(public.encode()).public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+        conn.execute("INSERT INTO devices(id,public_key_pem,public_key_sha256,mac_declared,mac_status,status,created_at) VALUES(?,?,?,?,'declared','active',?)",
+                     ("tuya-admin-device", public, hashlib.sha256(der).hexdigest(), "AA:BB:CC:DD:EE:78", gateway.utcnow()))
+        conn.execute("INSERT INTO user_devices(user_id,device_id,status,created_at) VALUES(?,?,'active',?)",
+                     ("tuya-admin", "tuya-admin-device", gateway.utcnow()))
+        raw = "tuya-admin-session-token"
+        conn.execute("INSERT INTO sessions(token_sha256,user_id,device_id,created_at,expires_at,credential_version) VALUES(?,?,?,?,?,1)",
+                     (gateway.token_hash(raw), "tuya-admin", "tuya-admin-device", int(time.time()), int(time.time()) + 3600))
+    denied = client.post("/api/v1/integrations/tuya/sync", headers={"Authorization": f"Bearer {raw}"}, json={})
+    assert denied.status_code == 403
+
+
+def test_tuya_sync_imports_local_key_and_device_capabilities(monkeypatch):
+    config = {"region": "eu_central", "client_id": "client", "client_secret": "secret-value",
+              "uid": "user-123", "devices": []}
+    calls = []
+    def request(_config, path, token=None, **kwargs):
+        calls.append(path)
+        if path == "/v1.0/token?grant_type=1":
+            return {"result": {"access_token": "temporary-token"}}
+        if path.startswith("/v2.0/cloud/thing/device?"):
+            return {"result": [{"id": "tuya_1", "name": "Plug", "category": "cz",
+                                "productId": "pid", "productName": "Plug Pro", "isOnline": False}]}
+        if path == "/v2.0/cloud/thing/tuya_1":
+            return {"result": {"id": "tuya_1", "local_key": "private-local-key-123",
+                                "ip": "192.168.8.41", "is_online": False}}
+        if path == "/v1.0/iot-03/devices/tuya_1/status":
+            return {"result": [{"code": "cur_power", "value": 31}]}
+        if path == "/v1.0/iot-03/devices/tuya_1/specification":
+            return {"result": {"category": "cz", "functions": [{"code": "switch_1", "type": "Boolean", "values": "{}"}],
+                                "status": [{"code": "cur_power", "type": "Integer", "values": "{}"}]}}
+        raise AssertionError(path)
+    original = gateway.hardware_integrations._tuya_request
+    monkeypatch.setattr(gateway.hardware_integrations, "_tuya_request", request)
+    result = gateway.hardware_integrations.synchronize_tuya_devices(config)
+    monkeypatch.setattr(gateway.hardware_integrations, "_tuya_request", original)
+    assert result["device_count"] == result["local_keys_available"] == 1
+    device = result["devices"][0]
+    assert device["online"] is False
+    assert device["local_key"] == "private-local-key-123"
+    assert device["functions"][0]["code"] == "switch_1"
+    assert device["status_spec"][0]["code"] == "cur_power"
+    assert device["current_status"] == [{"code": "cur_power", "value": 31}]
+    assert calls[0] == "/v1.0/token?grant_type=1"
+
+
 def test_tuya_level_command_is_owner_only_and_rejects_invalid_payload(client, monkeypatch):
     token = owner_session(client)
     headers = {"Authorization": f"Bearer {token}"}

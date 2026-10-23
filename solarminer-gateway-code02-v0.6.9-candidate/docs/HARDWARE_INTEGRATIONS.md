@@ -20,9 +20,13 @@ O controlo não é executado pela API CGMiner da porta 4028. Essa interface cont
 
 Uma ligação TCP aberta à porta 502 não prova que os registos estejam mapeados como esperado. O Gateway ignora FC43 no logger DYDA porque a sequência FC43→FC03 expirava; as leituras FC03 diretas responderam. As credenciais HTTP da interface local são separadas e não são enviadas ao Modbus. As métricas incluem leituras brutas e conversões baseadas no mapa, com `LIVE_UNVERIFIED` até confirmação da variante/firmware e dos canais de medição do logger. Não são enviados comandos ao inversor.
 
-## Tuya e MOES via Tuya Cloud
+## Tuya e MOES
 
-O Gateway assina chamadas Cloud com Client ID/Secret, escolhe o endpoint regional configurado, obtém token e consulta `/v1.0/devices/{id}/status`. O segredo permanece no Gateway. Até 50 IDs podem ser configurados. Cada dispositivo pode declarar `switch_code` para ON/OFF e `level_code`, `level_min`, `level_max` para dimmer ou posição. O Owner pode enviar percentagem de 0 a 100 através de `POST /api/v1/integrations/tuya/level`; o Gateway mapeia a percentagem à escala configurada e só envia comandos ao datapoint declarado. Comando aceite não significa posição física confirmada: a PWA agenda nova leitura. Confirma os códigos e escalas do datapoint na conta Tuya antes de configurar.
+O Owner configura no Gateway a região, Client ID/Secret e UID da conta associada ao projeto Tuya. `POST /api/v1/integrations/tuya/sync` importa por páginas até 200 dispositivos do projeto, incluindo offline, e tenta consultar para cada um os detalhes, a chave LAN, o estado atual e o esquema de funções/estados. O Gateway conserva a `local_key` apenas no ficheiro privado, com permissões restritas; a API/PWA só recebe `local_key_available`, nunca o valor. A sincronização preserva favoritos, divisões, códigos de controlo e registos anteriores mesmo que um aparelho deixe de aparecer na lista Cloud. Falhas de detalhe/esquema são contabilizadas sem apagar a lista importada.
+
+O esquema importado descreve o que a Cloud declara para aquele modelo, por exemplo códigos, tipos e escalas; não significa que cada função já esteja ligada a um controlo na PWA. Para comandos Cloud, o Owner tem de mapear explicitamente `switch_code` e, quando aplicável, `level_code`/escala. O estado e a telemetria consultados permanecem sujeitos às permissões e limites do projeto Tuya.
+
+A sincronização não implementa, por si só, controlo local Wi-Fi. A `local_key` é necessária para certos protocolos LAN, mas suporte depende também da família, versão de protocolo e acessibilidade do dispositivo na rede. Este Gateway ainda não possui um driver LAN Tuya validado; portanto, os comandos atuais usam a Cloud e não podem prometer controlo local nem todas as opções da app Tuya, como memória/relay type. Firmware, cenas e operações de conta também podem exigir APIs Cloud específicas.
 
 MOES não é um protocolo de rede uniforme. Um equipamento MOES só funciona nesta integração se a conta/projeto Tuya Cloud aplicável o expuser, as permissões de API estiverem ativas e o ID pertencer ao projeto. A marca MOES ou a utilização da app Smart Life, isoladamente, não garantem acesso. Não existe integração Tuya LAN/local. O Owner pode comandar interruptor e datapoint de nível configurados; a confirmação da API não substitui a leitura posterior nem a validação física da instalação.
 
@@ -40,6 +44,7 @@ Tesla é configurado em Energia → Carregador EV e só lê dados de carregament
 
 - `GET /api/v1/integrations/hardware` — Owner; devolve configuração não secreta.
 - `PUT /api/v1/integrations/hardware` — Owner; valida e guarda Deye, Antminer e Tuya.
+- `POST /api/v1/integrations/tuya/sync` — Owner; sincroniza até 200 dispositivos e respetivos esquemas/estados. As chaves locais ficam apenas no Gateway.
 - `POST /api/v1/integrations/hardware/read` — Owner; consulta os dispositivos configurados e devolve estado/erro por dispositivo sempre que possível.
 - `POST /api/v1/integrations/hardware/{deye|antminer|tuya}/read` — Owner; consulta só o fornecedor selecionado. Tuya aceita `{"device_id":"..."}` para consultar apenas um dispositivo.
 - `POST /api/v1/integrations/tuya/switch` — Owner; envia um comando explícito de interruptor para dispositivo configurado com código de função e devolve a confirmação de estado.

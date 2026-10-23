@@ -1,7 +1,7 @@
 """Owner-configured SolarMiner hardware integrations and explicit controls.
 
 Credentials and endpoints are stored on the Gateway under its private data
-directory. This module exposes no device-control operations.
+directory. Tuya device keys are excluded from public projections.
 """
 from __future__ import annotations
 
@@ -38,7 +38,8 @@ TESLA_API_BASES = {
     "china": "https://fleet-api.prd.cn.vn.cloud.tesla.cn",
 }
 TESLA_AUTH_URL = "https://fleet-auth.prd.vn.cloud.tesla.com/oauth2/v3/token"
-MAX_CONFIG_BYTES = 32_768
+MAX_CONFIG_BYTES = 1_048_576
+MAX_TUYA_DEVICES = 200
 CGMINER_COMMANDS = ("summary", "stats", "devs")
 CGMINER_OPTIONAL_READ_COMMANDS = ("tunerstatus",)
 _TESLA_EV_READ_LOCK = threading.Lock()
@@ -101,7 +102,7 @@ def public_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
         "deye": {k: config.get("deye", {}).get(k) for k in ("host", "port", "unit_id", "model") if config.get("deye", {}).get(k) is not None},
         "antminer": {k: config.get("antminer", {}).get(k) for k in ("host", "port", "rest_port", "model") if config.get("antminer", {}).get(k) is not None},
         "antminer_control_configured": bool(config.get("antminer", {}).get("username") and config.get("antminer", {}).get("password")),
-        "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": [{"device_id": x.get("device_id"), "name": x.get("name"), "switch_code": x.get("switch_code"), "level_code": x.get("level_code"), "level_min": x.get("level_min", 0), "level_max": x.get("level_max", 100)} for x in tuya.get("devices", []) if isinstance(x, dict)], "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
+        "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "uid": tuya.get("uid"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": [{"device_id": x.get("device_id"), "name": x.get("name"), "switch_code": x.get("switch_code"), "level_code": x.get("level_code"), "level_min": x.get("level_min", 0), "level_max": x.get("level_max", 100), "category": x.get("category"), "product_id": x.get("product_id"), "product_name": x.get("product_name"), "online": x.get("online"), "cloud_source": x.get("cloud_source"), "cloud_missing": x.get("cloud_missing", False), "local_key_available": bool(x.get("local_key")), "functions": x.get("functions", []), "status_spec": x.get("status_spec", []), "current_status": x.get("current_status", []), "last_status_at": x.get("last_status_at")} for x in tuya.get("devices", []) if isinstance(x, dict)], "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
         "secrets_returned": False,
     }
 
@@ -179,11 +180,15 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
         if region not in TUYA_REGIONS: raise ValueError("invalid_tuya_region")
         client_id = item.get("client_id", result.get("tuya", {}).get("client_id"))
         client_secret = item.get("client_secret") or result.get("tuya", {}).get("client_secret")
+        uid = item.get("uid", result.get("tuya", {}).get("uid"))
+        if uid is not None and (not isinstance(uid, str) or not 1 <= len(uid) <= 128 or not all(c.isalnum() or c in "_-" for c in uid)):
+            raise ValueError("invalid_tuya_uid")
         if client_id is not None and (not isinstance(client_id, str) or not 1 <= len(client_id) <= 128): raise ValueError("invalid_tuya_client_id")
         if client_secret is not None and (not isinstance(client_secret, str) or not 8 <= len(client_secret) <= 256): raise ValueError("invalid_tuya_client_secret")
         devices = item.get("devices", result.get("tuya", {}).get("devices", []))
-        if not isinstance(devices, list) or len(devices) > 50: raise ValueError("invalid_tuya_devices")
+        if not isinstance(devices, list) or len(devices) > MAX_TUYA_DEVICES: raise ValueError("invalid_tuya_devices")
         normalized = []
+        existing_devices = {x.get("device_id"): x for x in result.get("tuya", {}).get("devices", []) if isinstance(x, dict)}
         for device in devices:
             if not isinstance(device, dict): raise ValueError("invalid_tuya_device")
             device_id, name = device.get("device_id"), device.get("name", "Tuya device")
@@ -191,6 +196,12 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
             if not isinstance(name, str) or not name.strip() or len(name) > 120: raise ValueError("invalid_tuya_device_name")
             switch_code = device.get("switch_code")
             normalized_device = {"device_id": device_id, "name": name.strip()}
+            # Cloud-imported secrets and capability metadata can only come from
+            # the Gateway's previous trusted inventory, never from PWA input.
+            previous = existing_devices.get(device_id, {})
+            for key in ("local_key", "product_id", "product_name", "category", "online", "ip", "functions", "status_spec", "current_status", "last_status_at", "cloud_source", "cloud_missing", "last_synced_at"):
+                if key in previous:
+                    normalized_device[key] = previous[key]
             if switch_code is not None:
                 if not isinstance(switch_code, str) or not 1 <= len(switch_code) <= 64 or not all(c.isalnum() or c in "_-" for c in switch_code): raise ValueError("invalid_tuya_switch_code")
                 normalized_device["switch_code"] = switch_code
@@ -202,7 +213,8 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
                 normalized_device.update({"level_code": level_code, "level_min": level_min, "level_max": level_max})
             normalized.append(normalized_device)
         if normalized and (not client_id or not client_secret): raise ValueError("tuya_credentials_required")
-        result["tuya"] = {"region": region, "client_id": client_id, "client_secret": client_secret, "devices": normalized}
+        result["tuya"] = {"region": region, "client_id": client_id, "client_secret": client_secret,
+                           "uid": uid, "devices": normalized}
     return result
 
 
@@ -314,6 +326,128 @@ def read_tuya(config: dict[str, Any]) -> list[dict[str, Any]]:
                            "connection_state": "failed", "reason": str(exc)[:120],
                            "source": "TUYA_CLOUD_READ_ONLY", "trust": "UNAVAILABLE"})
     return output
+
+
+def synchronize_tuya_devices(config: dict[str, Any]) -> dict[str, Any]:
+    """Import the Tuya project's inventory and safe device capabilities.
+
+    Device local keys are persisted in the private Gateway config only. This
+    function returns private records to its in-process caller for persistence;
+    the API uses public_config and exposes only a boolean.
+    """
+    if not config.get("client_id") or not config.get("client_secret"):
+        raise ValueError("tuya_credentials_required")
+    if not config.get("uid"):
+        raise ValueError("tuya_uid_required")
+    auth = _tuya_request(config, "/v1.0/token?grant_type=1")
+    token = (auth.get("result") or {}).get("access_token")
+    if not isinstance(token, str) or not token:
+        raise RuntimeError("tuya_token_missing")
+
+    by_id = {x.get("device_id"): x for x in config.get("devices", []) if isinstance(x, dict)}
+    discovered: list[dict[str, Any]] = []
+    cursor = ""
+    seen_cursors: set[str] = set()
+    pages = 0
+    while True:
+        query = {"page_size": "20"}
+        if cursor:
+            query["last_id"] = cursor
+        path = "/v2.0/cloud/thing/device?" + urllib.parse.urlencode(query)
+        rows = _tuya_request(config, path, token).get("result")
+        if not isinstance(rows, list):
+            raise RuntimeError("tuya_device_list_invalid")
+        pages += 1
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            device_id = row.get("id") or row.get("device_id")
+            if not isinstance(device_id, str) or not 1 <= len(device_id) <= 128 or not all(c.isalnum() or c in "_-" for c in device_id):
+                continue
+            previous = by_id.get(device_id, {})
+            item = {
+                "device_id": device_id,
+                "name": str(row.get("customName") or row.get("name") or previous.get("name") or "Tuya device")[:120],
+                "category": str(row.get("category") or previous.get("category") or "")[:64],
+                "product_id": str(row.get("productId") or row.get("product_id") or previous.get("product_id") or "")[:128],
+                "product_name": str(row.get("productName") or row.get("product_name") or previous.get("product_name") or "")[:120],
+                "online": bool(row.get("isOnline", row.get("online", False))),
+                "ip": str(row.get("ip") or previous.get("ip") or "")[:64],
+                "cloud_source": "TUYA_PROJECT",
+                "cloud_missing": False,
+                "last_synced_at": int(time.time()),
+            }
+            key = row.get("localKey") or row.get("local_key")
+            if isinstance(key, str) and 8 <= len(key) <= 256:
+                item["local_key"] = key
+            elif isinstance(previous.get("local_key"), str):
+                item["local_key"] = previous["local_key"]
+            for retained in ("switch_code", "level_code", "level_min", "level_max", "favorite", "room", "floor"):
+                if retained in previous:
+                    item[retained] = previous[retained]
+            discovered.append(item)
+        if len(discovered) > MAX_TUYA_DEVICES:
+            raise RuntimeError("tuya_device_limit_exceeded")
+        if len(rows) < 20:
+            break
+        next_cursor = rows[-1].get("id") or rows[-1].get("device_id") if rows else None
+        if not isinstance(next_cursor, str) or next_cursor in seen_cursors:
+            raise RuntimeError("tuya_device_pagination_invalid")
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+        if pages >= 10:
+            raise RuntimeError("tuya_device_limit_exceeded")
+
+    # Read each device's latest metadata and DP schema. Per-device failures are
+    # reported without discarding the successfully imported inventory.
+    details_failures = 0
+    for item in discovered:
+        quoted = urllib.parse.quote(item["device_id"], safe="")
+        try:
+            details = _tuya_request(config, f"/v2.0/cloud/thing/{quoted}", token).get("result")
+            if isinstance(details, dict):
+                key = details.get("local_key") or details.get("localKey")
+                if isinstance(key, str) and 8 <= len(key) <= 256:
+                    item["local_key"] = key
+                if details.get("ip"):
+                    item["ip"] = str(details["ip"])[:64]
+                item["online"] = bool(details.get("is_online", details.get("online", item["online"])))
+                item["name"] = str(details.get("custom_name") or details.get("name") or item["name"])[:120]
+                item["product_id"] = str(details.get("product_id") or item["product_id"])[:128]
+                item["product_name"] = str(details.get("product_name") or item["product_name"])[:120]
+                item["category"] = str(details.get("category") or item["category"])[:64]
+        except (RuntimeError, ValueError):
+            details_failures += 1
+        try:
+            current_status = _tuya_request(config, f"/v1.0/iot-03/devices/{quoted}/status", token).get("result")
+            if isinstance(current_status, list):
+                item["current_status"] = [{"code": entry.get("code"), "value": entry.get("value")}
+                                           for entry in current_status if isinstance(entry, dict)
+                                           and isinstance(entry.get("code"), str)][:128]
+                item["last_status_at"] = int(time.time())
+        except (RuntimeError, ValueError):
+            if isinstance(by_id.get(item["device_id"], {}).get("current_status"), list):
+                item["current_status"] = by_id[item["device_id"]]["current_status"]
+                item["last_status_at"] = by_id[item["device_id"]].get("last_status_at")
+            details_failures += 1
+        try:
+            spec = _tuya_request(config, f"/v1.0/iot-03/devices/{quoted}/specification", token).get("result")
+            if isinstance(spec, dict):
+                functions = spec.get("functions", [])
+                statuses = spec.get("status", [])
+                if isinstance(functions, list):
+                    item["functions"] = [{k: entry.get(k) for k in ("code", "name", "type", "values", "desc") if k in entry}
+                                          for entry in functions if isinstance(entry, dict)][:128]
+                if isinstance(statuses, list):
+                    item["status_spec"] = [{k: entry.get(k) for k in ("code", "name", "type", "values", "desc") if k in entry}
+                                            for entry in statuses if isinstance(entry, dict)][:128]
+                item["category"] = str(spec.get("category") or item["category"])[:64]
+        except (RuntimeError, ValueError):
+            details_failures += 1
+
+    return {"devices": discovered, "device_count": len(discovered),
+            "local_keys_available": sum(bool(item.get("local_key")) for item in discovered),
+            "schema_failures": details_failures, "pages": pages}
 
 
 def control_tuya_switch(config: dict[str, Any], device_id: str, on: bool) -> dict[str, Any]:

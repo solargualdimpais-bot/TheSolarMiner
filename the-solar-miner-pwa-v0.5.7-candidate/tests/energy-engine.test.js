@@ -16,6 +16,11 @@ test("Owner PWA reads Gateway engine history and stores battery settings on Gate
   assert.match(app, /SOC da bateria/);
   assert.match(app, /Energia acima do SOC mínimo/);
   assert.match(app, /Autonomia até ao corte/);
+  assert.match(app, /Autonomia da bateria até ao corte/);
+  assert.match(app, /battery-flow-kpi \$\{batteryFlowClass\}/);
+  assert.match(app, /batteryFlowClass==="charge"\?"A carregar":batteryFlowClass==="discharge"\?"A descarregar"/);
+  assert.match(read(root, "styles.css"), /battery-flow-kpi\.charge strong\{color:var\(--blue\)\}/);
+  assert.match(read(root, "styles.css"), /battery-flow-kpi\.discharge strong\{color:var\(--red\)\}/);
   assert.match(app, /battery_soc_source/);
   assert.match(app, /gateway_energy_integrated/);
   assert.match(app, /page==="baterias"\?`<article class="ws-kpi battery-autonomy-card"/);

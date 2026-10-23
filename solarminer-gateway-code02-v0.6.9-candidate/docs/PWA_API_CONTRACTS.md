@@ -1,4 +1,4 @@
-# Contratos PWA / Gateway CODE02 0.6.42
+# Contratos PWA / Gateway CODE02 0.6.43
 
 ## Appearance of the shared property photo
 

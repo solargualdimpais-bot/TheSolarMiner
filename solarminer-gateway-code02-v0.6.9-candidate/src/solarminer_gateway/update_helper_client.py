@@ -26,7 +26,7 @@ def request(action: str, operation_id: str | None = None) -> dict[str, Any]:
         raise ValueError("update_operation_id_unexpected")
     path = os.environ.get("SOLARMINER_UPDATE_BROKER_SOCKET", DEFAULT_SOCKET_PATH)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        client.settimeout(35 if action == "tailscale_connect" else 15)
+        client.settimeout(35 if action == "tailscale_connect" else 30 if action == "diagnostics" else 15)
         client.connect(path)
         client.sendall(json.dumps(payload, separators=(",", ":")).encode("utf-8") + b"\n")
         client.shutdown(socket.SHUT_WR)

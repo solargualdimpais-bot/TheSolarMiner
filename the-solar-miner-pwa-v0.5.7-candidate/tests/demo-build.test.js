@@ -126,8 +126,32 @@ test('live Home uses compact square weather and production cards with a lighter 
   assert.match(css, /\.home-weather-row\{[^}]*grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
   assert.match(css, /\.home-weather-card,\.home-production-card\{[^}]*aspect-ratio:1\/1/);
   assert.match(css, /\.live-property-hero \.home-property-name\{[^}]*font-weight:300/);
+  assert.match(css, /\.live-property-hero\{[^}]*border-radius:0!important/);
+  assert.match(css, /\.live-property-hero \.hero-shade\{[^}]*radial-gradient\(ellipse at center/);
   assert.match(css, /\.home-weather-values strong,\.home-production-value\{[^}]*font-size:clamp\(24px,2\.3vw,32px\)/);
   assert.match(css, /\.main-content \.home-weather-card,\.main-content \.home-production-card\{aspect-ratio:1\/1/);
   assert.match(css, /\.main-content \.home-weather-row\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
   assert.match(css, /\.main-content \.live-property-hero\.has-property-photo::before[^}]*opacity:var\(--property-photo-opacity/);
+});
+
+test('Owner photo editor stores framing and weather card renders a condition icon', () => {
+  const app=read('app.js'),html=read('index.html'),css=read('styles.css');
+  for(const field of ['photo_position_x','photo_position_y','photo_zoom','photo_vignette']) assert.ok(app.includes(field),field);
+  assert.match(app,/pointermove/);
+  assert.match(app,/weather-condition-icon/);
+  assert.match(app,/home-weather-condition/);
+  assert.match(html,/context-editor-preview-vignette/);
+  assert.match(css,/\.weather-condition-icon\{[^}]*width:25px/);
+});
+
+test('live history chart uses consumption bars and solid or dotted production/potential lines',()=>{
+  const app=read('app.js');
+  assert.match(app,/solar-window-chart/);
+  assert.match(app,/stroke-dasharray="3 6"/);
+  assert.match(app,/Produção/);
+  assert.match(app,/Produção potencial/);
+  assert.match(app,/data-load=/);
+  assert.match(app,/Produção efetiva:/);
+  assert.match(app,/kW/);
+  assert.doesNotMatch(app,/FV medida \/ prevista|Consumo medido \/ previsto|Potencial FV pela meteorologia/);
 });

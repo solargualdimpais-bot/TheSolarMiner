@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
+import stat
 import subprocess
 import sys
+import time
 import uuid
 
 HELPER = "/usr/sbin/solarminer-update-apply"
@@ -23,12 +27,99 @@ DIAGNOSTIC_SECRET_PATTERNS = (
     (re.compile(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----", re.DOTALL), "[REDACTED PRIVATE KEY]"),
     (re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]"), ""),
 )
+TAILSCALE_CERT_LOG = "/var/log/solarminer-tailscale-cert.log"
+TAILSCALE_CERT_LOG_MAX_BYTES = 12_000
+CONSOLE_SERVICES = {
+    "solarminer-gateway.service": "gateway",
+    "nginx.service": "nginx",
+    "tailscaled.service": "tailscale",
+    "solarminer-update-check-daily.timer": "daily_update_check",
+    "solarminer-update-broker.socket": "privileged_update_broker",
+    "solarminer-tailscale-cert.timer": "tailscale_certificate_renewal",
+}
+def _cpu_sample() -> tuple[int, int] | None:
+    try:
+        with open("/proc/stat", "r", encoding="ascii") as stream:
+            fields = stream.readline().split()
+        values = [int(value) for value in fields[1:]]
+        if len(values) < 4:
+            return None
+        idle = values[3] + (values[4] if len(values) > 4 else 0)
+        return sum(values), idle
+    except (OSError, ValueError):
+        return None
+
+
+def _system_resources() -> dict[str, object]:
+    first = _cpu_sample()
+    if first:
+        time.sleep(0.12)
+    second = _cpu_sample() if first else None
+    cpu_percent = None
+    if first and second:
+        total_delta, idle_delta = second[0] - first[0], second[1] - first[1]
+        if total_delta > 0 and idle_delta >= 0:
+            cpu_percent = round(max(0.0, min(100.0, 100 * (1 - idle_delta / total_delta))), 1)
+    memory = {}
+    try:
+        with open("/proc/meminfo", "r", encoding="ascii") as stream:
+            for line in stream:
+                key, _, value = line.partition(":")
+                if key in {"MemTotal", "MemAvailable"}:
+                    memory[key] = int(value.strip().split()[0]) * 1024
+        total, available = memory["MemTotal"], memory["MemAvailable"]
+        memory_data = {"total_bytes": total, "used_bytes": max(0, total - available),
+                       "available_bytes": available,
+                       "used_percent": round(100 * (total - available) / total, 1) if total else None}
+    except (OSError, ValueError, KeyError, IndexError):
+        memory_data = {"total_bytes": None, "used_bytes": None, "available_bytes": None, "used_percent": None}
+    try:
+        disk = shutil.disk_usage("/var/lib/solarminer")
+        disk_data = {"path": "/var/lib/solarminer", "total_bytes": disk.total,
+                     "used_bytes": disk.used, "free_bytes": disk.free,
+                     "used_percent": round(100 * disk.used / disk.total, 1) if disk.total else None}
+    except OSError:
+        disk_data = {"path": "/var/lib/solarminer", "total_bytes": None,
+                     "used_bytes": None, "free_bytes": None, "used_percent": None}
+    return {"cpu_percent": cpu_percent, "cpu_count": os.cpu_count(), "memory": memory_data, "disk": disk_data}
+
+
+def _service_statuses(runner=subprocess.run) -> dict[str, str]:
+    statuses: dict[str, str] = {}
+    for unit, name in CONSOLE_SERVICES.items():
+        try:
+            result = runner(["/usr/bin/systemctl", "is-active", unit],
+                            capture_output=True, text=True, timeout=2, check=False)
+            state = result.stdout.strip() if isinstance(result.stdout, str) else ""
+            statuses[name] = state if state in {"active", "inactive", "failed"} else "unknown"
+        except (OSError, subprocess.TimeoutExpired):
+            statuses[name] = "unknown"
+    return statuses
 
 
 def _redact_diagnostics(value: str) -> str:
     for pattern, replacement in DIAGNOSTIC_SECRET_PATTERNS:
         value = pattern.sub(replacement, value)
     return value[-24000:]
+
+
+def _read_tailscale_cert_log() -> str:
+    """Read only the fixed, root-owned Tailscale certificate service log."""
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(TAILSCALE_CERT_LOG, flags)
+        with os.fdopen(descriptor, "rb") as stream:
+            metadata = os.fstat(stream.fileno())
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_size <= 0:
+                return ""
+            stream.seek(max(0, metadata.st_size - TAILSCALE_CERT_LOG_MAX_BYTES))
+            data = stream.read(TAILSCALE_CERT_LOG_MAX_BYTES)
+        text = data.decode("utf-8", errors="replace")
+        if metadata.st_size > TAILSCALE_CERT_LOG_MAX_BYTES:
+            text = text.partition("\n")[2]
+        return text.strip()
+    except (OSError, ValueError):
+        return ""
 
 
 def handle_request(raw: bytes, runner=subprocess.run) -> dict[str, object]:
@@ -78,8 +169,15 @@ def handle_request(raw: bytes, runner=subprocess.run) -> dict[str, object]:
     if action == "diagnostics":
         if result.returncode != 0 or not isinstance(result.stdout, str):
             return {"status": "error", "reason": "gateway_journal_unavailable"}
-        return {"status": "ok", "logs": _redact_diagnostics(result.stdout),
-                "truncated": len(result.stdout) > 24000, "scope": "allowlisted_services_last_2_hours"}
+        logs = result.stdout.rstrip()
+        cert_log = _read_tailscale_cert_log()
+        if cert_log:
+            logs += "\n\n--- SolarMiner Tailscale certificate and Nginx setup log ---\n" + cert_log
+        truncated = len(logs) > 24000
+        return {"status": "ok", "logs": _redact_diagnostics(logs),
+                "services": _service_statuses(runner), "resources": _system_resources(),
+                "truncated": truncated,
+                "scope": "allowlisted_services_last_2_hours_plus_tailscale_setup_log_tail"}
     if action == "tailscale_connect" and result.returncode != 0:
         return {"status": "error", "reason": "tailscale_connect_failed"}
     if action == "tailscale_status" and result.returncode != 0:

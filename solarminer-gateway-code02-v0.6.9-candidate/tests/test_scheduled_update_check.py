@@ -54,10 +54,11 @@ def test_root_broker_accepts_only_allowlisted_actions_and_validated_enqueue(monk
     assert calls[0][1]["timeout"] == 12
     assert update_broker.handle_request(b'{"action":"enqueue","operation_id":"../../etc/passwd"}\n', runner)["status"] == "error"
     assert update_broker.handle_request(b'{"action":"recover"}\n', runner)["status"] == "error"
+    assert update_broker.handle_request(b'{"action":"system_action","operation":"anything"}\n', runner)["status"] == "error"
     assert len(calls) == 1
 
 
-def test_root_broker_console_reads_only_fixed_service_logs_and_redacts_secrets():
+def test_root_broker_console_reads_fixed_service_logs_and_tailscale_setup_log_and_redacts_secrets(monkeypatch):
     calls = []
     raw_logs = ("2026-10-22T10:00:00+00:00 gateway INFO password=visible-secret Bearer abc.def.ghi\n"
                 "-----BEGIN ED25519 PRIVATE KEY-----\nsecret-key-material\n-----END ED25519 PRIVATE KEY-----\n")
@@ -66,6 +67,7 @@ def test_root_broker_console_reads_only_fixed_service_logs_and_redacts_secrets()
         calls.append((args, kwargs))
         return SimpleNamespace(returncode=0, stdout=raw_logs, stderr="must-not-leak")
 
+    monkeypatch.setattr(update_broker, "_read_tailscale_cert_log", lambda: "nginx: [emerg] certificate file missing\n")
     response = update_broker.handle_request(b'{"action":"diagnostics"}\n', runner)
     assert calls[0][0][0] == "/usr/bin/journalctl"
     assert "--no-pager" in calls[0][0]
@@ -76,7 +78,26 @@ def test_root_broker_console_reads_only_fixed_service_logs_and_redacts_secrets()
     assert "abc.def.ghi" not in response["logs"]
     assert "secret-key-material" not in response["logs"]
     assert "must-not-leak" not in response["logs"]
-    assert response["scope"] == "allowlisted_services_last_2_hours"
+    assert "Tailscale certificate and Nginx setup log" in response["logs"]
+    assert "nginx: [emerg] certificate file missing" in response["logs"]
+    assert response["scope"] == "allowlisted_services_last_2_hours_plus_tailscale_setup_log_tail"
+    assert set(response["services"]) == set(update_broker.CONSOLE_SERVICES.values())
+    assert set(response["resources"]) == {"cpu_percent", "cpu_count", "memory", "disk"}
+
+
+def test_service_status_reader_uses_only_fixed_units_and_distinguishes_failure():
+    requested = []
+
+    def runner(args, **_kwargs):
+        requested.append(args)
+        state = "failed" if args[-1] == "nginx.service" else "active"
+        return SimpleNamespace(returncode=0 if state == "active" else 3, stdout=state, stderr="")
+
+    statuses = update_broker._service_statuses(runner)
+    assert statuses["nginx"] == "failed"
+    assert statuses["gateway"] == "active"
+    assert {call[-1] for call in requested} == set(update_broker.CONSOLE_SERVICES)
+    assert all(call[:2] == ["/usr/bin/systemctl", "is-active"] for call in requested)
 
 
 @pytest.mark.parametrize(("action", "helper", "payload"), [

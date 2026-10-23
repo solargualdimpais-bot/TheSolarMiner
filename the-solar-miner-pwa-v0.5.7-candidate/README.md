@@ -1,10 +1,12 @@
-# The Solar Miner PWA v0.5.11
+# The Solar Miner PWA v0.5.12
 
-PWA de operação ligada ao SolarMiner Gateway CODE02 0.6.42. Em sessão autenticada, as páginas apresentam dados e estado fornecidos pelo Gateway; áreas ainda sem integração mostram disponibilidade explícita e não dados simulados.
+PWA de operação ligada ao SolarMiner Gateway CODE02 0.6.43. Em sessão autenticada, as páginas apresentam dados e estado fornecidos pelo Gateway; áreas ainda sem integração mostram disponibilidade explícita e não dados simulados.
 
-Notas da versão: [`CHANGELOG_V0510.md`](CHANGELOG_V0510.md).
+Notas da versão: [`CHANGELOG_V0512.md`](CHANGELOG_V0512.md).
 
-## Incremento v0.5.11
+## Incremento v0.5.12
+
+Mostra o fluxo da bateria com carga azul e descarga vermelha no menu Energia, e calcula a autonomia até ao SOC de corte com energia utilizável estimada pelo Gateway dividida pelo consumo atual. O cabeçalho partilhado, as opções de fotografia, meteorologia, gráfico interativo e restantes áreas seguem incluídos.
 
 - Home com perfil da casa (nome, localidade e fotografia), meteorologia, produção solar atual e gráfico de histórico/previsão fornecido pelo Gateway.
 - Favoritos de equipamentos Tuya configurados, com comandos Owner individuais para interruptores e dispositivos de nível compatíveis.

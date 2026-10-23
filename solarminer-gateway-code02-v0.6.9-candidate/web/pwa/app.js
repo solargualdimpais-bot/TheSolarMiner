@@ -3,7 +3,7 @@ import { DEMO_CONTROL_CONFIG, createDemoControlState, updateDemoControl, toggleD
 import { renderWorkspacePage, renderHomePreferenceLinks, renderHouseSearch, handleWorkspaceAction, handleWorkspaceChange, applyPreferences, getWorkspacePageLabel, workspace, getEditableEntity, saveEditableEntity, saveDemoWorkspace, hydrateWorkspacePhotos } from "./workspace-ui.js";
 import { renderAutomationsPage, renderSolarProductionPage, renderDemoAdminPanel, handleFeatureAction, saveAutomationForm, addDemoUser, saveDemoUserEdit, saveSolarWeather, demoFeatures } from "./features-v053.js";
 import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classifyEndpoint, inferHostedGatewayEndpoint, PRESENCE_API_STATUS } from "./gateway-connection.js";
-import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, controlGatewayAntminer, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, controlGatewayAntminer, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging } from "./gateway-auth.js";
 
 let automationEditingId = "";
 const state = { page: "inicio", mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], energyEngine: null, siteProfile: null, tuyaDevices: [], tuyaReadings: [], lastUpdated: null, lastMeasurementAt: null, refreshing: false, demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [] };
@@ -14,9 +14,11 @@ const userFacingSaveError = (error) => { const message=String(error?.message||""
 const pageLabel = (id) => id === "inicio" ? "Visão geral" : id === "owner" ? "Owner" : (CATEGORIES.find(c => c.id === id)?.label || getWorkspacePageLabel(id) || "Mais áreas");
 const timeLabel = (value) => value ? new Intl.DateTimeFormat("pt-PT", { dateStyle: "short", timeStyle: "medium" }).format(new Date(value)) : "Sem atualização";
 let editorContext=null, editorPhoto=undefined, editorPhotoFile=null;
+let editorPhotoSettings={x:50,y:50,zoom:1,vignette:.35,opacity:.38}, editorDrag=null;
 function openContextEditor(type,id){
   const entity=getEditableEntity(type,id);if(!entity){return;}
   editorContext={type,id};editorPhoto=type==='house'?(state.siteProfile?.photo_data_url||''):type==='room'?(entity.customPhoto||''):(entity.customPhoto||'');editorPhotoFile=null;
+  if(type==='house')editorPhotoSettings={x:Number(state.siteProfile?.photo_position_x??50),y:Number(state.siteProfile?.photo_position_y??50),zoom:Number(state.siteProfile?.photo_zoom??1),vignette:Number(state.siteProfile?.photo_vignette??.35),opacity:Number(state.siteProfile?.photo_opacity??.38)};
   const title=({house:'Casa',room:'Editar divisão',device:'Editar dispositivo',floor:'Editar piso'})[type]||'Editar elemento';
   $('#context-editor-title').textContent=title;$('#context-editor-status').textContent=type==='house'?'Os dados partilhados da casa são guardados no Gateway.':'';
   $('#context-editor .dialog-header .eyebrow').textContent=type==='house'?'CASA · LOCALIZAÇÃO · FOTOGRAFIA':'PERSONALIZAÇÃO';
@@ -27,7 +29,7 @@ function openContextEditor(type,id){
   if(type==='house'){
     const cfg=state.energyEngine?.configuration||{}, owner=sessionInfo().authenticated&&sessionInfo().user?.role==='owner';
     const transparency=Math.round((1-Math.max(0,Math.min(1,Number(state.siteProfile?.photo_opacity??0.38))))*100);
-    fields=`<label class="ws-field">Nome da casa<input name="name" maxlength="100" required value="${esc(state.siteProfile?.name||entity.name||'Solar Energy')}" ${owner?'':'disabled'}></label>${owner?`<label class="ws-field">Cidade ou localidade<input name="siteLocationName" type="text" maxlength="120" value="${esc(cfg.site_location_name??'')}" placeholder="Ex.: Coimbra, Portugal" autocomplete="address-level2"></label><p class="field-note">O Gateway converte a cidade em coordenadas para consultar meteorologia e calcular o potencial solar.</p><label class="ws-field photo-opacity-field">Transparência da fotografia <output id="photo-opacity-value">${transparency}%</output><input name="photoTransparency" id="photo-opacity" type="range" min="0" max="100" step="1" value="${transparency}" aria-label="Transparência da fotografia da casa"><small>0% mostra a fotografia; 100% deixa-a invisível.</small></label>`:`<p class="field-note">Só o Owner pode alterar os dados partilhados da propriedade.</p>`}`;
+    fields=`<label class="ws-field">Nome da casa<input name="name" maxlength="100" required value="${esc(state.siteProfile?.name||entity.name||'Solar Energy')}" ${owner?'':'disabled'}></label>${owner?`<label class="ws-field">Cidade ou localidade<input name="siteLocationName" type="text" maxlength="120" value="${esc(cfg.site_location_name??'')}" placeholder="Ex.: Coimbra, Portugal" autocomplete="address-level2"></label><p class="field-note">O Gateway converte a cidade em coordenadas para consultar meteorologia e calcular o potencial solar.</p><label class="ws-field photo-opacity-field">Transparência da fotografia <output id="photo-opacity-value">${transparency}%</output><input name="photoTransparency" id="photo-opacity" type="range" min="0" max="100" step="1" value="${transparency}" aria-label="Transparência da fotografia da casa"></label><label class="ws-field">Zoom da fotografia <output id="photo-zoom-value">${editorPhotoSettings.zoom.toFixed(1)}×</output><input name="photoZoom" id="photo-zoom" type="range" min="1" max="3" step="0.05" value="${editorPhotoSettings.zoom}" aria-label="Zoom da fotografia"></label><label class="ws-field">Vinheta nas bordas <output id="photo-vignette-value">${Math.round(editorPhotoSettings.vignette*100)}%</output><input name="photoVignette" id="photo-vignette" type="range" min="0" max="85" step="1" value="${Math.round(editorPhotoSettings.vignette*100)}" aria-label="Intensidade da vinheta"></label><small class="field-note">Arrasta a fotografia para a enquadrar. Os ajustes ficam partilhados no Gateway.</small>`:`<p class="field-note">Só o Owner pode alterar os dados partilhados da propriedade.</p>`}`;
   }
   if(type==='floor')fields=`<label class="ws-field">Nome do piso<input name="name" maxlength="100" required value="${esc(entity.name||'')}"></label>`;
   if(type==='room')fields=`<label class="ws-field">Nome da divisão<input name="name" maxlength="100" required value="${esc(entity.name||'')}"></label><label class="ws-field">Piso associado<select name="floorId">${floorOptions}</select></label>`;
@@ -40,12 +42,29 @@ function openContextEditor(type,id){
   $('#context-editor-fields').innerHTML=fields;
   const preview=$('#context-editor-preview'),img=$('#context-editor-preview-image');
   if(editorPhoto){img.src=editorPhoto;preview.hidden=false;}else{img.removeAttribute('src');preview.hidden=true;}
+  updateHousePhotoPreview();
   $('#context-editor').showModal();
+}
+function updateHousePhotoPreview(){
+  const img=$('#context-editor-preview-image'),shade=$('#context-editor-preview-vignette');if(!img)return;
+  img.style.objectPosition=`${editorPhotoSettings.x}% ${editorPhotoSettings.y}%`;
+  img.style.transform=`scale(${editorPhotoSettings.zoom})`;
+  img.style.opacity=String(editorPhotoSettings.opacity);
+  if(shade)shade.style.background=`radial-gradient(ellipse at center, transparent ${Math.max(0,65-editorPhotoSettings.vignette*38)}%, rgba(0,0,0,${editorPhotoSettings.vignette}) 120%)`;
 }
 function readAndCompressImage(file){return new Promise((resolve,reject)=>{if(!file)return resolve(undefined);if(!/^image\/(jpeg|png|webp|gif|avif|heic|heif)$/i.test(file.type)||file.size>12*1024*1024)return reject(new Error('Escolhe uma fotografia JPEG, PNG, WebP, GIF, AVIF ou HEIC com menos de 12 MB.'));const reader=new FileReader();reader.onerror=()=>reject(new Error('Não foi possível ler a imagem.'));reader.onload=()=>{const image=new Image();image.onerror=()=>reject(new Error('O browser não conseguiu abrir esta imagem. Se for HEIC, converte-a para JPEG e tenta novamente.'));image.onload=()=>{const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d');if(!ctx)return reject(new Error('O browser não disponibilizou processamento local de imagem.'));let maxDimension=1400;for(let attempt=0;attempt<12;attempt++){const scale=Math.min(1,maxDimension/Math.max(image.naturalWidth,image.naturalHeight));canvas.width=Math.max(1,Math.round(image.naturalWidth*scale));canvas.height=Math.max(1,Math.round(image.naturalHeight*scale));ctx.clearRect(0,0,canvas.width,canvas.height);ctx.drawImage(image,0,0,canvas.width,canvas.height);for(const quality of [.78,.68,.58,.48]){const data=canvas.toDataURL('image/jpeg',quality);if(data.length<=2_400_000)return resolve(data);}maxDimension=Math.round(maxDimension*.82);}reject(new Error('Não foi possível comprimir a fotografia abaixo do limite de 1,8 MB. Escolhe uma fotografia mais pequena.'));};image.src=reader.result;};reader.readAsDataURL(file);});}
 $('#context-editor-cancel').addEventListener('click',()=>$('#context-editor').close());
 $('#context-editor-fields').addEventListener('change',async e=>{if(e.target.id!=='context-editor-file')return;const file=e.target.files?.[0];if(!file)return;try{editorPhoto=await readAndCompressImage(file);const img=$('#context-editor-preview-image');img.src=editorPhoto;$('#context-editor-preview').hidden=false;$('#context-editor-status').textContent='Pré-visualização pronta. Ainda não foi guardada.';}catch(error){$('#context-editor-status').textContent=error.message;}});
-$('#context-editor-fields').addEventListener('input',e=>{if(e.target.id!=='photo-opacity')return;$('#photo-opacity-value').value=`${e.target.value}%`;$('#photo-opacity-value').textContent=`${e.target.value}%`;});
+$('#context-editor-fields').addEventListener('input',e=>{
+  const t=e.target;
+  if(t.id==='photo-opacity'){editorPhotoSettings.opacity=1-Number(t.value)/100;$('#photo-opacity-value').value=`${t.value}%`;$('#photo-opacity-value').textContent=`${t.value}%`;}
+  if(t.id==='photo-zoom'){editorPhotoSettings.zoom=Number(t.value);$('#photo-zoom-value').value=`${Number(t.value).toFixed(1)}×`;$('#photo-zoom-value').textContent=`${Number(t.value).toFixed(1)}×`;}
+  if(t.id==='photo-vignette'){editorPhotoSettings.vignette=Number(t.value)/100;$('#photo-vignette-value').value=`${t.value}%`;$('#photo-vignette-value').textContent=`${t.value}%`;}
+  updateHousePhotoPreview();
+});
+$('#context-editor-preview').addEventListener('pointerdown',e=>{if(!editorPhoto||editorContext?.type!=='house')return;editorDrag={x:e.clientX,y:e.clientY,px:editorPhotoSettings.x,py:editorPhotoSettings.y};e.currentTarget.setPointerCapture(e.pointerId);});
+$('#context-editor-preview').addEventListener('pointermove',e=>{if(!editorDrag)return;const rect=e.currentTarget.getBoundingClientRect();editorPhotoSettings.x=Math.max(0,Math.min(100,editorDrag.px-(e.clientX-editorDrag.x)/Math.max(1,rect.width)*100));editorPhotoSettings.y=Math.max(0,Math.min(100,editorDrag.py-(e.clientY-editorDrag.y)/Math.max(1,rect.height)*100));updateHousePhotoPreview();});
+$('#context-editor-preview').addEventListener('pointerup',()=>{editorDrag=null;});
 $('#context-editor-fields').addEventListener('click',e=>{if(e.target.id!=='context-editor-remove-photo')return;editorPhoto='';editorPhotoFile=null;$('#context-editor-preview').hidden=true;$('#context-editor-preview-image').removeAttribute('src');$('#context-editor-status').textContent='A imagem será removida quando guardares.';});
 $('#context-editor-form').addEventListener('submit',async e=>{
   e.preventDefault();if(!editorContext)return;
@@ -54,7 +73,7 @@ $('#context-editor-form').addEventListener('submit',async e=>{
     if(editorContext.type==='house'){
       if(sessionInfo().user?.role!=='owner')throw new Error('Só o Owner pode alterar os dados partilhados da propriedade.');
       const current=state.siteProfile||{name:'Solar Energy',photo_data_url:null,floors:[]};
-      const payload={...current,name:form.elements.name?.value||current.name,photo_data_url:editorPhoto===undefined?(current.photo_data_url||null):(editorPhoto||null),photo_opacity:1-Number(form.elements.photoTransparency?.value??Math.round((1-Number(current.photo_opacity??0.38))*100))/100};
+      const payload={...current,name:form.elements.name?.value||current.name,photo_data_url:editorPhoto===undefined?(current.photo_data_url||null):(editorPhoto||null),photo_opacity:editorPhotoSettings.opacity,photo_position_x:editorPhotoSettings.x,photo_position_y:editorPhotoSettings.y,photo_zoom:editorPhotoSettings.zoom,photo_vignette:editorPhotoSettings.vignette};
       const locationName=form.elements.siteLocationName?.value.trim()||'';
       const oldLocation=state.energyEngine?.configuration?.site_location_name||'';
       if(locationName&&locationName!==oldLocation){const cfg=await saveGatewayEnergyEngineConfig({site_location_name:locationName});state.siteLocationName=cfg.site_location_name||locationName;}
@@ -296,16 +315,23 @@ function chart() {
     const point=(item,forcedUnit)=>{const stamp=Date.parse(item.observed_at||item.forecast_at||"");let value=Number(item.value);if(!Number.isFinite(stamp)||!Number.isFinite(value))return null;if((item.unit||forcedUnit)==="W")value/=1000;return {stamp,value};};
     const historical=field=>(history[field]||[]).map(item=>point(item)).filter(p=>p&&p.stamp>=start&&p.stamp<=now);
     const future=items=>(items||[]).map(item=>point(item)).filter(p=>p&&p.stamp>=now&&p.stamp<=end);
-    const pv=[...historical("pv_total_power"),...future(forecast.solar_expected?.hourly_values)].sort((a,b)=>a.stamp-b.stamp);
-    const load=[...historical("load_total_power"),...future(forecast.load_power?.hourly_values)].sort((a,b)=>a.stamp-b.stamp);
+    const pvActual=historical("pv_total_power").sort((a,b)=>a.stamp-b.stamp);
+    const pvForecast=future(forecast.solar_expected?.hourly_values).sort((a,b)=>a.stamp-b.stamp);
+    const loadActual=historical("load_total_power").sort((a,b)=>a.stamp-b.stamp);
+    const loadForecast=future(forecast.load_power?.hourly_values).sort((a,b)=>a.stamp-b.stamp);
     const potential=(forecast.solar_potential?.hourly_values||[]).map(item=>point(item)).filter(p=>p&&p.stamp>=start&&p.stamp<=end).sort((a,b)=>a.stamp-b.stamp);
-    const all=[...pv,...load,...potential];
+    const all=[...pvActual,...pvForecast,...loadActual,...loadForecast,...potential];
     if(!all.length)return `<div class="empty-state">Ainda não há leituras ou previsão. Configura a localização e a potência FV na área Owner.</div>`;
-    const max=Math.max(1,...all.map(p=>p.value)),x=stamp=>45+Math.max(0,Math.min(1,(stamp-start)/(end-start)))*555,y=value=>178-Math.max(0,value)/max*145;
+    const max=Math.max(1,...all.map(p=>p.value)),x=stamp=>45+Math.max(0,Math.min(1,(stamp-start)/(end-start)))*555,y=value=>235-Math.max(0,value)/max*190;
     const path=items=>items.map((p,i)=>`${i?"L":"M"}${x(p.stamp).toFixed(1)} ${y(p.value).toFixed(1)}`).join(" ");
-    const weather=forecast.solar_potential||{},status=weather.state==="available"?"Previsão solar meteorológica ativa":weather.state==="needs_pv_capacity"?"Indica a potência nominal FV no Owner":weather.state==="unavailable"?"Serviço meteorológico indisponível":"Configura a localização no Owner";
-    const rows=(forecast.solar_potential?.hourly_values||[]).filter(item=>item.segment==="forecast").map((potentialPoint,index)=>{const exp=forecast.solar_expected?.hourly_values?.[index],cons=forecast.load_power?.hourly_values?.[index];const time=new Date(potentialPoint.observed_at).toLocaleTimeString("pt-PT",{hour:"2-digit",minute:"2-digit"});return `<tr><th scope="row">${esc(time)}</th><td>${exp?`${esc(exp.value)} kW`:"—"}</td><td>${esc(cons?cons.value:"—")} ${cons?"kW":""}</td><td>${esc(potentialPoint.value)} kW</td></tr>`;}).join("");
-    return `<svg class="chart solar-window-chart" viewBox="0 0 620 215" role="img" aria-label="Produção FV, consumo e potencial solar: três horas medidas e seis horas de previsão"><path class="chart-grid" d="M45 33H600 M45 70H600 M45 106H600 M45 142H600 M45 178H600"/><path d="${path(pv)}" fill="none" stroke="#dcc99c" stroke-width="2.5"/><path d="${path(load)}" fill="none" stroke="#a9c7d9" stroke-width="2.5"/><path d="${path(potential)}" fill="none" stroke="#b8df9c" stroke-width="2.5" stroke-dasharray="6 4"/><path d="M230 25V182" stroke="#8f897a" stroke-dasharray="3 4"/><g class="chart-label"><text x="45" y="201">−3 h</text><text x="218" y="201">agora</text><text x="414" y="201">+3 h</text><text x="570" y="201">+6 h</text></g></svg><div class="solar-chart-legend"><span><i class="solar-legend-pv"></i>FV medida / prevista</span><span><i class="solar-legend-load"></i>Consumo medido / previsto</span><span><i class="solar-legend-potential"></i>Potencial FV pela meteorologia</span></div><p class="field-note">${esc(status)}. Previsão de consumo: tendência linear das últimas três horas, indicativa. Previsão FV esperada: potencial meteorológico ajustado ao desempenho recente; linha tracejada verde: potência potencial calculada.</p>${rows?`<div class="solar-forecast-table-wrap"><table class="solar-forecast-table"><thead><tr><th>Hora</th><th>FV prevista</th><th>Consumo previsto</th><th>Potencial FV</th></tr></thead><tbody>${rows}</tbody></table></div>`:""}`;
+    const hourly=items=>{const bins=new Map();for(const p of items){const hour=Math.floor(p.stamp/3600000)*3600000;const bin=bins.get(hour)||{stamp:hour,total:0,count:0};bin.total+=p.value;bin.count++;bins.set(hour,bin);}return [...bins.values()].map(b=>({stamp:b.stamp,value:b.total/b.count})).sort((a,b)=>a.stamp-b.stamp);};
+    const loadHistoryBars=hourly(loadActual).map(p=>({...p,future:false})),loadForecastBars=hourly(loadForecast).map(p=>({...p,future:true}));
+    const bars=items=>items.map(p=>`<rect x="${(x(p.stamp)-5).toFixed(1)}" y="${y(p.value).toFixed(1)}" width="10" height="${Math.max(0,235-y(p.value)).toFixed(1)}" rx="2" fill="${p.future?'transparent':'#a9c7d9'}" stroke="#a9c7d9" stroke-width="1.5" ${p.future?'stroke-dasharray="2 2"':''}><title>${new Date(p.stamp).toLocaleTimeString("pt-PT",{hour:"2-digit"})} · ${p.future?'consumo previsto':'consumo medido'} ${p.value.toFixed(2)} kW</title></rect>`).join("");
+    const actualLine=path(pvActual),forecastLine=path(pvForecast.length&&pvActual.length?[pvActual.at(-1),...pvForecast]:pvForecast),historicalPotential=potential.filter(p=>p.stamp<=now),futurePotential=potential.filter(p=>p.stamp>=now);
+    const hourStart=Math.floor(start/3600000)*3600000,hourEnd=Math.ceil(end/3600000)*3600000,valueAt=(items,hour)=>hourly(items).find(p=>p.stamp===hour)?.value;
+    const hitTargets=[];for(let hour=hourStart;hour<=hourEnd;hour+=3600000){const loadValue=valueAt([...loadActual,...loadForecast],hour),pvValue=valueAt([...pvActual,...pvForecast],hour),potentialValue=valueAt(potential,hour);if(loadValue===undefined&&pvValue===undefined&&potentialValue===undefined)continue;hitTargets.push(`<rect class="solar-chart-hit" x="${Math.max(45,x(hour)-28).toFixed(1)}" y="34" width="56" height="203" tabindex="0" role="button" data-hour="${hour}" data-load="${loadValue??''}" data-pv="${pvValue??''}" data-potential="${potentialValue??''}" data-future="${hour>now}" aria-label="Ver valores das ${new Date(hour).toLocaleTimeString('pt-PT',{hour:'2-digit'})}"><title>Ver valores das ${new Date(hour).toLocaleTimeString('pt-PT',{hour:'2-digit'})}</title></rect>`);}
+    const yTicks=[0,.25,.5,.75,1].map(f=>`<text x="4" y="${(235-f*190+4).toFixed(0)}">${(max*f).toFixed(1)} kW</text>`).join("");
+    return `<div class="solar-chart-wrap"><svg class="chart solar-window-chart" viewBox="0 0 620 310" preserveAspectRatio="none" role="group" aria-label="Consumo em barras; Produção efetiva: linha azul; Produção potencial calculada: linha dourada. Eixo vertical em quilowatts; passado sólido, previsão pontilhada."><path class="chart-grid" d="M45 45H600 M45 92H600 M45 140H600 M45 187H600 M45 235H600"/><g class="chart-label solar-y-axis">${yTicks}</g><g>${bars(loadHistoryBars)}${bars(loadForecastBars)}</g>${actualLine?`<path d="${actualLine}" fill="none" stroke="#79bce8" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`:''}${forecastLine?`<path d="${forecastLine}" fill="none" stroke="#79bce8" stroke-width="3" stroke-dasharray="3 6" stroke-linecap="round" stroke-linejoin="round"/>`:''}${historicalPotential.length?`<path d="${path(historicalPotential)}" fill="none" stroke="#dcc99c" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`:''}${futurePotential.length?`<path d="${path(futurePotential.length&&historicalPotential.length?[historicalPotential.at(-1),...futurePotential]:futurePotential)}" fill="none" stroke="#dcc99c" stroke-width="3" stroke-dasharray="3 6" stroke-linecap="round" stroke-linejoin="round"/>`:''}<path d="M230 34V240" stroke="#8f897a" stroke-dasharray="3 4"/><g class="chart-label solar-x-axis"><text x="45" y="275">−3 h</text><text x="218" y="275">agora</text><text x="414" y="275">+3 h</text><text x="570" y="275">+6 h</text></g><g>${hitTargets.join('')}</g></svg><div class="solar-chart-tooltip" role="status" aria-live="polite" hidden></div></div><div class="solar-chart-legend"><span><i class="solar-legend-load"></i>Consumo</span><span><i class="solar-legend-pv"></i>Produção</span><span><i class="solar-legend-potential"></i>Produção potencial</span></div>`;
   }
   return `<svg class="chart" viewBox="0 0 620 190" role="img" aria-label="Gráfico ilustrativo de produção solar simulada"><defs><linearGradient id="areaFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#dcc99c" stop-opacity=".30"/><stop offset="100%" stop-color="#dcc99c" stop-opacity="0"/></linearGradient></defs><path class="chart-grid" d="M42 25H605 M42 65H605 M42 105H605 M42 145H605"/><path class="chart-area" d="M42 128 C75 125 90 111 122 118 S168 92 198 97 S245 70 276 82 S320 42 350 58 S399 72 430 47 S475 35 505 49 S565 28 605 37 L605 146 L42 146Z"/><path class="chart-line" d="M42 128 C75 125 90 111 122 118 S168 92 198 97 S245 70 276 82 S320 42 350 58 S399 72 430 47 S475 35 505 49 S565 28 605 37"/><g class="chart-label"><text x="42" y="166">08:00</text><text x="176" y="166">10:00</text><text x="309" y="166">12:00</text><text x="443" y="166">14:00</text><text x="575" y="166">16:00</text><text x="42" y="15">kW · CURVA ILUSTRATIVA</text></g></svg>`;
 }
@@ -438,12 +464,16 @@ function renderHomePhotoHero(menuTitle = "Home") {
   const photoStyle = photo ? "has-property-photo" : "photo-placeholder";
   const owner = sessionInfo().authenticated && sessionInfo().user?.role === "owner";
   const opacity=Math.max(0,Math.min(1,Number(state.siteProfile?.photo_opacity??0.38)));
-  const imageStyle = photo ? ` style="--property-image:url(&quot;${esc(photo)}&quot;);--property-photo-opacity:${opacity}"` : "";
+  const imageStyle = photo ? ` style="--property-image:url(&quot;${esc(photo)}&quot;);--property-photo-opacity:${opacity};--property-position-x:${Number(state.siteProfile?.photo_position_x??50)}%;--property-position-y:${Number(state.siteProfile?.photo_position_y??50)}%;--property-zoom:${Number(state.siteProfile?.photo_zoom??1)};--property-vignette:${Number(state.siteProfile?.photo_vignette??.35)}"` : "";
   return `<section class="property-hero ${photoStyle} live-property-hero shared-property-hero" id="property-hero" aria-label="${esc(menuTitle)} · ${esc(state.propertyName || workspace.house.name || "Solar Energy")}"${imageStyle}><div class="hero-shade"></div><div class="hero-content"><div><p class="shared-property-name">${esc(menuTitle)}</p><h1 class="home-property-name">${esc(state.propertyName || workspace.house.name || "Solar Energy")}</h1></div></div>${owner?`<button class="home-edit-trigger" id="hero-photo-settings" type="button" aria-label="Editar nome, localização e fotografia da propriedade" title="Editar propriedade">✎</button>`:""}</section>`;
 }
 function weatherConditionLabel(code) {
   const labels = {0:"Céu limpo",1:"Maioritariamente limpo",2:"Parcialmente nublado",3:"Encoberto",45:"Nevoeiro",48:"Nevoeiro com geada",51:"Chuvisco ligeiro",53:"Chuvisco moderado",55:"Chuvisco intenso",56:"Chuvisco gelado ligeiro",57:"Chuvisco gelado intenso",61:"Chuva ligeira",63:"Chuva moderada",65:"Chuva intensa",66:"Chuva gelada ligeira",67:"Chuva gelada intensa",71:"Neve ligeira",73:"Neve moderada",75:"Neve intensa",77:"Grãos de neve",80:"Aguaceiros ligeiros",81:"Aguaceiros moderados",82:"Aguaceiros violentos",85:"Queda de neve ligeira",86:"Queda de neve intensa",95:"Trovoada",96:"Trovoada com granizo ligeiro",99:"Trovoada com granizo intenso"};
   return Number.isInteger(code) ? (labels[code] || "Condição indisponível") : "Condição indisponível";
+}
+function weatherIcon(code){
+  const n=Number(code),paths=n===0?'<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"/>':n===1||n===2?'<path d="M7 18h10a4 4 0 0 0 .5-7.97A6 6 0 0 0 6 11a3.5 3.5 0 0 0 1 7Z"/><path d="M8 4V2m8 3 1.5-1.5"/>':n===3||n===45||n===48?'<path d="M6 17h12a4 4 0 0 0 .5-7.97A6 6 0 0 0 5 10a3.5 3.5 0 0 0 1 7Z"/><path d="M5 20h14"/>':n>=95?'<path d="M6 17h12a4 4 0 0 0 .5-7.97A6 6 0 0 0 5 10a3.5 3.5 0 0 0 1 7Z"/><path d="m13 13-3 5h3l-1 4 4-6h-3l1-3Z"/>':n>=51?'<path d="M6 15h12a4 4 0 0 0 .5-7.97A6 6 0 0 0 5 8a3.5 3.5 0 0 0 1 7Z"/><path d="m8 18-1 2m6-2-1 2m6-2-1 2"/>':'<path d="M7 18h10a4 4 0 0 0 .5-7.97A6 6 0 0 0 6 11a3.5 3.5 0 0 0 1 7Z"/>';
+  return `<svg class="weather-condition-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
 }
 function renderHomeWeatherCard() {
   const weather = state.energyEngine?.forecast?.weather, current = weather?.current;
@@ -454,7 +484,7 @@ function renderHomeWeatherCard() {
   if(Number.isFinite(current?.relative_humidity_percent))details.push(`Humidade ${Math.round(current.relative_humidity_percent)}%`);
   if(Number.isFinite(current?.cloud_cover_percent))details.push(`Nuvens ${Math.round(current.cloud_cover_percent)}%`);
   if(Number.isFinite(current?.wind_speed_kmh))details.push(`Vento ${Number(current.wind_speed_kmh).toLocaleString("pt-PT",{maximumFractionDigits:0})} km/h`);
-  return `<article class="home-weather-card" aria-label="Previsão meteorológica do Gateway"><p class="eyebrow">METEOROLOGIA · GATEWAY</p><div class="home-weather-values"><strong>${esc(temperature)}</strong><span>${esc(condition)}</span></div><p class="home-weather-details">${details.length?details.map(esc).join(" · "):"Sem detalhes meteorológicos disponíveis"}</p></article>`;
+  return `<article class="home-weather-card" aria-label="Previsão meteorológica do Gateway"><p class="eyebrow">METEOROLOGIA · GATEWAY</p><div class="home-weather-values"><strong>${esc(temperature)}</strong><span class="home-weather-condition">${weatherIcon(current?.weather_code)}<span>${esc(condition)}</span></span></div><p class="home-weather-details">${details.length?details.map(esc).join(" · "):"Sem detalhes meteorológicos disponíveis"}</p></article>`;
 }
 function renderHomeProductionCard() {
   const engine=state.energyEngine||{},current=engine.current||{},raw=Number(current.pv_power_w);
@@ -487,8 +517,10 @@ function renderGatewayArea(page) {
   const battery=engine.current||{};
   const autonomyAvailable=battery.battery_soc_source==="gateway_energy_integrated"&&Number.isFinite(Number(battery.battery_energy_available_kwh_above_minimum))&&Number(battery.battery_energy_available_kwh_above_minimum)>=0&&Number.isFinite(Number(battery.load_power_w))&&Number(battery.load_power_w)>0;
   const autonomyHours=autonomyAvailable?Number(battery.battery_energy_available_kwh_above_minimum)/(Number(battery.load_power_w)/1000):null;
+  const energyBatteryPower=battery.battery_power_w==null?null:-Number(battery.battery_power_w);
+  const batteryFlowClass=Number(battery.battery_charge_power_w)>0?"charge":Number(battery.battery_discharge_power_w)>0?"discharge":energyBatteryPower>0?"charge":energyBatteryPower<0?"discharge":"idle";
   const metrics=page==="energia"?[
-    ["Produção FV",engine.current?.pv_power_w,"W"],["Consumo",engine.current?.load_power_w,"W"],["SOC bateria",engine.current?.battery_soc_percent,"%"],["Potência bateria",engine.current?.battery_power_w,"W"]
+    ["Produção FV",engine.current?.pv_power_w,"W"],["Consumo",engine.current?.load_power_w,"W"],["SOC bateria",engine.current?.battery_soc_percent,"%"],["Potência bateria",energyBatteryPower,"W",`battery-flow-kpi ${batteryFlowClass}`]
   ]:page==="paineis-solares"?[
     ["Produção FV",engine.current?.pv_power_w,"W"],["MPPT 1 · potência",readings.pv1_input_power?.value,readings.pv1_input_power?.unit||"W"],["MPPT 2 · potência",readings.pv2_input_power?.value,readings.pv2_input_power?.unit||"W"],["Potencial solar",engine.forecast?.solar_potential?.hourly_values?.find(point=>point.segment==="forecast")?.value,"kW"]
   ]:page==="baterias"?[
@@ -496,7 +528,7 @@ function renderGatewayArea(page) {
   ]:page==="inversores"?[
     ["Saída do inversor",readings.inverter_power_total?.value,readings.inverter_power_total?.unit||"W"],["Consumo das cargas",engine.current?.load_power_w,"W"],["Estado",items[0]?.connection_state||"Sem equipamento"]
   ]:[];
-  const metricCard=([name,value,unit])=>`<article class="ws-kpi"><small>${esc(name)}</small><strong>${value===null||value===undefined||!Number.isFinite(Number(value))?"—":esc(new Intl.NumberFormat("pt-PT",{maximumFractionDigits:2}).format(Number(value)))} <em>${esc(unit||"")}</em></strong></article>`;
+  const metricCard=([name,value,unit,extraClass=""])=>`<article class="ws-kpi ${esc(extraClass)}"><small>${esc(name)}</small><strong>${value===null||value===undefined||!Number.isFinite(Number(value))?"—":esc(new Intl.NumberFormat("pt-PT",{maximumFractionDigits:2}).format(Number(value)))} <em>${esc(unit||"")}</em></strong>${name==="Potência bateria"?`<span>${batteryFlowClass==="charge"?"A carregar":batteryFlowClass==="discharge"?"A descarregar":"Sem fluxo de bateria"}</span>`:""}</article>`;
   const autonomyCard=page==="baterias"?`<article class="ws-kpi battery-autonomy-card"><small>Autonomia até ao corte</small><strong>${autonomyHours===null||!Number.isFinite(autonomyHours)?"—":esc(new Intl.NumberFormat("pt-PT",{maximumFractionDigits:1}).format(autonomyHours))} <em>h</em></strong><span>${autonomyAvailable?`Energia até ao limite de ${esc(new Intl.NumberFormat("pt-PT",{maximumFractionDigits:0}).format(Number(battery.minimum_soc_percent)))}% ÷ consumo atual`:"A aguardar estimativa energética do Gateway"}</span></article>`:"";
   const batteryConfig=isOwner&&page==="baterias"?`<section class="panel feature-panel battery-area-config"><div class="panel-header"><div><p class="eyebrow">CONFIGURAÇÃO OWNER · GATEWAY</p><h2>Bancos e limite de descarga</h2></div></div><p>Define a capacidade e o estado online de cada banco. Como estão em paralelo, o Gateway usa o pico comum dos últimos 30 dias para iniciar uma âncora persistente e integra cada nova amostra de carga/descarga uma só vez. O corte é o SOC mínimo configurado.</p><div class="ws-config-grid"><label class="feature-field">Capacidade de reserva (kWh, se não adicionares bancos)<input id="area-battery-capacity" type="number" min="0" max="10000" step="0.1" value="${esc(config.battery_capacity_kwh??"")}"></label><label class="feature-field">SOC mínimo / corte (%)<input id="area-battery-minimum" type="number" min="0" max="99.9" step="1" value="${esc(config.minimum_soc_percent??20)}"></label><label class="feature-field">SOC máximo (%)<input id="area-battery-maximum" type="number" min="0.1" max="100" step="1" value="${esc(config.maximum_soc_percent??100)}"></label></div><div class="battery-bank-list" id="area-battery-bank-list">${(config.battery_banks||[]).map((bank,index)=>renderBatteryBankRow(bank,index)).join("")}</div><button class="button secondary" id="area-battery-add-bank" type="button">+ Adicionar banco</button><p class="field-note">Cada banco online soma a sua capacidade; os offline são excluídos. Por exemplo, três bancos de 15 kWh online dão 45 kWh; com um offline, contam 30 kWh. A tensão máxima comum é aprendida pelo Gateway.</p><div class="ws-actions"><button class="button primary" id="area-battery-save">Guardar configuração</button><span id="area-battery-status" class="ws-inline-note"></span></div></section>`:"";
   const normalizeName=(reading)=>reading.evidence?.label||reading.field||"Leitura";
@@ -512,7 +544,8 @@ function renderGatewayArea(page) {
   ].filter(Boolean).join(""):"";
   const equipmentCards=items.map(item=>`<section class="panel detail-panel gateway-area-device"><div class="panel-header"><div><p class="eyebrow">${esc(item.manufacturer||"EQUIPAMENTO")}${item.model?` · ${esc(item.model)}`:""}</p><h2>${esc(item.name)}</h2></div><span class="source-tag">${esc(item.connection_state||item.status||"UNKNOWN")}</span></div><div class="device-detail-grid"><div class="detail-item"><small>Ligação</small><strong>${esc(item.connection_state||"Desconhecida")}</strong></div><div class="detail-item"><small>Última comunicação</small><strong>${esc(timeLabel(item.last_communication_at))}</strong></div><div class="detail-item"><small>Protocolo</small><strong>${esc(item.protocol||"Não indicado")}</strong></div></div>${deyeReadings}${page==="baterias"?`<div class="battery-available-kwh"><small>Energia disponível até ao SOC de corte</small><strong>${engine.current?.battery_energy_available_kwh_above_minimum!=null&&Number.isFinite(Number(engine.current.battery_energy_available_kwh_above_minimum))?`${esc(new Intl.NumberFormat("pt-PT",{maximumFractionDigits:2}).format(Number(engine.current.battery_energy_available_kwh_above_minimum)))} kWh`:"A aguardar estimativa do Gateway"}</strong></div>`:""}${item.readings?.length&&page!=="inversores"&&page!=="paineis-solares"?`<div class="device-detail-grid telemetry-grid">${item.readings.filter(value=>page!=="baterias"||value.field!=="battery_soc").map(value=>`<div class="detail-item"><small>${esc(value.evidence?.label||value.field)}</small><strong>${esc(formatReading(value).value)} ${esc(value.unit||"")}</strong></div>`).join("")}</div>`:""}</section>`).join("");
   const description=page==="paineis-solares"?"Produção e canais MPPT medidos pelo inversor Deye.":page==="inversores"?"Estado do inversor e potência entregue às cargas.":page==="baterias"?"SOC, potência assinada e limites que o Gateway observou.":"Dados e leituras atuais fornecidos pelo Gateway autenticado.";
-  return `${page!=="energia"?`<div class="ws-horizontal-tabs energy-tabs" role="tablist" aria-label="Áreas energéticas">${[["inversores","Inversores"],["baterias","Baterias"],["paineis-solares","Painéis"],["ev","Carregador EV"],["aqs","AQS"],["mineradoras","Mineradoras"],["soalho-radiante","Soalho radiante"]].map(([id,label])=>`<button role="tab" aria-selected="${page===id}" class="${page===id?"selected":""}" data-page="${id}">${label}</button>`).join("")}</div>`:""}<div class="page-heading"><div><p class="eyebrow">GATEWAY · DADOS REAIS</p><h1>${esc(labels[page]||page)}</h1><p>${esc(description)}</p></div>${page==="energia"?"":`<button class="button secondary" id="gateway-area-refresh">Atualizar ↻</button>`}</div><div class="ws-kpi-grid">${metrics.map(metricCard).join("")}</div>${page==="energia"?`<section class="panel"><div class="panel-header"><div><p class="eyebrow">INSTALAÇÃO</p><h2>Explorar áreas</h2></div></div><div class="ws-area-grid">${[["inversores","Inversores"],["baterias","Baterias"],["paineis-solares","Painéis solares"],["mineradoras","Mineradoras"],["ev","Carregador EV"],["aqs","AQS"],["soalho-radiante","Soalho radiante"]].map(([id,label])=>`<button class="ws-area-card" data-page="${id}"><span class="ws-area-icon">◉</span><span><strong>${label}</strong><small>Ver estado e leituras do Gateway</small></span><span class="ws-arrow">↗</span></button>`).join("")}</div></section>`:""}${batteryConfig}${autonomyCard}${page!=="energia"?(equipmentCards||`<div class="empty-state">O Gateway ainda não forneceu equipamentos ou leituras para esta área. Confirma a configuração correspondente na página Owner e volta a atualizar.</div>`):""}`;
+  const energyAutonomyCard=page==="energia"?`<article class="ws-kpi battery-autonomy-card energy-autonomy-card"><small>Autonomia da bateria até ao corte</small><strong>${autonomyHours===null||!Number.isFinite(autonomyHours)?"—":esc(new Intl.NumberFormat("pt-PT",{maximumFractionDigits:1}).format(autonomyHours))} <em>h</em></strong><span>${autonomyAvailable?`${esc(new Intl.NumberFormat("pt-PT",{maximumFractionDigits:2}).format(Number(battery.battery_energy_available_kwh_above_minimum)))} kWh disponíveis ÷ consumo atual`:`A aguardar energia estimada pelo Gateway e consumo atual`}</span></article>`:"";
+  return `${page!=="energia"?`<div class="ws-horizontal-tabs energy-tabs" role="tablist" aria-label="Áreas energéticas">${[["inversores","Inversores"],["baterias","Baterias"],["paineis-solares","Painéis"],["ev","Carregador EV"],["aqs","AQS"],["mineradoras","Mineradoras"],["soalho-radiante","Soalho radiante"]].map(([id,label])=>`<button role="tab" aria-selected="${page===id}" class="${page===id?"selected":""}" data-page="${id}">${label}</button>`).join("")}</div>`:""}<div class="page-heading"><div><p class="eyebrow">GATEWAY · DADOS REAIS</p><h1>${esc(labels[page]||page)}</h1><p>${esc(description)}</p></div>${page==="energia"?"":`<button class="button secondary" id="gateway-area-refresh">Atualizar ↻</button>`}</div><div class="ws-kpi-grid">${metrics.map(metricCard).join("")}</div>${energyAutonomyCard}${page==="energia"?`<section class="panel"><div class="panel-header"><div><p class="eyebrow">INSTALAÇÃO</p><h2>Explorar áreas</h2></div></div><div class="ws-area-grid">${[["inversores","Inversores"],["baterias","Baterias"],["paineis-solares","Painéis solares"],["mineradoras","Mineradoras"],["ev","Carregador EV"],["aqs","AQS"],["soalho-radiante","Soalho radiante"]].map(([id,label])=>`<button class="ws-area-card" data-page="${id}"><span class="ws-area-icon">◉</span><span><strong>${label}</strong><small>Ver estado e leituras do Gateway</small></span><span class="ws-arrow">↗</span></button>`).join("")}</div></section>`:""}${batteryConfig}${autonomyCard}${page!=="energia"?(equipmentCards||`<div class="empty-state">O Gateway ainda não forneceu equipamentos ou leituras para esta área. Confirma a configuração correspondente na página Owner e volta a atualizar.</div>`):""}`;
 }
 function renderGatewayUtilityPage(page){
   if(page==="automatismos"||page==="producao")return renderLiveEnergyEngine();
@@ -893,7 +926,7 @@ document.querySelector(".owner-tabs")?.addEventListener("click", event => {
   const tab = event.target.closest("[data-owner-tab]");
   if (tab) {
     selectOwnerTab(tab.dataset.ownerTab);
-    if (tab.dataset.ownerTab === "console") refreshGatewayConsole();
+    if (tab.dataset.ownerTab === "gateway") refreshGatewayConsole();
   }
 });
 document.querySelector(".owner-device-tabs")?.addEventListener("click", event => {
@@ -903,45 +936,74 @@ document.querySelector(".owner-device-tabs")?.addEventListener("click", event =>
 $("#owner-open-gateway")?.addEventListener("click", () => $("#gateway-dialog").showModal());
 $("#owner-gateway-status").textContent = "Configura e autentica a ligação pelo botão acima.";
 $("#owner-nav-item").addEventListener("click", () => selectOwnerTab(activeOwnerTab));
-async function refreshGatewayConsole() {
+let gatewayConsoleRefreshInFlight = false;
+const gatewayConsoleServiceLabels = {
+  gateway: "SolarMiner Gateway", nginx: "Nginx", tailscale: "Tailscale",
+  daily_update_check: "Verificação diária de atualizações",
+  privileged_update_broker: "Broker de atualização privilegiado",
+  tailscale_certificate_renewal: "Renovação do certificado Tailscale",
+};
+function gatewayConsoleBytes(value) {
+  if (!Number.isFinite(value) || value < 0) return "indisponível";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let scaled = value, index = 0;
+  while (scaled >= 1024 && index < units.length - 1) { scaled /= 1024; index++; }
+  return `${scaled.toLocaleString("pt-PT", { maximumFractionDigits: index ? 1 : 0 })} ${units[index]}`;
+}
+function renderGatewayConsoleMetrics(result) {
+  const servicesHost = $("#gateway-console-services"), resourcesHost = $("#gateway-console-resources");
+  if (!servicesHost || !resourcesHost) return;
+  servicesHost.replaceChildren();
+  const services = result.services && typeof result.services === "object" ? result.services : {};
+  for (const [key, label] of Object.entries(gatewayConsoleServiceLabels)) {
+    const row = document.createElement("div"), name = document.createElement("span"), state = document.createElement("span");
+    const value = ["active", "inactive", "failed"].includes(services[key]) ? services[key] : "unknown";
+    row.className = "gateway-console-service";
+    name.textContent = label;
+    state.className = `gateway-console-state ${value}`;
+    state.textContent = value === "active" ? "Ativo" : value === "inactive" ? "Parado" : value === "failed" ? "Falhou" : "Desconhecido";
+    row.append(name, state);
+    servicesHost.append(row);
+  }
+  resourcesHost.replaceChildren();
+  const resources = result.resources && typeof result.resources === "object" ? result.resources : {};
+  const memory = resources.memory || {}, disk = resources.disk || {};
+  const metrics = [
+    ["CPU", Number.isFinite(resources.cpu_percent) ? `${resources.cpu_percent.toLocaleString("pt-PT", { maximumFractionDigits: 1 })}%` : "indisponível"],
+    ["RAM", Number.isFinite(memory.used_percent) ? `${memory.used_percent.toLocaleString("pt-PT", { maximumFractionDigits: 1 })}% · ${gatewayConsoleBytes(memory.used_bytes)} / ${gatewayConsoleBytes(memory.total_bytes)}` : "indisponível"],
+    ["Armazenamento", Number.isFinite(disk.used_percent) ? `${disk.used_percent.toLocaleString("pt-PT", { maximumFractionDigits: 1 })}% · ${gatewayConsoleBytes(disk.used_bytes)} / ${gatewayConsoleBytes(disk.total_bytes)}` : "indisponível"],
+  ];
+  for (const [label, value] of metrics) {
+    const row = document.createElement("div"), name = document.createElement("span"), amount = document.createElement("strong");
+    row.className = "gateway-console-resource"; name.textContent = label; amount.textContent = value;
+    row.append(name, amount); resourcesHost.append(row);
+  }
+}
+async function refreshGatewayConsole({ silent = false } = {}) {
   const status = $("#gateway-console-status"), output = $("#gateway-console-output");
+  if (!status || !output || gatewayConsoleRefreshInFlight) return;
   if (!sessionInfo().authenticated || sessionInfo().user?.role !== "owner") {
-    status.textContent = "Só o Owner autenticado pode consultar a consola.";
+    if (!silent) status.textContent = "Só o Owner autenticado pode consultar a consola.";
     return;
   }
-  status.textContent = "A consultar registos autorizados do Gateway…";
+  gatewayConsoleRefreshInFlight = true;
+  if (!silent) status.textContent = "A consultar a saída recente do Gateway…";
   try {
     const result = await readGatewayConsole();
-    output.textContent = result.logs || "Sem registos nos serviços autorizados no período consultado.";
-    status.textContent = `Registos até ${timeLabel(result.captured_at)} · últimas duas horas · ${result.truncated ? "conteúdo limitado" : "conteúdo completo"}.`;
+    renderGatewayConsoleMetrics(result);
+    output.textContent = result.logs || "Sem saída recente dos serviços autorizados.";
+    output.scrollTop = output.scrollHeight;
+    status.textContent = `Atualizado ${timeLabel(result.captured_at)} · saída recente do Gateway${result.truncated ? " · conteúdo limitado" : ""}.`;
   } catch (error) {
     status.textContent = `Não foi possível consultar a consola: ${error.message}`;
+  } finally {
+    gatewayConsoleRefreshInFlight = false;
   }
 }
 $("#gateway-console-refresh")?.addEventListener("click", refreshGatewayConsole);
-$("#gateway-console-update-check")?.addEventListener("click", async event => {
-  const button = event.currentTarget, status = $("#gateway-console-status");
-  if (!sessionInfo().authenticated || sessionInfo().user?.role !== "owner") {
-    status.textContent = "Só o Owner autenticado pode verificar atualizações.";
-    return;
-  }
-  button.disabled = true;
-  status.textContent = "A verificar origem, manifesto, assinatura e pacote…";
-  try {
-    const source = await readGatewayUpdateSource();
-    const repository = source.repository_url || $("#gateway-update-repository")?.value.trim();
-    if (!repository) throw new Error("Não existe um repositório permitido configurado pelo administrador do Gateway.");
-    const input = $("#gateway-update-repository");
-    if (input) input.value = repository;
-    const result = await checkGatewayUpdate(repository);
-    setGatewayUpdateDetails(result);
-    if (result.status === "verified_staged") status.textContent = `Release ${result.available_version || ""} verificado; preflight ${result.activation_available ? "aprovado" : "bloqueado"}. A aplicação continua a exigir confirmação explícita.`;
-    else if (result.status === "current") status.textContent = `Gateway já está atualizado: ${result.latest_version || result.installed_version}.`;
-    else status.textContent = `Verificação bloqueada: ${gatewayUpdateFailureText(result.message)}.`;
-  } catch (error) {
-    status.textContent = `Não foi possível verificar a release: ${error.message}`;
-  } finally { button.disabled = false; }
-});
+setInterval(() => {
+  if (activeOwnerTab === "gateway" && !$("#gateway-owner-page")?.hidden) refreshGatewayConsole({ silent: true });
+}, 10_000);
 let verifiedGatewayUpdate = null;
 let inviteQrObjectUrl = null;
 let ownerRecoveryFingerprint = "";
@@ -1012,18 +1074,20 @@ async function refreshHardwareIntegrationConfig() {
   $("#hardware-antminer-password").value = "";
   $("#hardware-tuya-region").value = tuya.region || "eu_central";
   $("#hardware-tuya-client-id").value = tuya.client_id || "";
+  $("#hardware-tuya-uid").value = tuya.uid || "";
   $("#hardware-tuya-client-secret").value = "";
   $("#hardware-tuya-devices").value = (tuya.devices || []).map(device => `${device.device_id} | ${device.name}${device.switch_code ? ` | ${device.switch_code}` : ""}${device.level_code ? ` | ${device.level_code} | ${device.level_min ?? 0} | ${device.level_max ?? 100}` : ""}`).join("\n");
   $("#deye-status").textContent = deye.host ? `Deye configurado em ${deye.host}:${deye.port || 502}, Unit ID ${deye.unit_id ?? 1}.` : "Deye ainda não configurado.";
   $("#antminer-status").textContent = miner.host ? `Antminer configurada em ${miner.host}:${miner.port || 4028}. Credenciais de controlo ${config.antminer_control_configured ? "guardadas no Gateway" : "por configurar"}.` : "Antminer ainda não configurada.";
-  $("#tuya-status").textContent = tuya.configured ? "Conta Tuya configurada; segredo oculto no Gateway." : "Conta Tuya ainda não configurada.";
+  const importedCount = (tuya.devices || []).filter(device => device.cloud_source === "TUYA_PROJECT" || device.local_key_available).length;
+  $("#tuya-status").textContent = tuya.configured ? `Conta Tuya configurada; segredo oculto no Gateway. ${importedCount} dispositivo(s) sincronizado(s).` : "Conta Tuya ainda não configurada.";
   renderTuyaDeviceCards(tuya.devices || []);
   return config;
 }
 function renderTuyaDeviceCards(devices) {
   const list = $("#tuya-device-list");
   if (!list) return;
-  list.innerHTML = devices.length ? devices.map(device => `<article class="tuya-device-card" data-tuya-device="${esc(device.device_id)}"><h4>${esc(device.name)}</h4><p class="field-note">${esc(device.device_id)}${device.switch_code ? ` · ${esc(device.switch_code)}` : " · sem código de interruptor"}</p><div class="dialog-actions"><button type="button" class="button secondary" data-tuya-read="${esc(device.device_id)}">Ler este dispositivo</button>${device.switch_code ? `<button type="button" class="button secondary" data-tuya-switch="on" data-device-id="${esc(device.device_id)}">Ligar</button><button type="button" class="button secondary" data-tuya-switch="off" data-device-id="${esc(device.device_id)}">Desligar</button>` : ""}</div><div class="connection-result" data-tuya-status="${esc(device.device_id)}" role="status" aria-live="polite">Sem leitura recente.</div><pre class="integration-result" data-tuya-result="${esc(device.device_id)}" hidden></pre></article>`).join("") : `<p class="field-note">Ainda não há dispositivos Tuya configurados.</p>`;
+  list.innerHTML = devices.length ? devices.map(device => {const functions=Array.isArray(device.functions)?device.functions:[];const statuses=Array.isArray(device.status_spec)?device.status_spec:[];const schema=[...functions.map(item=>`ordem ${item.code} (${item.type})`),...statuses.map(item=>`leitura ${item.code} (${item.type})`)].slice(0,12).join(" · ");return `<article class="tuya-device-card" data-tuya-device="${esc(device.device_id)}"><h4>${esc(device.name)}</h4><p class="field-note">${esc(device.device_id)}${device.category?` · ${esc(device.category)}`:""}${device.online===true?" · online":device.online===false?" · offline":""}${device.local_key_available?" · chave local guardada no Gateway":" · chave local indisponível"}</p>${device.product_name?`<p class="field-note">${esc(device.product_name)}</p>`:""}${schema?`<p class="field-note">${esc(schema)}</p>`:""}<div class="dialog-actions"><button type="button" class="button secondary" data-tuya-read="${esc(device.device_id)}">Ler este dispositivo</button>${device.switch_code ? `<button type="button" class="button secondary" data-tuya-switch="on" data-device-id="${esc(device.device_id)}">Ligar</button><button type="button" class="button secondary" data-tuya-switch="off" data-device-id="${esc(device.device_id)}">Desligar</button>` : ""}</div><div class="connection-result" data-tuya-status="${esc(device.device_id)}" role="status" aria-live="polite">Sem leitura recente.</div><pre class="integration-result" data-tuya-result="${esc(device.device_id)}" hidden></pre></article>`;}).join("") : `<p class="field-note">Ainda não há dispositivos Tuya configurados.</p>`;
 }
 function setProviderResult(provider, result) {
   const payload = result[provider];
@@ -1078,7 +1142,22 @@ $("#antminer-save").addEventListener("click", event => {
 });
 $("#tuya-save").addEventListener("click", event => {
   const devices = parseTuyaDevices();
-  saveHardwareProvider("tuya", { region: $("#hardware-tuya-region").value, client_id: $("#hardware-tuya-client-id").value.trim() || undefined, client_secret: $("#hardware-tuya-client-secret").value || undefined, devices }, event.currentTarget, "tuya-status");
+  saveHardwareProvider("tuya", { region: $("#hardware-tuya-region").value, client_id: $("#hardware-tuya-client-id").value.trim() || undefined, client_secret: $("#hardware-tuya-client-secret").value || undefined, uid: $("#hardware-tuya-uid").value.trim() || undefined, devices }, event.currentTarget, "tuya-status");
+});
+$("#tuya-sync").addEventListener("click", async event => {
+  const status = $("#tuya-status"), button = event.currentTarget;
+  if (!ownerCanManageHardware("#tuya-status")) return;
+  button.disabled = true;
+  status.textContent = "A sincronizar dispositivos e capacidades da Tuya Cloud…";
+  try {
+    const current = await readGatewayHardwareIntegrationConfig();
+    await saveGatewayHardwareIntegrationConfig({tuya:{region:$("#hardware-tuya-region").value,client_id:$("#hardware-tuya-client-id").value.trim()||current.tuya?.client_id,client_secret:$("#hardware-tuya-client-secret").value||undefined,uid:$("#hardware-tuya-uid").value.trim()||current.tuya?.uid,devices:parseTuyaDevices().length?parseTuyaDevices():current.tuya?.devices||[]}});
+    $("#hardware-tuya-client-secret").value="";
+    const result=await syncGatewayTuyaDevices();
+    status.textContent=`Sincronização concluída: ${result.device_count} dispositivos; ${result.local_keys_available} chaves locais guardadas no Gateway; ${result.schema_failures} consultas de capacidades falharam.`;
+    await refreshHardwareIntegrationConfig();
+  } catch(error) { status.textContent=`Sincronização Tuya falhou: ${error.message}`; }
+  finally { button.disabled=false; }
 });
 async function readHardwareProvider(provider, deviceId = undefined, statusSelector = `#${provider}-status`, resultSelector = `#${provider}-result`) {
   if (!ownerCanManageHardware(statusSelector)) return;
@@ -1163,6 +1242,12 @@ async function refreshTeslaEvConfig() {
 }
 
 $("#page-content").addEventListener("click", async event => {
+  const chartPoint=event.target.closest(".solar-chart-hit");
+  if(chartPoint){
+    const tooltip=chartPoint.closest(".solar-chart-wrap")?.querySelector(".solar-chart-tooltip");
+    if(tooltip){const hour=Number(chartPoint.dataset.hour),when=new Date(hour).toLocaleTimeString("pt-PT",{hour:"2-digit",minute:"2-digit"}),isFuture=chartPoint.dataset.future==="true",kind=isFuture?"previsto":"medido",fmt=value=>value===""?"—":`${Number(value).toLocaleString("pt-PT",{maximumFractionDigits:2})} kW`;tooltip.innerHTML=`<strong>${esc(when)} · ${kind}</strong><span>Consumo: ${fmt(chartPoint.dataset.load)}</span><span>${isFuture?"Produção prevista":"Produção efetiva"}: ${fmt(chartPoint.dataset.pv)}</span><span>Produção potencial: ${fmt(chartPoint.dataset.potential)}</span>`;tooltip.hidden=false;}
+    return;
+  }
   const save = event.target.closest("#ev-tesla-save");
   const read = event.target.closest("#ev-tesla-read");
   if (!save && !read) return;
@@ -1210,6 +1295,10 @@ $("#page-content").addEventListener("click", async event => {
     if (save) save.disabled = false;
     if (read) read.disabled = false;
   }
+});
+$("#page-content").addEventListener("keydown",event=>{
+  const point=event.target.closest(".solar-chart-hit");if(!point||!['Enter',' '].includes(event.key))return;
+  event.preventDefault();point.dispatchEvent(new MouseEvent('click',{bubbles:true}));
 });
 
 $("#gateway-bootstrap-form").addEventListener("submit", async event => {

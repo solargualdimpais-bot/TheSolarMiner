@@ -9,7 +9,11 @@ import sqlite3
 from typing import Any
 
 PROFILE_KEY = "site_profile"
-DEFAULT_PROFILE: dict[str, Any] = {"name": "Solar Energy", "photo_data_url": None, "photo_opacity": 0.38, "floors": []}
+DEFAULT_PROFILE: dict[str, Any] = {
+    "name": "Solar Energy", "photo_data_url": None, "photo_opacity": 0.38,
+    "photo_position_x": 50, "photo_position_y": 50, "photo_zoom": 1.0,
+    "photo_vignette": 0.35, "floors": [],
+}
 _ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 _JPEG = re.compile(r"^data:image/jpeg;base64,([A-Za-z0-9+/]+={0,2})$")
 MAX_PHOTO_BYTES = 1_800_000
@@ -61,13 +65,26 @@ def _text(value: Any, field: str, maximum: int, *, optional: bool = False) -> st
 
 
 def normalize_profile(payload: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(payload, dict) or set(payload) - {"name", "photo_data_url", "photo_opacity", "floors"}:
+    fields = {"name", "photo_data_url", "photo_opacity", "photo_position_x", "photo_position_y", "photo_zoom", "photo_vignette", "floors"}
+    if not isinstance(payload, dict) or set(payload) - fields:
         raise ValueError("invalid_site_profile_fields")
     name = _text(payload.get("name", DEFAULT_PROFILE["name"]), "site_name", 100)
     photo = _photo(payload.get("photo_data_url"))
     opacity = payload.get("photo_opacity", DEFAULT_PROFILE["photo_opacity"])
     if isinstance(opacity, bool) or not isinstance(opacity, (int, float)) or not 0 <= opacity <= 1:
         raise ValueError("invalid_site_photo_opacity")
+    position_x = payload.get("photo_position_x", DEFAULT_PROFILE["photo_position_x"])
+    position_y = payload.get("photo_position_y", DEFAULT_PROFILE["photo_position_y"])
+    zoom = payload.get("photo_zoom", DEFAULT_PROFILE["photo_zoom"])
+    vignette = payload.get("photo_vignette", DEFAULT_PROFILE["photo_vignette"])
+    if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in (position_x, position_y, zoom, vignette)):
+        raise ValueError("invalid_site_photo_adjustment")
+    if not 0 <= position_x <= 100 or not 0 <= position_y <= 100:
+        raise ValueError("invalid_site_photo_position")
+    if not 1 <= zoom <= 3:
+        raise ValueError("invalid_site_photo_zoom")
+    if not 0 <= vignette <= 0.85:
+        raise ValueError("invalid_site_photo_vignette")
     floors = payload.get("floors", [])
     if not isinstance(floors, list) or len(floors) > 32:
         raise ValueError("invalid_site_floors")
@@ -102,7 +119,11 @@ def normalize_profile(payload: dict[str, Any]) -> dict[str, Any]:
         if "photo_data_url" in floor:
             normalized_floor["photo_data_url"] = floor_photo
         normalized_floors.append(normalized_floor)
-    return {"name": name, "photo_data_url": photo, "photo_opacity": float(opacity), "floors": normalized_floors}
+    return {
+        "name": name, "photo_data_url": photo, "photo_opacity": float(opacity),
+        "photo_position_x": float(position_x), "photo_position_y": float(position_y),
+        "photo_zoom": float(zoom), "photo_vignette": float(vignette), "floors": normalized_floors,
+    }
 
 
 def save_profile(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, Any]:
