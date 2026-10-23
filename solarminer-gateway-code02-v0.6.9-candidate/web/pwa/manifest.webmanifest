@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.28: edição e remoção persistentes dos bancos de bateria.",
+  "description": "The Solar Miner PWA v0.5.29: diagnóstico Tuya LAN, strings solares e configuração AQS.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",

@@ -23,7 +23,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "site_location_name": None, "site_latitude": None, "site_longitude": None,
     "pv_capacity_kw": None, "pv_system_efficiency": 0.85,
     "battery_capacity_kwh": None, "minimum_soc_percent": 20.0, "maximum_soc_percent": 100.0,
-    "battery_banks": [], "loads": [],
+    "battery_banks": [], "pv_strings": [], "loads": [],
     "automation": {"enabled": False, "commissioned": False, "surplus_margin_w": 250,
                    "decision_interval_seconds": 300, "deye_map_verified": False},
 }
@@ -86,7 +86,7 @@ def get_config(conn: sqlite3.Connection) -> dict[str, Any]:
 
 def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, Any]:
     allowed = {"site_location_name", "site_latitude", "site_longitude", "pv_capacity_kw", "pv_system_efficiency",
-               "battery_capacity_kwh", "minimum_soc_percent", "maximum_soc_percent", "battery_banks", "loads", "automation"}
+               "battery_capacity_kwh", "minimum_soc_percent", "maximum_soc_percent", "battery_banks", "pv_strings", "loads", "automation"}
     if not isinstance(payload, dict) or set(payload) - allowed:
         raise ValueError("unknown_energy_engine_setting")
     existing = get_config(conn)
@@ -149,6 +149,30 @@ def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, 
     if normalized_banks:
         active_capacity = sum(item["capacity_kwh"] for item in normalized_banks if item["active"])
         capacity = round(active_capacity, 3) if active_capacity > 0 else None
+    pv_strings = merged.get("pv_strings", [])
+    if not isinstance(pv_strings, list) or len(pv_strings) > 64:
+        raise ValueError("invalid_pv_strings")
+    normalized_pv_strings = []
+    pv_string_ids: set[str] = set()
+    for pv_string in pv_strings:
+        if not isinstance(pv_string, dict) or set(pv_string) - {"id", "name", "mppt", "nominal_power_kw", "active"}:
+            raise ValueError("invalid_pv_string")
+        identifier, name, mppt = pv_string.get("id"), pv_string.get("name"), pv_string.get("mppt")
+        nominal = pv_string.get("nominal_power_kw", 0)
+        active = pv_string.get("active", True)
+        if not isinstance(identifier, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,47}", identifier) or identifier in pv_string_ids:
+            raise ValueError("invalid_or_duplicate_pv_string_id")
+        if not isinstance(name, str) or not name.strip() or len(name) > 120:
+            raise ValueError("invalid_pv_string_name")
+        if isinstance(mppt, bool) or mppt not in {1, 2}:
+            raise ValueError("invalid_pv_string_mppt")
+        if isinstance(nominal, bool) or not isinstance(nominal, (int, float)) or not math.isfinite(nominal) or not 0 <= nominal <= 1000:
+            raise ValueError("invalid_pv_string_nominal_power")
+        if not isinstance(active, bool):
+            raise ValueError("invalid_pv_string_active")
+        pv_string_ids.add(identifier)
+        normalized_pv_strings.append({"id": identifier, "name": name.strip(), "mppt": mppt,
+                                      "nominal_power_kw": float(nominal), "active": active})
     if capacity is not None and (isinstance(capacity, bool) or not isinstance(capacity, (int, float)) or not math.isfinite(capacity) or not 0.1 <= capacity <= 10000):
         raise ValueError("invalid_battery_capacity_kwh")
     if isinstance(minimum, bool) or not isinstance(minimum, (int, float)) or not math.isfinite(minimum) or not 0 <= minimum < 100:
@@ -163,7 +187,7 @@ def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, 
     kinds = {"miner", "water_heater", "underfloor_heating", "ev_charger", "generic"}
     controls = {"tuya_smart", "tuya_breaker", "antminer_braiins", "tesla_fleet", "manual"}
     for load in loads:
-        allowed_load = {"id", "name", "kind", "control_type", "rated_power_w", "minimum_power_w", "maximum_power_w",
+        allowed_load = {"id", "name", "kind", "control_type", "rated_power_w", "minimum_power_w", "maximum_power_w", "manufacturer", "volume_l",
                         "priority", "enabled", "automatic", "tuya_device_id", "tuya_switch_code",
                         "minimum_on_seconds", "minimum_off_seconds", "requires_load_id"}
         if not isinstance(load, dict) or set(load) - allowed_load:
@@ -179,6 +203,12 @@ def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, 
                 raise ValueError("invalid_flexible_load_" + key)
             return value
         rated = bounded_number("rated_power_w", 1, 100000)
+        manufacturer = load.get("manufacturer", "")
+        volume_l = load.get("volume_l", 0)
+        if not isinstance(manufacturer, str) or len(manufacturer) > 120:
+            raise ValueError("invalid_flexible_load_manufacturer")
+        if isinstance(volume_l, bool) or not isinstance(volume_l, int) or not 0 <= volume_l <= 100000:
+            raise ValueError("invalid_flexible_load_volume_l")
         minimum_power = bounded_number("minimum_power_w", 0, 100000, 0)
         maximum_power = bounded_number("maximum_power_w", 1, 100000, rated)
         if minimum_power > maximum_power:
@@ -208,6 +238,7 @@ def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, 
                 raise ValueError("invalid_tuya_switch_code_for_load")
         load_ids.add(identifier)
         normalized_loads.append({"id": identifier, "name": name.strip(), "kind": kind, "control_type": control,
+                                 "manufacturer": manufacturer.strip(), "volume_l": volume_l,
                                  "rated_power_w": rated, "minimum_power_w": minimum_power,
                                  "maximum_power_w": maximum_power, "priority": priority, "enabled": enabled,
                                  "automatic": automatic, "tuya_device_id": device_id, "tuya_switch_code": switch_code,
@@ -242,7 +273,8 @@ def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, 
               "pv_system_efficiency": float(pv_efficiency),
               "battery_capacity_kwh": float(capacity) if capacity is not None else None,
               "minimum_soc_percent": float(minimum), "maximum_soc_percent": float(maximum),
-              "battery_banks": normalized_banks, "loads": normalized_loads, "automation": normalized_automation}
+              "battery_banks": normalized_banks, "pv_strings": normalized_pv_strings,
+              "loads": normalized_loads, "automation": normalized_automation}
     # Keep the shared parallel-bank SOC stable when the Owner changes the
     # online capacity. The integrated discharge is stored in kWh, so scale it
     # with capacity; otherwise taking one bank offline would distort the

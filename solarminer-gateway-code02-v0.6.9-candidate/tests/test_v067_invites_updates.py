@@ -545,6 +545,8 @@ def test_tuya_lan_diagnostics_excludes_setup_failures_from_response_latency(clie
     report = result.json()
     assert report["lan_testable_count"] == 0
     device = report["devices"][0]
+    assert device["local_ip"] == "8.8.8.8"
+    assert device["local_key_configured"] is True
     assert device["success_count"] == 0
     assert device["average_latency_ms"] is None
     assert device["worst_latency_ms"] is None
@@ -618,6 +620,31 @@ def test_tuya_lan_discovery_can_match_manual_mac_from_neighbor_cache(client, mon
     assert result["matched_count"] == 1
     assert result["devices"][0]["ip"] == "192.168.1.77"
     assert result["devices"][0]["matched_by"] == "mac"
+
+
+def test_tuya_lan_discovery_falls_back_to_neighbor_cache_when_broadcast_scan_fails(client, monkeypatch, tmp_path):
+    headers = {"Authorization": f"Bearer {owner_session(client)}"}
+    monkeypatch.setattr(gateway.hardware_integrations, "_data_dir", lambda: tmp_path)
+    gateway.hardware_integrations.save_config({"tuya": {"devices": [
+        {"device_id": "known-id", "name": "Termoacumulador", "local_key": "private-key-321",
+         "local_mac": "AA:BB:CC:DD:EE:99"},
+    ]}})
+    arp_file = tmp_path / "arp"
+    arp_file.write_text("IP address HW type Flags HW address Mask Device\n"
+                        "192.168.1.99 0x1 0x2 aa:bb:cc:dd:ee:99 * wlan0\n", encoding="ascii")
+    read_arp_entries = gateway.local_arp_entries
+    monkeypatch.setattr(gateway, "local_arp_entries", lambda: read_arp_entries(arp_file))
+    class BrokenScanner:
+        @staticmethod
+        def deviceScan(**kwargs):
+            raise OSError("broadcast unavailable")
+    monkeypatch.setattr(gateway.hardware_integrations, "tinytuya", BrokenScanner)
+    response = client.post("/api/v1/integrations/tuya/lan-discovery", headers=headers, json={})
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["matched_count"] == 1
+    assert result["scan_error"] == "OSError"
+    assert result["devices"][0]["ip"] == "192.168.1.99"
 
 
 def test_tuya_level_command_is_owner_only_and_rejects_invalid_payload(client, monkeypatch):

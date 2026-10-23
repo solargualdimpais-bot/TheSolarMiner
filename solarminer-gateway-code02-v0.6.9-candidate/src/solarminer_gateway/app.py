@@ -49,7 +49,7 @@ from . import updates as update_manager
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.62"
+PACKAGE_VERSION = "0.6.63"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -1450,6 +1450,8 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
             power_telemetry = any(re.search(r"power|watt|cur_power|active_power", str(entry.get("code", "")) + " " + str(entry.get("name", "")), re.I)
                                   for entry in schema)
             result.append({"device_id": item["device_id"], "name": str(item.get("name") or "Tuya device")[:120],
+                           "local_ip": item.get("local_ip") or item.get("ip"),
+                           "local_key_configured": bool(item.get("local_key")),
                            "success_count": sum(1 for row in rows if row["ok"]), "rounds": rounds,
                            "failure_count": sum(1 for row in rows if not row["ok"]),
                            "average_latency_ms": round(sum(times) / len(times), 1) if times else None,
@@ -1471,8 +1473,6 @@ def tuya_lan_discovery(session: dict[str, Any] = Depends(require_permission("man
         if actor["role"] != "owner":
             raise HTTPException(403, "owner_required")
         try:
-            if hardware_integrations.tinytuya is None:
-                raise HTTPException(503, "tuya_lan_driver_unavailable")
             config = hardware_integrations.load_config()
             tuya = config.get("tuya", {}) if isinstance(config.get("tuya"), dict) else {}
             devices = [item for item in tuya.get("devices", [])
@@ -1480,12 +1480,17 @@ def tuya_lan_discovery(session: dict[str, Any] = Depends(require_permission("man
             if not devices:
                 return {"scanned_count": 0, "matched_count": 0, "devices": [],
                         "cloud_used": False, "commands_sent": False}
+            scan_error = None
             try:
+                if hardware_integrations.tinytuya is None:
+                    raise RuntimeError("driver_unavailable")
                 discovered = hardware_integrations.tinytuya.deviceScan(
                     verbose=False, maxretry=10, poll=False, byID=True)
             except Exception as exc:
-                LOG.warning("Tuya LAN discovery failed (%s)", type(exc).__name__)
-                raise HTTPException(502, "tuya_lan_discovery_failed") from exc
+                # Broadcast discovery can be blocked by Wi-Fi isolation; still try configured MACs.
+                scan_error = type(exc).__name__[:64]
+                LOG.warning("Tuya LAN broadcast discovery failed (%s); trying neighbor cache", scan_error)
+                discovered = {}
             if not isinstance(discovered, dict):
                 raise HTTPException(502, "tuya_lan_discovery_invalid_result")
             discovered_by_id: dict[str, dict[str, Any]] = {}
@@ -1537,6 +1542,8 @@ def tuya_lan_discovery(session: dict[str, Any] = Depends(require_permission("man
                                 "ip": found["ip"], "mac": device.get("local_mac", ""),
                                 "matched_by": matched_by,
                                 "local_key_available": bool(device.get("local_key"))})
+            if scan_error and not matched:
+                raise HTTPException(502, f"tuya_lan_discovery_failed:{scan_error};neighbor_cache_empty")
             if matched:
                 config["tuya"] = tuya
                 hardware_integrations.save_config(config)
@@ -1546,7 +1553,9 @@ def tuya_lan_discovery(session: dict[str, Any] = Depends(require_permission("man
             })
             conn.commit()
             return {"scanned_count": len(discovered_by_id), "matched_count": len(matched),
-                    "devices": matched, "cloud_used": False, "commands_sent": False}
+                    "devices": matched, "scan_error": scan_error,
+                    "discovery_method": "neighbor_cache" if scan_error else "lan_broadcast",
+                    "cloud_used": False, "commands_sent": False}
         except HTTPException:
             raise
         except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -2703,7 +2712,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.62"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.63"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

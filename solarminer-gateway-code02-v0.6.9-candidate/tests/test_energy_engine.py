@@ -339,6 +339,21 @@ def test_flexible_load_schema_supports_multiple_heaters_and_radiant_heating():
     assert [item["id"] for item in config["loads"]] == ["aqs-1", "aqs-2", "radiant"]
 
 
+def test_energy_config_stores_pv_string_and_aqs_owner_metadata():
+    conn = database()
+    config = energy_engine.save_config(conn, {
+        "pv_strings": [{"id": "pv-mppt1-a", "name": "MPPT 1 · Sul", "mppt": 1,
+                        "nominal_power_kw": 4.8, "active": True}],
+        "loads": [{"id": "aqs-kitchen", "name": "Termoacumulador", "kind": "water_heater",
+                   "control_type": "manual", "manufacturer": "MOES", "volume_l": 200,
+                   "rated_power_w": 2000}],
+    })
+    assert config["pv_strings"] == [{"id": "pv-mppt1-a", "name": "MPPT 1 · Sul", "mppt": 1,
+                                     "nominal_power_kw": 4.8, "active": True}]
+    assert config["loads"][0]["manufacturer"] == "MOES"
+    assert config["loads"][0]["volume_l"] == 200
+
+
 def test_automatic_miner_requires_a_preceding_tuya_relay():
     conn = database()
     with pytest.raises(ValueError, match="automatic_antminer_requires_tuya_relay_load"):
