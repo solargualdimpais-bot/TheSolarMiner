@@ -153,6 +153,34 @@ def test_battery_energy_is_unknown_without_owner_declared_capacity():
     assert result["current"]["battery_at_configured_maximum"] is False
 
 
+def test_offlining_parallel_bank_removes_its_proportional_energy_share():
+    conn = database()
+    banks = [
+        {"id": "bank-large", "name": "Banco 1", "capacity_kwh": 20,
+         "minimum_soc_percent": 0, "maximum_soc_percent": 100, "active": True},
+        {"id": "bank-small", "name": "Banco 2", "capacity_kwh": 10,
+         "minimum_soc_percent": 0, "maximum_soc_percent": 100, "active": True},
+    ]
+    energy_engine.save_config(conn, {"battery_banks": banks})
+    # 15 kWh discharged from the 30 kWh aggregate means 15 kWh remains:
+    # 10 kWh belongs to the 20 kWh bank and 5 kWh to the 10 kWh bank.
+    conn.execute("INSERT INTO system_state(key,value) VALUES(?,?)", (
+        energy_engine.BATTERY_ESTIMATOR_STATE_KEY,
+        json.dumps({"anchor_at": "2026-10-23T00:00:00+00:00", "voltage_max_v": 55.0,
+                    "integrated_net_discharge_kwh": 15.0, "last_power_at": "2026-10-23T01:00:00+00:00",
+                    "last_power_w": 0.0, "last_sample_count": 2, "needs_reanchor": False}),
+    ))
+
+    saved = energy_engine.save_config(conn, {"battery_banks": [banks[0], dict(banks[1], active=False)]})
+    state = json.loads(conn.execute("SELECT value FROM system_state WHERE key=?",
+                                    (energy_engine.BATTERY_ESTIMATOR_STATE_KEY,)).fetchone()[0])
+    remaining_energy = saved["battery_capacity_kwh"] - state["integrated_net_discharge_kwh"]
+
+    assert saved["battery_capacity_kwh"] == 20
+    assert state["integrated_net_discharge_kwh"] == 10
+    assert remaining_energy == 10
+
+
 def test_deye_reported_soc_alone_never_becomes_gateway_estimated_soc():
     conn = database()
     battery = energy_registry.upsert_equipment(conn, {"category": "baterias", "name": "Battery"}, "deye-battery-test")

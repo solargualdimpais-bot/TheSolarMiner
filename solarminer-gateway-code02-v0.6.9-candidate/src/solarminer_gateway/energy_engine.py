@@ -241,6 +241,27 @@ def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, 
               "battery_capacity_kwh": float(capacity) if capacity is not None else None,
               "minimum_soc_percent": float(minimum), "maximum_soc_percent": float(maximum),
               "battery_banks": normalized_banks, "loads": normalized_loads, "automation": normalized_automation}
+    # Keep the shared parallel-bank SOC stable when the Owner changes the
+    # online capacity. The integrated discharge is stored in kWh, so scale it
+    # with capacity; otherwise taking one bank offline would distort the
+    # aggregate SOC instead of removing that bank's proportional energy share.
+    previous_capacity = existing.get("battery_capacity_kwh")
+    next_capacity = result["battery_capacity_kwh"]
+    if (isinstance(previous_capacity, (int, float)) and previous_capacity > 0
+            and isinstance(next_capacity, (int, float)) and next_capacity > 0
+            and not math.isclose(float(previous_capacity), float(next_capacity), rel_tol=1e-9)):
+        row = conn.execute("SELECT value FROM system_state WHERE key=?", (BATTERY_ESTIMATOR_STATE_KEY,)).fetchone()
+        if row:
+            try:
+                estimator_state = json.loads(row[0])
+                integrated = estimator_state.get("integrated_net_discharge_kwh")
+                if isinstance(integrated, (int, float)) and math.isfinite(integrated):
+                    estimator_state["integrated_net_discharge_kwh"] = round(
+                        float(integrated) * float(next_capacity) / float(previous_capacity), 9)
+                    conn.execute("UPDATE system_state SET value=? WHERE key=?",
+                                 (json.dumps(estimator_state, separators=(",", ":")), BATTERY_ESTIMATOR_STATE_KEY))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
     conn.execute("INSERT INTO system_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                  (ENGINE_CONFIG_KEY, json.dumps(result, separators=(",", ":"))))
     return result
