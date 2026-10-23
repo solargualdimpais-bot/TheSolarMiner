@@ -65,6 +65,8 @@ def test_root_broker_console_reads_fixed_service_logs_and_tailscale_setup_log_an
 
     def runner(args, **kwargs):
         calls.append((args, kwargs))
+        if args[0] == "/usr/sbin/nginx":
+            return SimpleNamespace(returncode=0, stdout="", stderr="nginx: configuration file /etc/nginx/nginx.conf test is successful")
         return SimpleNamespace(returncode=0, stdout=raw_logs, stderr="must-not-leak")
 
     monkeypatch.setattr(update_broker, "_read_tailscale_cert_log", lambda: "nginx: [emerg] certificate file missing\n")
@@ -80,6 +82,7 @@ def test_root_broker_console_reads_fixed_service_logs_and_tailscale_setup_log_an
     assert "must-not-leak" not in response["logs"]
     assert "Tailscale certificate and Nginx setup log" in response["logs"]
     assert "nginx: [emerg] certificate file missing" in response["logs"]
+    assert "nginx.conf test is successful" in response["logs"]
     assert response["scope"] == "allowlisted_services_last_2_hours_including_update_recovery_plus_tailscale_setup_log_tail"
     assert set(response["services"]) == set(update_broker.CONSOLE_SERVICES.values())
     assert set(response["resources"]) == {"cpu_percent", "cpu_count", "memory", "disk"}
