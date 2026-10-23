@@ -112,7 +112,9 @@ test('live Home uses Gateway weather, solar history and owner-controlled Tuya fa
   const runtime = ['index.html','app.js','app-core.js','demo-mode.js'].map(read).join('\n');
   assert.match(app, /SIMULATED/);
   assert.match(app, /forecast\?\.weather/);
-  assert.match(app, /engine\.history\?\.pv_total_power/);
+  assert.match(app, /addSeries\("pv_total_power","pv"\);addSeries\("load_total_power","load"\)/);
+  assert.match(app, /Produção solar e carga UPS/);
+  assert.match(app, /surplus-area/);
   assert.match(app, /controlGatewayTuyaSwitch/);
   assert.match(app, /controlGatewayTuyaLevel/);
   assert.match(app, /sessionInfo\(\)\.user\?\.role!=="owner"/);

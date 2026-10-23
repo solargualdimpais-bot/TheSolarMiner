@@ -59,9 +59,9 @@ test("Owner recovery file parser accepts a generated key and rejects malformed/o
 });
 
 test("new PWA static cache version is changed and USB limitations are documented", () => {
-  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.12-photo-framing-weather-chart/);
-  assert.match(manifest, /v0\.5\.12/);
-  assert.equal(packageJson.version, "0.5.12");
+  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.13-photo-framing-weather-chart/);
+  assert.match(manifest, /v0\.5\.13/);
+  assert.equal(packageJson.version, "0.5.13");
   const docs = read("OWNER_USB_AND_ACCESS.md");
   assert.match(docs, /texto simples/);
   assert.match(docs, /não valida certificados TLS/);
@@ -94,7 +94,7 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   assert.match(embeddedApp, /startGatewayTailscale/);
   assert.match(embeddedApp, /liveHomeMetric\("Painéis"/);
   assert.match(embeddedApp, /liveMinerHomeMetric\(\)/);
-  assert.match(embeddedWorker, /static-v0\.5\.12-photo-framing-weather-chart/);
+  assert.match(embeddedWorker, /static-v0\.5\.13-photo-framing-weather-chart/);
   assert.match(embeddedHtml, /data-owner-tab="gateway"/);
   assert.doesNotMatch(embeddedHtml, /data-owner-panel="console"/);
   assert.match(embeddedHtml, /Atualiza automaticamente enquanto esta área estiver aberta/);
@@ -110,10 +110,10 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   assert.doesNotMatch(embeddedHtml, /gateway-console-update-check/);
   assert.doesNotMatch(embeddedHtml, /gateway-console-command/);
   assert.match(embeddedWorker, /password-device-login/);
-  assert.match(embeddedHtml, /OWNER PWA 0\.5\.12/);
+  assert.match(embeddedHtml, /OWNER PWA 0\.5\.13/);
   assert.match(embeddedHtml, /gateway-password-login-form/);
-  assert.match(control, /^Version: 0\.6\.43$/m);
-  assert.match(installer, /solarminer-gateway_0\.6\.43_amd64\.deb/);
+  assert.match(control, /^Version: 0\.6\.44$/m);
+  assert.match(installer, /solarminer-gateway_0\.6\.44_amd64\.deb/);
   assert.match(embeddedApp, /RECOVERY_BLOCKED/);
   assert.match(embeddedApp, /rollbackFailure/);
   assert.match(installer, /install-tailscale\.sh/);

@@ -1,12 +1,12 @@
-# Contratos API — PWA v0.5.12 / Gateway CODE02 v0.6.43
+# Contratos API — PWA v0.5.13 / Gateway CODE02 v0.6.44
 
-## Fotografia e cartões da Home (PWA v0.5.12 / Gateway CODE02 v0.6.43)
+## Fotografia e cartões da Home (PWA v0.5.13 / Gateway CODE02 v0.6.44)
 
 `GET /api/v1/site/profile` e o `PUT` Owner-only incluem `photo_opacity` entre 0 e 1, posição horizontal/vertical entre 0 e 100, zoom entre 1 e 3 e `photo_vignette` entre 0 e 0,85. A PWA apresenta os controlos de transparência, zoom e vinheta e permite arrastar a pré-visualização para enquadrar a imagem. O Gateway guarda os ajustes com o nome, a fotografia JPEG opcional e a estrutura da propriedade; perfis anteriores recebem os valores predefinidos. Uploads de imagem até 12 MB são convertidos no browser para JPEG e comprimidos até ao limite de 1,8 MB do Gateway. O cartão meteorológico usa ícones SVG locais conforme o código de condição recebido do Gateway.
 
 O gráfico de nove horas mostra o consumo em barras por hora, produção efetiva numa linha azul sólida no histórico e pontilhada na previsão, e potencial máximo calculado numa linha dourada (passado sólido, previsão pontilhada). O eixo vertical mostra kW e os rótulos do eixo horizontal mostram o tempo. Tocar numa hora abre um resumo discreto com consumo, produção e potencial dessa hora; abaixo do gráfico fica apenas a legenda. A PWA usa exclusivamente séries devolvidas pelo Gateway; sem dados, indica que faltam leituras/configuração.
 
-## Cargas configuráveis (Gateway 0.6.43)
+## Cargas configuráveis (Gateway 0.6.44)
 
 O Owner guarda até 8 `battery_banks` e 64 `loads` por `PUT /api/v1/energy/engine/config`. `kind` aceita `miner`, `water_heater`, `underfloor_heating`, `ev_charger` ou `generic`; `control_type` aceita `tuya_smart`, `tuya_breaker`, `antminer_braiins`, `tesla_fleet` ou `manual`. Os registos suportam vários AQS e cargas de aquecimento sem alteração do código. A amostra com mais de 90 segundos bloqueia o despacho automático. O ciclo corre na cadência guardada no Gateway quando o Owner ativa a opção, com validação física do mapa obrigatória.
 
@@ -18,7 +18,7 @@ O Owner pode testar um interruptor registado através de `POST /api/v1/integrati
 
 A área Owner tem separadores para Acessos, Atualizações, Tailscale, Gateway e Equipamentos. Dentro de Equipamentos, Deye, Antminer e Tuya/MOES também são separados. Cada botão de guardar envia apenas a configuração daquele fornecedor por `PUT /api/v1/integrations/hardware`, preservando os restantes blocos no Gateway. As leituras usam `POST /api/v1/integrations/hardware/{provider}/read` e consultam apenas o fornecedor selecionado; Tuya aceita `device_id` opcional para limitar a leitura a um dispositivo. Estes endpoints exigem Owner e não enviam comandos de controlo. Os comandos Tuya e Braiins continuam em ações próprias com confirmação explícita.
 
-## Engine energético e meteorologia (Gateway 0.6.43)
+## Engine energético e meteorologia (Gateway 0.6.44)
 
 Após autenticação, a PWA consulta `GET /api/v1/energy/engine?history_hours=24`. A resposta `forecast.weather` contém `state`, `provider`, `fetched_at` e a condição horária mais próxima em `current` (`observed_at`, temperatura, sensação térmica, humidade, nebulosidade, vento em km/h e `weather_code` WMO). O Home mostra temperatura, condição, detalhe meteorológico compacto e, no cartão adjacente, produção FV atual com tendência histórica. Não usa valores meteorológicos de demonstração no modo Live. O Owner indica a cidade/localidade em `site_location_name` através de `PUT /api/v1/energy/engine/config`; o Gateway resolve-a para coordenadas internamente via Open-Meteo Geocoding. A potência FV instalada e SOC mínimo/máximo também são configuráveis nesse endpoint. Os dados meteorológicos são consultados pelo Gateway e conservados em cache por 15 minutos. Valores de previsão não são medições meteorológicas locais.
 

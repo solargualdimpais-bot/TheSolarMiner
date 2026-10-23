@@ -1,6 +1,6 @@
 # API v1 (CODE 01)
 
-## CODE02 v0.6.43 — perfil partilhado com fotografia ajustável
+## CODE02 v0.6.44 — perfil partilhado com fotografia ajustável
 
 - `GET /api/v1/site/profile` — nome/fotografia e estrutura de pisos/divisões partilhados com as PWA autenticadas. O perfil inicial chama-se `Solar Energy` e não inclui fotografia.
 - `PUT /api/v1/site/profile` — Owner-only; grava nome, fotografia JPEG enviada pelo Owner (base64 validado até 1,8 MB), opacidade entre 0 e 1, enquadramento horizontal/vertical entre 0 e 100, zoom entre 1 e 3, vinheta entre 0 e 0,85 e até 32 pisos/200 divisões. Ajustes omitidos recebem os valores predefinidos, para compatibilidade com perfis anteriores. A API rejeita IDs inválidos ou duplicados. A imagem não é incluída no pacote nem nos logs.

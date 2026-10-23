@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.12: painel Live do Gateway com energia, autonomia de bateria, perfil da casa partilhado e cartões compactos.",
+  "description": "The Solar Miner PWA v0.5.13: painel Live do Gateway com energia, autonomia de bateria, perfil da casa partilhado e cartões compactos.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",
