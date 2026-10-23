@@ -1,4 +1,4 @@
-SolarMiner Gateway CODE02 0.6.55 — instalador inicial USB
+SolarMiner Gateway CODE02 0.6.56 — instalador inicial USB
 
 O envio automático de erros para issues GitHub requer um token Fine-grained com Issues: Read and write, limitado a este repositório. Depois da instalação, como root, executa `solarminer-gateway github-error-token` no Gateway. Sem token, os relatórios ficam apenas na fila local.
 ==========================================================

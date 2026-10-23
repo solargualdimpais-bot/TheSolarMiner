@@ -83,7 +83,7 @@ def normalize_profile(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("invalid_site_photo_position")
     if not 1 <= zoom <= 3:
         raise ValueError("invalid_site_photo_zoom")
-    if not 0 <= vignette <= 0.85:
+    if not 0 <= vignette <= 1:
         raise ValueError("invalid_site_photo_vignette")
     floors = payload.get("floors", [])
     if not isinstance(floors, list) or len(floors) > 32:

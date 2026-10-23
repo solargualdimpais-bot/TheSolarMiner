@@ -43,12 +43,16 @@ def test_site_profile_rejects_invalid_photo_opacity(opacity):
 @pytest.mark.parametrize("payload", [
     {"photo_position_x": -1}, {"photo_position_y": 101},
     {"photo_zoom": .99}, {"photo_zoom": 3.01},
-    {"photo_vignette": -.01}, {"photo_vignette": .86},
+    {"photo_vignette": -.01}, {"photo_vignette": 1.01},
     {"photo_zoom": True},
 ])
 def test_site_profile_rejects_out_of_range_photo_adjustments(payload):
     with pytest.raises(ValueError):
         site_profile.normalize_profile(payload)
+
+
+def test_site_profile_accepts_full_strength_vignette():
+    assert site_profile.normalize_profile({"photo_vignette": 1.0})["photo_vignette"] == 1.0
 
 
 @pytest.mark.parametrize("payload", [

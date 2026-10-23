@@ -619,10 +619,13 @@ def _solar_day_forecast(conn: sqlite3.Connection, inverter: dict[str, Any] | Non
                    "reason": "Solar capacity, current daily energy, or a full-day forecast is unavailable.",
                    "historical_days_used": 0, "curtailment_days_excluded": 0,
                    "curtailment_hours_excluded": int(solar_model.get("possible_curtailment_hours", 0) or 0)}
-    if not inverter or not isinstance(capacity_kw, (int, float)) or isinstance(capacity_kw, bool) or capacity_kw <= 0:
-        return unavailable
+    if not inverter:
+        return {**unavailable, "reason": "O Gateway ainda não tem um inversor Deye configurado para a previsão solar."}
+    if (not isinstance(capacity_kw, (int, float)) or isinstance(capacity_kw, bool)
+            or not math.isfinite(capacity_kw) or capacity_kw <= 0):
+        return {**unavailable, "reason": "Falta configurar a potência nominal FV na página Produção para calcular a previsão."}
     if not weather or weather.get("state") != "available":
-        return {**unavailable, "reason": "Weather forecast is unavailable."}
+        return {**unavailable, "reason": "Previsão meteorológica indisponível. Confirma a localização da casa e a ligação à Internet do Gateway."}
 
     # Keep a stable estimate for ten minutes; clients may poll the summary more often.
     cached_row = conn.execute("SELECT value FROM system_state WHERE key=?", (SOLAR_DAY_FORECAST_KEY,)).fetchone()

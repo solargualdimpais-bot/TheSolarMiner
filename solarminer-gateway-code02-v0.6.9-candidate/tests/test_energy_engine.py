@@ -26,6 +26,24 @@ def insert_reading(conn, equipment_id, field, value, unit, observed_at):
     })
 
 
+def test_solar_day_forecast_reports_missing_pv_capacity_as_a_setup_action():
+    conn = database()
+    result = energy_engine._solar_day_forecast(
+        conn, {"id": "deye-inverter-test"}, {}, {"state": "available", "timezone": "UTC"},
+        None, 0.85, {}, as_of=datetime.now(timezone.utc))
+    assert result["state"] == "UNAVAILABLE"
+    assert "potência nominal FV" in result["reason"]
+
+
+def test_solar_day_forecast_distinguishes_missing_weather_from_missing_capacity():
+    conn = database()
+    result = energy_engine._solar_day_forecast(
+        conn, {"id": "deye-inverter-test"}, {}, None, 12.0, 0.85, {},
+        as_of=datetime.now(timezone.utc))
+    assert result["state"] == "UNAVAILABLE"
+    assert "Previsão meteorológica indisponível" in result["reason"]
+
+
 def test_gateway_battery_soc_integrates_signed_power_from_rolling_voltage_peak():
     now = datetime.now(timezone.utc)
     stamps = [(now - timedelta(seconds=60 - offset)).isoformat(timespec="microseconds") for offset in (0, 30, 60)]

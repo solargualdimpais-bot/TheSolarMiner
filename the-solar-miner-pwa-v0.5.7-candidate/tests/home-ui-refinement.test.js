@@ -38,6 +38,9 @@ test("Shared property photograph and menu title render above operational pages w
   assert.match(app, /propertyHost\.innerHTML=state\.page==="casa"\?"":renderHomePhotoHero/);
   assert.match(app, /function renderHomePhotoHero\(menuTitle = "Home"\)/);
   assert.match(app, /class="gateway-house-hero"/);
+  assert.match(app, /property-hero-image" src=/);
+  assert.match(app, /photo_opacity/);
+  assert.match(app, /photo_vignette/);
   assert.match(app, /sessionInfo\(\)\.authenticated && sessionInfo\(\)\.user\?\.role === "owner"/);
   assert.match(auth, /gatewayApi\("\/api\/v1\/site\/profile"\)/);
   assert.match(auth, /saveGatewaySiteProfile/);

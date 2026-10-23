@@ -134,7 +134,9 @@ test('live Home uses compact square weather and production cards with a lighter 
   assert.match(css, /\.home-weather-values strong,\.home-production-value\{[^}]*font-size:clamp\(24px,2\.3vw,32px\)/);
   assert.match(css, /\.main-content \.home-weather-card,\.main-content \.home-production-card\{aspect-ratio:1\/1/);
   assert.match(css, /\.main-content \.home-weather-row\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
-  assert.match(css, /\.main-content \.live-property-hero\.has-property-photo::before[^}]*opacity:var\(--property-photo-opacity/);
+  assert.match(css, /\.main-content \.live-property-hero \.property-hero-image\{[^}]*opacity:var\(--property-photo-opacity/);
+  assert.match(css, /\.gateway-house-hero::before,\.gateway-house-floor-hero::before\{[^}]*opacity:var\(--house-photo-opacity/);
+  assert.match(css, /\.gateway-house-hero::after[^}]*var\(--house-photo-vignette/);
 });
 
 test('Owner battery configuration edits existing banks and labels aggregate kWh as charge capacity', () => {
@@ -154,6 +156,9 @@ test('Owner photo editor supports HEIC conversion, framing and weather icons', (
   assert.match(app,/home-weather-condition/);
   assert.match(app,/heic2any-0\.0\.4\.min\.js/);
   assert.match(app,/makeBrowserReadablePhoto/);
+  assert.match(app,/id="photo-vignette" type="range" min="0" max="100" step="1"/);
+  assert.match(app,/Math\.min\(1,Number\(profile\.photo_vignette/);
+  assert.match(css,/rgba\(0,0,0,var\(--house-photo-vignette/);
   assert.match(read('service-worker.js'),/assets\/heic2any-0\.0\.4\.min\.js/);
   assert.match(html,/context-editor-preview-vignette/);
   assert.match(css,/\.weather-condition-icon\{[^}]*width:25px/);

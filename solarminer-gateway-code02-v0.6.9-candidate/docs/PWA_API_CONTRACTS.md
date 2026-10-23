@@ -1,28 +1,71 @@
-# Contratos PWA / Gateway CODE02 0.6.46
+# Contratos API — PWA v0.5.15 / Gateway CODE02 v0.6.46
 
-## Appearance of the shared property photo
+## Fotografia e cartões da Home (PWA v0.5.15 / Gateway CODE02 v0.6.46)
 
-`GET /api/v1/site/profile` returns `photo_opacity` (a number from 0 to 1) alongside the optional JPEG data URL. The Owner-only `PUT /api/v1/site/profile` validates and stores it with the shared property profile. Older persisted profiles receive the default opacity when read. The PWA's transparency control converts its 0–100% transparency setting into this opacity value; uploaded source images are compressed to remain within the Gateway's 1.8 MB binary JPEG limit.
+`GET /api/v1/site/profile` e o `PUT` Owner-only incluem `photo_opacity` entre 0 e 1, posição horizontal/vertical entre 0 e 100, zoom entre 1 e 3 e `photo_vignette` entre 0 e 1 (0% a 100%). A PWA apresenta os controlos de transparência, zoom e vinheta e permite arrastar a pré-visualização para enquadrar a imagem. O Gateway guarda os ajustes com o nome, a fotografia JPEG opcional e a estrutura da propriedade; perfis anteriores recebem os valores predefinidos. Uploads de imagem até 12 MB são convertidos no browser para JPEG e comprimidos até ao limite de 1,8 MB do Gateway. O cartão meteorológico usa ícones SVG locais conforme o código de condição recebido do Gateway.
 
-## Engine energético
+O gráfico de nove horas mostra o consumo em barras por hora, produção efetiva numa linha azul sólida no histórico e pontilhada na previsão, e potencial máximo calculado numa linha dourada (passado sólido, previsão pontilhada). O eixo vertical mostra kW e os rótulos do eixo horizontal mostram o tempo. Tocar numa hora abre um resumo discreto com consumo, produção e potencial dessa hora; abaixo do gráfico fica apenas a legenda. A PWA usa exclusivamente séries devolvidas pelo Gateway; sem dados, indica que faltam leituras/configuração.
 
-- `GET /api/v1/system/console` é exclusivo do Owner autenticado. A Consola apresenta até 160 linhas/24 kB das últimas duas horas dos serviços allowlistados Gateway, Nginx, atualização e Tailscale; o helper remove padrões comuns de segredo e não oferece terminal livre. O botão de release chama o `POST /api/v1/system/update/check` existente, valida manifesto/assinatura/pacote e mostra o preflight. Não aplica a release; a aplicação continua a usar a ação explícita do Owner na área Atualizações.
-- `GET /api/v1/system/tailscale` é exclusivo do Owner e devolve `checks` para certificado no nome `.ts.net`, sintaxe da configuração Nginx, Nginx ativo e Gateway ativo. `https_ready` exige todos os checks, permitindo distinguir certificado ausente, Nginx inválido/inativo e Gateway parado, incluindo falhas que podem causar HTTP 502.
+## Cargas configuráveis (Gateway 0.6.46)
 
-- `GET /api/v1/site/profile` fornece nome, fotografia, `photo_opacity` (0–1) e estrutura da propriedade a cada PWA autenticada. `PUT /api/v1/site/profile` só aceita papel Owner; valida JPEG limitado a 1,8 MB, opacidade entre 0 e 1 e até 32 pisos/200 divisões. Nome, fotografia, transparência e estrutura residem no Gateway, não em `localStorage`.
-- `GET /api/v1/energy/engine?history_hours=24` requer sessão autenticada com permissão `read`; aceita 1–168 horas. Retorna leituras Deye, séries históricas (incluindo tensão, corrente e potência separada de PV1/PV2), projeções, plano de cargas e último ciclo automático. Inclui `sampling_interval_seconds` (30 s), `persistence_interval_seconds` (60 s), `live_sample_at`, `live_sample_age_seconds` e `live_sample_state` (`LIVE`, `STALE`, `WAITING_FOR_SAMPLE` ou `UNKNOWN`). Leituras acima de 90 s bloqueiam o controlo.
-- `PUT /api/v1/energy/engine/config` é Owner-only. Recebe `site_location_name` (cidade/localidade), `pv_capacity_kw` e `pv_system_efficiency`, além da capacidade agregada e SOC mínimo/máximo, até 8 `battery_banks`, até 64 `loads` e `automation`. Cada banco exige id, nome, capacidade e limites SOC; `active` (omisso = `true`) exclui da soma os bancos offline. Como os bancos configurados são paralelos, partilham a tensão agregada do Deye. Na primeira utilização, o Gateway usa como âncora estimada o pico de tensão observado nos 30 dias anteriores, persiste essa âncora no SQLite e integra uma só vez cada nova amostra de potência positiva (descarga) ou negativa (carga); expirar amostras antigas não redefine a referência. Não usa SOC comunicado pelo inversor no cálculo operacional. O endpoint de resumo expõe origem, estado/âncora e energia disponível até ao limite. Uma lacuna superior a dez minutos suspende a estimativa até haver uma nova referência; sem capacidade, tensão, ou potência recente/contínua, o resultado é `null` e não é apresentado como medição. A PWA calcula apenas a autonomia de apresentação a partir da energia útil fornecida pelo Gateway e da carga atual. O Gateway resolve a cidade no endpoint fixo Open-Meteo Geocoding e guarda nome resolvido e coordenadas WGS84; falha de pesquisa não altera a configuração. Capacidade FV permitida é 0,1–1000 kWp. Cada carga define tipo, controlo, potência, prioridade, habilitação, elegibilidade automática e tempos mínimos ligado/desligado. A mineradora automática precisa de `requires_load_id` que aponte para um relé Tuya configurado, ativo, elegível e de prioridade anterior.
-- `GET /api/v1/energy/engine` inclui `forecast.weather` com estado, fornecedor, hora da consulta e `current` (`observed_at`, temperatura, sensação térmica, humidade, nebulosidade, velocidade do vento em km/h e `weather_code` WMO). A condição horária mais próxima é obtida pelo Gateway a partir do Open-Meteo; estes valores são previsões, não leituras de uma estação meteorológica local. O Gateway conserva a resposta meteorológica em cache por 15 minutos. A PWA apresenta estes dados no cartão meteorológico Home. O cartão adjacente mostra potência FV atual e a tendência histórica recente.
-- O Gateway lê Deye por FC03 a cada 30 segundos, independentemente dos pedidos da PWA. O último sample atualiza os cartões imediatamente; uma amostra por minuto é guardada em `energy_readings`; amostras Deye com mais de 90 dias são eliminadas.
-- O engine calcula energia acima do SOC mínimo, espaço de carga até ao máximo configurado e potências aproximadas a partir de tensão e limites de corrente configurados. Estes limites não são os limites dinâmicos do BMS.
-- A previsão solar combina radiação horária do Open-Meteo, capacidade FV configurada e um fator de desempenho adaptativo persistido no Gateway. O Gateway mantém a linha de potencial separada da previsão de produção esperada, perfis de tensão/corrente por MPPT e horas compatíveis com possível curtailment. São estimativas e não acionam Tesla.
-- O despacho é desligado por padrão e requer Owner a ativar e confirmar comissionamento e mapa Deye. A cada ciclo lê primeiro o estado Tuya; falhas e estado desconhecido bloqueiam as ações dependentes. Uma dependência de relé não confirmada impede o arranque do minerador; na redução de excedente, a ordem de paragem precede abrir o relé.
-- As leituras do mapa Deye permanecem `LIVE_UNVERIFIED` até validação física do modelo/logger/firmware, do sentido da potência e dos CTs. A caixa Owner de confirmação não prova esses dados.
+O Owner guarda até 8 `battery_banks` e 64 `loads` por `PUT /api/v1/energy/engine/config`. `kind` aceita `miner`, `water_heater`, `underfloor_heating`, `ev_charger` ou `generic`; `control_type` aceita `tuya_smart`, `tuya_breaker`, `antminer_braiins`, `tesla_fleet` ou `manual`. Os registos suportam vários AQS e cargas de aquecimento sem alteração do código. A amostra com mais de 90 segundos bloqueia o despacho automático. O ciclo corre na cadência guardada no Gateway quando o Owner ativa a opção, com validação física do mapa obrigatória.
 
-## Integrações existentes
+Cada `battery_bank` pode declarar `active` para indicar online/offline. Bancos paralelos partilham a tensão medida; só a capacidade dos bancos online entra no cálculo. O Gateway inicia a referência pelo pico de tensão dos 30 dias anteriores, guarda a âncora e integra uma só vez cada nova amostra de carga/descarga; expirar amostras antigas não redefine a âncora. Não usa o SOC comunicado pelo inversor como SOC operacional. A PWA mostra energia disponível e autonomia até ao SOC de corte configurado. Uma lacuna de telemetria superior a dez minutos suspende o cálculo até nova referência. Sem tensão, capacidade ou histórico de potência contínuo e recente, o cálculo fica indisponível.
 
-A configuração de Deye, Antminer e Tuya, as leituras manuais e os comandos suportados da Antminer continuam nos endpoints documentados em `API.md` e `HARDWARE_INTEGRATIONS.md`. `POST /api/v1/integrations/tuya/switch` e `POST /api/v1/integrations/tuya/level` são Owner-only e comandam apenas datapoints configurados. O resultado de nível separa comando aceite de estado físico confirmado; a PWA faz nova leitura. Tesla Fleet permanece uma integração de leitura do estado de carregamento; não comanda o veículo.
+O Owner pode testar um interruptor registado através de `POST /api/v1/integrations/tuya/switch` com `{ "device_id": "...", "on": true }`. A PWA pede confirmação, o Gateway verifica Owner e dispositivo previamente configurado, e o resultado declara se o estado foi confirmado. Segredos Tuya não são devolvidos.
 
-## PWA autenticada
+## Navegação Owner e operações individuais por equipamento
 
-Em sessão real, Home, áreas energéticas, inventário, perfil, automatismos e produção usam dados do Gateway, do registo energético ou apresentam ausência de dados. Fixtures e controlos simulados só aparecem no modo de demonstração sem sessão real. Favoritos Tuya guardam apenas divisão/piso e seleção no browser; estado e comandos são consultados/enviados ao Gateway.
+A área Owner tem separadores para Acessos, Atualizações, Tailscale, Gateway e Equipamentos. Dentro de Equipamentos, Deye, Antminer e Tuya/MOES também são separados. Cada botão de guardar envia apenas a configuração daquele fornecedor por `PUT /api/v1/integrations/hardware`, preservando os restantes blocos no Gateway. As leituras usam `POST /api/v1/integrations/hardware/{provider}/read` e consultam apenas o fornecedor selecionado; Tuya aceita `device_id` opcional para limitar a leitura a um dispositivo. Estes endpoints exigem Owner e não enviam comandos de controlo. Os comandos Tuya e Braiins continuam em ações próprias com confirmação explícita.
+
+## Engine energético e meteorologia (Gateway 0.6.46)
+
+Após autenticação, a PWA consulta `GET /api/v1/energy/engine?history_hours=24`. A resposta `forecast.weather` contém `state`, `provider`, `fetched_at` e a condição horária mais próxima em `current` (`observed_at`, temperatura, sensação térmica, humidade, nebulosidade, vento em km/h e `weather_code` WMO). O Home mostra temperatura, condição, detalhe meteorológico compacto e, no cartão adjacente, produção FV atual com tendência histórica. Não usa valores meteorológicos de demonstração no modo Live. O Owner indica a cidade/localidade em `site_location_name` através de `PUT /api/v1/energy/engine/config`; o Gateway resolve-a para coordenadas internamente via Open-Meteo Geocoding. A potência FV instalada e SOC mínimo/máximo também são configuráveis nesse endpoint. Os dados meteorológicos são consultados pelo Gateway e conservados em cache por 15 minutos. Valores de previsão não são medições meteorológicas locais.
+
+## Braiins OS Owner control (Gateway 0.6.36)
+
+The PWA configures local Braiins OS REST credentials through the authenticated Owner Gateway API. Secrets are held by the Gateway and never returned. The PWA calls `POST /api/v1/integrations/antminer/control` only after an explicit Owner confirmation. Supported actions are `set_power_target` (1–2900 W), `pause`, `stop`, and `start`; Gateway audit records contain action/result only, never credentials or session tokens. Braiins OS REST support requires firmware 25.07 or later. CGMiner-compatible port 4028 remains read-only.
+
+## Gateway hardware connectivity and telemetry (CODE02 0.6.36)
+
+`POST /api/v1/integrations/hardware/read` returns a `configuration` object and per-device `connection_state`. For the configured Deye `SUN-15K-SG05LP3-EU-SM2`, the Gateway reads the candidate telemetry map with FC03 only and skips FC43. The response includes PV1/PV2 voltage, current and power; battery SOC, voltage, signed current/power and charge/discharge splits, temperature and corrected capacity; daily/cumulative PV, battery, grid and load energy; configured battery charge/discharge current limits; grid/CT, inverter AC and load channels; and map-quality checks. A successful snapshot is saved in the canonical energy registry and becomes visible on the Home, Inversores and Baterias pages. Every Deye reading is `LIVE_UNVERIFIED`. The map is based on the three-phase Deye protocol and a public SG04/SG05 implementation, but exact logger/firmware applicability remains unconfirmed. The response reports raw type-code mismatch, zero grid channels, or MPPT power/current inconsistencies rather than hiding them. Battery current limits are read-only values from R/W registers and are not the live BMS limits. Antminer reports its configured model as unverified. Tuya Cloud status is isolated by device ID; one failing ID does not discard successful reads for others. MOES is supported only when exposed through the configured Tuya Cloud project. Shelly has no Gateway driver. This endpoint sends no Modbus control command.
+
+## Gateway signed automatic updates (CODE02 0.6.29)
+
+The Gateway checks its configured, administrator-allowlisted GitHub release daily. It automatically queues an update only after Ed25519 manifest and package verification and a successful independent recovery preflight. The privileged update helper performs SQLite backup, staging, activation, health check and rollback. The Owner PWA can still request an immediate check or manual application and reads progress from `GET /api/v1/system/update/status`.
+
+Gateway connection and Tailscale administration live on the authenticated Owner page. The Home dashboard shows Gateway readings using the units and field names returned by the API; it does not substitute simulated values into the live dashboard.
+
+## Hardware integrations and EV charging (Gateway CODE02 0.6.26)
+
+The Owner PWA calls `GET /api/v1/integrations/hardware`, `PUT /api/v1/integrations/hardware`, and `POST /api/v1/integrations/hardware/read` through the authenticated Gateway client for Deye, Antminer and Tuya only. Tesla Fleet configuration and charging-state reads are part of **Energy → EV charger**: `GET/PUT /api/v1/energy/ev/tesla` and `POST /api/v1/energy/ev/tesla/read`. The Owner role is required. Tuya secrets and the Tesla refresh token are sent only over the authenticated Gateway connection, cleared from the form after save, and never returned. Tesla responses contain charging data for the selected vehicle only. They exclude location, climate, driving and unrelated vehicle metadata. The integration is read-only; it does not start, stop or schedule charging. EV strategies X/Y/Z remain local configuration until a Gateway energy engine and a supported Tesla command flow are implemented.
+
+## Endpoints utilizados pela PWA autenticada
+
+| Método | Endpoint | Utilização |
+|---|---|---|
+| GET | `/api/v1/energy/engine?history_hours=24` | Home, histórico, previsão e estado energético |
+| GET/PUT | `/api/v1/energy/engine/config` | Cidade, potência FV, bateria e automação (escrita Owner) |
+| GET/PUT | `/api/v1/site/profile` | Nome/foto partilhados e estrutura de pisos/divisões no Gateway; PUT Owner-only |
+| GET/PUT | `/api/v1/integrations/hardware` | Configuração de equipamentos pelo Owner |
+| POST | `/api/v1/integrations/hardware/{provider}/read` | Leitura individual de Deye, Antminer ou Tuya |
+| POST | `/api/v1/integrations/tuya/switch` | ON/OFF Owner para um datapoint configurado |
+| POST | `/api/v1/integrations/tuya/level` | Nível/posição Owner de 0–100% |
+| GET/PUT | `/api/v1/energy/ev/tesla` | Configuração Tesla Fleet Owner |
+| POST | `/api/v1/energy/ev/tesla/read` | Leitura do estado de carregamento |
+| GET | `/api/v1/health`, `/api/v1/info` | Saúde, versão e identificação |
+| GET | `/api/v1/system/console` | Estado dos serviços permitidos, CPU/RAM/armazenamento e logs recentes; só Owner autenticado, leitura sem execução de comandos |
+
+O modo Live usa respostas do Gateway. Dados simulados são usados apenas no modo de demonstração sem sessão real.
+
+## Contratos necessários que não foram encontrados no CODE 02 v0.6.5 inspecionado
+
+- Preferências pessoais autenticadas: leitura/gravação por utilizador, com versionamento/migração aditiva.
+- Gestão de utilizadores: listagem, convite/associação, alteração de estado e papéis, com RBAC e auditoria no servidor.
+- Automatismos: capacidades declaradas por dispositivo; CRUD de regras; condições e operadores; scheduler/avaliação no Gateway; execução segura de ações; prevenção de ciclos; histórico de avaliação/execução e motivos; tratamento de fontes desatualizadas/offline.
+- Meteorologia/presença/astronomia: fonte meteorológica configurada, timestamp/validade, localização e fuso horário, nascer/pôr do Sol, e fontes de presença autorizadas.
+- Produção solar: leituras históricas por timestamp em kW/kWh, previsão central, fonte/atualização/confiança e API para potencial diário/restante calculado pelo Gateway.
+
+## Sem endpoints inventados
+
+A PWA v0.5.4 mantém os dados de demonstração em `localStorage`. Nenhum dos contratos acima é tratado como existente, e nenhum resultado local é apresentado como gravação ou execução no Gateway.
