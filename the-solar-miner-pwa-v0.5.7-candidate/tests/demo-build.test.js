@@ -146,12 +146,15 @@ test('Owner battery configuration edits existing banks and labels aggregate kWh 
   assert.match(app, /battery_banks:banks/);
 });
 
-test('Owner photo editor stores framing and weather card renders a condition icon', () => {
+test('Owner photo editor supports HEIC conversion, framing and weather icons', () => {
   const app=read('app.js'),html=read('index.html'),css=read('styles.css');
   for(const field of ['photo_position_x','photo_position_y','photo_zoom','photo_vignette']) assert.ok(app.includes(field),field);
   assert.match(app,/pointermove/);
   assert.match(app,/weather-condition-icon/);
   assert.match(app,/home-weather-condition/);
+  assert.match(app,/heic2any-0\.0\.4\.min\.js/);
+  assert.match(app,/makeBrowserReadablePhoto/);
+  assert.match(read('service-worker.js'),/assets\/heic2any-0\.0\.4\.min\.js/);
   assert.match(html,/context-editor-preview-vignette/);
   assert.match(css,/\.weather-condition-icon\{[^}]*width:25px/);
 });

@@ -1,9 +1,9 @@
-const CACHE_NAME = "the-solar-miner-static-v0.5.17-gateway-console-filters";
+const CACHE_NAME = "the-solar-miner-static-v0.5.18-gateway-console-filters-heic";
 const STATIC_ASSETS = [
   "./", "./index.html", "./styles.css", "./app.js", "./gateway-connection.js",
   "./gateway-auth.js", "./app-core.js", "./workspace-ui.js", "./demo-mode.js",
   "./features-v053.js", "./manifest.webmanifest", "./assets/icon.svg",
-  "./assets/icon-192.png", "./assets/icon-512.png"
+  "./assets/icon-192.png", "./assets/icon-512.png", "./assets/heic2any-0.0.4.min.js"
 ];
 const STATIC_PATHS = new Set(STATIC_ASSETS.map(path => new URL(path, self.location.href).pathname));
 const CACHE_PREFIXES = ["the-solar-miner-static-", "the-solar-miner-demo-static-"];

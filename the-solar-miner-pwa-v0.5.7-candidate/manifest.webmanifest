@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.17: consola Gateway com filtros de registos e leitura cronológica estável.",
+  "description": "The Solar Miner PWA v0.5.18: consola Gateway com filtros de registos e leitura cronológica estável.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",
