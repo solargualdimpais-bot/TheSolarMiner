@@ -32,6 +32,14 @@ test("Home favorites expose local device controls and responsive typography", ()
   assert.match(css, /property-hero \.hero-content h1\{font-family:Georgia/);
 });
 
+test("Home favorite controls use a centered minimal add button and subtle power symbols", () => {
+  assert.match(app, /class="favorite-add-button" id="home-favorite-plus"/);
+  assert.match(css, /\.home-favorites \.favorite-manage\{flex-direction:column;justify-content:center/);
+  assert.match(css, /\.home-favorites \.favorite-add-button\{display:grid;place-items:center;width:30px;height:30px/);
+  assert.match(css, /\.home-favorites \.favorite-state-symbol\.on\{border-color:rgba\(220,201,156,\.52\)/);
+  assert.match(css, /\.home-favorites \.favorite-state-symbol\{width:30px;height:30px/);
+});
+
 test("Shared property photograph and menu title render above operational pages while Casa uses its dedicated hero", () => {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
   const auth = readFileSync(new URL("../gateway-auth.js", import.meta.url), "utf8");

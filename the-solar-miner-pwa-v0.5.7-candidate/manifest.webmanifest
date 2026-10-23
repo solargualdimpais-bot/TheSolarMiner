@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.31: diagnóstico Tuya LAN, strings solares e configuração AQS.",
+  "description": "The Solar Miner PWA v0.5.32: diagnóstico Tuya LAN, strings solares e configuração AQS.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",

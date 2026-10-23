@@ -450,3 +450,17 @@ html[data-font="small"]{--font-ui-scale:.9;}html[data-font="normal"]{--font-ui-s
 .tuya-editor-panel>h3:first-child{margin-top:14px}
 .tuya-favorite-action{margin-right:auto}
 @media(max-width:380px){.home-favorites .favorite-device-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.home-favorites .favorite-device{padding:11px;gap:8px}.home-favorites .favorite-device-name{font-size:16px}.home-favorites .favorite-device-info span{font-size:11px}.tuya-editor-tab{padding:8px 10px;font-size:11px}}
+
+/* Refined, centered quick controls for Home favorites. */
+.home-favorites .favorite-manage{flex-direction:column;justify-content:center;gap:9px;padding:9px 0 13px;text-align:center;font-size:11px;color:rgba(242,239,232,.52)}
+.home-favorites .favorite-add-button{display:grid;place-items:center;width:30px;height:30px;padding:0;border:1px solid rgba(220,201,156,.23);border-radius:50%;background:rgba(220,201,156,.035);color:rgba(220,201,156,.82);font-size:20px;font-weight:300;line-height:1;transition:border-color .18s ease,background .18s ease,color .18s ease,transform .18s ease}
+.home-favorites .favorite-add-button:hover{border-color:rgba(220,201,156,.58);background:rgba(220,201,156,.09);color:var(--gold);transform:translateY(-1px)}
+.home-favorites .favorite-add-button:active{transform:scale(.96)}
+.home-favorites .favorite-device-actions{justify-content:center;gap:8px}
+.home-favorites .favorite-state-symbol{width:30px;height:30px;flex-basis:30px;border-color:rgba(220,201,156,.15);background:rgba(255,255,255,.018);color:rgba(220,201,156,.42);box-shadow:none}
+.home-favorites .favorite-state-symbol svg{width:18px;height:18px;stroke-width:1.8}
+.home-favorites .favorite-state-symbol.on{border-color:rgba(220,201,156,.52);background:rgba(220,201,156,.09);color:var(--gold-2);box-shadow:inset 0 0 0 1px rgba(220,201,156,.045)}
+.home-favorites .favorite-state-symbol.off{border-color:rgba(255,255,255,.105);background:rgba(255,255,255,.012);color:rgba(242,239,232,.3)}
+.home-favorites .favorite-state-symbol:hover:not(:disabled){border-color:rgba(220,201,156,.58);color:var(--gold);background:rgba(220,201,156,.075)}
+.home-favorites .favorite-state-symbol:active:not(:disabled){transform:scale(.95)}
+@media(prefers-reduced-motion:reduce){.home-favorites .favorite-add-button,.home-favorites .favorite-state-symbol{transition:none}}
