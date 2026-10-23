@@ -49,7 +49,7 @@ from . import updates as update_manager
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.63"
+PACKAGE_VERSION = "0.6.64"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -617,8 +617,7 @@ def _collect_tuya_device_events_once() -> int:
     """Poll configured Tuya Wi-Fi devices and save observed transitions locally."""
     config = hardware_integrations.load_config().get("tuya", {})
     devices = [item for item in config.get("devices", [])
-               if isinstance(item, dict) and item.get("local_key")
-               and (item.get("local_ip") or item.get("ip"))]
+               if isinstance(item, dict) and item.get("local_key") and item.get("local_ip")]
     if not devices:
         return 0
     readings = hardware_integrations.read_tuya({**config, "devices": devices})
@@ -1406,7 +1405,7 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
             sweep_started = time.perf_counter()
             configured_lan = []
             for item in devices:
-                host = item.get("local_ip") or item.get("ip")
+                host = item.get("local_ip")
                 if not item.get("local_key") or not host:
                     continue
                 try:
@@ -1421,7 +1420,7 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
                 device_id = item["device_id"]
                 row = by_id.get(device_id)
                 if row is None:
-                    host = item.get("local_ip") or item.get("ip")
+                    host = item.get("local_ip")
                     if not item.get("local_key"):
                         reason = "tuya_local_key_missing"
                     elif not host:
@@ -1450,7 +1449,7 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
             power_telemetry = any(re.search(r"power|watt|cur_power|active_power", str(entry.get("code", "")) + " " + str(entry.get("name", "")), re.I)
                                   for entry in schema)
             result.append({"device_id": item["device_id"], "name": str(item.get("name") or "Tuya device")[:120],
-                           "local_ip": item.get("local_ip") or item.get("ip"),
+                           "local_ip": item.get("local_ip", ""),
                            "local_key_configured": bool(item.get("local_key")),
                            "success_count": sum(1 for row in rows if row["ok"]), "rounds": rounds,
                            "failure_count": sum(1 for row in rows if not row["ok"]),
@@ -1458,7 +1457,7 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
                            "worst_latency_ms": round(max(times), 1) if times else None,
                            "power_telemetry_configured": power_telemetry,
                            "reason": next((row["reason"] for row in rows if row.get("reason")),
-                                          "private_lan_target_required" if not item.get("local_ip") and not item.get("ip") else None)})
+                                          "private_lan_target_required" if not item.get("local_ip") else None)})
         return {"rounds": rounds, "configured_count": len(devices),
                 "lan_testable_count": len(configured_lan),
                 "elapsed_ms": elapsed_ms, "sweep_times_ms": sweep_times,
@@ -2712,7 +2711,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.63"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.64"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

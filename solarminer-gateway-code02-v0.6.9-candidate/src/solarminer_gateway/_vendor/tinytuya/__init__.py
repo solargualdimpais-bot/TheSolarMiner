@@ -6,6 +6,7 @@ only the LAN Device class, so this minimal initializer keeps the vendored
 runtime strictly on the local-device API.
 """
 from .core.Device import Device
+from .core.core import deviceScan
 from .core import __version__
 
-__all__ = ["Device", "__version__"]
+__all__ = ["Device", "deviceScan", "__version__"]

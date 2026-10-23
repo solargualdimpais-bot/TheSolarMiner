@@ -1918,16 +1918,6 @@ $("#gateway-update-check").addEventListener("click", async () => {
     renderOperationDialog({title:"Verificação falhou",message:error.message||"Não foi possível verificar a atualização.",actions:[{label:"OK",value:"ok",primary:true}]});await checking;
   } finally { button.disabled = false; }
 });
-$("#gateway-update-refresh").addEventListener("click", async () => {
-  const checking=showOperationDialog({title:"Estado da atualização",message:"A consultar o Gateway…",locked:true,progress:true});
-  try{
-    let result=await refreshGatewayUpdateStatus();
-    const status=String(result.status||"").toUpperCase();
-    if(!terminalUpdateStates.has(status))result=await watchGatewayUpdate({initial:result});
-    renderOperationDialog({title:status==="COMMITTED"?"Atualização concluída":"Estado da atualização",message:updateStatusMessage(result),actions:[{label:"OK",value:"ok",primary:true}]});
-  }catch(error){renderOperationDialog({title:"Não foi possível consultar",message:error.message||"O Gateway não respondeu.",actions:[{label:"OK",value:"ok",primary:true}]});}
-  await checking;
-});
 async function refreshGatewayTailscale() {
   const info=sessionInfo();
   if(!info.authenticated || info.user.role!=="owner") throw new Error("Apenas o Owner autenticado pode gerir Tailscale.");

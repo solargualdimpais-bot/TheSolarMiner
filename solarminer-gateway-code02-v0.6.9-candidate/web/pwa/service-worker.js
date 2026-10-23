@@ -1,4 +1,4 @@
-const CACHE_NAME = "the-solar-miner-static-v0.5.29-tuya-lan-panels-aqs";
+const CACHE_NAME = "the-solar-miner-static-v0.5.30-updates-dialog";
 const STATIC_ASSETS = [
   "./", "./index.html", "./styles.css", "./app.js", "./gateway-connection.js",
   "./gateway-auth.js", "./app-core.js", "./workspace-ui.js", "./demo-mode.js",

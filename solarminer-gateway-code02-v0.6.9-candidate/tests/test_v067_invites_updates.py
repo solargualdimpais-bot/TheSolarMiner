@@ -545,12 +545,25 @@ def test_tuya_lan_diagnostics_excludes_setup_failures_from_response_latency(clie
     report = result.json()
     assert report["lan_testable_count"] == 0
     device = report["devices"][0]
-    assert device["local_ip"] == "8.8.8.8"
+    assert device["local_ip"] == ""
     assert device["local_key_configured"] is True
     assert device["success_count"] == 0
     assert device["average_latency_ms"] is None
     assert device["worst_latency_ms"] is None
     assert device["reason"] == "private_lan_target_required"
+
+
+def test_tinytuya_lan_scanner_is_exported_by_bundled_package():
+    assert callable(gateway.hardware_integrations.tinytuya.deviceScan)
+
+
+def test_public_tuya_projection_never_labels_cloud_ip_as_local():
+    projected = gateway.hardware_integrations.public_config({"tuya": {"devices": [
+        {"device_id": "cloud-ip-only", "name": "Device", "ip": "87.10.20.30"},
+    ]}})
+    device = projected["tuya"]["devices"][0]
+    assert device["local_ip"] == ""
+    assert device["ip"] == ""
 
 
 def test_tuya_lan_discovery_matches_device_ids_or_mac_and_saves_only_private_addresses(client, monkeypatch, tmp_path):
