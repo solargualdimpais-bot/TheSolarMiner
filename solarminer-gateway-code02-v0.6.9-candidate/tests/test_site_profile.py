@@ -95,6 +95,28 @@ def test_site_profile_round_trips_floor_plan_and_room_photographs():
     assert floor["rooms"][0]["photo_data_url"] == image
 
 
+def test_site_profile_round_trips_room_plan_position_and_size():
+    payload = {"floors": [{"id": "floor-garden", "name": "Exterior", "rooms": [
+        {"id": "room-garden", "name": "Jardim", "plan_rect": {"x": 12.5, "y": 8, "w": 42, "h": 35}}
+    ]}]}
+    normalized = site_profile.normalize_profile(payload)
+    assert normalized["floors"][0]["rooms"][0]["plan_rect"] == {"x": 12.5, "y": 8.0, "w": 42.0, "h": 35.0}
+
+
+@pytest.mark.parametrize("rect", [
+    {"x": 90, "y": 0, "w": 20, "h": 30},
+    {"x": 0, "y": 90, "w": 30, "h": 20},
+    {"x": 0, "y": 0, "w": 13, "h": 30},
+    {"x": True, "y": 0, "w": 30, "h": 30},
+])
+def test_site_profile_rejects_invalid_room_plan_rect(rect):
+    payload = {"floors": [{"id": "floor-garden", "name": "Exterior", "rooms": [
+        {"id": "room-garden", "name": "Jardim", "plan_rect": rect}
+    ]}]}
+    with pytest.raises(ValueError, match="invalid_site_room_plan_rect"):
+        site_profile.normalize_profile(payload)
+
+
 @pytest.mark.parametrize("zoom", [0.99, 2.51, True, "1.5"])
 def test_site_profile_rejects_invalid_floor_plan_zoom(zoom):
     with pytest.raises(ValueError, match="invalid_site_plan_zoom"):

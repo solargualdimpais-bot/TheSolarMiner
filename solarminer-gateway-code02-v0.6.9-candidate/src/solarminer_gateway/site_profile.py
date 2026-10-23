@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import math
 import re
 import sqlite3
 from typing import Any
@@ -105,7 +106,7 @@ def normalize_profile(payload: dict[str, Any]) -> dict[str, Any]:
         normalized_rooms = []
         for room in rooms:
             room_count += 1
-            if room_count > 200 or not isinstance(room, dict) or set(room) - {"id", "name", "photo_data_url"}:
+            if room_count > 200 or not isinstance(room, dict) or set(room) - {"id", "name", "photo_data_url", "plan_rect"}:
                 raise ValueError("invalid_site_room")
             room_id = room.get("id")
             if not isinstance(room_id, str) or not _ID.fullmatch(room_id) or room_id in room_ids:
@@ -115,6 +116,19 @@ def normalize_profile(payload: dict[str, Any]) -> dict[str, Any]:
             normalized_room = {"id": room_id, "name": room_name}
             if "photo_data_url" in room:
                 normalized_room["photo_data_url"] = _photo(room.get("photo_data_url"))
+            if "plan_rect" in room:
+                rect = room["plan_rect"]
+                if not isinstance(rect, dict) or set(rect) != {"x", "y", "w", "h"}:
+                    raise ValueError("invalid_site_room_plan_rect")
+                values = [rect[key] for key in ("x", "y", "w", "h")]
+                if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in values):
+                    raise ValueError("invalid_site_room_plan_rect")
+                x, y, width, height = (float(value) for value in values)
+                if (not all(map(math.isfinite, (x, y, width, height)))
+                        or x < 0 or y < 0 or width < 14 or height < 14
+                        or x + width > 100 or y + height > 100):
+                    raise ValueError("invalid_site_room_plan_rect")
+                normalized_room["plan_rect"] = {"x": x, "y": y, "w": width, "h": height}
             normalized_rooms.append(normalized_room)
         floor_ids.add(floor_id)
         floor_photo = _photo(floor.get("photo_data_url"))

@@ -79,6 +79,17 @@ test("Gateway Casa provides floor and room navigation with Gateway-persisted flo
   assert.match(css, /\.main-content \.live-property-hero \.hero-shade\{background:radial-gradient[\s\S]*linear-gradient\(0deg/);
 });
 
+test("Casa floor plan separates the upload prompt and supports saved, draggable room layouts", () => {
+  assert.match(app, /gateway-house-plan-empty/);
+  assert.match(app, /data-house-plan-edit="true"/);
+  assert.match(app, /room\.plan_rect\s*=\s*rect/);
+  assert.match(app, /data-site-action="upload-plan"/);
+  assert.doesNotMatch(app, /plan_data_url\|\|selected\?\.photo_data_url/);
+  assert.match(css, /gateway-house-plan-empty\{/);
+  assert.match(css, /gateway-house-room-resize\{/);
+  assert.match(css, /gateway-house-room-tile\.is-editing/);
+});
+
 test("Casa floor buttons have a restrained lifted shadow and tactile press state", () => {
   assert.match(css, /\.gateway-house-floor-chip\{box-shadow:0 2px 5px rgba\(0,0,0,\.24\),inset 0 1px 0/);
   assert.match(css, /\.gateway-house-floor-chip\.active\{box-shadow:0 3px 8px/);
