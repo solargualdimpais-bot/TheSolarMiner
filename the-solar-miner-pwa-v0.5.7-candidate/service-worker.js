@@ -1,4 +1,4 @@
-const CACHE_NAME = "the-solar-miner-static-v0.5.27-tuya-lan-diagnostic-fix";
+const CACHE_NAME = "the-solar-miner-static-v0.5.28-battery-bank-editor";
 const STATIC_ASSETS = [
   "./", "./index.html", "./styles.css", "./app.js", "./gateway-connection.js",
   "./gateway-auth.js", "./app-core.js", "./workspace-ui.js", "./demo-mode.js",

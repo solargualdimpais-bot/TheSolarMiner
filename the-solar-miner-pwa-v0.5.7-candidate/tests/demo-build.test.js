@@ -141,13 +141,15 @@ test('live Home uses compact square weather and production cards with a lighter 
   assert.match(css, /\.gateway-house-hero\.shared-property-hero \.hero-shade\{[^}]*var\(--property-vignette/);
 });
 
-test('Owner battery configuration edits existing banks and labels aggregate kWh as charge capacity', () => {
+test('Owner battery bank pop-up persists add, edit and remove actions', () => {
   const app = read('app.js');
-  assert.match(app, /Capacidade de carga \(kWh, se não adicionares bancos\)/);
-  assert.match(app, /data-bank-name value=/);
-  assert.match(app, /data-bank-capacity type="number"/);
-  assert.match(app, /data-bank-active type="checkbox"/);
-  assert.match(app, /battery_banks:banks/);
+  assert.match(app, /area-battery-bank-dialog/);
+  assert.match(app, /area-battery-bank-save/);
+  assert.match(app, /area-battery-bank-delete/);
+  assert.match(app, /data-battery-bank-edit/);
+  assert.match(app, /addEventListener\("dblclick"/);
+  assert.match(app, /saveGatewayEnergyEngineConfig\(\{battery_banks:banks/);
+  assert.match(app, /Remover este banco da configuração guardada no Gateway/);
 });
 
 test('Owner photo editor supports HEIC conversion, framing and weather icons', () => {
