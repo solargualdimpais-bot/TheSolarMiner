@@ -306,6 +306,34 @@ def test_tuya_api_error_code_is_preserved_but_message_and_credentials_are_not(mo
     assert "secret-value-123" not in str(exc.value)
 
 
+def test_tuya_inventory_pagination_sorts_query_parameters_for_signature(monkeypatch):
+    inventory_paths = []
+    device_rows = [{"id": f"device_{index:02d}"} for index in range(44)]
+
+    def request(config, path, token=None, *, method="GET", payload=None):
+        if path == "/v1.0/token?grant_type=1":
+            return {"result": {"access_token": "temporary-token"}}
+        if path.startswith("/v2.0/cloud/thing/device?"):
+            inventory_paths.append(path)
+            page_start = (len(inventory_paths) - 1) * 20
+            return {"result": device_rows[page_start:page_start + 20]}
+        if path.startswith("/v2.0/cloud/thing/"):
+            return {"result": {}}
+        return {"result": []}
+
+    monkeypatch.setattr(integrations, "_tuya_request", request)
+    result = integrations.synchronize_tuya_devices({
+        "region": "eu_central", "client_id": "client", "client_secret": "secret", "uid": "uid",
+        "devices": [],
+    })
+
+    assert result["pages"] == 3
+    assert len(result["devices"]) == 44
+    assert inventory_paths[0] == "/v2.0/cloud/thing/device?page_size=20"
+    assert inventory_paths[1] == "/v2.0/cloud/thing/device?last_id=device_19&page_size=20"
+    assert inventory_paths[2] == "/v2.0/cloud/thing/device?last_id=device_39&page_size=20"
+
+
 def test_tuya_reports_devices_individually_when_one_status_request_fails(monkeypatch):
     calls = []
     def request(config, path, token=None):

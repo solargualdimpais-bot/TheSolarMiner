@@ -363,7 +363,10 @@ def synchronize_tuya_devices(config: dict[str, Any]) -> dict[str, Any]:
         query = {"page_size": "20"}
         if cursor:
             query["last_id"] = cursor
-        path = "/v2.0/cloud/thing/device?" + urllib.parse.urlencode(query)
+        # Tuya calculates the signature over query parameters in alphabetical
+        # order. The first page only has page_size, but subsequent pages also
+        # include last_id, which must precede page_size in the signed URL.
+        path = "/v2.0/cloud/thing/device?" + urllib.parse.urlencode(sorted(query.items()))
         try:
             rows = _tuya_request(config, path, token).get("result")
         except (RuntimeError, ValueError) as exc:
