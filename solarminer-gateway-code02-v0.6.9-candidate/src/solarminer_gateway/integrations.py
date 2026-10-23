@@ -267,7 +267,13 @@ def _tuya_request(config: dict[str, Any], path: str, token: str | None = None, *
                   method: str = "GET", payload: dict[str, Any] | None = None) -> dict[str, Any]:
     if method not in {"GET", "POST"}:
         raise ValueError("tuya_method_not_allowed")
-    client_id, secret = config["client_id"], config["client_secret"]
+    # Cloud keys copied from the Tuya console can carry surrounding whitespace
+    # (for example, a trailing newline from a mobile clipboard). It is not part
+    # of either credential and would otherwise invalidate every HMAC signature.
+    client_id = str(config["client_id"]).strip()
+    secret = str(config["client_secret"]).strip()
+    if not client_id or not secret:
+        raise ValueError("tuya_credentials_required")
     timestamp, nonce = str(int(time.time() * 1000)), uuid.uuid4().hex
     body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8") if payload is not None else b""
     canonical = f"{method}\n{hashlib.sha256(body).hexdigest()}\n\n{path}"
@@ -339,7 +345,11 @@ def synchronize_tuya_devices(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("tuya_credentials_required")
     if not config.get("uid"):
         raise ValueError("tuya_uid_required")
-    auth = _tuya_request(config, "/v1.0/token?grant_type=1")
+    try:
+        auth = _tuya_request(config, "/v1.0/token?grant_type=1")
+    except (RuntimeError, ValueError) as exc:
+        # Identify the failing stage without returning request headers or secrets.
+        raise RuntimeError(f"tuya_authentication_failed:{str(exc)[:80]}") from exc
     token = (auth.get("result") or {}).get("access_token")
     if not isinstance(token, str) or not token:
         raise RuntimeError("tuya_token_missing")
@@ -354,7 +364,10 @@ def synchronize_tuya_devices(config: dict[str, Any]) -> dict[str, Any]:
         if cursor:
             query["last_id"] = cursor
         path = "/v2.0/cloud/thing/device?" + urllib.parse.urlencode(query)
-        rows = _tuya_request(config, path, token).get("result")
+        try:
+            rows = _tuya_request(config, path, token).get("result")
+        except (RuntimeError, ValueError) as exc:
+            raise RuntimeError(f"tuya_inventory_request_failed:{str(exc)[:80]}") from exc
         if not isinstance(rows, list):
             raise RuntimeError("tuya_device_list_invalid")
         pages += 1
