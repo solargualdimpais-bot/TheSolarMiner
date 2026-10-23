@@ -221,9 +221,9 @@ def test_energy_api_uses_existing_auth_rbac_and_audit(tmp_path, monkeypatch):
         assert configured.status_code==200 and configured.json()["battery_capacity_kwh"]==18
         assert client.put("/api/v1/energy/engine/config",headers=headers,json={"battery_capacity_kwh":18,"minimum_soc_percent":98,"maximum_soc_percent":95}).status_code==422
         monkeypatch.setattr(gateway.hardware_integrations,"load_config",lambda:{"tuya":{"devices":[{"device_id":"switch1","switch_code":"switch_1"}]}})
-        def fake_tuya_control(_config, device_id, on):
+        def fake_tuya_control(_config, device_id, on, *, code=None):
             if device_id != "switch1": raise ValueError("tuya_device_not_configured")
-            return {"device_id":device_id,"requested_on":on,"state_confirmed":True,"control_command_sent":True}
+            return {"device_id":device_id,"requested_on":on,"code":code,"state_confirmed":True,"control_command_sent":True}
         monkeypatch.setattr(gateway.hardware_integrations,"control_tuya_switch",fake_tuya_control)
         tuya_owner=client.post("/api/v1/integrations/tuya/switch",headers=headers,json={"device_id":"switch1","on":True})
         assert tuya_owner.status_code==200 and tuya_owner.json()["state_confirmed"] is True

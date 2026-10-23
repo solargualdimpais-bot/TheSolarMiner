@@ -440,7 +440,7 @@ def test_tuya_cloud_inventory_sync_stores_local_key_only_on_gateway(client, monk
     monkeypatch.setattr(gateway.hardware_integrations, "_data_dir", lambda: tmp_path / "gateway-data")
     headers = {"Authorization": f"Bearer {owner_session(client)}"}
     local_key = "private-tuya-local-key-value"
-    monkeypatch.setattr(gateway.hardware_integrations, "synchronize_tuya_devices", lambda config: {
+    monkeypatch.setattr(gateway.hardware_integrations, "synchronize_tuya_devices", lambda config, **kwargs: {
         "devices": [{"device_id": "tuya_cloud_1", "name": "AQS", "category": "cz",
                      "product_id": "product-1", "product_name": "Smart Plug", "online": False,
                      "ip": "192.168.8.40", "cloud_source": "TUYA_PROJECT", "local_key": local_key,
@@ -512,8 +512,6 @@ def test_tuya_sync_imports_local_key_and_device_capabilities(monkeypatch):
         if path == "/v2.0/cloud/thing/tuya_1":
             return {"result": {"id": "tuya_1", "local_key": "private-local-key-123",
                                 "ip": "192.168.8.41", "is_online": False}}
-        if path == "/v1.0/iot-03/devices/tuya_1/status":
-            return {"result": [{"code": "cur_power", "value": 31}]}
         if path == "/v1.0/iot-03/devices/tuya_1/specification":
             return {"result": {"category": "cz", "functions": [{"code": "switch_1", "type": "Boolean", "values": "{}"}],
                                 "status": [{"code": "cur_power", "type": "Integer", "values": "{}"}]}}
@@ -528,7 +526,10 @@ def test_tuya_sync_imports_local_key_and_device_capabilities(monkeypatch):
     assert device["local_key"] == "private-local-key-123"
     assert device["functions"][0]["code"] == "switch_1"
     assert device["status_spec"][0]["code"] == "cur_power"
-    assert device["current_status"] == [{"code": "cur_power", "value": 31}]
+    # Sync imports capability metadata only; operational readings are obtained
+    # from the device locally and must not be fetched through the Tuya cloud.
+    assert "current_status" not in device
+    assert not any(path.endswith("/status") for path in calls)
     assert calls[0] == "/v1.0/token?grant_type=1"
 
 
