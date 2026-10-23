@@ -620,7 +620,7 @@ function openBatteryBankDialog(bank=null,index=0){
   $("#area-battery-bank-name").focus();
 }
 function renderPvStringDialog(){
-  return `<dialog id="pv-string-dialog" class="settings-dialog"><form id="pv-string-form" class="dialog-body"><div class="dialog-header"><div><p class="eyebrow">CONFIGURAÇÃO FV · GATEWAY</p><h2 id="pv-string-title">Adicionar string</h2></div><button type="button" class="icon-button" data-pv-string-close aria-label="Fechar">×</button></div><label>Nome da string<input name="name" maxlength="120" required></label><label>Entrada<select name="mppt"><option value="1">MPPT 1</option><option value="2">MPPT 2</option></select></label><label>Potência nominal (kWp)<input name="nominal_power_kw" type="number" min="0" max="1000" step="0.01" value="0"></label><label><input name="active" type="checkbox" checked> String online</label><input name="id" type="hidden"><p class="field-note" id="pv-string-status" role="status"></p><div class="dialog-actions"><button type="button" class="button danger" id="pv-string-remove" hidden>Remover</button><span class="dialog-actions-spacer"></span><button type="button" class="button secondary" data-pv-string-close>Cancelar</button><button type="submit" class="button primary">Guardar</button></div></form></dialog>`;
+  return `<dialog id="pv-string-dialog" class="settings-dialog"><form id="pv-string-form" class="dialog-body"><div class="dialog-header"><div><p class="eyebrow">CONFIGURAÇÃO FV · GATEWAY</p><h2 id="pv-string-title">Adicionar string</h2></div><button type="button" class="icon-button" data-pv-string-close aria-label="Fechar">×</button></div><label>Nome da string<input name="name" maxlength="120" required></label><label>Fabricante<input name="manufacturer" maxlength="120" required></label><div class="ws-config-grid"><label>Número de painéis<input name="panel_count" type="number" min="1" max="2000" step="1" required></label><label>Potência por painel (W)<input name="panel_power_w" type="number" min="1" max="2500" step="1" required></label></div><label>Entrada<select name="mppt"><option value="1">MPPT 1</option><option value="2">MPPT 2</option></select></label><label><input name="active" type="checkbox" checked> String online</label><input name="id" type="hidden"><p class="field-note" id="pv-string-total-power" aria-live="polite">Potência total calculada: —</p><p class="field-note" id="pv-string-status" role="status"></p><div class="dialog-actions"><button type="button" class="button danger" id="pv-string-remove" hidden>Remover</button><span class="dialog-actions-spacer"></span><button type="button" class="button secondary" data-pv-string-close>Cancelar</button><button type="submit" class="button primary">Guardar</button></div></form></dialog>`;
 }
 function renderAqsDialog(){
   const channels=(state.tuyaDevices||[]).flatMap(device=>(device.functions||[]).filter(item=>["bool","boolean"].includes(String(item.type||"").toLowerCase())).map(item=>({device,channel:item})));
@@ -628,7 +628,7 @@ function renderAqsDialog(){
 }
 function renderPvStringsSection(config,isOwner){
   const strings=Array.isArray(config.pv_strings)?config.pv_strings:[];
-  return `<section class="panel detail-panel pv-strings-panel"><div class="panel-header"><div><p class="eyebrow">CONFIGURAÇÃO FV · GATEWAY</p><h2>Strings fotovoltaicas</h2></div>${isOwner?`<button class="button primary" id="pv-string-add" type="button">+ Adicionar string</button>`:""}</div><p class="field-note">A leitura de potência é agregada por MPPT; o estado online/offline abaixo é a configuração da string, não uma leitura individual do painel.</p>${strings.length?`<div class="equipment-grid pv-string-grid">${strings.map((item,index)=>`<button class="detail-item pv-string-card" type="button" data-pv-string-edit="${esc(item.id)}" aria-label="${esc(item.name)}, MPPT ${item.mppt}, ${item.active===false?"offline":"online"}; duplo clique para editar"><small>${esc(item.name)}</small><strong>MPPT ${esc(item.mppt)} · ${item.active===false?"OFFLINE":"ONLINE"}</strong><span>${Number(item.nominal_power_kw)>0?`${esc(new Intl.NumberFormat("pt-PT",{maximumFractionDigits:2}).format(Number(item.nominal_power_kw)))} kWp`:"Potência nominal por indicar"}</span><span>Duplo clique para editar</span></button>`).join("")}</div>`:`<div class="empty-state">Ainda não há strings registadas.${isOwner?" Adiciona uma para identificar o MPPT e a potência nominal.":""}</div>`}${isOwner?renderPvStringDialog():""}</section>`;
+  return `<section class="panel detail-panel pv-strings-panel"><div class="panel-header"><div><p class="eyebrow">CONFIGURAÇÃO FV · GATEWAY</p><h2>Strings fotovoltaicas</h2></div>${isOwner?`<button class="button primary" id="pv-string-add" type="button">+ Adicionar string</button>`:""}</div><p class="field-note">A potência nominal total é calculada pelo número de painéis e pela potência de cada painel. O estado online/offline é a configuração da string.</p>${strings.length?`<div class="equipment-grid pv-string-grid">${strings.map((item,index)=>`<button class="detail-item pv-string-card" type="button" data-pv-string-edit="${esc(item.id)}" aria-label="${esc(item.name)}, MPPT ${item.mppt}, ${item.active===false?"offline":"online"}; duplo clique para editar"><small>${esc(item.name)}</small><strong>MPPT ${esc(item.mppt)} · ${item.active===false?"OFFLINE":"ONLINE"}</strong><span>${esc(item.manufacturer||"Fabricante não indicado")} · ${Number(item.panel_count)||0} painéis × ${Number(item.panel_power_w)||0} W</span><span>${Number(item.nominal_power_kw)>0?`${esc(new Intl.NumberFormat("pt-PT",{maximumFractionDigits:2}).format(Number(item.nominal_power_kw)))} kWp total`:"Potência nominal por indicar"}</span><span>Duplo clique para editar</span></button>`).join("")}</div>`:`<div class="empty-state">Ainda não há strings registadas.${isOwner?" Adiciona uma para identificar fabricante, painéis, MPPT e estado.":""}</div>`}${isOwner?renderPvStringDialog():""}</section>`;
 }
 function renderAqsSection(config,isOwner){
   const loads=(Array.isArray(config.loads)?config.loads:[]).filter(item=>item.kind==="water_heater");
@@ -638,10 +638,19 @@ function renderAqsSection(config,isOwner){
 function openPvStringDialog(item=null){
   const dialog=$("#pv-string-dialog"),form=$("#pv-string-form");if(!dialog||!form)return;
   form.elements.name.value=item?.name||`String ${(state.energyEngine?.configuration?.pv_strings||[]).length+1}`;
-  form.elements.mppt.value=String(item?.mppt||1);form.elements.nominal_power_kw.value=item?.nominal_power_kw??0;
+  form.elements.manufacturer.value=item?.manufacturer||"";form.elements.panel_count.value=item?.panel_count??"";form.elements.panel_power_w.value=item?.panel_power_w??"";
+  form.elements.mppt.value=String(item?.mppt||1);
   form.elements.active.checked=item?.active!==false;form.elements.id.value=item?.id||"";
+  updatePvStringTotalPower(form);
   $("#pv-string-title").textContent=item?`Editar ${item.name}`:"Adicionar string";$("#pv-string-remove").hidden=!item;$("#pv-string-status").textContent="";
   dialog.dataset.mode=item?"edit":"add";if(!dialog.open)dialog.showModal();
+}
+function updatePvStringTotalPower(form){
+  const count=Number(form.elements.panel_count.value), watts=Number(form.elements.panel_power_w.value), label=$("#pv-string-total-power");
+  if(!label)return;
+  label.textContent=Number.isInteger(count)&&count>0&&Number.isFinite(watts)&&watts>0
+    ?`Potência total calculada: ${new Intl.NumberFormat("pt-PT",{maximumFractionDigits:2}).format(count*watts/1000)} kWp`
+    :"Potência total calculada: indica o número de painéis e a potência por painel.";
 }
 function openAqsDialog(item=null){
   const dialog=$("#aqs-dialog"),form=$("#aqs-form");if(!dialog||!form)return;
@@ -869,11 +878,11 @@ $("#page-content").addEventListener("submit", e => {
 async function savePvStringForm(form){
   const status=$("#pv-string-status"),button=form.querySelector('[type="submit"]');
   if(!sessionInfo().authenticated||sessionInfo().user?.role!=="owner"){status.textContent="Só o Owner pode alterar as strings.";return;}
-  const name=form.elements.name.value.trim(),mppt=Number(form.elements.mppt.value),nominal=Number(form.elements.nominal_power_kw.value),id=form.elements.id.value||`pv-string-${Date.now().toString(36)}`;
-  if(!name||name.length>120||![1,2].includes(mppt)||!Number.isFinite(nominal)||nominal<0||nominal>1000){status.textContent="Confirma o nome, MPPT 1 ou 2 e potência nominal válida.";return;}
+  const name=form.elements.name.value.trim(),manufacturer=form.elements.manufacturer.value.trim(),panelCount=Number(form.elements.panel_count.value),panelPower=Number(form.elements.panel_power_w.value),mppt=Number(form.elements.mppt.value),nominal=panelCount*panelPower/1000,id=form.elements.id.value||`pv-string-${Date.now().toString(36)}`;
+  if(!name||name.length>120||!manufacturer||manufacturer.length>120||![1,2].includes(mppt)||!Number.isInteger(panelCount)||panelCount<1||panelCount>2000||!Number.isFinite(panelPower)||panelPower<1||panelPower>2500||!Number.isFinite(nominal)||nominal>1000){status.textContent="Confirma o nome, fabricante, número de painéis, potência por painel e entrada MPPT.";return;}
   const strings=[...(state.energyEngine?.configuration?.pv_strings||[])],index=strings.findIndex(item=>item.id===id);
   if(form.closest("dialog").dataset.mode==="edit"&&index<0){status.textContent="A string já não consta na configuração. Atualiza e tenta novamente.";return;}
-  const value={id,name,mppt,nominal_power_kw:nominal,active:form.elements.active.checked};if(index>=0)strings[index]=value;else strings.push(value);
+  const value={id,name,manufacturer,panel_count:panelCount,panel_power_w:panelPower,mppt,nominal_power_kw:nominal,active:form.elements.active.checked};if(index>=0)strings[index]=value;else strings.push(value);
   button.disabled=true;status.textContent="A guardar no Gateway…";
   try{await saveGatewayEnergyEngineConfig({pv_strings:strings});form.closest("dialog").close();await refreshGatewayReadings();}
   catch(error){status.textContent=`Não foi possível guardar: ${error.message}`;}
@@ -897,10 +906,14 @@ async function saveAqsForm(form){
 }
 function showFeatureNotice(message){const n=$("#notice");n.hidden=false;n.textContent=message;setTimeout(()=>n.hidden=true,4500);}
 $("#page-content").addEventListener("change", e => {
+  if(e.target.matches('#pv-string-form [name="panel_count"], #pv-string-form [name="panel_power_w"]'))updatePvStringTotalPower(e.target.form);
   const fontPref=e.target.closest('[data-ws-field="prefs.font"]');if(fontPref){document.documentElement.dataset.font=fontPref.value;applyLiveFontScale();return;}
   const toggle=e.target.closest("[data-rule-toggle]"); if(toggle){const r=demoFeatures.automations.find(x=>x.id===toggle.dataset.ruleToggle);if(r){r.enabled=toggle.checked;localStorage.setItem('solar-miner-v053-demo-features-v1',JSON.stringify(demoFeatures));render();showFeatureNotice(r.enabled?'Automatismo ativado apenas na demonstração.':'Automatismo desativado.');}return;}
   if(e.target.id==='solar-weather'){saveSolarWeather(e.target.value);if($('#production-dialog')?.open)openProductionDialog();else render();}
   if(['conditionDevice','sourceType','targetDevice'].includes(e.target.name)){const form=e.target.closest('#auto-form');if(form){const ds=workspace.house.floors.flatMap(f=>f.rooms.flatMap(r=>r.devices));const device=ds.find(d=>d.id===form.elements.conditionDevice.value);const type=form.elements.sourceType.value;const opts=type==='device'?(device?.type==='blind'?[['open','Fica aberto'],['closed','Fica fechado']]:device?.type==='sensor'&&/temp/i.test(device?.name||'')?[['temperature','Temperatura acima/abaixo de limite']]:device?.type==='sensor'?[['motion','Deteta movimento'],['no-motion','Não deteta movimento']]:['light','socket'].includes(device?.type)?[['on','Fica ligado'],['off','Fica desligado']]:[['online','Estado online (se suportado)']]):type==='schedule'?[['time','Hora fixa'],['sunrise','Nascer do Sol'],['sunset','Pôr do Sol']]:type==='weather'?[['temperature','Temperatura exterior'],['rain','Chuva'],['cloud','Nebulosidade']]:[['arrive','Chegar a casa'],['leave','Sair de casa'],['nobody','Ninguém em casa']];if(e.target.name!=='targetDevice')form.elements.conditionType.innerHTML=opts.map(([v,l])=>`<option value="${v}">${l}</option>`).join('');if(e.target.name==='targetDevice'){const target=ds.find(d=>d.id===form.elements.targetDevice.value);const t=(target?.type||'').toLowerCase(),n=(target?.name||'').toLowerCase();let actions=[['notify','Notificação local simulada']];if(t.includes('blind')||/estore/.test(n))actions=[['open','Abrir (simulado)'],['close','Fechar (simulado)'],...actions];else if(['light','socket','switch','plug'].some(x=>t.includes(x))||/luz|tomada/.test(n))actions=[['on','Ligar (simulado)'],['off','Desligar (simulado)'],...actions];form.elements.action.innerHTML=actions.map(([v,l])=>`<option value="${v}">${l}</option>`).join('');}}}
+});
+$("#page-content").addEventListener("input", e => {
+  if(e.target.matches('#pv-string-form [name="panel_count"], #pv-string-form [name="panel_power_w"]'))updatePvStringTotalPower(e.target.form);
 });
 $("#page-content").addEventListener("click", async e => {
   if(e.target.closest("#engine-refresh")){refreshGatewayReadings();return;}

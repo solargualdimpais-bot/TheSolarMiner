@@ -155,10 +155,13 @@ def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, 
     normalized_pv_strings = []
     pv_string_ids: set[str] = set()
     for pv_string in pv_strings:
-        if not isinstance(pv_string, dict) or set(pv_string) - {"id", "name", "mppt", "nominal_power_kw", "active"}:
+        if not isinstance(pv_string, dict) or set(pv_string) - {"id", "name", "manufacturer", "panel_count", "panel_power_w", "mppt", "nominal_power_kw", "active"}:
             raise ValueError("invalid_pv_string")
         identifier, name, mppt = pv_string.get("id"), pv_string.get("name"), pv_string.get("mppt")
         nominal = pv_string.get("nominal_power_kw", 0)
+        manufacturer = pv_string.get("manufacturer")
+        panel_count = pv_string.get("panel_count")
+        panel_power_w = pv_string.get("panel_power_w")
         active = pv_string.get("active", True)
         if not isinstance(identifier, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,47}", identifier) or identifier in pv_string_ids:
             raise ValueError("invalid_or_duplicate_pv_string_id")
@@ -168,11 +171,26 @@ def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, 
             raise ValueError("invalid_pv_string_mppt")
         if isinstance(nominal, bool) or not isinstance(nominal, (int, float)) or not math.isfinite(nominal) or not 0 <= nominal <= 1000:
             raise ValueError("invalid_pv_string_nominal_power")
+        has_panel_specs = any(key in pv_string for key in ("manufacturer", "panel_count", "panel_power_w"))
+        if has_panel_specs:
+            if not isinstance(manufacturer, str) or not manufacturer.strip() or len(manufacturer) > 120:
+                raise ValueError("invalid_pv_string_manufacturer")
+            if isinstance(panel_count, bool) or not isinstance(panel_count, int) or not 1 <= panel_count <= 2000:
+                raise ValueError("invalid_pv_string_panel_count")
+            if isinstance(panel_power_w, bool) or not isinstance(panel_power_w, (int, float)) or not math.isfinite(panel_power_w) or not 1 <= panel_power_w <= 2500:
+                raise ValueError("invalid_pv_string_panel_power")
+            nominal = panel_count * panel_power_w / 1000
+            if nominal > 1000:
+                raise ValueError("invalid_pv_string_nominal_power")
         if not isinstance(active, bool):
             raise ValueError("invalid_pv_string_active")
         pv_string_ids.add(identifier)
-        normalized_pv_strings.append({"id": identifier, "name": name.strip(), "mppt": mppt,
-                                      "nominal_power_kw": float(nominal), "active": active})
+        normalized_string = {"id": identifier, "name": name.strip(), "mppt": mppt,
+                             "nominal_power_kw": float(nominal), "active": active}
+        if has_panel_specs:
+            normalized_string.update({"manufacturer": manufacturer.strip(), "panel_count": panel_count,
+                                      "panel_power_w": float(panel_power_w)})
+        normalized_pv_strings.append(normalized_string)
     if capacity is not None and (isinstance(capacity, bool) or not isinstance(capacity, (int, float)) or not math.isfinite(capacity) or not 0.1 <= capacity <= 10000):
         raise ValueError("invalid_battery_capacity_kwh")
     if isinstance(minimum, bool) or not isinstance(minimum, (int, float)) or not math.isfinite(minimum) or not 0 <= minimum < 100:

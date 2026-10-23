@@ -343,15 +343,27 @@ def test_energy_config_stores_pv_string_and_aqs_owner_metadata():
     conn = database()
     config = energy_engine.save_config(conn, {
         "pv_strings": [{"id": "pv-mppt1-a", "name": "MPPT 1 · Sul", "mppt": 1,
-                        "nominal_power_kw": 4.8, "active": True}],
+                        "manufacturer": "Exemplo Solar", "panel_count": 12, "panel_power_w": 400,
+                        "nominal_power_kw": 1, "active": True}],
         "loads": [{"id": "aqs-kitchen", "name": "Termoacumulador", "kind": "water_heater",
                    "control_type": "manual", "manufacturer": "MOES", "volume_l": 200,
                    "rated_power_w": 2000}],
     })
     assert config["pv_strings"] == [{"id": "pv-mppt1-a", "name": "MPPT 1 · Sul", "mppt": 1,
-                                     "nominal_power_kw": 4.8, "active": True}]
+                                     "nominal_power_kw": 4.8, "active": True,
+                                     "manufacturer": "Exemplo Solar", "panel_count": 12,
+                                     "panel_power_w": 400.0}]
     assert config["loads"][0]["manufacturer"] == "MOES"
     assert config["loads"][0]["volume_l"] == 200
+
+
+def test_pv_string_rejects_invalid_panel_metadata():
+    conn = database()
+    with pytest.raises(ValueError, match="invalid_pv_string_panel_count"):
+        energy_engine.save_config(conn, {"pv_strings": [{
+            "id": "pv-invalid", "name": "String inválida", "manufacturer": "Fabricante",
+            "panel_count": 0, "panel_power_w": 400, "mppt": 1, "active": True,
+        }]})
 
 
 def test_automatic_miner_requires_a_preceding_tuya_relay():

@@ -22,6 +22,18 @@ test("Panels separate MPPT readings from inverter output and AQS records retain 
   assert.match(energyEngine, /"pv_strings": normalized_pv_strings/);
 });
 
+test("PV string editor captures module details and derives total nominal power", () => {
+  assert.match(app, /name="manufacturer"/);
+  assert.match(app, /name="panel_count"/);
+  assert.match(app, /name="panel_power_w"/);
+  assert.match(app, /MPPT 1/);
+  assert.match(app, /MPPT 2/);
+  assert.match(app, /panelCount\*panelPower\/1000/);
+  assert.match(app, /name="active" type="checkbox" checked> String online/);
+  assert.match(energyEngine, /"panel_count"/);
+  assert.match(energyEngine, /"panel_power_w"/);
+});
+
 test("LAN discovery tries the local neighbor cache after broadcast errors", () => {
   assert.match(gatewayApp, /trying neighbor cache/);
   assert.match(gatewayApp, /neighbor_cache_empty/);
