@@ -73,3 +73,25 @@ def test_site_profile_accepts_a_bounded_real_jpeg():
     normalized = site_profile.normalize_profile({"photo_data_url": data_url})
     assert normalized["photo_data_url"] == data_url
     assert normalized["photo_opacity"] == 0.38
+
+
+def test_site_profile_round_trips_floor_plan_and_room_photographs():
+    import base64
+
+    jpeg = b"\xff\xd8\xff" + b"casa-test" + b"\xff\xd9"
+    image = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")
+    payload = {"floors": [{"id": "floor-ground", "name": "Rés do chão", "photo_data_url": image,
+        "plan_data_url": image, "plan_zoom": 1.4,
+        "rooms": [{"id": "room-living", "name": "Sala", "photo_data_url": image}]}]}
+    normalized = site_profile.normalize_profile(payload)
+    floor = normalized["floors"][0]
+    assert floor["photo_data_url"] == image
+    assert floor["plan_data_url"] == image
+    assert floor["plan_zoom"] == 1.4
+    assert floor["rooms"][0]["photo_data_url"] == image
+
+
+@pytest.mark.parametrize("zoom", [0.99, 2.51, True, "1.5"])
+def test_site_profile_rejects_invalid_floor_plan_zoom(zoom):
+    with pytest.raises(ValueError, match="invalid_site_plan_zoom"):
+        site_profile.normalize_profile({"floors": [{"id": "floor-ground", "name": "Piso", "plan_zoom": zoom}]})

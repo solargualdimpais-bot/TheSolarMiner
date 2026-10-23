@@ -93,7 +93,7 @@ def normalize_profile(payload: dict[str, Any]) -> dict[str, Any]:
     room_ids: set[str] = set()
     room_count = 0
     for floor in floors:
-        if not isinstance(floor, dict) or set(floor) - {"id", "name", "photo_data_url", "rooms"}:
+        if not isinstance(floor, dict) or set(floor) - {"id", "name", "photo_data_url", "plan_data_url", "plan_zoom", "rooms"}:
             raise ValueError("invalid_site_floor")
         floor_id = floor.get("id")
         if not isinstance(floor_id, str) or not _ID.fullmatch(floor_id) or floor_id in floor_ids:
@@ -105,19 +105,29 @@ def normalize_profile(payload: dict[str, Any]) -> dict[str, Any]:
         normalized_rooms = []
         for room in rooms:
             room_count += 1
-            if room_count > 200 or not isinstance(room, dict) or set(room) - {"id", "name"}:
+            if room_count > 200 or not isinstance(room, dict) or set(room) - {"id", "name", "photo_data_url"}:
                 raise ValueError("invalid_site_room")
             room_id = room.get("id")
             if not isinstance(room_id, str) or not _ID.fullmatch(room_id) or room_id in room_ids:
                 raise ValueError("invalid_or_duplicate_site_room_id")
             room_name = _text(room.get("name"), "site_room_name", 100)
             room_ids.add(room_id)
-            normalized_rooms.append({"id": room_id, "name": room_name})
+            normalized_room = {"id": room_id, "name": room_name}
+            if "photo_data_url" in room:
+                normalized_room["photo_data_url"] = _photo(room.get("photo_data_url"))
+            normalized_rooms.append(normalized_room)
         floor_ids.add(floor_id)
         floor_photo = _photo(floor.get("photo_data_url"))
         normalized_floor = {"id": floor_id, "name": floor_name, "rooms": normalized_rooms}
         if "photo_data_url" in floor:
             normalized_floor["photo_data_url"] = floor_photo
+        if "plan_data_url" in floor:
+            normalized_floor["plan_data_url"] = _photo(floor.get("plan_data_url"))
+        plan_zoom = floor.get("plan_zoom", 1.0)
+        if isinstance(plan_zoom, bool) or not isinstance(plan_zoom, (int, float)) or not 1 <= plan_zoom <= 2.5:
+            raise ValueError("invalid_site_plan_zoom")
+        if "plan_zoom" in floor:
+            normalized_floor["plan_zoom"] = float(plan_zoom)
         normalized_floors.append(normalized_floor)
     return {
         "name": name, "photo_data_url": photo, "photo_opacity": float(opacity),

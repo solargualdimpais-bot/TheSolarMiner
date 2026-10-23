@@ -73,7 +73,8 @@ def test_root_broker_console_reads_fixed_service_logs_and_tailscale_setup_log_an
     response = update_broker.handle_request(b'{"action":"diagnostics"}\n', runner)
     assert calls[0][0][0] == "/usr/bin/journalctl"
     assert "--no-pager" in calls[0][0]
-    assert "--lines=160" in calls[0][0]
+    assert "--since=-7 days" in calls[0][0]
+    assert "--lines=400" in calls[0][0]
     assert calls[0][1]["timeout"] == 12
     assert response["status"] == "ok"
     assert "visible-secret" not in response["logs"]
@@ -85,7 +86,7 @@ def test_root_broker_console_reads_fixed_service_logs_and_tailscale_setup_log_an
     assert "nginx.conf test is successful" in response["logs"]
     nginx_call = next(call for call in calls if call[0][0] == "/usr/sbin/nginx")
     assert nginx_call[0] == ["/usr/sbin/nginx", "-t"]
-    assert response["scope"] == "allowlisted_services_last_2_hours_including_update_recovery_plus_tailscale_setup_log_tail"
+    assert response["scope"] == "allowlisted_services_last_7_days_including_update_recovery_plus_tailscale_setup_log_tail"
     assert set(response["services"]) == set(update_broker.CONSOLE_SERVICES.values())
     assert set(response["resources"]) == {"cpu_percent", "cpu_count", "memory", "disk"}
 

@@ -31,15 +31,28 @@ test("Home favorites expose local device controls and responsive typography", ()
   assert.match(css, /property-hero \.hero-content h1\{font-family:Georgia/);
 });
 
-test("Shared property photograph and menu title render above every PWA page", () => {
+test("Shared property photograph and menu title render above operational pages while Casa uses its dedicated hero", () => {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
   const auth = readFileSync(new URL("../gateway-auth.js", import.meta.url), "utf8");
   assert.match(html, /id="property-hero-host"/);
-  assert.match(app, /propertyHost\.innerHTML=renderHomePhotoHero/);
+  assert.match(app, /propertyHost\.innerHTML=state\.page==="casa"\?"":renderHomePhotoHero/);
   assert.match(app, /function renderHomePhotoHero\(menuTitle = "Home"\)/);
+  assert.match(app, /class="gateway-house-hero"/);
   assert.match(app, /sessionInfo\(\)\.authenticated && sessionInfo\(\)\.user\?\.role === "owner"/);
   assert.match(auth, /gatewayApi\("\/api\/v1\/site\/profile"\)/);
   assert.match(auth, /saveGatewaySiteProfile/);
+});
+
+test("Gateway Casa provides floor and room navigation with Gateway-persisted floor plans and room photos", () => {
+  assert.match(app, /\[\["overview","⌂","Visão Geral"\]/);
+  assert.match(app, /\[\["floor","⌂","Visão geral"\]/);
+  assert.match(app, /data-site-action="upload-plan"/);
+  assert.match(app, /data-site-action="upload-room-photo"/);
+  assert.match(app, /floor\.plan_data_url=photo/);
+  assert.match(app, /room\.photo_data_url=photo/);
+  assert.match(app, /data-site-plan-zoom/);
+  assert.match(css, /\.gateway-house-plan-tiles/);
+  assert.match(css, /\.gateway-house-floor-tabs/);
 });
 
 test("Live house structure is Gateway-backed and editing controls are Owner-only", () => {
@@ -60,4 +73,12 @@ test("Any authenticated PWA can manage its favorites and choose registered Gatew
   assert.match(app, /Adicionar aos meus favoritos/);
   assert.match(app, /const owner=sessionInfo\(\)\.authenticated&&sessionInfo\(\)\.user\?\.role==="owner"/);
   assert.match(app, /Só o Owner pode registar ou configurar dispositivos no Gateway/);
+});
+
+test("Energy page shows Gateway daily solar estimate and battery energy above cut-off", () => {
+  assert.match(app, /engine\.forecast\?\.solar_day/);
+  assert.match(app, /Produção solar prevista até ao fim do dia/);
+  assert.match(app, /battery_energy_available_kwh_above_minimum/);
+  assert.match(app, /Energia disponível até ao corte/);
+  assert.doesNotMatch(app, /battery_energy_consumed_since_maximum_kwh/);
 });

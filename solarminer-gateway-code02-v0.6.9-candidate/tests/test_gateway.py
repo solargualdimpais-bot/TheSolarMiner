@@ -605,7 +605,7 @@ def test_owner_can_read_redacted_gateway_console_logs(client, monkeypatch):
                        "memory": {"total_bytes": 100, "used_bytes": 40, "available_bytes": 60, "used_percent": 40.0},
                        "disk": {"path": "/var/lib/solarminer", "total_bytes": 1000, "used_bytes": 250,
                                 "free_bytes": 750, "used_percent": 25.0}},
-        "scope": "allowlisted_services_last_2_hours_including_update_recovery_plus_tailscale_setup_log_tail"} if action == "diagnostics" else {})
+        "scope": "allowlisted_services_last_7_days_including_update_recovery_plus_tailscale_setup_log_tail"} if action == "diagnostics" else {})
     response = client.get("/api/v1/system/console", headers=headers)
     assert response.status_code == 200, response.text
     assert response.json()["state"] == "available"

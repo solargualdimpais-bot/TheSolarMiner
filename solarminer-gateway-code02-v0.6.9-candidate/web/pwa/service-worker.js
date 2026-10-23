@@ -1,4 +1,4 @@
-const CACHE_NAME = "the-solar-miner-static-v0.5.18-gateway-console-filters-heic";
+const CACHE_NAME = "the-solar-miner-static-v0.5.19-casa-energy-forecast-heic-fixes";
 const STATIC_ASSETS = [
   "./", "./index.html", "./styles.css", "./app.js", "./gateway-connection.js",
   "./gateway-auth.js", "./app-core.js", "./workspace-ui.js", "./demo-mode.js",

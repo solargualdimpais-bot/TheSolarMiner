@@ -49,7 +49,7 @@ from . import updates as update_manager
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.54"
+PACKAGE_VERSION = "0.6.55"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -638,7 +638,7 @@ async def security_response_headers(request: Request, call_next):
     if request.url.path.startswith("/api/v1/"):
         response.headers["Cache-Control"] = "no-store"
     if request.url.path in {"/", "/index.html", "/app.js", "/app-core.js", "/api-client.js", "/auth-client.js", "/gateway-connection.js", "/gateway-auth.js", "/workspace-ui.js", "/features-v053.js", "/demo-mode.js", "/styles.css", "/manifest.webmanifest", "/service-worker.js"} or request.url.path.startswith("/assets/"):
-        response.headers["Content-Security-Policy"] = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        response.headers["Content-Security-Policy"] = ("default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data:; font-src 'self'; connect-src 'self' http://localhost:* http://127.0.0.1:*; "
             "object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'")
     return response
@@ -2359,7 +2359,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.54"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.55"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

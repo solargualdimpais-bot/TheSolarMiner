@@ -145,7 +145,9 @@ def handle_request(raw: bytes, runner=subprocess.run) -> dict[str, object]:
         elif action == "tailscale_status":
             args = [TAILSCALE_INFO_HELPER]
         else:
-            args = ["/usr/bin/journalctl", "--since=-2 hours", "--lines=160", "--no-pager", "--output=short-iso"]
+            # Keep a week of fixed, allowlisted service journals so an Owner can
+            # inspect an update failure after a reboot or after returning remotely.
+            args = ["/usr/bin/journalctl", "--since=-7 days", "--lines=400", "--no-pager", "--output=short-iso"]
             for unit in DIAGNOSTIC_UNITS:
                 args.extend(("--unit", unit))
     elif action == "tailscale_connect":
@@ -195,7 +197,7 @@ def handle_request(raw: bytes, runner=subprocess.run) -> dict[str, object]:
         return {"status": "ok", "logs": _redact_diagnostics(logs),
                 "services": _service_statuses(runner), "resources": _system_resources(),
                 "truncated": truncated,
-                "scope": "allowlisted_services_last_2_hours_including_update_recovery_plus_tailscale_setup_log_tail"}
+                "scope": "allowlisted_services_last_7_days_including_update_recovery_plus_tailscale_setup_log_tail"}
     if action == "tailscale_connect" and result.returncode != 0:
         return {"status": "error", "reason": "tailscale_connect_failed"}
     if action == "tailscale_status" and result.returncode != 0:

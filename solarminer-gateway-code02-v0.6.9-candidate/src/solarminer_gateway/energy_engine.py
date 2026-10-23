@@ -11,12 +11,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Any
 
 from . import energy_registry
 
 ENGINE_CONFIG_KEY = "energy_engine_config"
 BATTERY_ESTIMATOR_STATE_KEY = "energy_engine_battery_estimator"
+SOLAR_DAY_FORECAST_KEY = "energy_engine_solar_day_forecast"
 DEFAULT_CONFIG: dict[str, Any] = {
     "site_location_name": None, "site_latitude": None, "site_longitude": None,
     "pv_capacity_kw": None, "pv_system_efficiency": 0.85,
@@ -277,7 +279,7 @@ def _number(readings: dict[str, dict[str, Any]], field: str) -> float | None:
 
 
 def _solar_weather(latitude: float | None, longitude: float | None) -> dict[str, Any] | None:
-    """Fetch hourly solar radiation from the fixed Open-Meteo forecast API, cached for 15 minutes."""
+    """Fetch hourly solar radiation through the end of the current day, cached for 10 minutes."""
     if latitude is None or longitude is None:
         return None
     cache_key = f"{latitude:.5f},{longitude:.5f}"
@@ -287,7 +289,7 @@ def _solar_weather(latitude: float | None, longitude: float | None) -> dict[str,
         query = urllib.parse.urlencode({
             "latitude": f"{latitude:.5f}", "longitude": f"{longitude:.5f}",
             "hourly": "shortwave_radiation,temperature_2m,apparent_temperature,relative_humidity_2m,cloud_cover,wind_speed_10m,weather_code", "past_hours": 4,
-            "forecast_hours": 7, "timezone": "UTC", "temperature_unit": "celsius", "wind_speed_unit": "kmh",
+            "forecast_hours": 48, "timezone": "auto", "temperature_unit": "celsius", "wind_speed_unit": "kmh",
         })
         request = urllib.request.Request(
             f"https://api.open-meteo.com/v1/forecast?{query}",
@@ -308,7 +310,7 @@ def _solar_weather(latitude: float | None, longitude: float | None) -> dict[str,
             cloud_cover = hourly.get("cloud_cover") if isinstance(hourly, dict) else None
             wind_speed = hourly.get("wind_speed_10m") if isinstance(hourly, dict) else None
             weather_codes = hourly.get("weather_code") if isinstance(hourly, dict) else None
-            if not isinstance(times, list) or not isinstance(radiation, list) or len(times) != len(radiation) or len(times) > 16:
+            if not isinstance(times, list) or not isinstance(radiation, list) or len(times) != len(radiation) or len(times) > 64:
                 raise ValueError("weather_response_invalid")
             if temperature is None:
                 temperature = [None] * len(times)
@@ -347,7 +349,10 @@ def _solar_weather(latitude: float | None, longitude: float | None) -> dict[str,
                 try:
                     parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
                     if parsed.tzinfo is None:
-                        parsed = parsed.replace(tzinfo=timezone.utc)
+                        try:
+                            parsed = parsed.replace(tzinfo=ZoneInfo(payload.get("timezone", "UTC")))
+                        except (ZoneInfoNotFoundError, TypeError, ValueError):
+                            parsed = parsed.replace(tzinfo=timezone.utc)
                 except ValueError:
                     continue
                 points.append({"observed_at": parsed.astimezone(timezone.utc).isoformat(timespec="minutes"),
@@ -360,10 +365,11 @@ def _solar_weather(latitude: float | None, longitude: float | None) -> dict[str,
                                "weather_code": code})
             if not points:
                 raise ValueError("weather_data_empty")
-            result = {"provider": "Open-Meteo", "state": "available", "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "hourly": points}
+            result = {"provider": "Open-Meteo", "state": "available", "timezone": payload.get("timezone", "UTC"),
+                      "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "hourly": points}
         except (OSError, TimeoutError, urllib.error.URLError, ValueError, UnicodeError, json.JSONDecodeError):
             result = {"provider": "Open-Meteo", "state": "unavailable", "hourly": []}
-        _WEATHER_CACHE.update({"key": cache_key, "expires_at": time.monotonic() + 900, "value": result})
+        _WEATHER_CACHE.update({"key": cache_key, "expires_at": time.monotonic() + 600, "value": result})
         return result
 
 
@@ -588,6 +594,173 @@ def _dedupe_time_series(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 and not isinstance(value, bool) and math.isfinite(value)):
             by_stamp[stamp] = point
     return [by_stamp[key] for key in sorted(by_stamp)]
+
+
+def _solar_day_forecast(conn: sqlite3.Connection, inverter: dict[str, Any] | None,
+                        inverter_readings: dict[str, dict[str, Any]], weather: dict[str, Any] | None,
+                        capacity_kw: float | None, efficiency: float, solar_model: dict[str, Any],
+                        as_of: datetime | None = None) -> dict[str, Any]:
+    """Estimate today's final PV energy from measured yield, weather, and non-curtailed history.
+
+    This is an analytics result only. It does not allocate energy to loads or control an EV.
+    """
+    now = as_of.astimezone(timezone.utc) if as_of else datetime.now(timezone.utc)
+    timezone_name = weather.get("timezone") if isinstance(weather, dict) else None
+    try:
+        site_tz = ZoneInfo(timezone_name) if isinstance(timezone_name, str) else datetime.now().astimezone().tzinfo
+    except (ZoneInfoNotFoundError, ValueError):
+        site_tz = datetime.now().astimezone().tzinfo or timezone.utc
+    local_now = now.astimezone(site_tz)
+    today = local_now.date()
+    calculated_at = now.isoformat(timespec="seconds")
+    unavailable = {"state": "UNAVAILABLE", "estimated_total_kwh": None, "actual_today_kwh": None,
+                   "remaining_estimate_kwh": None, "calculated_at": calculated_at,
+                   "next_update_seconds": 600, "confidence": "UNAVAILABLE",
+                   "reason": "Solar capacity, current daily energy, or a full-day forecast is unavailable.",
+                   "historical_days_used": 0, "curtailment_days_excluded": 0,
+                   "curtailment_hours_excluded": int(solar_model.get("possible_curtailment_hours", 0) or 0)}
+    if not inverter or not isinstance(capacity_kw, (int, float)) or isinstance(capacity_kw, bool) or capacity_kw <= 0:
+        return unavailable
+    if not weather or weather.get("state") != "available":
+        return {**unavailable, "reason": "Weather forecast is unavailable."}
+
+    # Keep a stable estimate for ten minutes; clients may poll the summary more often.
+    cached_row = conn.execute("SELECT value FROM system_state WHERE key=?", (SOLAR_DAY_FORECAST_KEY,)).fetchone()
+    if cached_row:
+        try:
+            cached = json.loads(cached_row[0])
+            cached_at = datetime.fromisoformat(str(cached.get("calculated_at", "")).replace("Z", "+00:00"))
+            if (cached.get("local_date") == today.isoformat() and cached_at.tzinfo is not None
+                    and 0 <= (now - cached_at.astimezone(timezone.utc)).total_seconds() < 600
+                    and cached.get("state") in {"ESTIMATED", "UNAVAILABLE"}):
+                return cached
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+
+    counter = inverter_readings.get("pv_daily_energy")
+    actual_kwh = counter.get("value") if isinstance(counter, dict) else None
+    actual_at = counter.get("observed_at") if isinstance(counter, dict) else None
+    try:
+        actual_stamp = datetime.fromisoformat(str(actual_at).replace("Z", "+00:00"))
+        if actual_stamp.tzinfo is None:
+            actual_stamp = actual_stamp.replace(tzinfo=timezone.utc)
+        counter_is_fresh = (0 <= (now - actual_stamp.astimezone(timezone.utc)).total_seconds() <= 1200
+                            and actual_stamp.astimezone(site_tz).date() == today)
+    except (TypeError, ValueError):
+        counter_is_fresh = False
+    if (not counter_is_fresh or isinstance(actual_kwh, bool) or not isinstance(actual_kwh, (int, float))
+            or not math.isfinite(actual_kwh) or not 0 <= actual_kwh <= float(capacity_kw) * 24 * 1.5):
+        return {**unavailable, "local_date": today.isoformat(),
+                "reason": "A fresh, valid daily PV energy reading is required for today's measured production."}
+
+    day_end_local = datetime.combine(today + timedelta(days=1), datetime.min.time(), tzinfo=site_tz)
+    day_end = day_end_local.astimezone(timezone.utc)
+    remaining_weather_kwh = 0.0
+    forecast_hours = 0
+    performance_ratio = solar_model.get("performance_ratio")
+    if (isinstance(performance_ratio, bool) or not isinstance(performance_ratio, (int, float))
+            or not math.isfinite(performance_ratio)):
+        performance_ratio = 1.0
+    performance_ratio = max(0.1, min(1.2, float(performance_ratio)))
+    for point in weather.get("hourly", []):
+        try:
+            stamp = datetime.fromisoformat(str(point.get("observed_at", "")).replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            radiation = point.get("shortwave_radiation_w_m2")
+            if isinstance(radiation, bool) or not isinstance(radiation, (int, float)) or not math.isfinite(radiation) or radiation < 0:
+                continue
+            interval_start = max(now, stamp.astimezone(timezone.utc))
+            interval_end = min(day_end, stamp.astimezone(timezone.utc) + timedelta(hours=1))
+            hours = (interval_end - interval_start).total_seconds() / 3600
+            if hours <= 0:
+                continue
+            remaining_weather_kwh += float(capacity_kw) * float(radiation) / 1000 * float(efficiency) * performance_ratio * hours
+            forecast_hours += 1
+        except (TypeError, ValueError):
+            continue
+    if forecast_hours == 0 and now < day_end:
+        return {**unavailable, "local_date": today.isoformat(),
+                "actual_today_kwh": round(float(actual_kwh), 3),
+                "reason": "The weather feed has no hourly values through the end of today."}
+
+    # Compare today's measured trajectory with recent daily-counter trajectories.
+    # Days with any detected possible curtailment are excluded as biased references.
+    historical_days: dict[str, list[tuple[datetime, float]]] = {}
+    since = (now - timedelta(days=35)).isoformat(timespec="microseconds")
+    for sample in _series(conn, [inverter["id"]], "pv_daily_energy", since, limit=50000):
+        try:
+            stamp = datetime.fromisoformat(str(sample["observed_at"]).replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            local_stamp = stamp.astimezone(site_tz)
+            value = float(sample["value"])
+            if not math.isfinite(value) or value < 0 or value > float(capacity_kw) * 24 * 1.5:
+                continue
+            if local_stamp.date() < today:
+                historical_days.setdefault(local_stamp.date().isoformat(), []).append((local_stamp, value))
+        except (KeyError, TypeError, ValueError):
+            continue
+    curtailed_dates: set[str] = set()
+    for event in solar_model.get("recent_curtailment_candidates", []):
+        try:
+            stamp = datetime.fromisoformat(str(event.get("hour", "")).replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            curtailed_dates.add(stamp.astimezone(site_tz).date().isoformat())
+        except (TypeError, ValueError):
+            continue
+    completed: list[tuple[float, float]] = []
+    for day, samples in historical_days.items():
+        if day in curtailed_dates or not samples:
+            continue
+        latest = max(stamp for stamp, _ in samples)
+        if latest.hour < 16:
+            continue
+        prior_total = max(value for _, value in samples)
+        close = [(stamp, value) for stamp, value in samples
+                 if abs((stamp.hour * 60 + stamp.minute) - (local_now.hour * 60 + local_now.minute)) <= 20]
+        if close:
+            prior_at_time = min(close, key=lambda item: abs((item[0].hour * 60 + item[0].minute)
+                                                              - (local_now.hour * 60 + local_now.minute)))[1]
+            completed.append((prior_total, prior_at_time))
+    history_used = len(completed)
+    historical_remaining = None
+    history_full_median = history_so_far_median = None
+    if history_used >= 3:
+        full_values = sorted(item[0] for item in completed)
+        so_far_values = sorted(item[1] for item in completed)
+        middle = history_used // 2
+        history_full_median = full_values[middle] if history_used % 2 else (full_values[middle - 1] + full_values[middle]) / 2
+        history_so_far_median = so_far_values[middle] if history_used % 2 else (so_far_values[middle - 1] + so_far_values[middle]) / 2
+        if history_so_far_median > 0.25:
+            day_adjustment = max(0.5, min(1.5, float(actual_kwh) / history_so_far_median))
+            historical_remaining = max(0.0, history_full_median - history_so_far_median) * day_adjustment
+
+    # Weather is the forward-looking signal; the recent non-curtailed daily curve
+    # contributes a bounded prior so unusually strong/weak current production adapts.
+    if historical_remaining is not None:
+        remaining_kwh = 0.7 * remaining_weather_kwh + 0.3 * historical_remaining
+    else:
+        remaining_kwh = remaining_weather_kwh
+    total_kwh = float(actual_kwh) + max(0.0, remaining_kwh)
+    result = {"state": "ESTIMATED", "local_date": today.isoformat(),
+              "estimated_total_kwh": round(total_kwh, 2), "actual_today_kwh": round(float(actual_kwh), 2),
+              "remaining_estimate_kwh": round(max(0.0, remaining_kwh), 2),
+              "weather_remaining_kwh": round(max(0.0, remaining_weather_kwh), 2),
+              "historical_daily_median_kwh": round(history_full_median, 2) if history_full_median is not None else None,
+              "historical_daily_to_now_median_kwh": round(history_so_far_median, 2) if history_so_far_median is not None else None,
+              "historical_days_used": history_used, "curtailment_days_excluded": len(curtailed_dates),
+              "curtailment_hours_excluded": int(solar_model.get("possible_curtailment_hours", 0) or 0),
+              "curtailment_adjustment": "Possible-curtailment days are excluded from the daily reference; suspected hours are excluded from learned performance.",
+              "performance_ratio": round(performance_ratio, 4), "confidence": "LOW_INDICATIVE",
+              "measurement_source": "pv_daily_energy", "forecast_hours_used": forecast_hours,
+              "calculated_at": calculated_at, "next_update_seconds": 600,
+              "method": "measured_today_plus_remaining_weather_and_recent_non_curtailed_daily_history",
+              "reason": None}
+    conn.execute("INSERT INTO system_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                 (SOLAR_DAY_FORECAST_KEY, json.dumps(result, separators=(",", ":"))))
+    return result
 
 
 def _estimate_battery_soc(voltage_history: list[dict[str, Any]], power_history: list[dict[str, Any]],
@@ -1090,6 +1263,9 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
                 solar_expected_points.append({**point, "value": round(point["value"] * solar_model["performance_ratio"], 3)})
     elif weather:
         weather = {**weather, "state": "needs_pv_capacity"}
+    solar_day_forecast = _solar_day_forecast(
+        conn, inverter, inverter_readings, weather, config.get("pv_capacity_kw"),
+        float(config.get("pv_system_efficiency", 0.85)), solar_model)
     battery_voltage = _number(battery_readings, "battery_voltage")
     max_charge_current = _number(battery_readings, "battery_max_charge_current")
     max_discharge_current = _number(battery_readings, "battery_max_discharge_current")
@@ -1150,6 +1326,7 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
                          "capacity_kw": config.get("pv_capacity_kw"),
                          "efficiency_factor": config.get("pv_system_efficiency", 0.85),
                          "adaptive_model": solar_model},
+                         "solar_day": solar_day_forecast,
                          "load_power": load_forecast, "battery_soc": soc_forecast,
                          "weather_adjusted": bool(potential_points),
                          "notice": "O Gateway compara, uma vez por hora, a produção Deye medida com a radiação prevista para essa hora e guarda um fator de desempenho suavizado no SQLite. Esse fator ajusta previsões futuras; a linha de potencial meteorológico permanece separada. Consumo é extrapolação indicativa do histórico. Não controla equipamentos."},

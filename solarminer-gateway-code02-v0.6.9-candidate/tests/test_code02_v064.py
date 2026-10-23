@@ -79,6 +79,7 @@ def test_gateway_serves_pwa_from_same_origin(tmp_path, monkeypatch):
         converter = client.get("/assets/heic2any-0.0.4.min.js")
         assert converter.status_code == 200
         assert "javascript" in converter.headers["content-type"]
+        assert "worker-src 'self' blob:" in converter.headers.get("Content-Security-Policy", "")
         auth_client = client.get("/auth-client.js")
         assert auth_client.status_code == 200
         assert "Content-Security-Policy" in auth_client.headers
