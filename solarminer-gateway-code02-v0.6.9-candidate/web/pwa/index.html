@@ -61,6 +61,10 @@
             <h4 class="gateway-console-section-title">Recursos do Gateway</h4>
             <div id="gateway-console-resources" class="gateway-console-resources" aria-live="polite">À espera de dados do Gateway.</div>
             <h4 class="gateway-console-section-title">Registos</h4>
+            <div class="gateway-console-filters" aria-label="Filtros dos registos">
+              <label>Serviço<select id="gateway-console-service-filter"><option value="all">Todos os serviços</option><option value="gateway">Gateway</option><option value="nginx">Nginx</option><option value="tailscale">Tailscale</option><option value="updates">Atualizações e recuperação</option></select></label>
+              <label>Nível<select id="gateway-console-level-filter"><option value="all">Todos os níveis</option><option value="error">Erros</option><option value="warning">Avisos</option><option value="info">Informação</option></select></label>
+            </div>
             <pre id="gateway-console-output" class="integration-result gateway-console-output" aria-label="Saída operacional recente do Gateway">A aguardar ligação autenticada ao Gateway.</pre>
           </section>
         </section>
@@ -111,7 +115,7 @@
       </section>
       </section>
 
-      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.5.16</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
+      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.5.17</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
     </main>
   </div>
 

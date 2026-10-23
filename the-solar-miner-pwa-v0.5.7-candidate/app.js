@@ -13,9 +13,11 @@ const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp
 const userFacingSaveError = (error) => { const message=String(error?.message||""); if(message.includes("site_location_not_found")) return "O Gateway não encontrou essa cidade. Escreve cidade e país, por exemplo, Coimbra, Portugal."; if(message.includes("site_location_lookup_failed")) return "O Gateway não conseguiu consultar o serviço de localização. Verifica a ligação à Internet e tenta novamente."; return message||"Não foi possível guardar as alterações."; };
 const pageLabel = (id) => id === "inicio" ? "Visão geral" : id === "owner" ? "Owner" : (CATEGORIES.find(c => c.id === id)?.label || getWorkspacePageLabel(id) || "Mais áreas");
 const timeLabel = (value) => value ? new Intl.DateTimeFormat("pt-PT", { dateStyle: "short", timeStyle: "medium" }).format(new Date(value)) : "Sem atualização";
-let editorContext=null, editorPhoto=undefined, editorPhotoFile=null;
+let editorContext=null, editorPhoto=undefined, editorPhotoFile=null, editorPreviewObjectUrl=null, editorPhotoProcessing=false;
 let editorPhotoSettings={x:50,y:50,zoom:1,vignette:.35,opacity:.38}, editorDrag=null;
 function openContextEditor(type,id){
+  if(editorPreviewObjectUrl){URL.revokeObjectURL(editorPreviewObjectUrl);editorPreviewObjectUrl=null;}
+  editorPhotoProcessing=false;
   const entity=getEditableEntity(type,id);if(!entity){return;}
   editorContext={type,id};editorPhoto=type==='house'?(state.siteProfile?.photo_data_url||''):type==='room'?(entity.customPhoto||''):(entity.customPhoto||'');editorPhotoFile=null;
   if(type==='house')editorPhotoSettings={x:Number(state.siteProfile?.photo_position_x??50),y:Number(state.siteProfile?.photo_position_y??50),zoom:Number(state.siteProfile?.photo_zoom??1),vignette:Number(state.siteProfile?.photo_vignette??.35),opacity:Number(state.siteProfile?.photo_opacity??.38)};
@@ -52,9 +54,9 @@ function updateHousePhotoPreview(){
   img.style.opacity=String(editorPhotoSettings.opacity);
   if(shade)shade.style.background=`radial-gradient(ellipse at center, transparent ${Math.max(0,65-editorPhotoSettings.vignette*38)}%, rgba(0,0,0,${editorPhotoSettings.vignette}) 120%)`;
 }
-function readAndCompressImage(file){return new Promise((resolve,reject)=>{if(!file)return resolve(undefined);if(!/^image\/(jpeg|png|webp|gif|avif|heic|heif)$/i.test(file.type)||file.size>12*1024*1024)return reject(new Error('Escolhe uma fotografia JPEG, PNG, WebP, GIF, AVIF ou HEIC com menos de 12 MB.'));const reader=new FileReader();reader.onerror=()=>reject(new Error('Não foi possível ler a imagem.'));reader.onload=()=>{const image=new Image();image.onerror=()=>reject(new Error('O browser não conseguiu abrir esta imagem. Se for HEIC, converte-a para JPEG e tenta novamente.'));image.onload=()=>{const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d');if(!ctx)return reject(new Error('O browser não disponibilizou processamento local de imagem.'));let maxDimension=1400;for(let attempt=0;attempt<12;attempt++){const scale=Math.min(1,maxDimension/Math.max(image.naturalWidth,image.naturalHeight));canvas.width=Math.max(1,Math.round(image.naturalWidth*scale));canvas.height=Math.max(1,Math.round(image.naturalHeight*scale));ctx.clearRect(0,0,canvas.width,canvas.height);ctx.drawImage(image,0,0,canvas.width,canvas.height);for(const quality of [.78,.68,.58,.48]){const data=canvas.toDataURL('image/jpeg',quality);if(data.length<=2_400_000)return resolve(data);}maxDimension=Math.round(maxDimension*.82);}reject(new Error('Não foi possível comprimir a fotografia abaixo do limite de 1,8 MB. Escolhe uma fotografia mais pequena.'));};image.src=reader.result;};reader.readAsDataURL(file);});}
+function readAndCompressImage(file){return new Promise((resolve,reject)=>{if(!file)return resolve(undefined);if((file.type&&!/^image\//i.test(file.type))||file.size>40*1024*1024)return reject(new Error('Escolhe uma fotografia com menos de 40 MB.'));const image=new Image();const sourceUrl=URL.createObjectURL(file);const finish=()=>URL.revokeObjectURL(sourceUrl);image.onerror=()=>{finish();reject(new Error('O browser não conseguiu abrir esta imagem. Se for HEIC, converte-a para JPEG e tenta novamente.'));};image.onload=async()=>{try{const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d');if(!ctx)throw new Error('O browser não disponibilizou processamento local de imagem.');let maxDimension=1800;for(let attempt=0;attempt<14;attempt++){const scale=Math.min(1,maxDimension/Math.max(image.naturalWidth,image.naturalHeight));canvas.width=Math.max(1,Math.round(image.naturalWidth*scale));canvas.height=Math.max(1,Math.round(image.naturalHeight*scale));ctx.clearRect(0,0,canvas.width,canvas.height);ctx.drawImage(image,0,0,canvas.width,canvas.height);for(const quality of [.82,.72,.62,.52,.42]){const blob=await new Promise(done=>canvas.toBlob(done,'image/jpeg',quality));if(blob&&blob.size<=1_800_000){const reader=new FileReader();reader.onerror=()=>reject(new Error('Não foi possível preparar a fotografia.'));reader.onload=()=>resolve(reader.result);reader.readAsDataURL(blob);finish();return;}}maxDimension=Math.round(maxDimension*.8);}throw new Error('Não foi possível comprimir a fotografia abaixo do limite de 1,8 MB. Escolhe uma fotografia mais pequena.');}catch(error){finish();reject(error);}};image.src=sourceUrl;});}
 $('#context-editor-cancel').addEventListener('click',()=>$('#context-editor').close());
-$('#context-editor-fields').addEventListener('change',async e=>{if(e.target.id!=='context-editor-file')return;const file=e.target.files?.[0];if(!file)return;try{editorPhoto=await readAndCompressImage(file);const img=$('#context-editor-preview-image');img.src=editorPhoto;$('#context-editor-preview').hidden=false;$('#context-editor-status').textContent='Pré-visualização pronta. Ainda não foi guardada.';}catch(error){$('#context-editor-status').textContent=error.message;}});
+$('#context-editor-fields').addEventListener('change',async e=>{if(e.target.id!=='context-editor-file')return;const file=e.target.files?.[0];if(!file)return;const img=$('#context-editor-preview-image'),preview=$('#context-editor-preview'),submit=$('#context-editor-form [type="submit"]');if(editorPreviewObjectUrl)URL.revokeObjectURL(editorPreviewObjectUrl);editorPreviewObjectUrl=URL.createObjectURL(file);img.src=editorPreviewObjectUrl;preview.hidden=false;updateHousePhotoPreview();editorPhotoProcessing=true;submit.disabled=true;$('#context-editor-status').textContent='A preparar a pré-visualização da fotografia…';try{editorPhoto=await readAndCompressImage(file);$('#context-editor-status').textContent='Pré-visualização pronta. Ainda não foi guardada.';}catch(error){$('#context-editor-status').textContent=error.message;$('#context-editor-file').value='';if(editorPhoto){img.src=editorPhoto;preview.hidden=false;}else{img.removeAttribute('src');preview.hidden=true;}}finally{editorPhotoProcessing=false;submit.disabled=false;}});
 $('#context-editor-fields').addEventListener('input',e=>{
   const t=e.target;
   if(t.id==='photo-opacity'){editorPhotoSettings.opacity=1-Number(t.value)/100;$('#photo-opacity-value').value=`${t.value}%`;$('#photo-opacity-value').textContent=`${t.value}%`;}
@@ -67,7 +69,7 @@ $('#context-editor-preview').addEventListener('pointermove',e=>{if(!editorDrag)r
 $('#context-editor-preview').addEventListener('pointerup',()=>{editorDrag=null;});
 $('#context-editor-fields').addEventListener('click',e=>{if(e.target.id!=='context-editor-remove-photo')return;editorPhoto='';editorPhotoFile=null;$('#context-editor-preview').hidden=true;$('#context-editor-preview-image').removeAttribute('src');$('#context-editor-status').textContent='A imagem será removida quando guardares.';});
 $('#context-editor-form').addEventListener('submit',async e=>{
-  e.preventDefault();if(!editorContext)return;
+  e.preventDefault();if(!editorContext)return;if(editorPhotoProcessing){$('#context-editor-status').textContent='Aguarda que a fotografia termine de preparar.';return;}
   const form=e.currentTarget,submit=form.querySelector('[type="submit"]');submit.disabled=true;
   try{
     if(editorContext.type==='house'){
@@ -1007,15 +1009,52 @@ async function refreshGatewayConsole({ silent = false } = {}) {
   try {
     const result = await readGatewayConsole();
     renderGatewayConsoleMetrics(result);
-    output.textContent = result.logs || "Sem saída recente dos serviços autorizados.";
-    output.scrollTop = output.scrollHeight;
-    status.textContent = `Atualizado ${timeLabel(result.captured_at)} · saída recente do Gateway${result.truncated ? " · conteúdo limitado" : ""}.`;
+    gatewayConsoleLogs = result.logs || "Sem saída recente dos serviços autorizados.";
+    renderGatewayConsoleLogs({ preserveScroll: true });
+    status.textContent = `Atualizado ${timeLabel(result.captured_at)} · registos mais recentes no fim${result.truncated ? " · conteúdo limitado" : ""}.`;
   } catch (error) {
     status.textContent = `Não foi possível consultar a consola: ${error.message}`;
   } finally {
     gatewayConsoleRefreshInFlight = false;
   }
 }
+let gatewayConsoleLogs = "";
+function renderGatewayConsoleLogs({ preserveScroll = false } = {}) {
+  const output = $("#gateway-console-output");
+  if (!output) return;
+  const previousScrollTop = output.scrollTop;
+  const service = $("#gateway-console-service-filter")?.value || "all";
+  const level = $("#gateway-console-level-filter")?.value || "all";
+  const lines = gatewayConsoleLogs.split("\n");
+  const datedLines = [], otherLines = [];
+  for (const [index, line] of lines.entries()) {
+    const match = line.match(/^(\d{4}-\d{2}-\d{2}[T ][^\s]+)/);
+    const timestamp = match ? Date.parse(match[1]) : NaN;
+    if (Number.isFinite(timestamp)) datedLines.push({ line, timestamp, index });
+    else otherLines.push({ line, index });
+  }
+  datedLines.sort((a, b) => a.timestamp - b.timestamp || a.index - b.index);
+  const chronologicalLines = [...otherLines, ...datedLines].map(entry => entry.line);
+  const servicePatterns = {
+    gateway: /solarminer[-_ ]gateway|uvicorn|fastapi/i,
+    nginx: /nginx|current nginx configuration validation/i,
+    tailscale: /tailscale|tailscale-cert/i,
+    updates: /solarminer-update|recovery|rollback|preflight|update-apply/i,
+  };
+  const levelPatterns = {
+    error: /\b(error|err|failed|failure|fatal|emerg|critical)\b|\[emerg\]/i,
+    warning: /\b(warn|warning)\b/i,
+    info: /\b(info|notice)\b/i,
+  };
+  const filtered = chronologicalLines.filter(line =>
+    (service === "all" || servicePatterns[service]?.test(line)) &&
+    (level === "all" || levelPatterns[level]?.test(line))
+  );
+  output.textContent = filtered.join("\n") || "Sem registos para estes filtros.";
+  if (preserveScroll) output.scrollTop = previousScrollTop;
+}
+$("#gateway-console-service-filter")?.addEventListener("change", () => renderGatewayConsoleLogs());
+$("#gateway-console-level-filter")?.addEventListener("change", () => renderGatewayConsoleLogs());
 $("#gateway-console-refresh")?.addEventListener("click", refreshGatewayConsole);
 setInterval(() => {
   if (activeOwnerTab === "gateway" && !$("#gateway-owner-page")?.hidden) refreshGatewayConsole({ silent: true });

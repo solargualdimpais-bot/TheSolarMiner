@@ -8,7 +8,7 @@ Type=oneshot
 User=solarminer
 Group=solarminer
 Environment=PYTHONPATH=/opt/solarminer/current/usr/lib/solarminer-gateway
-Environment=SOLARMINER_PACKAGE_VERSION=0.6.48
+Environment=SOLARMINER_PACKAGE_VERSION=0.6.49
 ExecStart=/usr/bin/python3 -m solarminer_gateway.error_reporting
 UMask=0077
 NoNewPrivileges=true
