@@ -551,12 +551,14 @@ def test_tuya_lan_diagnostics_excludes_setup_failures_from_response_latency(clie
     assert device["reason"] == "private_lan_target_required"
 
 
-def test_tuya_lan_discovery_matches_device_ids_and_saves_only_private_addresses(client, monkeypatch, tmp_path):
+def test_tuya_lan_discovery_matches_device_ids_or_mac_and_saves_only_private_addresses(client, monkeypatch, tmp_path):
     token = owner_session(client)
     headers = {"Authorization": f"Bearer {token}"}
     monkeypatch.setattr(gateway.hardware_integrations, "_data_dir", lambda: tmp_path)
     gateway.hardware_integrations.save_config({"tuya": {"devices": [
         {"device_id": "moes-local", "name": "Luzes MOES", "local_key": "private-local-key-123"},
+        {"device_id": "renamed-device", "name": "Gateway Cozinha", "local_key": "private-local-key-456",
+         "local_mac": "AA:BB:CC:DD:EE:44"},
         {"device_id": "not-on-lan", "name": "Fora da LAN", "local_key": "other-local-key-123"},
     ]}})
     class Scanner:
@@ -565,21 +567,57 @@ def test_tuya_lan_discovery_matches_device_ids_and_saves_only_private_addresses(
             assert kwargs == {"verbose": False, "maxretry": 10, "poll": False, "byID": True}
             return {
                 "moes-local": {"gwId": "moes-local", "ip": "192.168.1.44", "version": "3.4"},
+                "renamed-device": {"gwId": "renamed-device", "ip": "192.168.1.45", "version": "3.3",
+                                   "mac": "AA:BB:CC:DD:EE:44"},
+                "unknown-id": {"gwId": "unknown-id", "ip": "192.168.1.46", "version": "3.3",
+                               "mac": "AA:BB:CC:DD:EE:55"},
                 "foreign-device": {"gwId": "foreign-device", "ip": "8.8.8.8", "version": "3.3"},
             }
     monkeypatch.setattr(gateway.hardware_integrations, "tinytuya", Scanner)
     response = client.post("/api/v1/integrations/tuya/lan-discovery", headers=headers, json={})
     assert response.status_code == 200, response.text
     result = response.json()
-    assert result["scanned_count"] == 1
-    assert result["matched_count"] == 1
+    assert result["scanned_count"] == 3
+    assert result["matched_count"] == 2
     assert result["cloud_used"] is False and result["commands_sent"] is False
-    assert result["devices"] == [{"device_id": "moes-local", "name": "Luzes MOES",
-                                   "ip": "192.168.1.44", "local_key_available": True}]
+    assert result["devices"] == [
+        {"device_id": "moes-local", "name": "Luzes MOES", "ip": "192.168.1.44",
+         "mac": "", "matched_by": "device_id", "local_key_available": True},
+        {"device_id": "renamed-device", "name": "Gateway Cozinha", "ip": "192.168.1.45",
+         "mac": "AA:BB:CC:DD:EE:44", "matched_by": "device_id", "local_key_available": True},
+    ]
     saved = gateway.hardware_integrations.load_config()["tuya"]["devices"]
     assert saved[0]["local_ip"] == "192.168.1.44"
     assert saved[0]["local_protocol"] == "3.4"
-    assert "local_ip" not in saved[1]
+    assert saved[1]["local_ip"] == "192.168.1.45"
+    assert saved[1]["local_mac"] == "AA:BB:CC:DD:EE:44"
+    assert "local_ip" not in saved[2]
+
+
+def test_tuya_lan_discovery_can_match_manual_mac_from_neighbor_cache(client, monkeypatch, tmp_path):
+    headers = {"Authorization": f"Bearer {owner_session(client)}"}
+    monkeypatch.setattr(gateway.hardware_integrations, "_data_dir", lambda: tmp_path)
+    gateway.hardware_integrations.save_config({"tuya": {"devices": [
+        {"device_id": "cloud-id-differs", "name": "Relay by MAC", "local_key": "private-local-key-789",
+         "local_mac": "AA:BB:CC:DD:EE:77"},
+    ]}})
+    arp_file = tmp_path / "arp"
+    arp_file.write_text("IP address HW type Flags HW address Mask Device\n"
+                        "192.168.1.77 0x1 0x2 aa:bb:cc:dd:ee:77 * wlan0\n"
+                        "8.8.8.8 0x1 0x2 aa:bb:cc:dd:ee:88 * wlan0\n", encoding="ascii")
+    read_arp_entries = gateway.local_arp_entries
+    monkeypatch.setattr(gateway, "local_arp_entries", lambda: read_arp_entries(arp_file))
+    class Scanner:
+        @staticmethod
+        def deviceScan(**kwargs):
+            return {"unmatched": {"gwId": "unmatched", "ip": "192.168.1.78", "version": "3.3"}}
+    monkeypatch.setattr(gateway.hardware_integrations, "tinytuya", Scanner)
+    response = client.post("/api/v1/integrations/tuya/lan-discovery", headers=headers, json={})
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["matched_count"] == 1
+    assert result["devices"][0]["ip"] == "192.168.1.77"
+    assert result["devices"][0]["matched_by"] == "mac"
 
 
 def test_tuya_level_command_is_owner_only_and_rejects_invalid_payload(client, monkeypatch):

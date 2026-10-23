@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.25: diagnóstico de latência LAN dos dispositivos Tuya.",
+  "description": "The Solar Miner PWA v0.5.26: diagnóstico de latência LAN dos dispositivos Tuya.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",

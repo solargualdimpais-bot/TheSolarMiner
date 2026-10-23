@@ -49,7 +49,7 @@ from . import updates as update_manager
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.59"
+PACKAGE_VERSION = "0.6.60"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -244,6 +244,26 @@ def normalize_mac(value: str) -> str:
     if not isinstance(value, str) or not MAC_RE.fullmatch(value):
         raise HTTPException(422, "invalid_mac")
     return value.upper()
+
+
+def local_arp_entries(path: Path = Path("/proc/net/arp")) -> dict[str, str]:
+    """Return private LAN IPs indexed by MAC from the kernel neighbour cache."""
+    entries: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="ascii", errors="ignore").splitlines()[1:]
+    except OSError:
+        return entries
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 6 or fields[2] != "0x2":
+            continue
+        try:
+            ip = hardware_integrations._private_ip(fields[0])
+            mac = normalize_mac(fields[3])
+        except (ValueError, HTTPException):
+            continue
+        entries[mac] = ip
+    return entries
 
 
 def ensure_private_dir(path: Path) -> None:
@@ -1469,6 +1489,8 @@ def tuya_lan_discovery(session: dict[str, Any] = Depends(require_permission("man
             if not isinstance(discovered, dict):
                 raise HTTPException(502, "tuya_lan_discovery_invalid_result")
             discovered_by_id: dict[str, dict[str, Any]] = {}
+            discovered_by_mac: dict[str, dict[str, Any]] = {}
+            arp_by_mac = local_arp_entries()
             for key, value in discovered.items():
                 if not isinstance(value, dict):
                     continue
@@ -1479,13 +1501,31 @@ def tuya_lan_discovery(session: dict[str, Any] = Depends(require_permission("man
                         host = hardware_integrations._private_ip(host)
                     except ValueError:
                         continue
-                    discovered_by_id[device_id] = {"ip": host, "version": value.get("version")}
+                    found = {"ip": host, "version": value.get("version"), "mac": None}
+                    try:
+                        if value.get("mac"):
+                            found["mac"] = normalize_mac(str(value["mac"]))
+                            discovered_by_mac[found["mac"]] = found
+                    except HTTPException:
+                        pass
+                    discovered_by_id[device_id] = found
             matched = []
             for device in devices:
                 found = discovered_by_id.get(device["device_id"])
+                matched_by = "device_id"
+                if not found and device.get("local_mac"):
+                    try:
+                        mac = normalize_mac(str(device["local_mac"]))
+                    except HTTPException:
+                        mac = ""
+                    found = discovered_by_mac.get(mac)
+                    if not found and mac in arp_by_mac:
+                        found = {"ip": arp_by_mac[mac], "version": None, "mac": mac}
+                    matched_by = "mac"
                 if not found:
                     continue
                 device["local_ip"] = found["ip"]
+                device["local_mac"] = found.get("mac") or device.get("local_mac", "")
                 try:
                     version = str(found.get("version") or "")
                     if version in {"3.1", "3.2", "3.3", "3.4", "3.5"}:
@@ -1494,7 +1534,9 @@ def tuya_lan_discovery(session: dict[str, Any] = Depends(require_permission("man
                     pass
                 matched.append({"device_id": device["device_id"],
                                 "name": str(device.get("name") or "Tuya device")[:120],
-                                "ip": found["ip"], "local_key_available": bool(device.get("local_key"))})
+                                "ip": found["ip"], "mac": device.get("local_mac", ""),
+                                "matched_by": matched_by,
+                                "local_key_available": bool(device.get("local_key"))})
             if matched:
                 config["tuya"] = tuya
                 hardware_integrations.save_config(config)
@@ -2661,7 +2703,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.59"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.60"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(
