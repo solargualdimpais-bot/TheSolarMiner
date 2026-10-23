@@ -383,6 +383,9 @@ export async function runGatewayTuyaLanDiagnostics(rounds = 3) {
   if (!Number.isInteger(rounds) || rounds < 1 || rounds > 5) throw new Error("O diagnóstico aceita entre uma e cinco rondas.");
   return gatewayApi("/api/v1/integrations/tuya/lan-diagnostics", { method: "POST", body: { rounds } });
 }
+export async function discoverGatewayTuyaLanDevices() {
+  return gatewayApi("/api/v1/integrations/tuya/lan-discovery", { method: "POST", body: {} });
+}
 export async function readGatewayTeslaEvConfig() {
   return gatewayApi("/api/v1/energy/ev/tesla");
 }

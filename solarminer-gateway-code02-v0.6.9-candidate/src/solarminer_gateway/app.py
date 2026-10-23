@@ -49,7 +49,7 @@ from . import updates as update_manager
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.58"
+PACKAGE_VERSION = "0.6.59"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -1384,8 +1384,16 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
         sweep_times: list[float] = []
         for _ in range(rounds):
             sweep_started = time.perf_counter()
-            configured_lan = [item for item in devices if item.get("local_key") and
-                              (item.get("local_ip") or item.get("ip"))]
+            configured_lan = []
+            for item in devices:
+                host = item.get("local_ip") or item.get("ip")
+                if not item.get("local_key") or not host:
+                    continue
+                try:
+                    hardware_integrations._private_ip(host)
+                except ValueError:
+                    continue
+                configured_lan.append(item)
             readings = hardware_integrations.read_tuya({**config, "devices": configured_lan}) if configured_lan else []
             sweep_times.append(round((time.perf_counter() - sweep_started) * 1000, 1))
             by_id = {row.get("device_id"): row for row in readings}
@@ -1393,11 +1401,25 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
                 device_id = item["device_id"]
                 row = by_id.get(device_id)
                 if row is None:
+                    host = item.get("local_ip") or item.get("ip")
+                    if not item.get("local_key"):
+                        reason = "tuya_local_key_missing"
+                    elif not host:
+                        reason = "private_lan_target_required"
+                    else:
+                        try:
+                            hardware_integrations._private_ip(host)
+                            reason = "tuya_lan_read_unavailable"
+                        except ValueError as exc:
+                            reason = str(exc)
                     samples[device_id].append({"ok": False, "latency_ms": None,
-                                               "reason": "local_ip_or_key_not_configured"})
+                                               "reason": reason})
                 else:
-                    samples[device_id].append({"ok": row.get("connection_state") == "local_responded",
-                                               "latency_ms": row.get("latency_ms"),
+                    ok = row.get("connection_state") == "local_responded"
+                    samples[device_id].append({"ok": ok,
+                                               # Only successful LAN replies are response-time samples.
+                                               # Setup failures are not network latency.
+                                               "latency_ms": row.get("latency_ms") if ok else None,
                                                "reason": row.get("reason")})
         elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
         result = []
@@ -1409,14 +1431,85 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
                                   for entry in schema)
             result.append({"device_id": item["device_id"], "name": str(item.get("name") or "Tuya device")[:120],
                            "success_count": sum(1 for row in rows if row["ok"]), "rounds": rounds,
+                           "failure_count": sum(1 for row in rows if not row["ok"]),
                            "average_latency_ms": round(sum(times) / len(times), 1) if times else None,
                            "worst_latency_ms": round(max(times), 1) if times else None,
                            "power_telemetry_configured": power_telemetry,
-                           "reason": next((row["reason"] for row in rows if row.get("reason")), None)})
+                           "reason": next((row["reason"] for row in rows if row.get("reason")),
+                                          "private_lan_target_required" if not item.get("local_ip") and not item.get("ip") else None)})
         return {"rounds": rounds, "configured_count": len(devices),
-                "lan_testable_count": sum(1 for item in devices if item.get("local_key") and (item.get("local_ip") or item.get("ip"))),
+                "lan_testable_count": len(configured_lan),
                 "elapsed_ms": elapsed_ms, "sweep_times_ms": sweep_times,
                 "devices": result, "control_commands_sent": False}
+
+
+@app.post("/api/v1/integrations/tuya/lan-discovery")
+def tuya_lan_discovery(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Discover Tuya LAN addresses and save only matches to configured device IDs."""
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        try:
+            if hardware_integrations.tinytuya is None:
+                raise HTTPException(503, "tuya_lan_driver_unavailable")
+            config = hardware_integrations.load_config()
+            tuya = config.get("tuya", {}) if isinstance(config.get("tuya"), dict) else {}
+            devices = [item for item in tuya.get("devices", [])
+                       if isinstance(item, dict) and isinstance(item.get("device_id"), str)]
+            if not devices:
+                return {"scanned_count": 0, "matched_count": 0, "devices": [],
+                        "cloud_used": False, "commands_sent": False}
+            try:
+                discovered = hardware_integrations.tinytuya.deviceScan(
+                    verbose=False, maxretry=10, poll=False, byID=True)
+            except Exception as exc:
+                LOG.warning("Tuya LAN discovery failed (%s)", type(exc).__name__)
+                raise HTTPException(502, "tuya_lan_discovery_failed") from exc
+            if not isinstance(discovered, dict):
+                raise HTTPException(502, "tuya_lan_discovery_invalid_result")
+            discovered_by_id: dict[str, dict[str, Any]] = {}
+            for key, value in discovered.items():
+                if not isinstance(value, dict):
+                    continue
+                device_id = value.get("gwId") or value.get("id") or key
+                host = value.get("ip") or (key if isinstance(key, str) else None)
+                if isinstance(device_id, str) and isinstance(host, str):
+                    try:
+                        host = hardware_integrations._private_ip(host)
+                    except ValueError:
+                        continue
+                    discovered_by_id[device_id] = {"ip": host, "version": value.get("version")}
+            matched = []
+            for device in devices:
+                found = discovered_by_id.get(device["device_id"])
+                if not found:
+                    continue
+                device["local_ip"] = found["ip"]
+                try:
+                    version = str(found.get("version") or "")
+                    if version in {"3.1", "3.2", "3.3", "3.4", "3.5"}:
+                        device["local_protocol"] = version
+                except (TypeError, ValueError):
+                    pass
+                matched.append({"device_id": device["device_id"],
+                                "name": str(device.get("name") or "Tuya device")[:120],
+                                "ip": found["ip"], "local_key_available": bool(device.get("local_key"))})
+            if matched:
+                config["tuya"] = tuya
+                hardware_integrations.save_config(config)
+            audit(conn, session["user_id"], "hardware.tuya.lan_discovery", "tuya_devices", "success", {
+                "scanned_count": len(discovered_by_id), "matched_count": len(matched),
+                "cloud_used": False, "commands_sent": False,
+            })
+            conn.commit()
+            return {"scanned_count": len(discovered_by_id), "matched_count": len(matched),
+                    "devices": matched, "cloud_used": False, "commands_sent": False}
+        except HTTPException:
+            raise
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            LOG.warning("Tuya LAN discovery could not be saved (%s)", type(exc).__name__)
+            raise HTTPException(500, "tuya_lan_discovery_save_failed") from exc
 
 
 @app.post("/api/v1/integrations/hardware/{provider}/read")
@@ -2568,7 +2661,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.58"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.59"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

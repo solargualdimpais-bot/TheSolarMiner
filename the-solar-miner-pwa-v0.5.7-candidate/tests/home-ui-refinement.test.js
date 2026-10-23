@@ -38,7 +38,7 @@ test("Shared property photograph and menu title render above operational pages w
   assert.match(html, /id="property-hero-host"/);
   assert.match(app, /propertyHost\.innerHTML=state\.page==="casa"\?"":renderHomePhotoHero/);
   assert.match(app, /function renderHomePhotoHero\(menuTitle = "Home"\)/);
-  assert.match(app, /class="gateway-house-hero"/);
+  assert.match(app, /class="property-hero live-property-hero shared-property-hero gateway-house-hero/);
   assert.match(app, /property-hero-image" src=/);
   assert.match(app, /photo_opacity/);
   assert.match(app, /photo_vignette/);
@@ -62,7 +62,7 @@ test("Gateway Casa provides floor and room navigation with Gateway-persisted flo
   assert.match(app, /data-site-plan-zoom/);
   assert.match(css, /\.gateway-house-plan-tiles/);
   assert.match(css, /\.gateway-house-floor-tabs/);
-  assert.match(css, /gateway-house-hero-image[^}]*border-radius:inherit/);
+  assert.match(css, /\.gateway-house-hero\.shared-property-hero \.property-hero-image\{[^}]*border-radius:inherit/);
   assert.match(css, /\.main-content \.live-property-hero\{border-radius:24px!important\}/);
   assert.match(css, /\.main-content \.live-property-hero \.hero-shade\{background:radial-gradient[\s\S]*linear-gradient\(0deg/);
 });
@@ -94,6 +94,9 @@ test("Tuya device editor opens a Gateway event log for state, availability and a
   assert.match(app, /automation_action/);
   assert.match(app, /Dispositivo indisponível na LAN/);
   assert.match(app, /A carregar registo local do Gateway/);
+  assert.match(auth, /discoverGatewayTuyaLanDevices/);
+  assert.match(app, /tuya-lan-discovery/);
+  assert.match(app, /esc\(item\.ip\)/);
 });
 
 test("Energy page shows Gateway daily solar estimate and battery energy above cut-off", () => {

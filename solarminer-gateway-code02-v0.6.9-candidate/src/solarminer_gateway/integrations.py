@@ -227,7 +227,17 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
                 value = device.get(key, previous.get(key, ""))
                 if not isinstance(value, str) or len(value) > 120: raise ValueError(f"invalid_tuya_{key}")
                 normalized_device[key] = value.strip()
-            local_ip_value = device.get("local_ip", previous.get("local_ip") or previous.get("ip"))
+            # Prefer an explicit LAN address. The Tuya Cloud IP field is
+            # accepted only when it is a valid private address; cloud APIs can
+            # also return a public/NAT address, which must never be used as a
+            # local control target.
+            local_ip_value = device.get("local_ip") or previous.get("local_ip")
+            if not local_ip_value:
+                cloud_ip = device.get("ip") or previous.get("ip")
+                try:
+                    local_ip_value = _private_ip(cloud_ip) if cloud_ip else None
+                except ValueError:
+                    local_ip_value = None
             if local_ip_value:
                 normalized_device["local_ip"] = _private_ip(local_ip_value)
             protocol = str(device.get("local_protocol", previous.get("local_protocol", "3.3")))

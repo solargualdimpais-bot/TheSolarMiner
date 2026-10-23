@@ -125,18 +125,20 @@ test('live Home uses Gateway weather, solar history and owner-controlled Tuya fa
 });
 
 test('live Home uses compact square weather and production cards with a lighter house title', () => {
+  const app = read('app.js');
   const css = read('styles.css');
   assert.match(css, /\.home-weather-row\{[^}]*grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
   assert.match(css, /\.home-weather-card,\.home-production-card\{[^}]*aspect-ratio:1\/1/);
   assert.match(css, /\.live-property-hero \.home-property-name\{[^}]*font-weight:300/);
-  assert.match(css, /\.live-property-hero\{[^}]*border-radius:0!important/);
+  assert.match(css, /\.main-content \.live-property-hero\{border-radius:24px!important\}/);
   assert.match(css, /\.live-property-hero \.hero-shade\{[^}]*radial-gradient\(ellipse at center/);
   assert.match(css, /\.home-weather-values strong,\.home-production-value\{[^}]*font-size:clamp\(24px,2\.3vw,32px\)/);
   assert.match(css, /\.main-content \.home-weather-card,\.main-content \.home-production-card\{aspect-ratio:1\/1/);
   assert.match(css, /\.main-content \.home-weather-row\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
   assert.match(css, /\.main-content \.live-property-hero \.property-hero-image\{[^}]*opacity:var\(--property-photo-opacity/);
-  assert.match(css, /\.gateway-house-hero::before,\.gateway-house-floor-hero::before\{[^}]*opacity:var\(--house-photo-opacity/);
-  assert.match(css, /\.gateway-house-hero::after[^}]*var\(--house-photo-vignette/);
+  assert.match(app, /shared-property-hero gateway-house-hero \$\{profile\.photo_data_url/);
+  assert.match(css, /\.gateway-house-hero\.shared-property-hero \.property-hero-image\{[^}]*opacity:var\(--property-photo-opacity/);
+  assert.match(css, /\.gateway-house-hero\.shared-property-hero \.hero-shade\{[^}]*var\(--property-vignette/);
 });
 
 test('Owner battery configuration edits existing banks and labels aggregate kWh as charge capacity', () => {

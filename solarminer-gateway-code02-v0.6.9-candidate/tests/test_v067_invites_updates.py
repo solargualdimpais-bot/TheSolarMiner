@@ -533,6 +533,55 @@ def test_tuya_sync_imports_local_key_and_device_capabilities(monkeypatch):
     assert calls[0] == "/v1.0/token?grant_type=1"
 
 
+def test_tuya_lan_diagnostics_excludes_setup_failures_from_response_latency(client, monkeypatch):
+    headers = {"Authorization": f"Bearer {owner_session(client)}"}
+    monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: {"tuya": {"devices": [
+        {"device_id": "moes-no-lan-target", "name": "MOES com IP cloud externo",
+         "local_key": "local-key-valid", "ip": "8.8.8.8"},
+    ]}})
+    result = client.post("/api/v1/integrations/tuya/lan-diagnostics", headers=headers,
+                         json={"rounds": 3})
+    assert result.status_code == 200, result.text
+    report = result.json()
+    assert report["lan_testable_count"] == 0
+    device = report["devices"][0]
+    assert device["success_count"] == 0
+    assert device["average_latency_ms"] is None
+    assert device["worst_latency_ms"] is None
+    assert device["reason"] == "private_lan_target_required"
+
+
+def test_tuya_lan_discovery_matches_device_ids_and_saves_only_private_addresses(client, monkeypatch, tmp_path):
+    token = owner_session(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    monkeypatch.setattr(gateway.hardware_integrations, "_data_dir", lambda: tmp_path)
+    gateway.hardware_integrations.save_config({"tuya": {"devices": [
+        {"device_id": "moes-local", "name": "Luzes MOES", "local_key": "private-local-key-123"},
+        {"device_id": "not-on-lan", "name": "Fora da LAN", "local_key": "other-local-key-123"},
+    ]}})
+    class Scanner:
+        @staticmethod
+        def deviceScan(**kwargs):
+            assert kwargs == {"verbose": False, "maxretry": 10, "poll": False, "byID": True}
+            return {
+                "moes-local": {"gwId": "moes-local", "ip": "192.168.1.44", "version": "3.4"},
+                "foreign-device": {"gwId": "foreign-device", "ip": "8.8.8.8", "version": "3.3"},
+            }
+    monkeypatch.setattr(gateway.hardware_integrations, "tinytuya", Scanner)
+    response = client.post("/api/v1/integrations/tuya/lan-discovery", headers=headers, json={})
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["scanned_count"] == 1
+    assert result["matched_count"] == 1
+    assert result["cloud_used"] is False and result["commands_sent"] is False
+    assert result["devices"] == [{"device_id": "moes-local", "name": "Luzes MOES",
+                                   "ip": "192.168.1.44", "local_key_available": True}]
+    saved = gateway.hardware_integrations.load_config()["tuya"]["devices"]
+    assert saved[0]["local_ip"] == "192.168.1.44"
+    assert saved[0]["local_protocol"] == "3.4"
+    assert "local_ip" not in saved[1]
+
+
 def test_tuya_level_command_is_owner_only_and_rejects_invalid_payload(client, monkeypatch):
     token = owner_session(client)
     headers = {"Authorization": f"Bearer {token}"}
