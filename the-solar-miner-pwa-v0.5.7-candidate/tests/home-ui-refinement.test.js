@@ -32,12 +32,13 @@ test("Home favorites expose local device controls and responsive typography", ()
   assert.match(css, /property-hero \.hero-content h1\{font-family:Georgia/);
 });
 
-test("Home favorite controls use a centered minimal add button and subtle power symbols", () => {
+test("Home favorite controls use a centered plus-only add button and the open-ring power symbol", () => {
   assert.match(app, /class="favorite-add-button" id="home-favorite-plus"/);
   assert.match(css, /\.home-favorites \.favorite-manage\{flex-direction:column;justify-content:center/);
-  assert.match(css, /\.home-favorites \.favorite-add-button\{display:grid;place-items:center;width:30px;height:30px/);
-  assert.match(css, /\.home-favorites \.favorite-state-symbol\.on\{border-color:rgba\(220,201,156,\.52\)/);
-  assert.match(css, /\.home-favorites \.favorite-state-symbol\{width:30px;height:30px/);
+  assert.match(css, /\.home-favorites \.favorite-add-button\{display:grid;place-items:center;width:40px;height:40px;padding:0;border:0;border-radius:0/);
+  assert.match(app, /const powerGlyph=`<svg viewBox="0 0 28 28"[^`]*M19\.25 4\.9a10\.5 10\.5 0 1 1-10\.5 0/);
+  assert.match(css, /\.home-favorites \.favorite-state-symbol\.on\{border:0;background:transparent;color:var\(--gold\)/);
+  assert.match(css, /\.home-favorites \.favorite-state-symbol\{width:40px;height:40px;flex-basis:40px;border:0;border-radius:0/);
 });
 
 test("Casa reuses the exact shared property photo hero used by every operational menu", () => {
@@ -58,6 +59,7 @@ test("Casa reuses the exact shared property photo hero used by every operational
 });
 
 test("Gateway Casa provides floor and room navigation with Gateway-persisted floor plans and room photos", () => {
+  assert.doesNotMatch(app, /CASA · GUARDADA NO GATEWAY|Pisos, divisões e plantas partilhados com as tuas sessões\.|data-action="edit-house">Editar casa/);
   assert.match(app, /data-house-general="true"/);
   assert.match(app, /data-house-select-floor=.*data-house-view="overview"/);
   assert.match(app, /data-house-room-floor=/);
