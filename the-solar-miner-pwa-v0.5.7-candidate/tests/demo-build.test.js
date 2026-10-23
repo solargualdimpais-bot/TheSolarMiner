@@ -136,6 +136,15 @@ test('live Home uses compact square weather and production cards with a lighter 
   assert.match(css, /\.main-content \.live-property-hero\.has-property-photo::before[^}]*opacity:var\(--property-photo-opacity/);
 });
 
+test('Owner battery configuration edits existing banks and labels aggregate kWh as charge capacity', () => {
+  const app = read('app.js');
+  assert.match(app, /Capacidade de carga \(kWh, se não adicionares bancos\)/);
+  assert.match(app, /data-bank-name value=/);
+  assert.match(app, /data-bank-capacity type="number"/);
+  assert.match(app, /data-bank-active type="checkbox"/);
+  assert.match(app, /battery_banks:banks/);
+});
+
 test('Owner photo editor stores framing and weather card renders a condition icon', () => {
   const app=read('app.js'),html=read('index.html'),css=read('styles.css');
   for(const field of ['photo_position_x','photo_position_y','photo_zoom','photo_vignette']) assert.ok(app.includes(field),field);

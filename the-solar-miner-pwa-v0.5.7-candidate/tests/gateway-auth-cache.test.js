@@ -49,7 +49,7 @@ test("new browser sign-in sends password only to the HTTPS Gateway and stores de
 });
 
 test("service worker only caches allowlisted static resources and versions cache explicitly", () => {
-  assert.match(sw, /the-solar-miner-static-v0\.5\.13-photo-framing-weather-chart/);
+  assert.match(sw, /the-solar-miner-static-v0\.5\.14-photo-framing-weather-chart/);
   assert.match(sw, /url\.pathname\.includes\("\/api\/v1\/"\)/);
   assert.match(sw, /request\.headers\.has\("Authorization"\)/);
   assert.match(sw, /request\.headers\.has\("Cookie"\)/);

@@ -1,4 +1,4 @@
-# Engine energético — CODE02 0.6.44
+# Engine energético — CODE02 0.6.45
 
 ## Recolha e cálculos
 

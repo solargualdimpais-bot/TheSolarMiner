@@ -2,7 +2,7 @@
 
 Standalone Gateway foundation for local identity, bootstrap, authentication, authorization, device identity and audit. This directory is deliberately separate from the archived Prova 0 v0.3.0 artifacts. The current package version is recorded in `packaging/control`; the API-reported version remains `0.6.0` for compatibility. Release workflow builds, tests, signs and publishes the Debian package and USB bundle.
 
-CODE02 v0.6.44 adds battery autonomy and charge/discharge visual state to Energy, and Tuya Cloud device inventory sync on the Gateway. It retains the shared Owner property photo with framing and vignette controls, interactive energy chart, gateway console, Deye energy engine, configurable loads and update features. Deye readings remain `LIVE_UNVERIFIED` until physically validated. See [`docs/CHANGELOG_V0644.md`](docs/CHANGELOG_V0644.md), [`docs/PWA_API_CONTRACTS.md`](docs/PWA_API_CONTRACTS.md), [`docs/ENERGY_ENGINE.md`](docs/ENERGY_ENGINE.md), [`docs/deye/README.md`](docs/deye/README.md), and [`docs/UPDATE_AND_ROLLBACK.md`](docs/UPDATE_AND_ROLLBACK.md).
+CODE02 v0.6.45 adds battery autonomy and charge/discharge visual state to Energy, and Tuya Cloud device inventory sync on the Gateway. It retains the shared Owner property photo with framing and vignette controls, interactive energy chart, gateway console, Deye energy engine, configurable loads and update features. Deye readings remain `LIVE_UNVERIFIED` until physically validated. See [`docs/CHANGELOG_V0644.md`](docs/CHANGELOG_V0644.md), [`docs/PWA_API_CONTRACTS.md`](docs/PWA_API_CONTRACTS.md), [`docs/ENERGY_ENGINE.md`](docs/ENERGY_ENGINE.md), [`docs/deye/README.md`](docs/deye/README.md), and [`docs/UPDATE_AND_ROLLBACK.md`](docs/UPDATE_AND_ROLLBACK.md).
 ## Build and test
 
 ```sh
