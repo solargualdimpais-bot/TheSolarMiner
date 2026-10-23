@@ -110,10 +110,10 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   assert.doesNotMatch(embeddedHtml, /gateway-console-update-check/);
   assert.doesNotMatch(embeddedHtml, /gateway-console-command/);
   assert.match(embeddedWorker, /password-device-login/);
-  assert.match(embeddedHtml, /OWNER PWA 0\.5\.16/);
+  assert.match(embeddedHtml, /OWNER PWA 0\.5\.17/);
   assert.match(embeddedHtml, /gateway-password-login-form/);
-  assert.match(control, /^Version: 0\.6\.48$/m);
-  assert.match(installer, /solarminer-gateway_0\.6\.48_amd64\.deb/);
+  assert.match(control, /^Version: 0\.6\.49$/m);
+  assert.match(installer, /solarminer-gateway_0\.6\.49_amd64\.deb/);
   assert.match(embeddedApp, /RECOVERY_BLOCKED/);
   assert.match(embeddedApp, /rollbackFailure/);
   assert.match(installer, /install-tailscale\.sh/);

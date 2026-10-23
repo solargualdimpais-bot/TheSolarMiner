@@ -364,3 +364,6 @@ html[data-font="small"]{--font-ui-scale:.9;}html[data-font="normal"]{--font-ui-s
 .home-production-chart path.surplus-area{fill:rgba(115,174,149,.16);stroke:none}
 .home-production-chart path.pv-trend{stroke:#d7c69e;stroke-width:1.05;stroke-linecap:round;stroke-linejoin:round}
 .home-production-chart path.load-trend{stroke:rgba(231,235,239,.78);stroke-width:.85;stroke-linecap:round;stroke-linejoin:round}
+
+.home-metric-link{width:100%;color:inherit;text-align:left;font:inherit;cursor:pointer}.home-metric-link:hover{border-color:#62583f;transform:translateY(-1px)}.home-metric-link:focus-visible{outline:2px solid var(--gold);outline-offset:3px}.home-metric-link .metric-top,.home-metric-link .metric-value,.home-metric-link .metric-sub{display:block}.home-metric-link .metric-top{display:flex;align-items:center;justify-content:space-between}
+.home-metric-link{appearance:none;-webkit-appearance:none;background:linear-gradient(145deg,#191918,#141413);border:1px solid var(--line);border-radius:var(--radius);font-weight:inherit;padding:18px;min-height:130px;position:relative;overflow:hidden;display:block}.home-metric-link:after{content:"";position:absolute;width:70px;height:70px;border-radius:50%;right:-30px;bottom:-40px;border:1px solid #dcc99c1a;pointer-events:none}

@@ -256,29 +256,32 @@ function metric(label, value, unit, icon, detail) {
     : value === null || value === undefined ? "—" : String(value);
   return `<article class="metric-card"><div class="metric-top"><span>${esc(label)}</span><span class="metric-symbol">${icon}</span></div><div class="metric-value">${esc(formatted)} <small>${esc(unit)}</small></div><div class="metric-sub">${esc(safeDetail)}</div></article>`;
 }
-function liveReadingMetric(label, categoryId, icon) {
+function liveReadingMetric(label, categoryId, icon, targetPage = categoryId) {
   const equipment = state.equipment.find(item => item.category === categoryId && !isSimulated(item));
   const reading = equipment ? preferredGatewayReading(equipment) : null;
   const value = reading ? reading.value : null;
   const detail = reading
     ? `${equipment.name || equipment.id} · ${reading.field || "leitura"} · ${reading.trust || "UNKNOWN"}`
     : "Sem leitura válida do Gateway";
-  return metric(label, value, reading?.unit || "", icon, detail);
+  const formatted = typeof value === "number" && Number.isFinite(value)
+    ? new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 2 }).format(value)
+    : value === null || value === undefined ? "—" : String(value);
+  return `<button type="button" class="metric-card home-metric-link" data-page="${esc(targetPage)}" aria-label="Abrir área ${esc(label)}"><span class="metric-top"><span>${esc(label)}</span><span class="metric-symbol">${icon}</span></span><span class="metric-value">${esc(formatted)} <small>${esc(reading?.unit || "")}</small></span><span class="metric-sub">${esc(detail)}</span></button>`;
 }
 function liveMetricReading(equipment, field) {
   return (equipment?.readings || []).find(reading => reading?.field === field) || null;
 }
-function liveHomeMetric(label, value, unit, icon, detail, extra = "") {
+function liveHomeMetric(label, value, unit, icon, detail, extra = "", targetPage = "energia") {
   const formatted = typeof value === "number" && Number.isFinite(value)
     ? new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 2 }).format(value)
     : value === null || value === undefined ? "—" : String(value);
-  return `<article class="metric-card"><div class="metric-top"><span>${esc(label)}</span><span class="metric-symbol">${icon}</span></div><div class="metric-value">${esc(formatted)} <small>${esc(unit)}</small></div><div class="metric-sub">${esc(detail)}</div>${extra}</article>`;
+  return `<button type="button" class="metric-card home-metric-link" data-page="${esc(targetPage)}" aria-label="Abrir área ${esc(label)}"><span class="metric-top"><span>${esc(label)}</span><span class="metric-symbol">${icon}</span></span><span class="metric-value">${esc(formatted)} <small>${esc(unit)}</small></span><span class="metric-sub">${esc(detail)}</span>${extra}</button>`;
 }
 function liveSolarHomeMetric() {
   const equipment = state.equipment.find(item => item.category === "inversores" && !isSimulated(item));
   const reading = liveMetricReading(equipment, "pv_total_power");
   return liveHomeMetric("Painéis", reading?.value, reading?.unit || "W", "ϟ",
-    reading ? `Produção FV · ${reading.trust || "UNKNOWN"}` : "Sem leitura de produção FV do Gateway");
+    reading ? `Produção FV · ${reading.trust || "UNKNOWN"}` : "Sem leitura de produção FV do Gateway", "", "paineis-solares");
 }
 function liveBatteryHomeMetric() {
   const equipment = state.equipment.find(item => item.category === "baterias" && !isSimulated(item));
@@ -292,7 +295,7 @@ function liveBatteryHomeMetric() {
     : `${signedPower > 0 ? "+" : ""}${new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 1 }).format(signedPower)} ${rawPower.unit || "W"} · ${signedPower < 0 ? "a descarregar" : signedPower > 0 ? "a carregar" : "sem fluxo"}`;
   const formattedSoc = typeof soc?.value === "number" ? new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 1 }).format(soc.value) : "—";
   const trust = soc?.trust || rawPower?.trust || "UNKNOWN";
-  return `<article class="metric-card"><div class="metric-top"><span>Bateria</span><span class="metric-symbol">▤</span></div><div class="metric-value">${esc(formattedSoc)} <small>${soc ? "%" : ""}</small></div><div class="metric-sub">${esc(soc ? `Estado de carga · ${trust}` : "Sem leitura de SOC do Gateway")}</div><div class="metric-sub battery-flow ${flowClass}">${esc(flowLabel)}</div></article>`;
+  return `<button type="button" class="metric-card home-metric-link" data-page="baterias" aria-label="Abrir área Baterias"><span class="metric-top"><span>Bateria</span><span class="metric-symbol">▤</span></span><span class="metric-value">${esc(formattedSoc)} <small>${soc ? "%" : ""}</small></span><span class="metric-sub">${esc(soc ? `Estado de carga · ${trust}` : "Sem leitura de SOC do Gateway")}</span><span class="metric-sub battery-flow ${flowClass}">${esc(flowLabel)}</span></button>`;
 }
 function liveMinerHomeMetric() {
   const equipment = state.equipment.find(item => item.category === "mineradoras" && !isSimulated(item));
@@ -308,8 +311,8 @@ function liveMinerHomeMetric() {
     !equipment ? "Sem leitura da Antminer" : null,
   ].filter(Boolean).join(" · ");
   const detail = currentHash ? `${currentHash.field === "miner_hashrate_5s_ghs" ? "Taxa atual" : "Taxa média"} · ${currentHash.trust || "UNKNOWN"}` : "Hashrate sem leitura do Gateway";
-  const extra = sub ? `<div class="metric-sub miner-power-details">${esc(sub)}</div>` : "";
-  return liveHomeMetric("Mineradora", hashThs, hashUnit, "▦", detail, extra);
+  const extra = sub ? `<span class="metric-sub miner-power-details">${esc(sub)}</span>` : "";
+  return liveHomeMetric("Mineradora", hashThs, hashUnit, "▦", detail, extra, "mineradoras");
 }
 function chart() {
   if (state.mode !== "SIMULATED") {
