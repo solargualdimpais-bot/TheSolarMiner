@@ -472,8 +472,15 @@ function weatherConditionLabel(code) {
   return Number.isInteger(code) ? (labels[code] || "Condição indisponível") : "Condição indisponível";
 }
 function weatherIcon(code){
-  const n=Number(code),paths=n===0?'<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"/>':n===1||n===2?'<path d="M7 18h10a4 4 0 0 0 .5-7.97A6 6 0 0 0 6 11a3.5 3.5 0 0 0 1 7Z"/><path d="M8 4V2m8 3 1.5-1.5"/>':n===3||n===45||n===48?'<path d="M6 17h12a4 4 0 0 0 .5-7.97A6 6 0 0 0 5 10a3.5 3.5 0 0 0 1 7Z"/><path d="M5 20h14"/>':n>=95?'<path d="M6 17h12a4 4 0 0 0 .5-7.97A6 6 0 0 0 5 10a3.5 3.5 0 0 0 1 7Z"/><path d="m13 13-3 5h3l-1 4 4-6h-3l1-3Z"/>':n>=51?'<path d="M6 15h12a4 4 0 0 0 .5-7.97A6 6 0 0 0 5 8a3.5 3.5 0 0 0 1 7Z"/><path d="m8 18-1 2m6-2-1 2m6-2-1 2"/>':'<path d="M7 18h10a4 4 0 0 0 .5-7.97A6 6 0 0 0 6 11a3.5 3.5 0 0 0 1 7Z"/>';
-  return `<svg class="weather-condition-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+  const n=Number(code),sun='<circle class="weather-sun-core" cx="17" cy="17" r="6"/><path class="weather-sun-rays" d="M17 4v3m0 20v3M4 17h3m20 0h3M7.8 7.8l2.1 2.1m14.2 14.2 2.1 2.1m0-16.4-2.1 2.1M9.9 24.1l-2.1 2.1"/>',cloud='<path class="weather-cloud" d="M13.1 35h22a7.1 7.1 0 0 0 .6-14.17 11.35 11.35 0 0 0-21.55-.46A7.35 7.35 0 0 0 13.1 35Z"/>';
+  let kind="cloudy",art=cloud;
+  if(n===0){kind="clear";art=sun;}
+  else if(n===1||n===2){kind="partly-cloudy";art=`${sun}${cloud}`;}
+  else if(n===45||n===48){kind="fog";art=`${cloud}<path class="weather-fog-line" d="M8 39h32M13 44h25"/>`;}
+  else if(n>=95){kind="storm";art=`${cloud}<path class="weather-lightning" d="m25 29-6 9h6l-2 8 9-12h-7l3-5Z"/>`;}
+  else if(n>=71&&n<=77||n===85||n===86){kind="snow";art=`${cloud}<circle class="weather-snowflake" cx="15" cy="42" r="1.8"/><circle class="weather-snowflake" cx="25" cy="44" r="1.8"/><circle class="weather-snowflake" cx="35" cy="41" r="1.8"/>`;}
+  else if(n>=51&&n<=67||n>=80&&n<=82){kind="rain";art=`${cloud}<path class="weather-rain-line" d="m16 39-2 5m12-5-2 5m12-5-2 5"/>`;}
+  return `<svg class="weather-condition-icon weather-icon-${kind}" viewBox="0 0 48 48" aria-hidden="true">${art}</svg>`;
 }
 function renderHomeWeatherCard() {
   const weather = state.energyEngine?.forecast?.weather, current = weather?.current;

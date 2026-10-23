@@ -17,16 +17,26 @@ try:
     dns=(self_data.get("DNSName") or "").rstrip(".").lower()
     valid=bool(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.ts\.net", dns))
     connected=data.get("BackendState") == "Running" and valid
-    def command_ok(args):
-        try: return subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8, check=False).returncode == 0
+    def command_result(args):
+        try: return subprocess.run(args, capture_output=True, text=True, timeout=8, check=False)
         except (OSError, subprocess.TimeoutExpired): return False
+    def command_ok(args):
+        result=command_result(args)
+        return result is not False and result.returncode == 0
     certificate_valid=bool(connected and command_ok(["/usr/bin/openssl","x509","-in","/etc/solarminer/tailscale.crt","-noout","-checkhost",dns])
                            and command_ok(["/usr/bin/openssl","x509","-in","/etc/solarminer/tailscale.crt","-noout","-checkend","3600"])
                            and command_ok(["/usr/bin/test","-s","/etc/solarminer/tailscale.key"]))
+    nginx_test=command_result(["/usr/sbin/nginx","-t"])
+    nginx_error=""
+    if nginx_test is False:
+        nginx_error="Nginx configuration check could not run."
+    elif nginx_test.returncode != 0:
+        nginx_error="\n".join(x.strip() for x in (nginx_test.stdout or "",nginx_test.stderr or "") if x.strip())[:1200]
     result={"installed":True,"connected":connected,"dns_name":dns if connected else None,
             "https_url":"https://"+dns if connected else None,
             "certificate_valid":certificate_valid,
-            "nginx_config_valid":command_ok(["/usr/sbin/nginx","-t"]),
+            "nginx_config_valid":nginx_test is not False and nginx_test.returncode == 0,
+            "nginx_config_error":nginx_error,
             "nginx_active":command_ok(["/usr/bin/systemctl","is-active","--quiet","nginx.service"]),
             "gateway_active":command_ok(["/usr/bin/systemctl","is-active","--quiet","solarminer-gateway.service"])}
     print(json.dumps(result, separators=(",", ":")))

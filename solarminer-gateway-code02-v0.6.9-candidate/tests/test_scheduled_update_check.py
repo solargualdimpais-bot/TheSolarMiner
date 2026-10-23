@@ -80,7 +80,7 @@ def test_root_broker_console_reads_fixed_service_logs_and_tailscale_setup_log_an
     assert "must-not-leak" not in response["logs"]
     assert "Tailscale certificate and Nginx setup log" in response["logs"]
     assert "nginx: [emerg] certificate file missing" in response["logs"]
-    assert response["scope"] == "allowlisted_services_last_2_hours_plus_tailscale_setup_log_tail"
+    assert response["scope"] == "allowlisted_services_last_2_hours_including_update_recovery_plus_tailscale_setup_log_tail"
     assert set(response["services"]) == set(update_broker.CONSOLE_SERVICES.values())
     assert set(response["resources"]) == {"cpu_percent", "cpu_count", "memory", "disk"}
 
@@ -123,6 +123,7 @@ def test_root_broker_runs_fixed_tailscale_helpers_and_returns_only_sanitized_dat
             "dns_name": "solarminer.tailnet.ts.net",
             "https_url": "https://solarminer.tailnet.ts.net",
             "certificate_valid": False, "nginx_config_valid": False,
+            "nginx_config_error": "",
             "nginx_active": False, "gateway_active": False,
         }
     else:

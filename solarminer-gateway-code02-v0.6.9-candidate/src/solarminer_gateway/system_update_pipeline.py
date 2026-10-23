@@ -485,10 +485,15 @@ class SystemUpdatePipeline:
             return {"status": "clean", "state": record.get("state") if record else None,
                     "connector_recovery": connector_recovery}
         op_id = record.get("operation_id")
-        if record.get("state") == "APPLY_QUEUED" and isinstance(op_id, str) and UUID_RE.fullmatch(op_id):
+        # The Gateway service restart is part of the update transaction. Its
+        # Requires= recovery unit runs during that restart, so recovery must
+        # not mistake any live apply stage for a process that died. If the
+        # apply unit is still active, let it finish its own health check or
+        # rollback; the boot/timer recovery will retry after the unit exits.
+        if record.get("state") in ACTIVE_STATES and isinstance(op_id, str) and UUID_RE.fullmatch(op_id):
             unit_status = self._run(["/usr/bin/systemctl", "is-active", f"solarminer-update-apply@{op_id}.service"], timeout=5)
             if unit_status.stdout.strip() in {"active", "activating", "deactivating"}:
-                return {"status": "update_unit_active", "operation_id": op_id, "state": "APPLY_QUEUED",
+                return {"status": "update_unit_active", "operation_id": op_id, "state": record.get("state"),
                         "connector_recovery": connector_recovery}
         if not isinstance(op_id, str) or not UUID_RE.fullmatch(op_id): raise PipelineError("recovery_operation_id_invalid")
         backup_raw, previous_raw = record.get("backup_path"), record.get("previous_target")

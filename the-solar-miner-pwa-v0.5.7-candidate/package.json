@@ -1,9 +1,9 @@
 {
   "name": "the-solar-miner-pwa-demo",
-  "version": "0.5.15",
+  "version": "0.5.16",
   "private": true,
   "type": "module",
-  "description": "The Solar Miner PWA v0.5.15 adds adaptive battery autonomy and live Energy battery flow indicators",
+  "description": "The Solar Miner PWA v0.5.16 adds adaptive battery autonomy and live Energy battery flow indicators",
   "scripts": {
     "test": "node --test tests/*.test.js",
     "serve": "python3 -m http.server 4173 --bind 127.0.0.1"

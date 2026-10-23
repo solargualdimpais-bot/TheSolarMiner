@@ -151,6 +151,26 @@ def test_queued_update_is_not_activated_without_preflight(tmp_path: Path, monkey
         pipeline.enqueue(op_id)
 
 
+def test_recovery_defers_while_gateway_restart_update_worker_is_active(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    pipeline = SystemUpdatePipeline(root=tmp_path / "opt/solarminer")
+    op_id = "12345678-1234-4234-8234-123456789abc"
+    monkeypatch.setattr("solarminer_gateway.system_update_pipeline.os.geteuid", lambda: 0)
+    monkeypatch.setattr("solarminer_gateway.deployment_recovery.DeploymentReleaseSwitch.recover_pending",
+                        lambda _self: {"status": "clean"})
+    monkeypatch.setattr(pipeline, "_read_state", lambda: {"state": "SERVICE_RESTARTING", "operation_id": op_id})
+    requested = []
+
+    def active_apply_unit(args, **_kwargs):
+        requested.append(args)
+        return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
+
+    monkeypatch.setattr(pipeline, "_run", active_apply_unit)
+    result = pipeline._recover_locked()
+    assert result["status"] == "update_unit_active"
+    assert result["state"] == "SERVICE_RESTARTING"
+    assert requested == [["/usr/bin/systemctl", "is-active", f"solarminer-update-apply@{op_id}.service"]]
+
+
 def test_apply_rolls_back_pointer_when_new_release_fails_health(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     pipeline, root, previous, _db, op_id = _pipeline_fixture(tmp_path, monkeypatch)
     answers = iter([False, True])

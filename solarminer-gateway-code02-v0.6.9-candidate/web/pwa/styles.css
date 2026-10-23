@@ -345,3 +345,19 @@ html[data-font="small"]{--font-ui-scale:.9;}html[data-font="normal"]{--font-ui-s
 .gateway-console-state.inactive{color:#f2c0b7;background:rgba(208,90,70,.14)}
 .battery-flow-kpi.charge strong{color:var(--blue)}.battery-flow-kpi.discharge strong{color:var(--red)}.battery-flow-kpi.charge{border-color:#52768a80}.battery-flow-kpi.discharge{border-color:#8a514a80}.energy-autonomy-card{margin:-4px 0 20px}
 .home-production-card .home-production-load{display:flex;align-items:center;justify-content:space-between;gap:8px;padding-top:5px;margin-top:5px;border-top:1px solid rgba(255,255,255,.38);color:rgba(255,255,255,.82);font-size:9px;line-height:1.2}.home-production-card .home-production-load strong{font-size:10px;font-weight:450;color:#fff;font-variant-numeric:tabular-nums}.home-production-chart path.pv-area{fill:rgba(220,201,156,.18);stroke:none}.home-production-chart path.load-area{fill:rgba(255,255,255,.09);stroke:none}.home-production-chart path.surplus-area{fill:rgba(104,191,153,.58);stroke:rgba(130,220,180,.65);stroke-width:.6}.home-production-chart path.pv-trend{stroke:#dcc99c;stroke-width:1.8}.home-production-chart path.load-trend{stroke:rgba(255,255,255,.92);stroke-width:1.25}
+
+/* Home visual refinement: restrained weather glyphs and lighter production traces */
+.home-weather-condition{display:inline-flex;align-items:center;gap:6px}
+.weather-condition-icon{width:25px;height:25px;flex:none;filter:none;overflow:visible}
+.weather-sun-core{fill:#dfc990;stroke:none}
+.weather-sun-rays{fill:none;stroke:#dfc990;stroke-width:1.7;stroke-linecap:round;opacity:.9}
+.weather-cloud{fill:#c7cbd0;stroke:#e5e5e1;stroke-width:.7;stroke-linejoin:round}
+.weather-rain-line{fill:none;stroke:#9fc3d5;stroke-width:1.8;stroke-linecap:round}
+.weather-fog-line{fill:none;stroke:#b8c0c5;stroke-width:1.6;stroke-linecap:round;opacity:.85}
+.weather-lightning{fill:#e2c982;stroke:#e2c982;stroke-width:.7;stroke-linejoin:round}
+.weather-snowflake{fill:#d8e6ed;stroke:none}
+.home-production-chart path.pv-area{fill:rgba(220,201,156,.075);stroke:none}
+.home-production-chart path.load-area{fill:rgba(220,228,234,.035);stroke:none}
+.home-production-chart path.surplus-area{fill:rgba(115,174,149,.16);stroke:none}
+.home-production-chart path.pv-trend{stroke:#d7c69e;stroke-width:1.05;stroke-linecap:round;stroke-linejoin:round}
+.home-production-chart path.load-trend{stroke:rgba(231,235,239,.78);stroke-width:.85;stroke-linecap:round;stroke-linejoin:round}

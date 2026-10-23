@@ -19,7 +19,8 @@ TAILSCALE_DNS_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[
 TAILSCALE_AUTH_PATTERN = re.compile(r"^https://login\.tailscale\.com/a/[A-Za-z0-9_-]{6,128}$")
 DIAGNOSTIC_UNITS = (
     "solarminer-gateway.service", "solarminer-update-check-daily.service",
-    "solarminer-update-apply@*.service", "solarminer-tailscale-cert.service", "nginx.service",
+    "solarminer-update-apply@*.service", "solarminer-recovery.service",
+    "solarminer-recovery.timer", "solarminer-tailscale-cert.service", "nginx.service",
 )
 DIAGNOSTIC_SECRET_PATTERNS = (
     (re.compile(r"(?i)(\b(?:password|passwd|token|secret|authorization|access[_-]?token|api[_-]?key)\b\s*[:=]\s*)([^\s,;]+)"), r"\1[REDACTED]"),
@@ -31,6 +32,8 @@ TAILSCALE_CERT_LOG = "/var/log/solarminer-tailscale-cert.log"
 TAILSCALE_CERT_LOG_MAX_BYTES = 12_000
 CONSOLE_SERVICES = {
     "solarminer-gateway.service": "gateway",
+    "solarminer-recovery.service": "offline_recovery",
+    "solarminer-recovery.timer": "offline_recovery_timer",
     "nginx.service": "nginx",
     "tailscaled.service": "tailscale",
     "solarminer-update-check-daily.timer": "daily_update_check",
@@ -170,6 +173,18 @@ def handle_request(raw: bytes, runner=subprocess.run) -> dict[str, object]:
         if result.returncode != 0 or not isinstance(result.stdout, str):
             return {"status": "error", "reason": "gateway_journal_unavailable"}
         logs = result.stdout.rstrip()
+        # Capture the current Nginx parser output directly. The Tailscale
+        # status helper intentionally returns booleans, which hid the useful
+        # `nginx -t` error from the Owner console.
+        try:
+            nginx_check = runner(["/usr/sbin/nginx", "-t"], capture_output=True,
+                                 text=True, timeout=8, check=False)
+            nginx_output = "\n".join(part.strip() for part in
+                                      (nginx_check.stdout or "", nginx_check.stderr or "") if part.strip())
+        except (OSError, subprocess.TimeoutExpired):
+            nginx_output = "Nginx configuration check could not run."
+        if nginx_output:
+            logs += "\n\n--- Current Nginx configuration validation ---\n" + nginx_output
         cert_log = _read_tailscale_cert_log()
         if cert_log:
             logs += "\n\n--- SolarMiner Tailscale certificate and Nginx setup log ---\n" + cert_log
@@ -177,7 +192,7 @@ def handle_request(raw: bytes, runner=subprocess.run) -> dict[str, object]:
         return {"status": "ok", "logs": _redact_diagnostics(logs),
                 "services": _service_statuses(runner), "resources": _system_resources(),
                 "truncated": truncated,
-                "scope": "allowlisted_services_last_2_hours_plus_tailscale_setup_log_tail"}
+                "scope": "allowlisted_services_last_2_hours_including_update_recovery_plus_tailscale_setup_log_tail"}
     if action == "tailscale_connect" and result.returncode != 0:
         return {"status": "error", "reason": "tailscale_connect_failed"}
     if action == "tailscale_status" and result.returncode != 0:
@@ -199,12 +214,16 @@ def handle_request(raw: bytes, runner=subprocess.run) -> dict[str, object]:
             return {"status": "error", "reason": "tailscale_status_invalid"}
         checks = {key: payload.get(key) is True for key in
                   ("certificate_valid", "nginx_config_valid", "nginx_active", "gateway_active")}
+        nginx_error = payload.get("nginx_config_error")
+        if not isinstance(nginx_error, str):
+            nginx_error = ""
+        nginx_error = _redact_diagnostics(nginx_error)[:1200]
         if not installed:
             return {"installed": False, "connected": False, "dns_name": None, "https_url": None,
-                    **checks}
+                    **checks, "nginx_config_error": nginx_error}
         https_url = "https://" + dns_name if connected else None
         return {"installed": True, "connected": connected, "dns_name": dns_name if connected else None,
-                "https_url": https_url, **checks}
+                "https_url": https_url, **checks, "nginx_config_error": nginx_error}
     if action == "tailscale_connect":
         if payload.get("started") is not True or not isinstance(payload.get("connected"), bool):
             return {"status": "error", "reason": "tailscale_connect_failed"}

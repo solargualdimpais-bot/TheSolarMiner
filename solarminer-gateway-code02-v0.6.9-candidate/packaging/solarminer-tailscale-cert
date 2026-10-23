@@ -69,7 +69,21 @@ if [ "$certificate_changed" -eq 0 ] && cmp -s "$work/nginx.conf" "$CONFIG"; then
   exit 0
 fi
 install -o root -g root -m 0644 "$work/nginx.conf" "$CONFIG.new"
+had_previous_config=0
+if [ -f "$CONFIG" ] && [ ! -L "$CONFIG" ]; then
+  cp -p "$CONFIG" "$work/nginx.previous.conf"
+  had_previous_config=1
+fi
 mv -f "$CONFIG.new" "$CONFIG"
-nginx -t >>"$LOG" 2>&1 || fail "nginx_configuration_invalid"
+if ! nginx -t >>"$LOG" 2>&1; then
+  if [ "$had_previous_config" -eq 1 ]; then
+    mv -f "$work/nginx.previous.conf" "$CONFIG"
+    log "Rejected Tailscale Nginx candidate; previous configuration restored."
+  else
+    rm -f "$CONFIG"
+    log "Rejected Tailscale Nginx candidate; no previous configuration existed."
+  fi
+  fail "nginx_configuration_invalid; see preceding nginx -t output"
+fi
 systemctl reload nginx.service || fail "nginx_reload_failed"
 log "HTTPS certificate and Nginx Tailscale endpoint are ready."

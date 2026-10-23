@@ -1,4 +1,4 @@
-const CACHE_NAME = "the-solar-miner-static-v0.5.15-photo-framing-weather-chart";
+const CACHE_NAME = "the-solar-miner-static-v0.5.16-photo-framing-weather-chart";
 const STATIC_ASSETS = [
   "./", "./index.html", "./styles.css", "./app.js", "./gateway-connection.js",
   "./gateway-auth.js", "./app-core.js", "./workspace-ui.js", "./demo-mode.js",
