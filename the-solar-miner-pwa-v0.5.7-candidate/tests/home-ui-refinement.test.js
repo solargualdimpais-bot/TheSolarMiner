@@ -79,6 +79,13 @@ test("Gateway Casa provides floor and room navigation with Gateway-persisted flo
   assert.match(css, /\.main-content \.live-property-hero \.hero-shade\{background:radial-gradient[\s\S]*linear-gradient\(0deg/);
 });
 
+test("Casa floor buttons have a restrained lifted shadow and tactile press state", () => {
+  assert.match(css, /\.gateway-house-floor-chip\{box-shadow:0 2px 5px rgba\(0,0,0,\.24\),inset 0 1px 0/);
+  assert.match(css, /\.gateway-house-floor-chip\.active\{box-shadow:0 3px 8px/);
+  assert.match(css, /\.gateway-house-floor-chip:hover\{transform:translateY\(-1px\)/);
+  assert.match(css, /\.gateway-house-floor-chip:active\{transform:translateY\(0\)/);
+});
+
 test("Live house structure is Gateway-backed and editing controls are Owner-only", () => {
   const gateway = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/app.py", import.meta.url), "utf8");
   assert.match(app, /function renderGatewayHousePage\(\)/);

@@ -455,5 +455,12 @@ html[data-font="small"]{--font-ui-scale:.9;}html[data-font="normal"]{--font-ui-s
 .home-favorites .favorite-state-symbol:hover:not(:disabled){border:0;color:var(--gold);background:transparent}
 .home-favorites .favorite-state-symbol:active:not(:disabled){transform:scale(.95)}
 @media(prefers-reduced-motion:reduce){.home-favorites .favorite-add-button,.home-favorites .favorite-state-symbol{transition:none}}
+
+/* Light tactile depth for the Casa floor selector. */
+.gateway-house-floor-chip{box-shadow:0 2px 5px rgba(0,0,0,.24),inset 0 1px 0 rgba(255,255,255,.035);transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease,background .18s ease}
+.gateway-house-floor-chip.active{box-shadow:0 3px 8px rgba(0,0,0,.28),0 0 10px rgba(220,201,156,.075),inset 0 1px 0 rgba(255,255,255,.055)}
+.gateway-house-floor-chip:hover{transform:translateY(-1px);box-shadow:0 4px 9px rgba(0,0,0,.28),0 0 9px rgba(220,201,156,.07)}
+.gateway-house-floor-chip:active{transform:translateY(0);box-shadow:0 1px 3px rgba(0,0,0,.25)}
+@media(prefers-reduced-motion:reduce){.gateway-house-floor-chip{transition:none}}
 .gateway-house-floor-nav{margin:0 0 18px}.gateway-house-floor-nav .gateway-house-floor-chips{display:flex;gap:8px;overflow-x:auto;padding:3px 0 12px;scrollbar-width:none}.gateway-house-floor-nav .gateway-house-floor-chips::-webkit-scrollbar{display:none}
 @media(max-width:680px){.gateway-house-floor-nav{margin-bottom:12px}}
