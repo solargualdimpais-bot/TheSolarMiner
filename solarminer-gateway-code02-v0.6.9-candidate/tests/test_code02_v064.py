@@ -76,6 +76,9 @@ def test_gateway_serves_pwa_from_same_origin(tmp_path, monkeypatch):
         assert manifest.status_code == 200
         assert manifest.json()["name"] == "The Solar Miner"
         assert client.get("/app.js").status_code == 200
+        converter = client.get("/assets/heic2any-0.0.4.min.js")
+        assert converter.status_code == 200
+        assert "javascript" in converter.headers["content-type"]
         auth_client = client.get("/auth-client.js")
         assert auth_client.status_code == 200
         assert "Content-Security-Policy" in auth_client.headers
