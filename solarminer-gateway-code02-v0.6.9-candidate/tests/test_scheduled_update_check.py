@@ -33,7 +33,7 @@ def test_update_broker_is_root_owned_and_socket_is_private_to_service_account():
     assert "User=root" in service_unit
     assert "NoNewPrivileges=true" in service_unit
     assert "RestrictSUIDSGID=true" in service_unit
-    assert "ReadWritePaths=/opt/solarminer /var/lib/solarminer" in service_unit
+    assert "ReadWritePaths=/opt/solarminer /var/lib/solarminer /var/log/nginx /run" in service_unit
 
 
 def test_root_broker_accepts_only_allowlisted_actions_and_validated_enqueue(monkeypatch):
@@ -83,6 +83,8 @@ def test_root_broker_console_reads_fixed_service_logs_and_tailscale_setup_log_an
     assert "Tailscale certificate and Nginx setup log" in response["logs"]
     assert "nginx: [emerg] certificate file missing" in response["logs"]
     assert "nginx.conf test is successful" in response["logs"]
+    nginx_call = next(call for call in calls if call[0][0] == "/usr/sbin/nginx")
+    assert nginx_call[0] == ["/usr/sbin/nginx", "-t"]
     assert response["scope"] == "allowlisted_services_last_2_hours_including_update_recovery_plus_tailscale_setup_log_tail"
     assert set(response["services"]) == set(update_broker.CONSOLE_SERVICES.values())
     assert set(response["resources"]) == {"cpu_percent", "cpu_count", "memory", "disk"}

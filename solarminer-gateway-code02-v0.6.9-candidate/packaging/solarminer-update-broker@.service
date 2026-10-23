@@ -18,7 +18,9 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/solarminer /var/lib/solarminer
+# Nginx -t opens its configured error log and PID file. Keep these paths
+# writable inside the strict namespace so diagnostics reflect the host config.
+ReadWritePaths=/opt/solarminer /var/lib/solarminer /var/log/nginx /run
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

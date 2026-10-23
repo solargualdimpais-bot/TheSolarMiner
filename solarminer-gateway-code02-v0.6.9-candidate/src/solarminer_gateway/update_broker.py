@@ -177,6 +177,9 @@ def handle_request(raw: bytes, runner=subprocess.run) -> dict[str, object]:
         # status helper intentionally returns booleans, which hid the useful
         # `nginx -t` error from the Owner console.
         try:
+            # The broker's strict filesystem sandbox explicitly permits the
+            # Nginx log and runtime paths; otherwise this check reports EROFS
+            # from the sandbox instead of validating the host configuration.
             nginx_check = runner(["/usr/sbin/nginx", "-t"], capture_output=True,
                                  text=True, timeout=8, check=False)
             nginx_output = "\n".join(part.strip() for part in
