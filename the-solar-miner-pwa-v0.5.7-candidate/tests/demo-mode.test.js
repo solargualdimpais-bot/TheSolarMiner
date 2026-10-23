@@ -55,8 +55,9 @@ test("property image comes from the Gateway and is only changed by the Owner",as
   assert.match(app,/state\.siteProfile\?\.photo_data_url \|\| ""/);
   assert.match(app,/Só o Owner pode alterar os dados partilhados da propriedade/);
   assert.doesNotMatch(app,/function readStoredPhoto/);
-  assert.match(app,/canvas\.toDataURL\('image\/jpeg'/);
-  assert.match(app,/maxDimension=Math\.round\(maxDimension\*\.82\)/);
+  assert.match(app,/canvas\.toBlob\(done,'image\/jpeg',quality\)/);
+  assert.match(app,/maxDimension=Math\.round\(maxDimension\*\.8\)/);
+  assert.match(app,/URL\.createObjectURL\(file\)/);
   assert.match(app,/photo_opacity/);
 });
 test("static cache includes demo module but never caches API responses",async()=>{

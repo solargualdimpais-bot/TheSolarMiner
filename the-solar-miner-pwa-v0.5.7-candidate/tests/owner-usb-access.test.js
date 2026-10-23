@@ -59,8 +59,8 @@ test("Owner recovery file parser accepts a generated key and rejects malformed/o
 });
 
 test("new PWA static cache version is changed and USB limitations are documented", () => {
-  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.16-photo-framing-weather-chart/);
-  assert.match(manifest, /v0\.5\.16/);
+  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.17-gateway-console-filters/);
+  assert.match(manifest, /v0\.5\.17/);
   assert.equal(packageJson.version, "0.5.17");
   const docs = read("OWNER_USB_AND_ACCESS.md");
   assert.match(docs, /texto simples/);
@@ -94,7 +94,7 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   assert.match(embeddedApp, /startGatewayTailscale/);
   assert.match(embeddedApp, /liveHomeMetric\("Painéis"/);
   assert.match(embeddedApp, /liveMinerHomeMetric\(\)/);
-  assert.match(embeddedWorker, /static-v0\.5\.16-photo-framing-weather-chart/);
+  assert.match(embeddedWorker, /static-v0\.5\.17-gateway-console-filters/);
   assert.match(embeddedHtml, /data-owner-tab="gateway"/);
   assert.doesNotMatch(embeddedHtml, /data-owner-panel="console"/);
   assert.match(embeddedHtml, /Atualiza automaticamente enquanto esta área estiver aberta/);

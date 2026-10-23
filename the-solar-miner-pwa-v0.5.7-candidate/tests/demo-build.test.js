@@ -71,7 +71,8 @@ test('property image is empty until the Owner uploads it to the Gateway', () => 
   assert.ok(!app.includes('function readStoredPhoto'));
   assert.ok(!app.includes('workspace.house.photo=compressed'));
   assert.ok(!app.includes('Ambiente demonstrativo ativo.'));
-  assert.ok(app.includes('maxDimension=1400'));
+  assert.ok(app.includes('maxDimension=1800'));
+  assert.ok(app.includes('maxDimension=Math.round(maxDimension*.8)'));
   assert.ok(app.includes('photoTransparency'));
   assert.ok(app.includes('photo_opacity'));
   assert.ok(!read('index.html').includes('id="property-photo-file"'));
