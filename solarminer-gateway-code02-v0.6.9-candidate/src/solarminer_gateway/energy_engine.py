@@ -266,6 +266,9 @@ def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, 
                 pass
     conn.execute("INSERT INTO system_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                  (ENGINE_CONFIG_KEY, json.dumps(result, separators=(",", ":"))))
+    if {"site_latitude", "site_longitude", "pv_capacity_kw", "pv_system_efficiency"}.intersection(payload):
+        # Recalculate immediately after an Owner updates the solar inputs.
+        conn.execute("DELETE FROM system_state WHERE key=?", (SOLAR_DAY_FORECAST_KEY,))
     return result
 
 
@@ -635,7 +638,7 @@ def _solar_day_forecast(conn: sqlite3.Connection, inverter: dict[str, Any] | Non
             cached_at = datetime.fromisoformat(str(cached.get("calculated_at", "")).replace("Z", "+00:00"))
             if (cached.get("local_date") == today.isoformat() and cached_at.tzinfo is not None
                     and 0 <= (now - cached_at.astimezone(timezone.utc)).total_seconds() < 600
-                    and cached.get("state") in {"ESTIMATED", "UNAVAILABLE"}):
+                    and cached.get("state") == "ESTIMATED"):
                 return cached
         except (TypeError, ValueError, json.JSONDecodeError):
             pass
@@ -1057,6 +1060,59 @@ def _linear_forecast(series: list[dict[str, Any]], current: float | None, max_va
     return result
 
 
+def _bounded_load_forecast(series: list[dict[str, Any]], current_w: float | None,
+                           as_of: datetime | None = None) -> dict[str, Any]:
+    """Forecast household load conservatively; short noisy slopes must not become trends."""
+    now = as_of.astimezone(timezone.utc) if as_of else datetime.now(timezone.utc)
+    buckets: dict[int, list[float]] = {}
+    for item in series:
+        try:
+            stamp = datetime.fromisoformat(str(item["observed_at"]).replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            age = (now - stamp.astimezone(timezone.utc)).total_seconds()
+            value = float(item["value"])
+            if -60 <= age <= 3 * 3600 and math.isfinite(value):
+                if item.get("unit") == "W":
+                    value /= 1000
+                buckets.setdefault(int(stamp.timestamp() // 300), []).append(value)
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    points = sorted((key * 300 / 3600, sorted(values)[len(values)//2])
+                    for key, values in buckets.items() if values)
+    unit = "kW" if series and series[-1].get("unit") == "W" else (series[-1].get("unit") if series else "kW")
+    result: dict[str, Any] = {"method": "robust_recent_median_with_bounded_slope",
+        "confidence": "INSUFFICIENT_HISTORY", "one_hour_value": None, "three_hour_value": None,
+        "six_hour_value": None, "hourly_values": [], "slope_per_hour": None, "unit": unit}
+    if len(points) < 3 or points[-1][0] - points[0][0] < 10/60:
+        return result
+
+    recent = [value for hour, value in points if hour >= points[-1][0] - 15/60]
+    base = (current_w / 1000 if unit == "kW" else current_w) if current_w is not None else None
+    if base is None or not math.isfinite(float(base)):
+        base = sorted(recent)[len(recent)//2] if recent else points[-1][1]
+    base = max(0.0, float(base))
+    pair_slopes = sorted((b[1]-a[1])/(b[0]-a[0]) for index,a in enumerate(points)
+                         for b in points[index+1:] if b[0] > a[0])
+    slope = pair_slopes[len(pair_slopes)//2] if pair_slopes else 0.0
+    deadband = max(0.05, base * 0.05)
+    if abs(slope) <= deadband:
+        slope = 0.0
+    # Even a persistent trend is allowed to move the six-hour outlook by at
+    # most 25% of the baseline (or 0.2 kW for very small loads).
+    total_change_limit = max(0.2, base * 0.25)
+    slope = max(-total_change_limit/6, min(total_change_limit/6, slope))
+    hourly = [{"hours_ahead": hour, "value": round(max(0.0, base+slope*hour), 3), "unit": unit,
+               "forecast_at": (now+timedelta(hours=hour)).isoformat(timespec="minutes")}
+              for hour in range(1,7)]
+    result.update({"confidence":"LOW_INDICATIVE", "slope_per_hour":round(slope,3),
+                   "one_hour_value":hourly[0]["value"], "three_hour_value":hourly[2]["value"],
+                   "six_hour_value":hourly[5]["value"], "hourly_values":hourly,
+                   "baseline":round(base,3)})
+    return result
+
+
 def build_dispatch_plan(current: dict[str, Any], config: dict[str, Any], *, sample_state: str = "UNKNOWN",
                         telemetry_trust: str = "LIVE_UNVERIFIED") -> dict[str, Any]:
     """Compute conservative load allocations; this function never sends commands."""
@@ -1217,7 +1273,7 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
         charge_headroom = round(float(capacity) * max(0.0, max_soc - soc) / 100.0, 3)
     latest_at = max((r.get("observed_at", "") for r in [*inverter_readings.values(), *battery_readings.values()]), default=None)
     forecast = _linear_forecast(history["pv_total_power"], pv, 15.0)
-    load_forecast = _linear_forecast(history["load_total_power"], load, 100.0)
+    load_forecast = _bounded_load_forecast(history["load_total_power"], load)
     # Never train or project operational SOC from the Deye-reported SOC.
     soc_forecast = _linear_forecast([], soc, 100.0)
     weather = _solar_weather(config.get("site_latitude"), config.get("site_longitude"))

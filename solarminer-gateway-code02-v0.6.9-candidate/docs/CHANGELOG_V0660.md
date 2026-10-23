@@ -1,1 +1,0 @@
-# SolarMiner Gateway 0.6.60`n`n- Add local MAC entry and correlate configured Tuya devices with private LAN addresses from TinyTuya scan and the Linux ARP neighbor cache.`n- Keep manual private IP configuration available in the Tuya device editor.`n

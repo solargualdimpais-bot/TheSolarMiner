@@ -44,6 +44,33 @@ def test_solar_day_forecast_distinguishes_missing_weather_from_missing_capacity(
     assert "Previsão meteorológica indisponível" in result["reason"]
 
 
+def test_solar_configuration_change_invalidates_cached_day_estimate():
+    conn = database()
+    conn.execute("INSERT INTO system_state(key,value) VALUES(?,?)",
+                 (energy_engine.SOLAR_DAY_FORECAST_KEY, json.dumps({"state":"ESTIMATED"})))
+    energy_engine.save_config(conn, {"pv_capacity_kw": 9.0})
+    assert conn.execute("SELECT 1 FROM system_state WHERE key=?",
+                        (energy_engine.SOLAR_DAY_FORECAST_KEY,)).fetchone() is None
+
+
+def test_load_forecast_flattens_stable_load_instead_of_inventing_a_rising_trend():
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    series = [{"observed_at": (now-timedelta(minutes=5*index)).isoformat(),
+               "value": 500 + (index % 3) * 8, "unit": "W"} for index in reversed(range(36))]
+    result = energy_engine._bounded_load_forecast(series, 510, as_of=now)
+    assert result["method"] == "robust_recent_median_with_bounded_slope"
+    assert [item["value"] for item in result["hourly_values"]] == [0.51] * 6
+
+
+def test_load_forecast_bounds_a_persistent_rising_trend():
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    series = [{"observed_at": (now-timedelta(minutes=5*index)).isoformat(),
+               "value": 500 + (35-index) * 20, "unit": "W"} for index in reversed(range(36))]
+    result = energy_engine._bounded_load_forecast(series, 1200, as_of=now)
+    assert result["one_hour_value"] <= 1.25
+    assert result["six_hour_value"] <= 1.5
+
+
 def test_gateway_battery_soc_integrates_signed_power_from_rolling_voltage_peak():
     now = datetime.now(timezone.utc)
     stamps = [(now - timedelta(seconds=60 - offset)).isoformat(timespec="microseconds") for offset in (0, 30, 60)]
