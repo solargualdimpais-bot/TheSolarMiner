@@ -386,6 +386,9 @@ export async function runGatewayTuyaLanDiagnostics(rounds = 3) {
 export async function discoverGatewayTuyaLanDevices() {
   return gatewayApi("/api/v1/integrations/tuya/lan-discovery", { method: "POST", body: {} });
 }
+export async function readGatewayHuaweiClients() {
+  return gatewayApi("/api/v1/integrations/huawei/clients", { method: "POST", body: {} });
+}
 export async function readGatewayTeslaEvConfig() {
   return gatewayApi("/api/v1/energy/ev/tesla");
 }

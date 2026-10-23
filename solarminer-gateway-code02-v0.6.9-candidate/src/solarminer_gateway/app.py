@@ -49,7 +49,7 @@ from . import updates as update_manager
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.70"
+PACKAGE_VERSION = "0.6.71"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -1091,7 +1091,7 @@ def hardware_integrations_configure(payload: dict[str, Any], session: dict[str, 
             updated = hardware_integrations.validate_config(payload, old)
             result = hardware_integrations.save_config(updated)
             audit(conn, session["user_id"], "hardware.integrations.configure", "gateway", "success", {
-                "providers": sorted(k for k in ("deye", "antminer", "tuya") if k in payload),
+                "providers": sorted(k for k in ("deye", "antminer", "tuya", "huawei_router") if k in payload),
                 "provider_secrets_returned": False,
             })
             return result
@@ -1464,6 +1464,70 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
                 "devices": result, "control_commands_sent": False}
 
 
+@app.post("/api/v1/integrations/huawei/clients")
+def huawei_router_clients(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Read Huawei's connected-client table and match known Tuya MAC/IP pairs."""
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        config = hardware_integrations.load_config()
+        router = config.get("huawei_router", {})
+        if not isinstance(router, dict) or not router.get("password"):
+            raise HTTPException(409, "huawei_router_not_configured")
+        try:
+            clients = hardware_integrations.huawei_router.read_huawei_clients(router)
+        except hardware_integrations.huawei_router.HuaweiRouterError as exc:
+            audit(conn, session["user_id"], "hardware.huawei.clients", "router", "failed", {"reason": str(exc)[:80]})
+            conn.commit()
+            raise HTTPException(502, str(exc)) from exc
+        tuya = config.get("tuya", {}) if isinstance(config.get("tuya"), dict) else {}
+        devices = [item for item in tuya.get("devices", []) if isinstance(item, dict)]
+        by_mac = {item["mac"]: item for item in clients}
+        by_ip = {item["ip"]: item for item in clients}
+        def name_key(value: Any) -> str:
+            return " ".join(str(value or "").strip().casefold().split())
+        clients_by_name: dict[str, list[dict[str, str]]] = {}
+        devices_by_name: dict[str, list[dict[str, Any]]] = {}
+        for client in clients:
+            key = name_key(client.get("name"))
+            if key:
+                clients_by_name.setdefault(key, []).append(client)
+        for device in devices:
+            key = name_key(device.get("name"))
+            if key:
+                devices_by_name.setdefault(key, []).append(device)
+        matched = []
+        for device in devices:
+            local_mac = str(device.get("local_mac") or "").strip().upper()
+            local_ip = str(device.get("local_ip") or "").strip()
+            found = by_mac.get(local_mac) if local_mac else None
+            matched_by = "mac"
+            if not found and local_ip:
+                found = by_ip.get(local_ip)
+                matched_by = "ip"
+            if not found:
+                key = name_key(device.get("name"))
+                if key and len(devices_by_name.get(key, [])) == 1 and len(clients_by_name.get(key, [])) == 1:
+                    found = clients_by_name[key][0]
+                    matched_by = "name"
+            if not found:
+                continue
+            device["local_mac"] = found["mac"]
+            device["local_ip"] = found["ip"]
+            matched.append({"device_id": device.get("device_id"), "name": str(device.get("name") or "Tuya device")[:120],
+                            "mac": found["mac"], "ip": found["ip"], "matched_by": matched_by})
+        if matched:
+            config["tuya"] = tuya
+            hardware_integrations.save_config(config)
+        audit(conn, session["user_id"], "hardware.huawei.clients", "router", "success", {
+            "client_count": len(clients), "matched_count": len(matched), "read_only": True,
+        })
+        conn.commit()
+        return {"client_count": len(clients), "matched_count": len(matched), "matched": matched,
+                "clients": clients, "read_only": True, "cloud_used": False, "commands_sent": False}
+
+
 @app.post("/api/v1/integrations/tuya/lan-discovery")
 def tuya_lan_discovery(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
     """Discover Tuya LAN addresses and save only matches to configured device IDs."""
@@ -1495,6 +1559,17 @@ def tuya_lan_discovery(session: dict[str, Any] = Depends(require_permission("man
             discovered_by_id: dict[str, dict[str, Any]] = {}
             discovered_by_mac: dict[str, dict[str, Any]] = {}
             arp_by_mac = local_arp_entries()
+            router_error = None
+            router_clients: list[dict[str, str]] = []
+            router = config.get("huawei_router", {})
+            if isinstance(router, dict) and router.get("password"):
+                try:
+                    router_clients = hardware_integrations.huawei_router.read_huawei_clients(router)
+                except hardware_integrations.huawei_router.HuaweiRouterError as exc:
+                    router_error = str(exc)[:80]
+            router_by_ip = {item["ip"]: item for item in router_clients}
+            for item in router_clients:
+                arp_by_mac[item["mac"]] = item["ip"]
             for key, value in discovered.items():
                 if not isinstance(value, dict):
                     continue
@@ -1505,7 +1580,8 @@ def tuya_lan_discovery(session: dict[str, Any] = Depends(require_permission("man
                         host = hardware_integrations._private_ip(host)
                     except ValueError:
                         continue
-                    found = {"ip": host, "version": value.get("version"), "mac": None}
+                    router_client = router_by_ip.get(host)
+                    found = {"ip": host, "version": value.get("version"), "mac": router_client["mac"] if router_client else None}
                     try:
                         if value.get("mac"):
                             found["mac"] = normalize_mac(str(value["mac"]))
@@ -1526,6 +1602,10 @@ def tuya_lan_discovery(session: dict[str, Any] = Depends(require_permission("man
                     if not found and mac in arp_by_mac:
                         found = {"ip": arp_by_mac[mac], "version": None, "mac": mac}
                     matched_by = "mac"
+                if not found and device.get("local_ip") in router_by_ip:
+                    found = {"ip": router_by_ip[device["local_ip"]]["ip"], "version": None,
+                             "mac": router_by_ip[device["local_ip"]]["mac"]}
+                    matched_by = "ip"
                 if not found:
                     continue
                 device["local_ip"] = found["ip"]
@@ -1553,7 +1633,8 @@ def tuya_lan_discovery(session: dict[str, Any] = Depends(require_permission("man
             conn.commit()
             return {"scanned_count": len(discovered_by_id), "matched_count": len(matched),
                     "devices": matched, "scan_error": scan_error,
-                    "discovery_method": "neighbor_cache" if scan_error else "lan_broadcast",
+                    "router_error": router_error, "router_client_count": len(router_clients),
+                    "discovery_method": "huawei_router" if router_clients else "neighbor_cache" if scan_error else "lan_broadcast",
                     "cloud_used": False, "commands_sent": False}
         except HTTPException:
             raise
@@ -2711,7 +2792,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.70"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.71"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

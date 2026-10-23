@@ -3,7 +3,7 @@ import { DEMO_CONTROL_CONFIG, createDemoControlState, updateDemoControl, toggleD
 import { renderWorkspacePage, renderHomePreferenceLinks, renderHouseSearch, handleWorkspaceAction, handleWorkspaceChange, applyPreferences, getWorkspacePageLabel, workspace, getEditableEntity, saveEditableEntity, saveDemoWorkspace, hydrateWorkspacePhotos } from "./workspace-ui.js";
 import { renderAutomationsPage, renderSolarProductionPage, renderDemoAdminPanel, handleFeatureAction, saveAutomationForm, addDemoUser, saveDemoUserEdit, saveSolarWeather, demoFeatures } from "./features-v053.js";
 import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classifyEndpoint, inferHostedGatewayEndpoint, PRESENCE_API_STATUS } from "./gateway-connection.js";
-import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, controlGatewayAntminer, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, discoverGatewayTuyaLanDevices, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, controlGatewayAntminer, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, discoverGatewayTuyaLanDevices, readGatewayHuaweiClients, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging } from "./gateway-auth.js";
 
 let automationEditingId = "";
 const state = { page: "inicio", mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], energyEngine: null, siteProfile: null, tuyaDevices: [], tuyaReadings: [], lastUpdated: null, lastMeasurementAt: null, refreshing: false, demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [] };
@@ -1424,11 +1424,17 @@ async function refreshHardwareIntegrationConfig() {
   $("#hardware-tuya-client-id").value = tuya.client_id || "";
   $("#hardware-tuya-uid").value = tuya.uid || "";
   $("#hardware-tuya-client-secret").value = "";
+  $("#huawei-router-host").value = config.huawei_router?.host || "192.168.8.1";
+  $("#huawei-router-username").value = config.huawei_router?.username || "admin";
+  $("#huawei-router-password").value = "";
   $("#hardware-tuya-devices").value = (tuya.devices || []).map(device => `${device.device_id} | ${device.name}${device.switch_code ? ` | ${device.switch_code}` : ""}${device.level_code ? ` | ${device.level_code} | ${device.level_min ?? 0} | ${device.level_max ?? 100}` : ""}`).join("\n");
   $("#deye-status").textContent = deye.host ? `Deye configurado em ${deye.host}:${deye.port || 502}, Unit ID ${deye.unit_id ?? 1}.` : "Deye ainda não configurado.";
   $("#antminer-status").textContent = miner.host ? `Antminer configurada em ${miner.host}:${miner.port || 4028}. Credenciais de controlo ${config.antminer_control_configured ? "guardadas no Gateway" : "por configurar"}.` : "Antminer ainda não configurada.";
   const importedCount = (tuya.devices || []).filter(device => device.cloud_source === "TUYA_PROJECT" || device.local_key_available).length;
   $("#tuya-status").textContent = tuya.configured ? `Conta Tuya configurada; segredo oculto no Gateway. ${importedCount} dispositivo(s) sincronizado(s).` : "Conta Tuya ainda não configurada.";
+  $("#huawei-router-status").textContent = config.huawei_router?.configured
+    ? `Huawei configurado em ${config.huawei_router.host}; palavra-passe guardada apenas no Gateway.`
+    : "Indica o IP e as credenciais locais do Huawei para tentar ler a lista de clientes.";
   renderTuyaDeviceCards(tuya.devices || []);
   return config;
 }
@@ -1537,6 +1543,42 @@ $("#antminer-save").addEventListener("click", event => {
 $("#tuya-save").addEventListener("click", event => {
   const devices = parseTuyaDevices();
   saveHardwareProvider("tuya", { region: $("#hardware-tuya-region").value, client_id: $("#hardware-tuya-client-id").value.trim() || undefined, client_secret: $("#hardware-tuya-client-secret").value || undefined, uid: $("#hardware-tuya-uid").value.trim() || undefined, devices }, event.currentTarget, "tuya-status");
+});
+$("#huawei-router-save").addEventListener("click", async event => {
+  const button=event.currentTarget,status=$("#huawei-router-status");
+  if(!ownerCanManageHardware("#tuya-status"))return;
+  button.disabled=true;
+  try{
+    const host=$("#huawei-router-host").value.trim(),username=$("#huawei-router-username").value.trim(),password=$("#huawei-router-password").value;
+    const saved=await saveGatewayHardwareIntegrationConfig({huawei_router:{host,username,...(password?{password}:{})}});
+    $("#huawei-router-password").value="";
+    status.textContent=saved.huawei_router?.configured?`Acesso local guardado no Gateway para ${saved.huawei_router.host}.`:`Endereço guardado; introduz a palavra-passe antes de consultar.`;
+  }catch(error){status.textContent=`Não foi possível guardar o acesso local: ${error.message}`;}
+  finally{button.disabled=false;}
+});
+$("#huawei-router-read").addEventListener("click", async event => {
+  const button=event.currentTarget,status=$("#huawei-router-status");
+  if(!ownerCanManageHardware("#tuya-status"))return;
+  button.disabled=true;
+  const finished=showOperationDialog({title:"Consulta local do Huawei",message:"A ler a lista de clientes do router. Esta operação é apenas de leitura; não altera o Huawei nem envia comandos aos Tuya.",locked:true,progress:true});
+  try{
+    const host=$("#huawei-router-host").value.trim(),username=$("#huawei-router-username").value.trim(),password=$("#huawei-router-password").value;
+    const saved=await saveGatewayHardwareIntegrationConfig({huawei_router:{host,username,...(password?{password}:{})}});
+    $("#huawei-router-password").value="";
+    if(!saved.huawei_router?.configured)throw new Error("Introduz a palavra-passe do router e guarda o acesso local.");
+    const report=await readGatewayHuaweiClients();
+    await refreshHardwareIntegrationConfig();
+    updateOperationDialog({title:"Consulta Huawei concluída",message:`Foram lidos ${report.client_count} clientes; ${report.matched_count} MAC/IP foram associados aos Tuya configurados.`,actions:[{label:"Ver lista",value:"report",primary:true}]});
+    await finished;
+    const rows=(report.clients||[]).map(item=>`<tr><td>${esc(item.name||"Sem nome")}</td><td>${esc(item.mac)}</td><td>${esc(item.ip)}</td></tr>`).join("");
+    const dialog=document.createElement("dialog");dialog.className="settings-dialog tuya-diagnostic-dialog";
+    dialog.innerHTML=`<form method="dialog" class="dialog-header"><div><p class="eyebrow">HUAWEI · CONSULTA LOCAL</p><h2>MACs e IPs encontrados</h2></div><button class="icon-button" value="close" aria-label="Fechar">×</button></form><div class="dialog-body"><p class="field-note">O router devolveu ${esc(report.client_count)} cliente(s); ${esc(report.matched_count)} dispositivo(s) Tuya foram associados com os MACs/IPs já configurados. Os restantes podem ser associados manualmente ao editar cada dispositivo.</p><div class="diagnostic-table-wrap"><table class="diagnostic-table"><thead><tr><th>Nome no router</th><th>MAC</th><th>IP privado</th></tr></thead><tbody>${rows||'<tr><td colspan="3">O Huawei não devolveu clientes ligados.</td></tr>'}</tbody></table></div><div class="dialog-actions"><button class="button primary" type="button" data-huawei-close>OK</button></div></div>`;
+    dialog.addEventListener("close",()=>dialog.remove());document.body.append(dialog);dialog.querySelector("[data-huawei-close]").addEventListener("click",()=>dialog.close("ok"));dialog.showModal();
+    status.textContent=`Consulta concluída: ${report.client_count} cliente(s), ${report.matched_count} associação(ões) Tuya. Os valores continuam editáveis em cada dispositivo.`;
+  }catch(error){
+    updateOperationDialog({title:"Consulta Huawei falhou",message:error.message||"O Gateway não conseguiu ler os clientes do router.",actions:[{label:"OK",value:"ok",primary:true}]});
+    await finished;status.textContent=`Consulta Huawei falhou: ${error.message||"verifica o IP, a ligação e as credenciais"}`;
+  }finally{button.disabled=false;}
 });
 $("#tuya-sync").addEventListener("click", async event => {
   const status = $("#tuya-status"), button = event.currentTarget;
