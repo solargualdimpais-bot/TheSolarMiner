@@ -49,6 +49,13 @@ class PipelineError(RuntimeError):
     pass
 
 
+def _failure_code(error: Exception) -> str:
+    # Preserve concise allowlisted failure reasons so Owner diagnostics can
+    # identify the failed step, while excluding arbitrary paths or payloads.
+    value = str(error)
+    return value[:180] if re.fullmatch(r"[A-Za-z0-9_.:-]{1,180}", value) else type(error).__name__
+
+
 def _validate_root_owned_not_writable(path_stat: os.stat_result, error_code: str) -> None:
     if path_stat.st_uid != 0 or path_stat.st_mode & 0o022:
         raise PipelineError(error_code)
@@ -385,7 +392,7 @@ class SystemUpdatePipeline:
                     if state.get("operation_id") == op_id and state.get("state") not in TERMINAL:
                         self._record("FAILED", operation_id=op_id, target_version=state.get("target_version"),
                                      previous_target=state.get("previous_target"), backup_path=state.get("backup_path"),
-                                     failure=type(exc).__name__, finished_at_utc=_utc())
+                                     failure=_failure_code(exc), finished_at_utc=_utc())
                 except Exception:
                     pass
                 raise
@@ -449,7 +456,7 @@ class SystemUpdatePipeline:
             current_state = self._read_state() or {}
             self._record("ROLLING_BACK", operation_id=op_id, target_version=release_name, previous_target=previous_target,
                          new_target=os.path.relpath(target, self.root) if target.exists() else None,
-                         backup_path=str(backup_path), failure=type(exc).__name__, health_timeout_seconds=60)
+                         backup_path=str(backup_path), failure=_failure_code(exc), health_timeout_seconds=60)
             try:
                 self._run(["/usr/bin/systemctl", "stop", self.service], timeout=15, check=True)
                 self._switch(previous_path)
@@ -457,15 +464,30 @@ class SystemUpdatePipeline:
                 self._run(["/usr/bin/systemctl", "start", self.service], timeout=20, check=True)
                 if not self._health(str(row["installed_version"]), 60): raise PipelineError("previous_release_health_check_failed_after_60s")
                 self._record("ROLLED_BACK", operation_id=op_id, target_version=release_name, previous_target=previous_target,
-                             backup_path=str(backup_path), failure=type(exc).__name__, rollback_health_check="passed", finished_at_utc=_utc())
+                             backup_path=str(backup_path), failure=_failure_code(exc), rollback_health_check="passed", finished_at_utc=_utc())
                 return {"status": "ROLLED_BACK", "operation_id": op_id, "reason": type(exc).__name__}
             except Exception as rollback_exc:
                 self._record("RECOVERY_BLOCKED", operation_id=op_id, target_version=release_name, previous_target=previous_target,
-                             backup_path=str(backup_path), failure=type(exc).__name__, rollback_failure=type(rollback_exc).__name__,
+                             backup_path=str(backup_path), failure=_failure_code(exc), rollback_failure=_failure_code(rollback_exc),
                              finished_at_utc=_utc())
                 raise PipelineError("update_failed_and_rollback_requires_manual_recovery") from rollback_exc
 
     def recover(self) -> dict[str, Any]:
+        # Gateway startup requires the recovery oneshot. During an online
+        # update, the apply unit itself restarts Gateway while holding this
+        # pipeline lock. Check whether that owner is still active before
+        # acquiring the lock; otherwise Gateway startup waits for recovery,
+        # while recovery waits for the updater, deadlocking the health check.
+        record = self._read_state()
+        op_id = record.get("operation_id") if isinstance(record, dict) else None
+        if (record and record.get("state") in ACTIVE_STATES
+                and isinstance(op_id, str) and UUID_RE.fullmatch(op_id)):
+            unit_status = self._run(
+                ["/usr/bin/systemctl", "is-active", f"solarminer-update-apply@{op_id}.service"], timeout=5
+            )
+            if unit_status.stdout.strip() in {"active", "activating", "deactivating"}:
+                return {"status": "update_unit_active", "operation_id": op_id,
+                        "state": record.get("state")}
         with self._locked():
             return self._recover_locked()
 

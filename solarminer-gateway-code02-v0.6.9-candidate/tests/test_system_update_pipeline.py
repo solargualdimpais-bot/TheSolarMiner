@@ -165,7 +165,15 @@ def test_recovery_defers_while_gateway_restart_update_worker_is_active(tmp_path:
         return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
 
     monkeypatch.setattr(pipeline, "_run", active_apply_unit)
-    result = pipeline._recover_locked()
+    from contextlib import contextmanager
+
+    @contextmanager
+    def lock_must_not_be_taken():
+        raise AssertionError("recovery must defer before waiting on the update lock")
+        yield
+
+    monkeypatch.setattr(pipeline, "_locked", lock_must_not_be_taken)
+    result = pipeline.recover()
     assert result["status"] == "update_unit_active"
     assert result["state"] == "SERVICE_RESTARTING"
     assert requested == [["/usr/bin/systemctl", "is-active", f"solarminer-update-apply@{op_id}.service"]]
@@ -182,7 +190,9 @@ def test_apply_rolls_back_pointer_when_new_release_fails_health(tmp_path: Path, 
     result = pipeline.apply(op_id)
     assert result["status"] == "ROLLED_BACK"
     assert os.readlink(root / "current") == "releases/0.6.8"
-    assert json.loads((root / "update-state.json").read_text())["state"] == "ROLLED_BACK"
+    state = json.loads((root / "update-state.json").read_text())
+    assert state["state"] == "ROLLED_BACK"
+    assert state["failure"] == "new_release_health_check_failed_after_60s"
     with sqlite3.connect(_db) as conn:
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert conn.execute("SELECT state FROM update_operations WHERE id=?", (op_id,)).fetchone()[0] == "ROLLED_BACK"
