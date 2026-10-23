@@ -361,43 +361,41 @@ def test_tuya_inventory_pagination_sorts_query_parameters_for_signature(monkeypa
 
 
 def test_tuya_reports_devices_individually_when_one_status_request_fails(monkeypatch):
-    calls = []
-    def request(config, path, token=None):
-        calls.append((path, token))
-        if path == "/v1.0/token?grant_type=1":
-            return {"success": True, "result": {"access_token": "temporary-token"}}
-        if "bad-device" in path:
-            raise RuntimeError("tuya_http_404")
-        return {"success": True, "result": [{"code": "switch", "value": True}]}
-    monkeypatch.setattr(integrations, "_tuya_request", request)
+    monkeypatch.setattr(integrations, "_tuya_request", lambda *args, **kwargs: pytest.fail("Tuya status read used Cloud"))
+    def local_status(device):
+        if device["device_id"] == "bad-device":
+            raise RuntimeError("tuya_lan_unavailable")
+        return {"device_id": device["device_id"], "name": device["name"], "status": [{"code": "switch", "value": True}],
+                "connection_state": "local_responded", "source": "TUYA_LAN"}
+    monkeypatch.setattr(integrations, "_tuya_local_status", local_status)
     result = integrations.read_tuya({
-        "region": "eu_central", "client_id": "client", "client_secret": "secret-value-123",
         "devices": [{"device_id": "good-device", "name": "Good"},
                     {"device_id": "bad-device", "name": "Bad"}],
     })
-    assert [item["connection_state"] for item in result] == ["api_responded", "failed"]
+    assert [item["connection_state"] for item in result] == ["local_responded", "failed"]
     assert result[0]["status"] == [{"code": "switch", "value": True}]
-    assert result[1]["reason"] == "tuya_http_404"
+    assert result[1]["reason"] == "tuya_lan_unavailable"
+    assert all(item["source"] == "TUYA_LAN" for item in result)
 
 
 def test_tuya_switch_control_posts_only_configured_switch_and_reads_back(monkeypatch):
     calls = []
-    def fake_request(config, path, token=None, *, method="GET", payload=None):
-        calls.append((path, method, payload))
-        if path.startswith("/v1.0/token"):
-            return {"result": {"access_token": "short-lived"}}
-        if path.endswith("/commands"):
-            return {"result": True}
-        return {"result": [{"code": "switch_1", "value": True}]}
-    monkeypatch.setattr(integrations, "_tuya_request", fake_request)
+    class LocalDevice:
+        def set_socketTimeout(self, value): pass
+        def set_retry(self, value): pass
+        def set_status(self, on, switch=1):
+            calls.append(("set_status", on, switch))
+            return {"dps": {str(switch): on}}
+    monkeypatch.setattr(integrations, "_tuya_lan_client", lambda device: LocalDevice())
+    monkeypatch.setattr(integrations, "_tuya_local_status", lambda device: {"status": [{"code": "switch_1", "value": True}]})
+    monkeypatch.setattr(integrations, "_tuya_request", lambda *args, **kwargs: pytest.fail("Tuya control used Cloud"))
     result = integrations.control_tuya_switch({
-        "client_id": "client", "client_secret": "private-secret", "region": "eu_central",
+        "region": "eu_central",
         "devices": [{"device_id": "device_123", "name": "AQS 1", "switch_code": "switch_1"}],
     }, "device_123", True)
-    assert calls[1] == ("/v1.0/iot-03/devices/device_123/commands", "POST",
-                        {"commands": [{"code": "switch_1", "value": True}]})
+    assert calls == [("set_status", True, 1)]
     assert result["state_confirmed"] is True
-    assert "private-secret" not in json.dumps(result)
+    assert result["source"] == "TUYA_LAN"
 
 
 def test_tuya_switch_control_rejects_unconfigured_device_without_request(monkeypatch):
@@ -411,23 +409,23 @@ def test_tuya_switch_control_rejects_unconfigured_device_without_request(monkeyp
 
 def test_tuya_level_control_maps_percent_to_configured_range_and_reads_back(monkeypatch):
     calls = []
-    def fake_request(config, path, token=None, *, method="GET", payload=None):
-        calls.append((path, method, payload))
-        if path.startswith("/v1.0/token"):
-            return {"result": {"access_token": "short-lived"}}
-        if path.endswith("/commands"):
-            return {"result": True}
-        return {"result": [{"code": "position", "value": 540}]}
-    monkeypatch.setattr(integrations, "_tuya_request", fake_request)
+    class LocalDevice:
+        def set_socketTimeout(self, value): pass
+        def set_retry(self, value): pass
+        def set_value(self, dps, value):
+            calls.append(("set_value", dps, value))
+            return {"dps": {str(dps): value}}
+    monkeypatch.setattr(integrations, "_tuya_lan_client", lambda device: LocalDevice())
+    monkeypatch.setattr(integrations, "_tuya_local_status", lambda device: {"status": [{"code": "position", "value": 510}]})
+    monkeypatch.setattr(integrations, "_tuya_request", lambda *args, **kwargs: pytest.fail("Tuya level control used Cloud"))
     result = integrations.control_tuya_level({
-        "client_id": "client", "client_secret": "private-secret", "region": "eu_central",
-        "devices": [{"device_id": "device_123", "name": "Estore", "level_code": "position", "level_min": 10, "level_max": 1010}],
+        "region": "eu_central",
+        "devices": [{"device_id": "device_123", "name": "Estore", "level_code": "position", "level_min": 10, "level_max": 1010, "local_dps_map": {"position": "2"}}],
     }, "device_123", 50)
-    assert calls[1] == ("/v1.0/iot-03/devices/device_123/commands", "POST",
-                        {"commands": [{"code": "position", "value": 510}]})
+    assert calls == [("set_value", 2, 510)]
     assert result["command_accepted"] is True
-    assert result["state_confirmed"] is False
-    assert "private-secret" not in json.dumps(result)
+    assert result["state_confirmed"] is True
+    assert result["source"] == "TUYA_LAN"
 
 
 def test_tuya_level_control_rejects_unconfigured_device_without_request(monkeypatch):

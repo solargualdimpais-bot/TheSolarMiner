@@ -37,6 +37,7 @@ cp "$ROOT/packaging/solarminer-tailscale-cert.timer" "$STAGE/lib/systemd/system/
 cp "$ROOT/packaging/install-tailscale.sh" "$STAGE/usr/share/solarminer/install-tailscale.sh"
 cp "$ROOT/packaging/solarminer-gateway-nginx.conf" "$STAGE/usr/share/solarminer/nginx/solarminer-gateway.conf"
 cp "$ROOT/src/solarminer_gateway/"*.py "$STAGE/usr/lib/solarminer-gateway/solarminer_gateway/"
+cp -R "$ROOT/src/solarminer_gateway/_vendor" "$STAGE/usr/lib/solarminer-gateway/solarminer_gateway/"
 cp "$ROOT/README.md" "$STAGE/usr/share/doc/solarminer-gateway/README.md"
 cp "$ROOT/docs/TLS_TRUST.md" "$STAGE/usr/share/doc/solarminer-gateway/TLS_TRUST.md"
 cp "$ROOT/docs/REMOTE_ACCESS_AND_TLS.md" "$STAGE/usr/share/doc/solarminer-gateway/REMOTE_ACCESS_AND_TLS.md"

@@ -11,9 +11,12 @@ import errno
 import ipaddress
 import json
 import os
+import re
+import sys
 import socket
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -22,6 +25,16 @@ from pathlib import Path
 from typing import Any
 
 from . import deye_modbus
+
+# TinyTuya is bundled with the signed Gateway package so local control works
+# without an installer-time network dependency. It is used only for LAN I/O.
+_TUYA_VENDOR = Path(__file__).with_name("_vendor")
+if _TUYA_VENDOR.is_dir() and str(_TUYA_VENDOR) not in sys.path:
+    sys.path.insert(0, str(_TUYA_VENDOR))
+try:
+    import tinytuya
+except ImportError:  # Keep the rest of the Gateway usable if packaging is incomplete.
+    tinytuya = None
 
 
 class TuyaSyncCancelled(Exception):
@@ -106,7 +119,7 @@ def public_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
         "deye": {k: config.get("deye", {}).get(k) for k in ("host", "port", "unit_id", "model") if config.get("deye", {}).get(k) is not None},
         "antminer": {k: config.get("antminer", {}).get(k) for k in ("host", "port", "rest_port", "model") if config.get("antminer", {}).get(k) is not None},
         "antminer_control_configured": bool(config.get("antminer", {}).get("username") and config.get("antminer", {}).get("password")),
-        "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "uid": tuya.get("uid"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": [{"device_id": x.get("device_id"), "name": x.get("name"), "room": x.get("room", ""), "floor": x.get("floor", ""), "name_source": x.get("name_source", "cloud"), "switch_code": x.get("switch_code"), "switch_channels": [item.get("code") for item in x.get("functions", []) if isinstance(item, dict) and str(item.get("type", "")).lower() in {"bool", "boolean"}], "channel_labels": x.get("channel_labels", {}), "capability_labels": x.get("capability_labels", {}), "level_code": x.get("level_code"), "level_min": x.get("level_min", 0), "level_max": x.get("level_max", 100), "category": x.get("category"), "product_id": x.get("product_id"), "product_name": x.get("product_name"), "online": x.get("online"), "cloud_source": x.get("cloud_source"), "cloud_missing": x.get("cloud_missing", False), "local_key_available": bool(x.get("local_key")), "functions": x.get("functions", []), "status_spec": x.get("status_spec", []), "current_status": x.get("current_status", []), "last_status_at": x.get("last_status_at")} for x in tuya.get("devices", []) if isinstance(x, dict)], "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
+        "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "uid": tuya.get("uid"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": [{"device_id": x.get("device_id"), "name": x.get("name"), "room": x.get("room", ""), "floor": x.get("floor", ""), "name_source": x.get("name_source", "cloud"), "switch_code": x.get("switch_code"), "switch_channels": [item.get("code") for item in x.get("functions", []) if isinstance(item, dict) and str(item.get("type", "")).lower() in {"bool", "boolean"}], "channel_labels": x.get("channel_labels", {}), "capability_labels": x.get("capability_labels", {}), "level_code": x.get("level_code"), "level_min": x.get("level_min", 0), "level_max": x.get("level_max", 100), "category": x.get("category"), "product_id": x.get("product_id"), "product_name": x.get("product_name"), "online": x.get("online"), "ip": x.get("local_ip") or x.get("ip"), "local_ip": x.get("local_ip", ""), "local_protocol": x.get("local_protocol", "3.3"), "local_dps_map": x.get("local_dps_map", {}), "local_control_state": x.get("local_control_state", "not_tested"), "cloud_source": x.get("cloud_source"), "cloud_missing": x.get("cloud_missing", False), "local_key_available": bool(x.get("local_key")), "functions": x.get("functions", []), "status_spec": x.get("status_spec", []), "current_status": x.get("current_status", []), "last_status_at": x.get("last_status_at")} for x in tuya.get("devices", []) if isinstance(x, dict)], "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
         "secrets_returned": False,
     }
 
@@ -203,7 +216,7 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
             # Cloud-imported secrets and capability metadata can only come from
             # the Gateway's previous trusted inventory, never from PWA input.
             previous = existing_devices.get(device_id, {})
-            for key in ("local_key", "product_id", "product_name", "category", "online", "ip", "functions", "status_spec", "current_status", "last_status_at", "cloud_source", "cloud_missing", "last_synced_at"):
+            for key in ("local_key", "local_ip", "local_protocol", "local_dps_map", "local_control_state", "product_id", "product_name", "category", "online", "ip", "functions", "status_spec", "current_status", "last_status_at", "cloud_source", "cloud_missing", "last_synced_at"):
                 if key in previous:
                     normalized_device[key] = previous[key]
             name_source = device.get("name_source", previous.get("name_source", "cloud"))
@@ -214,6 +227,24 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
                 value = device.get(key, previous.get(key, ""))
                 if not isinstance(value, str) or len(value) > 120: raise ValueError(f"invalid_tuya_{key}")
                 normalized_device[key] = value.strip()
+            local_ip_value = device.get("local_ip", previous.get("local_ip") or previous.get("ip"))
+            if local_ip_value:
+                normalized_device["local_ip"] = _private_ip(local_ip_value)
+            protocol = str(device.get("local_protocol", previous.get("local_protocol", "3.3")))
+            if protocol not in {"3.1", "3.2", "3.3", "3.4", "3.5"}:
+                raise ValueError("invalid_tuya_local_protocol")
+            normalized_device["local_protocol"] = protocol
+            dps_map = device.get("local_dps_map", previous.get("local_dps_map", {}))
+            if not isinstance(dps_map, dict) or len(dps_map) > 128:
+                raise ValueError("invalid_tuya_local_dps_map")
+            allowed_dps_codes = {entry.get("code") for entry in [*previous.get("functions", []), *previous.get("status_spec", [])]
+                                 if isinstance(entry, dict) and isinstance(entry.get("code"), str)}
+            clean_dps_map: dict[str, str] = {}
+            for code, dps in dps_map.items():
+                if code not in allowed_dps_codes or not isinstance(dps, (str, int)) or not str(dps).isdigit() or not 1 <= int(dps) <= 65535:
+                    raise ValueError("invalid_tuya_local_dps_map")
+                clean_dps_map[code] = str(int(dps))
+            normalized_device["local_dps_map"] = clean_dps_map
             channel_labels = device.get("channel_labels", previous.get("channel_labels", {}))
             if not isinstance(channel_labels, dict) or len(channel_labels) > 32: raise ValueError("invalid_tuya_channel_labels")
             available_codes = {entry.get("code") for entry in previous.get("functions", []) if isinstance(entry, dict) and str(entry.get("type", "")).lower() in {"bool", "boolean"}}
@@ -338,28 +369,79 @@ def _tuya_request(config: dict[str, Any], path: str, token: str | None = None, *
     return value
 
 
-def read_tuya(config: dict[str, Any]) -> list[dict[str, Any]]:
-    if not config.get("client_id") or not config.get("client_secret"): raise ValueError("tuya_credentials_required")
-    auth = _tuya_request(config, "/v1.0/token?grant_type=1")
-    token = (auth.get("result") or {}).get("access_token")
-    if not isinstance(token, str) or not token: raise RuntimeError("tuya_token_missing")
-    output = []
-    for item in config.get("devices", []):
-        device_id = item["device_id"]
+def _tuya_lan_client(device: dict[str, Any]):
+    if tinytuya is None:
+        raise RuntimeError("tuya_lan_driver_unavailable")
+    key = device.get("local_key")
+    host = device.get("local_ip") or device.get("ip")
+    if not isinstance(key, str) or len(key) < 8:
+        raise RuntimeError("tuya_local_key_missing")
+    host = _private_ip(host)
+    protocol = str(device.get("local_protocol", "3.3"))
+    if protocol not in {"3.1", "3.2", "3.3", "3.4", "3.5"}:
+        raise RuntimeError("tuya_local_protocol_unsupported")
+    client = tinytuya.Device(device["device_id"], host, key, version=float(protocol), connection_timeout=2)
+    client.set_socketTimeout(2)
+    client.set_retry(False)
+    return client
+
+
+def _tuya_local_dps(device: dict[str, Any], code: str) -> str:
+    mapping = device.get("local_dps_map") if isinstance(device.get("local_dps_map"), dict) else {}
+    value = mapping.get(code)
+    if value is not None:
+        return str(value)
+    if code == "switch":
+        return "1"
+    match = re.fullmatch(r"switch_(\d+)", code)
+    if match and 1 <= int(match.group(1)) <= 64:
+        return str(int(match.group(1)))
+    if code.isdigit() and 1 <= int(code) <= 65535:
+        return str(int(code))
+    raise ValueError("tuya_local_datapoint_mapping_required")
+
+
+def _tuya_local_status(device: dict[str, Any]) -> dict[str, Any]:
+    result = _tuya_lan_client(device).status()
+    if not isinstance(result, dict) or not isinstance(result.get("dps"), dict):
+        raise RuntimeError("tuya_lan_status_unavailable")
+    code_by_dps: dict[str, str] = {}
+    for entry in [*device.get("functions", []), *device.get("status_spec", [])]:
+        if not isinstance(entry, dict) or not isinstance(entry.get("code"), str):
+            continue
         try:
-            result = _tuya_request(config, f"/v1.0/devices/{urllib.parse.quote(device_id, safe='')}/status", token).get("result")
-            if not isinstance(result, list):
-                raise RuntimeError("tuya_status_invalid")
-            output.append({"device_id": device_id, "name": item["name"], "status": result,
-                           "connection_state": "api_responded", "source": "TUYA_CLOUD",
-                           "trust": "LIVE_UNVERIFIED", "observed_at": time.time()})
-        except (RuntimeError, ValueError) as exc:
-            # Keep failures isolated per device. A stale ID or missing Tuya
-            # permission must not discard successful results for other devices.
-            output.append({"device_id": device_id, "name": item["name"],
-                           "connection_state": "failed", "reason": str(exc)[:120],
-                           "source": "TUYA_CLOUD_READ_ONLY", "trust": "UNAVAILABLE"})
-    return output
+            code_by_dps[_tuya_local_dps(device, entry["code"])] = entry["code"]
+        except ValueError:
+            continue
+    status = [{"code": code_by_dps.get(str(dps), f"dps_{dps}"), "value": value}
+              for dps, value in result["dps"].items()]
+    return {"device_id": device["device_id"], "name": device.get("name", "Tuya device"),
+            "status": status, "connection_state": "local_responded", "source": "TUYA_LAN",
+            "trust": "LIVE_UNVERIFIED", "observed_at": time.time()}
+
+
+def read_tuya(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Read Tuya device status over LAN only; never fall back to Tuya Cloud."""
+    devices = [item for item in config.get("devices", [])
+               if isinstance(item, dict) and isinstance(item.get("device_id"), str)]
+    if not devices:
+        return []
+
+    def read_one(item: dict[str, Any]) -> dict[str, Any]:
+        started = time.perf_counter()
+        try:
+            result = _tuya_local_status(item)
+            result["latency_ms"] = round((time.perf_counter() - started) * 1000, 1)
+            return result
+        except (RuntimeError, ValueError, OSError, TypeError) as exc:
+            return {"device_id": item["device_id"], "name": item.get("name", "Tuya device"),
+                    "connection_state": "failed", "reason": str(exc)[:120],
+                    "source": "TUYA_LAN", "trust": "UNAVAILABLE",
+                    "latency_ms": round((time.perf_counter() - started) * 1000, 1)}
+
+    # Keep polling a large home bounded and return rows in their configured order.
+    with ThreadPoolExecutor(max_workers=min(8, len(devices)), thread_name_prefix="tuya-lan") as pool:
+        return list(pool.map(read_one, devices))
 
 
 def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Event | None = None) -> dict[str, Any]:
@@ -433,7 +515,7 @@ def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Eve
                 item["local_key"] = key
             elif isinstance(previous.get("local_key"), str):
                 item["local_key"] = previous["local_key"]
-            for retained in ("switch_code", "level_code", "level_min", "level_max", "favorite", "room", "floor", "name_source", "local_name", "channel_labels", "capability_labels"):
+            for retained in ("switch_code", "level_code", "level_min", "level_max", "favorite", "room", "floor", "name_source", "local_name", "channel_labels", "capability_labels", "local_ip", "local_protocol", "local_dps_map", "local_control_state"):
                 if retained in previous:
                     item[retained] = previous[retained]
             discovered.append(item)
@@ -472,16 +554,13 @@ def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Eve
         except (RuntimeError, ValueError):
             details_failures += 1
         try:
-            current_status = _tuya_request(config, f"/v1.0/iot-03/devices/{quoted}/status", token).get("result")
-            if isinstance(current_status, list):
-                item["current_status"] = [{"code": entry.get("code"), "value": entry.get("value")}
-                                           for entry in current_status if isinstance(entry, dict)
-                                           and isinstance(entry.get("code"), str)][:128]
-                item["last_status_at"] = int(time.time())
+            # Inventory sync uses Cloud only for discovery/configuration.
+            # Operational state is deliberately read from the device over LAN.
+            previous_status = by_id.get(item["device_id"], {})
+            if isinstance(previous_status.get("current_status"), list):
+                item["current_status"] = previous_status["current_status"]
+                item["last_status_at"] = previous_status.get("last_status_at")
         except (RuntimeError, ValueError):
-            if isinstance(by_id.get(item["device_id"], {}).get("current_status"), list):
-                item["current_status"] = by_id[item["device_id"]]["current_status"]
-                item["last_status_at"] = by_id[item["device_id"]].get("last_status_at")
             details_failures += 1
         try:
             spec = _tuya_request(config, f"/v1.0/iot-03/devices/{quoted}/specification", token).get("result")
@@ -509,8 +588,8 @@ def control_tuya_switch(config: dict[str, Any], device_id: str, on: bool, code: 
     """Toggle only a switch datapoint explicitly assigned in Owner config."""
     if not isinstance(on, bool):
         raise ValueError("tuya_switch_state_must_be_boolean")
-    if not isinstance(config, dict) or not config.get("client_id") or not config.get("client_secret"):
-        raise RuntimeError("tuya_credentials_required")
+    if not isinstance(config, dict):
+        raise RuntimeError("tuya_config_unavailable")
     device = next((item for item in config.get("devices", [])
                    if isinstance(item, dict) and item.get("device_id") == device_id), None)
     if device is None:
@@ -523,35 +602,30 @@ def control_tuya_switch(config: dict[str, Any], device_id: str, on: bool, code: 
         raise ValueError("tuya_switch_function_code_not_configured")
     if not isinstance(code, str) or not code or not code.replace("_", "").replace("-", "").isalnum() or len(code) > 64:
         raise ValueError("tuya_switch_function_code_not_configured")
-    auth = _tuya_request(config, "/v1.0/token?grant_type=1")
-    token = (auth.get("result") or {}).get("access_token")
-    if not isinstance(token, str) or not token:
-        raise RuntimeError("tuya_token_missing")
-    path = f"/v1.0/iot-03/devices/{urllib.parse.quote(device_id, safe='')}/commands"
-    response = _tuya_request(config, path, token, method="POST",
-                             payload={"commands": [{"code": code, "value": on}]})
-    if response.get("result") is not True:
-        raise RuntimeError("tuya_command_not_accepted")
+    dps = _tuya_local_dps(device, code)
+    client = _tuya_lan_client(device)
+    response = client.set_status(on, switch=int(dps))
+    if not isinstance(response, dict) or (response.get("Error") and not response.get("dps")):
+        raise RuntimeError("tuya_lan_command_rejected")
     observed = None
     try:
-        rows = _tuya_request(config, f"/v1.0/iot-03/devices/{urllib.parse.quote(device_id, safe='')}/status", token).get("result")
-        if isinstance(rows, list):
-            observed = next((item.get("value") for item in rows if isinstance(item, dict) and item.get("code") == code), None)
-    except (RuntimeError, ValueError):
+        rows = _tuya_local_status(device).get("status", [])
+        observed = next((item.get("value") for item in rows if item.get("code") == code), None)
+    except (RuntimeError, ValueError, OSError):
         pass
     state = observed if isinstance(observed, bool) else None
     return {"device_id": device_id, "switch_code": code, "requested_on": on,
             "command_accepted": True, "observed_on": state,
             "state_confirmed": state is on, "connection_state": "control_confirmed" if state is on else "command_accepted_state_unconfirmed",
-            "control_command_sent": True}
+            "control_command_sent": True, "source": "TUYA_LAN"}
 
 
 def control_tuya_level(config: dict[str, Any], device_id: str, percent: int) -> dict[str, Any]:
     """Set a configured Tuya dimmer/cover datapoint from 0–100 percent."""
     if isinstance(percent, bool) or not isinstance(percent, int) or not 0 <= percent <= 100:
         raise ValueError("tuya_level_percent_out_of_range")
-    if not isinstance(config, dict) or not config.get("client_id") or not config.get("client_secret"):
-        raise RuntimeError("tuya_credentials_required")
+    if not isinstance(config, dict):
+        raise RuntimeError("tuya_config_unavailable")
     device = next((item for item in config.get("devices", []) if isinstance(item, dict) and item.get("device_id") == device_id), None)
     if device is None:
         raise ValueError("tuya_device_not_configured")
@@ -560,17 +634,19 @@ def control_tuya_level(config: dict[str, Any], device_id: str, percent: int) -> 
     if not isinstance(code, str) or not code or isinstance(low, bool) or isinstance(high, bool) or not isinstance(low, int) or not isinstance(high, int) or not 0 <= low < high <= 100000:
         raise ValueError("tuya_level_function_not_configured")
     target = round(low + (high - low) * percent / 100)
-    auth = _tuya_request(config, "/v1.0/token?grant_type=1")
-    token = (auth.get("result") or {}).get("access_token")
-    if not isinstance(token, str) or not token:
-        raise RuntimeError("tuya_token_missing")
-    path = f"/v1.0/iot-03/devices/{urllib.parse.quote(device_id, safe='')}/commands"
-    response = _tuya_request(config, path, token, method="POST", payload={"commands": [{"code": code, "value": target}]})
-    if response.get("result") is not True:
-        raise RuntimeError("tuya_command_not_accepted")
+    dps = _tuya_local_dps(device, code)
+    response = _tuya_lan_client(device).set_value(int(dps), target)
+    if not isinstance(response, dict) or (response.get("Error") and not response.get("dps")):
+        raise RuntimeError("tuya_lan_command_rejected")
+    try:
+        rows = _tuya_local_status(device).get("status", [])
+        observed = next((item.get("value") for item in rows if item.get("code") == code), None)
+    except (RuntimeError, ValueError, OSError):
+        observed = None
     return {"device_id": device_id, "level_code": code, "requested_percent": percent, "requested_value": target,
-            "command_accepted": True, "control_command_sent": True, "state_confirmed": False,
-            "connection_state": "command_accepted_state_unconfirmed"}
+            "command_accepted": True, "control_command_sent": True, "state_confirmed": observed == target,
+            "observed_value": observed, "connection_state": "control_confirmed" if observed == target else "command_accepted_state_unconfirmed",
+            "source": "TUYA_LAN"}
 
 
 def read_antminer(host: str, port: int = 4028, timeout: float = 2.0) -> dict[str, Any]:

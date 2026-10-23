@@ -375,6 +375,14 @@ export async function controlGatewayTuyaLevel(deviceId, percent) {
   if (typeof deviceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(deviceId) || !Number.isInteger(percent) || percent < 0 || percent > 100) throw new Error("Comando Tuya percentual inválido.");
   return gatewayApi("/api/v1/integrations/tuya/level", { method: "POST", body: { device_id: deviceId, percent } });
 }
+export async function readGatewayTuyaDeviceEvents(deviceId, limit = 100) {
+  if (typeof deviceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(deviceId) || !Number.isInteger(limit) || limit < 1 || limit > 500) throw new Error("Dispositivo inválido.");
+  return gatewayApi(`/api/v1/integrations/tuya/${encodeURIComponent(deviceId)}/events?limit=${limit}`);
+}
+export async function runGatewayTuyaLanDiagnostics(rounds = 3) {
+  if (!Number.isInteger(rounds) || rounds < 1 || rounds > 5) throw new Error("O diagnóstico aceita entre uma e cinco rondas.");
+  return gatewayApi("/api/v1/integrations/tuya/lan-diagnostics", { method: "POST", body: { rounds } });
+}
 export async function readGatewayTeslaEvConfig() {
   return gatewayApi("/api/v1/energy/ev/tesla");
 }

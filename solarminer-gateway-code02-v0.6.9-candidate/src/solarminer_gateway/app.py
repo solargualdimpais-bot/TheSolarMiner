@@ -120,6 +120,16 @@ CREATE TABLE IF NOT EXISTS audit(
  id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at TEXT NOT NULL, actor_user_id TEXT,
  action TEXT NOT NULL, target TEXT, outcome TEXT NOT NULL, details_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS device_events(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at TEXT NOT NULL, device_id TEXT NOT NULL,
+ device_name TEXT NOT NULL, event_type TEXT NOT NULL, channel_code TEXT NOT NULL DEFAULT '',
+ old_value_json TEXT, new_value_json TEXT, source TEXT NOT NULL DEFAULT 'TUYA_LAN'
+);
+CREATE TABLE IF NOT EXISTS device_observations(
+ device_id TEXT NOT NULL, observation_key TEXT NOT NULL, value_json TEXT NOT NULL,
+ observed_at TEXT NOT NULL, PRIMARY KEY(device_id, observation_key)
+);
+CREATE INDEX IF NOT EXISTS idx_device_events_device_time ON device_events(device_id, id DESC);
 CREATE TABLE IF NOT EXISTS owner_recovery_keys(
  id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL REFERENCES users(id),
  verifier_sha256 TEXT NOT NULL, generation INTEGER NOT NULL CHECK(generation >= 1),
@@ -448,7 +458,9 @@ def _run_automatic_dispatch() -> dict[str, Any]:
             tuya_config = integration_config.get("tuya", {})
             tuya_states = {}
             if any(action.get("control_type") in {"tuya_smart", "tuya_breaker"} for action in plan.get("actions", [])):
-                tuya_states = {item.get("device_id"): item for item in hardware_integrations.read_tuya(tuya_config)}
+                tuya_readings = hardware_integrations.read_tuya(tuya_config)
+                _persist_tuya_device_events(conn, tuya_readings)
+                tuya_states = {item.get("device_id"): item for item in tuya_readings}
         except (ValueError, RuntimeError, OSError, json.JSONDecodeError) as exc:
             outcome = {"state": "BLOCKED_INTEGRATION_READ", "reason": type(exc).__name__, "actions": []}
             _persist_dispatch_outcome(conn, outcome)
@@ -479,7 +491,7 @@ def _run_automatic_dispatch() -> dict[str, Any]:
             if control in {"tuya_smart", "tuya_breaker"}:
                 device_id, code = load.get("tuya_device_id"), load.get("tuya_switch_code")
                 device_state = tuya_states.get(device_id, {})
-                values = device_state.get("status", []) if device_state.get("connection_state") == "api_responded" else []
+                values = device_state.get("status", []) if device_state.get("connection_state") == "local_responded" else []
                 observed = next((item.get("value") for item in values if isinstance(item, dict) and item.get("code") == code), None)
                 if not isinstance(observed, bool):
                     results.append({"load_id": load["id"], "state": "BLOCKED_STATE_UNKNOWN"})
@@ -498,6 +510,8 @@ def _run_automatic_dispatch() -> dict[str, Any]:
                     continue
                 try:
                     result = hardware_integrations.control_tuya_switch(tuya_config, device_id, desired == "ON", code=code)
+                    _append_tuya_command_event(conn, device_id, code or "", desired == "ON",
+                                               confirmed=bool(result.get("state_confirmed")), automatic=True)
                     outcome = "APPLIED" if result.get("state_confirmed") else "UNCONFIRMED"
                     if result.get("state_confirmed"):
                         with _dispatch_lock:
@@ -579,6 +593,41 @@ async def _energy_dispatch_loop() -> None:
         await asyncio.sleep(10)
 
 
+def _collect_tuya_device_events_once() -> int:
+    """Poll configured Tuya Wi-Fi devices and save observed transitions locally."""
+    config = hardware_integrations.load_config().get("tuya", {})
+    devices = [item for item in config.get("devices", [])
+               if isinstance(item, dict) and item.get("local_key")
+               and (item.get("local_ip") or item.get("ip"))]
+    if not devices:
+        return 0
+    readings = hardware_integrations.read_tuya({**config, "devices": devices})
+    with db() as conn:
+        recorded = _persist_tuya_device_events(conn, readings)
+        conn.commit()
+    return recorded
+
+
+def _tuya_event_poll_interval_seconds() -> int:
+    try:
+        return max(60, min(3600, int(os.environ.get("SOLARMINER_TUYA_EVENT_POLL_SECONDS", "60"))))
+    except (TypeError, ValueError):
+        return 60
+
+
+async def _tuya_device_event_loop() -> None:
+    """Continuously observe Tuya LAN state for the per-device event history."""
+    interval = _tuya_event_poll_interval_seconds()
+    while True:
+        try:
+            await asyncio.to_thread(_collect_tuya_device_events_once)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            LOG.warning("Periodic Tuya LAN observation failed (%s)", type(exc).__name__)
+        await asyncio.sleep(interval)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global _latest_deye_sample
@@ -587,17 +636,23 @@ async def lifespan(_: FastAPI):
         _latest_deye_sample = None
     sampler = asyncio.create_task(_energy_sampling_loop(), name="solarminer-energy-sampler")
     dispatcher = asyncio.create_task(_energy_dispatch_loop(), name="solarminer-energy-dispatcher")
+    tuya_observer = asyncio.create_task(_tuya_device_event_loop(), name="solarminer-tuya-event-observer")
     try:
         yield
     finally:
         sampler.cancel()
         dispatcher.cancel()
+        tuya_observer.cancel()
         try:
             await sampler
         except asyncio.CancelledError:
             pass
         try:
             await dispatcher
+        except asyncio.CancelledError:
+            pass
+        try:
+            await tuya_observer
         except asyncio.CancelledError:
             pass
 
@@ -1243,6 +1298,127 @@ def hardware_integrations_read(session: dict[str, Any] = Depends(require_permiss
             raise HTTPException(503, "integration_read_unavailable") from exc
 
 
+def _persist_tuya_device_events(conn: sqlite3.Connection, readings: list[dict[str, Any]]) -> int:
+    """Persist observed Tuya state/availability transitions from LAN polls."""
+    recorded = 0
+    for reading in readings:
+        device_id = reading.get("device_id")
+        if not isinstance(device_id, str):
+            continue
+        name = str(reading.get("name") or "Tuya device")[:120]
+        observed_at = datetime.now(timezone.utc).isoformat()
+        available = reading.get("connection_state") == "local_responded"
+        observations: list[tuple[str, Any, str]] = [("__availability", available, "availability")]
+        if available:
+            for row in reading.get("status", []):
+                if isinstance(row, dict) and isinstance(row.get("code"), str) and isinstance(row.get("value"), bool):
+                    observations.append((row["code"], row["value"], "switch_state"))
+        for key, value, event_type in observations:
+            new_json = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+            previous = conn.execute("SELECT value_json FROM device_observations WHERE device_id=? AND observation_key=?",
+                                    (device_id, key)).fetchone()
+            old_json = previous["value_json"] if previous else None
+            conn.execute("INSERT INTO device_observations(device_id,observation_key,value_json,observed_at) VALUES(?,?,?,?) "
+                         "ON CONFLICT(device_id,observation_key) DO UPDATE SET value_json=excluded.value_json,observed_at=excluded.observed_at",
+                         (device_id, key, new_json, observed_at))
+            if old_json != new_json:
+                conn.execute("INSERT INTO device_events(occurred_at,device_id,device_name,event_type,channel_code,old_value_json,new_value_json,source) VALUES(?,?,?,?,?,?,?,?)",
+                             (observed_at, device_id, name, event_type, "" if key == "__availability" else key,
+                              old_json, new_json, "TUYA_LAN"))
+                recorded += 1
+    return recorded
+
+
+def _append_tuya_command_event(conn: sqlite3.Connection, device_id: str, code: str, requested_on: bool,
+                              *, confirmed: bool, automatic: bool = False, source: str = "TUYA_LAN") -> None:
+    config = hardware_integrations.load_config().get("tuya", {})
+    device = next((item for item in config.get("devices", []) if isinstance(item, dict) and item.get("device_id") == device_id), {})
+    conn.execute("INSERT INTO device_events(occurred_at,device_id,device_name,event_type,channel_code,old_value_json,new_value_json,source) VALUES(?,?,?,?,?,?,?,?)",
+                 (datetime.now(timezone.utc).isoformat(), device_id, str(device.get("name") or "Tuya device")[:120],
+                  ("automation_action" if automatic else "command_confirmed" if confirmed else "command_unconfirmed"),
+                  code, None, json.dumps(requested_on),
+                  "TUYA_LAN_AUTOMATION" if automatic else source))
+
+
+@app.get("/api/v1/integrations/tuya/{device_id}/events")
+def tuya_device_events(device_id: str, limit: int = 100,
+                       session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", device_id) or not 1 <= limit <= 500:
+        raise HTTPException(422, "tuya_event_query_invalid")
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        configured = hardware_integrations.load_config().get("tuya", {}).get("devices", [])
+        if not any(isinstance(item, dict) and item.get("device_id") == device_id for item in configured):
+            raise HTTPException(404, "tuya_device_not_configured")
+        rows = conn.execute("SELECT id,occurred_at,device_name,event_type,channel_code,old_value_json,new_value_json,source "
+                            "FROM device_events WHERE device_id=? ORDER BY id DESC LIMIT ?", (device_id, limit)).fetchall()
+        return {"device_id": device_id, "events": [{"id": row["id"], "occurred_at": row["occurred_at"],
+                "device_name": row["device_name"], "event_type": row["event_type"], "channel_code": row["channel_code"],
+                "old_value": json.loads(row["old_value_json"]) if row["old_value_json"] is not None else None,
+                "new_value": json.loads(row["new_value_json"]) if row["new_value_json"] is not None else None,
+                "source": row["source"]} for row in rows]}
+
+
+@app.post("/api/v1/integrations/tuya/lan-diagnostics")
+def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
+                         session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Measure read-only Tuya LAN response times; never sends control commands."""
+    payload = payload or {}
+    rounds = payload.get("rounds", 3)
+    if isinstance(rounds, bool) or not isinstance(rounds, int) or not 1 <= rounds <= 5:
+        raise HTTPException(422, "tuya_diagnostic_rounds_must_be_1_to_5")
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        config = hardware_integrations.load_config().get("tuya", {})
+        devices = [item for item in config.get("devices", [])
+                   if isinstance(item, dict) and isinstance(item.get("device_id"), str)]
+        if not devices:
+            return {"rounds": rounds, "configured_count": 0, "lan_testable_count": 0,
+                    "elapsed_ms": 0, "devices": [], "control_commands_sent": False}
+        samples: dict[str, list[dict[str, Any]]] = {item["device_id"]: [] for item in devices}
+        started = time.perf_counter()
+        sweep_times: list[float] = []
+        for _ in range(rounds):
+            sweep_started = time.perf_counter()
+            configured_lan = [item for item in devices if item.get("local_key") and
+                              (item.get("local_ip") or item.get("ip"))]
+            readings = hardware_integrations.read_tuya({**config, "devices": configured_lan}) if configured_lan else []
+            sweep_times.append(round((time.perf_counter() - sweep_started) * 1000, 1))
+            by_id = {row.get("device_id"): row for row in readings}
+            for item in devices:
+                device_id = item["device_id"]
+                row = by_id.get(device_id)
+                if row is None:
+                    samples[device_id].append({"ok": False, "latency_ms": None,
+                                               "reason": "local_ip_or_key_not_configured"})
+                else:
+                    samples[device_id].append({"ok": row.get("connection_state") == "local_responded",
+                                               "latency_ms": row.get("latency_ms"),
+                                               "reason": row.get("reason")})
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+        result = []
+        for item in devices:
+            rows = samples[item["device_id"]]
+            times = [row["latency_ms"] for row in rows if isinstance(row.get("latency_ms"), (int, float))]
+            schema = [entry for entry in item.get("status_spec", []) if isinstance(entry, dict)]
+            power_telemetry = any(re.search(r"power|watt|cur_power|active_power", str(entry.get("code", "")) + " " + str(entry.get("name", "")), re.I)
+                                  for entry in schema)
+            result.append({"device_id": item["device_id"], "name": str(item.get("name") or "Tuya device")[:120],
+                           "success_count": sum(1 for row in rows if row["ok"]), "rounds": rounds,
+                           "average_latency_ms": round(sum(times) / len(times), 1) if times else None,
+                           "worst_latency_ms": round(max(times), 1) if times else None,
+                           "power_telemetry_configured": power_telemetry,
+                           "reason": next((row["reason"] for row in rows if row.get("reason")), None)})
+        return {"rounds": rounds, "configured_count": len(devices),
+                "lan_testable_count": sum(1 for item in devices if item.get("local_key") and (item.get("local_ip") or item.get("ip"))),
+                "elapsed_ms": elapsed_ms, "sweep_times_ms": sweep_times,
+                "devices": result, "control_commands_sent": False}
+
+
 @app.post("/api/v1/integrations/hardware/{provider}/read")
 def hardware_provider_read(provider: str, payload: dict[str, Any] | None = None,
                            session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
@@ -1282,6 +1458,17 @@ def hardware_provider_read(provider: str, payload: dict[str, Any] | None = None,
                         raise HTTPException(404, "tuya_device_not_configured")
                     tuya_config = {**item, "devices": [d for d in item["devices"] if d.get("device_id") == device_id]}
                 result = {"tuya": hardware_integrations.read_tuya(tuya_config)}
+                _persist_tuya_device_events(conn, result["tuya"])
+                by_id = {row.get("device_id"): row for row in result["tuya"]}
+                for configured_device in item.get("devices", []):
+                    reading = by_id.get(configured_device.get("device_id"))
+                    if not reading:
+                        continue
+                    configured_device["local_control_state"] = "ready" if reading.get("connection_state") == "local_responded" else "unavailable"
+                    if reading.get("connection_state") == "local_responded":
+                        configured_device["current_status"] = reading.get("status", [])
+                        configured_device["last_status_at"] = int(time.time())
+                hardware_integrations.save_config(config)
             result["provider"] = provider
             result["collected_at"] = datetime.now(timezone.utc).isoformat()
             audit(conn, session["user_id"], f"hardware.{provider}.read", "gateway", "success", {
@@ -1349,6 +1536,8 @@ def tuya_switch_control(payload: dict[str, Any], session: dict[str, Any] = Depen
         try:
             config = hardware_integrations.load_config().get("tuya", {})
             result = hardware_integrations.control_tuya_switch(config, device_id, requested_on, code=code)
+            _append_tuya_command_event(conn, device_id, code or result.get("switch_code", ""), requested_on,
+                                       confirmed=bool(result.get("state_confirmed")))
             outcome = "success" if result.get("state_confirmed") else "unconfirmed"
             audit(conn, session["user_id"], "hardware.tuya.switch", device_id, outcome, {
                 "requested_on": requested_on, "channel_code": code or result.get("switch_code"), "state_confirmed": bool(result.get("state_confirmed")),

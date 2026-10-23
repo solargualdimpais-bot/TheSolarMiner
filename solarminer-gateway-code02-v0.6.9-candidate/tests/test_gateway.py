@@ -77,6 +77,53 @@ def test_password_login_registers_new_device_and_issues_owner_session(client):
     assert client.get("/api/v1/system/update/status", headers={"Authorization": f"Bearer {result['access_token']}"}).status_code == 200
 
 
+def test_tuya_lan_event_history_records_switch_and_availability_transitions(client):
+    with gateway.db() as conn:
+        gateway._persist_tuya_device_events(conn, [{
+            "device_id": "tuya_switch_1", "name": "Garden relay", "connection_state": "local_responded",
+            "status": [{"code": "switch_1", "value": True}],
+        }])
+        gateway._persist_tuya_device_events(conn, [{
+            "device_id": "tuya_switch_1", "name": "Garden relay", "connection_state": "local_responded",
+            "status": [{"code": "switch_1", "value": False}],
+        }])
+        gateway._persist_tuya_device_events(conn, [{
+            "device_id": "tuya_switch_1", "name": "Garden relay", "connection_state": "failed",
+            "reason": "tuya_lan_unavailable",
+        }])
+        rows = conn.execute("SELECT event_type,channel_code,old_value_json,new_value_json FROM device_events ORDER BY id").fetchall()
+    assert [(row["event_type"], row["channel_code"]) for row in rows] == [
+        ("availability", ""), ("switch_state", "switch_1"), ("switch_state", "switch_1"), ("availability", "")]
+    assert rows[1]["new_value_json"] == "true"
+    assert rows[2]["old_value_json"] == "true" and rows[2]["new_value_json"] == "false"
+    assert rows[3]["new_value_json"] == "false"
+
+
+def test_tuya_event_collector_polls_devices_even_without_a_pwa_request(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway, "DB_PATH", tmp_path / "gateway.db")
+    monkeypatch.setattr(gateway, "BOOTSTRAP_PATH", tmp_path / "bootstrap.token")
+    monkeypatch.setattr(gateway, "INSTANCE_MARKER", tmp_path / "initialized.marker")
+    gateway.initialize()
+    config = {"devices": [
+        {"device_id": "lan-ready", "name": "Relay", "local_key": "local-key-valid", "local_ip": "192.168.1.20"},
+        {"device_id": "not-configured", "name": "No key", "local_ip": "192.168.1.21"},
+    ]}
+    monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: {"tuya": config})
+    observed = []
+    def read_tuya(selected):
+        observed.extend(item["device_id"] for item in selected["devices"])
+        return [{"device_id": "lan-ready", "name": "Relay", "connection_state": "local_responded",
+                 "status": [{"code": "switch_1", "value": True}]}]
+    monkeypatch.setattr(gateway.hardware_integrations, "read_tuya", read_tuya)
+
+    assert gateway._collect_tuya_device_events_once() == 2
+    assert observed == ["lan-ready"]
+    with gateway.db() as conn:
+        rows = conn.execute("SELECT event_type, new_value_json FROM device_events ORDER BY id").fetchall()
+    assert [(row["event_type"], row["new_value_json"]) for row in rows] == [
+        ("availability", "true"), ("switch_state", "true")]
+
+
 def test_password_login_rejects_wrong_password_without_registering_device(client):
     create_owner(client)
     private, public = keypair()

@@ -20,7 +20,7 @@ Os bancos são paralelos e partilham a tensão do barramento Deye. Cada registo 
 
 O Owner pode configurar até 8 bancos de bateria e 64 cargas através do Engine PWA. Os tipos de carga incluem mineradora, AQS (smart ou controlada por disjuntor Tuya), carregador EV, soalho radiante/toalheiro e carga genérica. Cada carga define potência nominal, mínimo/máximo, prioridade, estado habilitado e elegibilidade para despacho automático. A configuração é validada e guardada no Gateway.
 
-Uma carga Tuya necessita de um dispositivo previamente registado nas integrações e de um código de função de interruptor, por exemplo `switch_1`. O Owner pode enviar comandos manuais de ligar/desligar com confirmação explícita. O Gateway exige sessão Owner, valida que o dispositivo está configurado, comunica apenas com a API HTTPS oficial da Tuya e tenta confirmar o estado depois do comando. Um HTTP aceite sem confirmação de estado é apresentado como não confirmado.
+Uma carga Tuya necessita de um dispositivo previamente registado nas integrações e de um código de função de interruptor, por exemplo `switch_1`. O Owner pode enviar comandos manuais de ligar/desligar com confirmação explícita. O Gateway exige sessão Owner, valida que o dispositivo está configurado e envia o comando diretamente pela LAN usando a chave local, IP, protocolo e DPS guardados no Gateway. Depois tenta confirmar o estado com nova leitura LAN; não usa a Cloud como fallback.
 
 ## Planeamento e despacho
 
@@ -41,5 +41,5 @@ O editor Owner guarda `battery_banks`, `loads` e `automation` em `/api/v1/energy
 - A radiação meteorológica é uma previsão de serviço externo, não uma medição local no plano dos painéis. A previsão fica indisponível sem coordenadas ou quando o serviço falha.
 - A tensão e a potência Deye são agregadas; o SOC calculado é uma estimativa comum para bancos em paralelo. Não substitui telemetria individual de BMS nem um SOC independente por banco.
 - A potência nominal de uma carga é uma estimativa para planeamento, não um medidor de consumo real.
-- Tuya Cloud depende de credenciais, região, permissões do projeto e códigos de datapoint válidos. Os segredos permanecem no Gateway.
+- A descoberta inicial, o esquema e a chave local Tuya dependem das credenciais, região e permissões do projeto Cloud. O funcionamento normal depende de um dispositivo Wi-Fi compatível, IP acessível e chave/protocolo/DPS corretos; falhas locais bloqueiam o controlo em vez de recorrer à Cloud.
 - A Tuya e a Braiins possuem comandos explícitos Owner; Tesla permanece leitura apenas. Nenhuma previsão indicativa pode por si só acionar uma carga.
