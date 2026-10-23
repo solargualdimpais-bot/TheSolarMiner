@@ -136,9 +136,9 @@ test('live Home uses compact square weather and production cards with a lighter 
   assert.match(css, /\.main-content \.home-weather-card,\.main-content \.home-production-card\{aspect-ratio:1\/1/);
   assert.match(css, /\.main-content \.home-weather-row\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
   assert.match(css, /\.main-content \.live-property-hero \.property-hero-image\{[^}]*opacity:var\(--property-photo-opacity/);
-  assert.match(app, /shared-property-hero gateway-house-hero \$\{profile\.photo_data_url/);
-  assert.match(css, /\.gateway-house-hero\.shared-property-hero \.property-hero-image\{[^}]*opacity:var\(--property-photo-opacity/);
-  assert.match(css, /\.gateway-house-hero\.shared-property-hero \.hero-shade\{[^}]*var\(--property-vignette/);
+  assert.match(app, /propertyHost\.innerHTML=renderHomePhotoHero\(state\.page==="inicio"\?"Home":pageLabel\(state\.page\)\)/);
+  assert.match(app, /function renderHomePhotoHero\(menuTitle = "Home"\)/);
+  assert.doesNotMatch(app, /main-content \.live-property-hero/);
 });
 
 test('Owner battery bank pop-up persists add, edit and remove actions', () => {
@@ -161,7 +161,7 @@ test('Owner photo editor supports HEIC conversion, framing and weather icons', (
   assert.match(app,/heic2any-0\.0\.4\.min\.js/);
   assert.match(app,/makeBrowserReadablePhoto/);
   assert.match(app,/id="photo-vignette" type="range" min="0" max="100" step="1"/);
-  assert.match(app,/Math\.min\(1,Number\(profile\.photo_vignette/);
+  assert.match(app,/--property-vignette:\$\{Number\(state\.siteProfile\?\.photo_vignette/);
   assert.match(css,/rgba\(0,0,0,var\(--house-photo-vignette/);
   assert.match(read('service-worker.js'),/assets\/heic2any-0\.0\.4\.min\.js/);
   assert.match(html,/context-editor-preview-vignette/);

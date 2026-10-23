@@ -40,13 +40,15 @@ test("Home favorite controls use a centered minimal add button and subtle power 
   assert.match(css, /\.home-favorites \.favorite-state-symbol\{width:30px;height:30px/);
 });
 
-test("Shared property photograph and menu title render above operational pages while Casa uses its dedicated hero", () => {
+test("Casa reuses the exact shared property photo hero used by every operational menu", () => {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
   const auth = readFileSync(new URL("../gateway-auth.js", import.meta.url), "utf8");
   assert.match(html, /id="property-hero-host"/);
-  assert.match(app, /propertyHost\.innerHTML=state\.page==="casa"\?"":renderHomePhotoHero/);
+  assert.match(app, /propertyHost\.innerHTML=renderHomePhotoHero\(state\.page==="inicio"\?"Home":pageLabel\(state\.page\)\)/);
   assert.match(app, /function renderHomePhotoHero\(menuTitle = "Home"\)/);
-  assert.match(app, /class="property-hero live-property-hero shared-property-hero gateway-house-hero/);
+  assert.match(app, /class="property-hero \$\{photoStyle\} live-property-hero shared-property-hero/);
+  assert.match(app, /gateway-house-floor-nav/);
+  assert.doesNotMatch(app, /class="property-hero \$\{photoStyle\} live-property-hero shared-property-hero gateway-house-hero/);
   assert.match(app, /property-hero-image" src=/);
   assert.match(app, /photo_opacity/);
   assert.match(app, /photo_vignette/);
@@ -70,7 +72,7 @@ test("Gateway Casa provides floor and room navigation with Gateway-persisted flo
   assert.match(app, /data-site-plan-zoom/);
   assert.match(css, /\.gateway-house-plan-tiles/);
   assert.match(css, /\.gateway-house-floor-tabs/);
-  assert.match(css, /\.gateway-house-hero\.shared-property-hero \.property-hero-image\{[^}]*border-radius:inherit/);
+  assert.match(css, /main-content \.live-property-hero \.property-hero-image\{[^}]*border-radius:inherit/);
   assert.match(css, /\.main-content \.live-property-hero\{border-radius:24px!important\}/);
   assert.match(css, /\.main-content \.live-property-hero \.hero-shade\{background:radial-gradient[\s\S]*linear-gradient\(0deg/);
 });
