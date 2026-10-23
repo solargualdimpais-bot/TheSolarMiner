@@ -30,6 +30,32 @@ def test_config_accepts_deye_antminer_and_tuya_and_redacts_secret(tmp_path, monk
     assert "secret-value-123" not in json.dumps(public)
 
 
+def test_tuya_local_names_and_capability_aliases_are_bound_to_synced_schema():
+    synced = {"tuya": {"region": "eu_central", "client_id": "client-id", "client_secret": "secret-value-123", "devices": [{
+        "device_id": "device_123", "name": "Cloud name", "functions": [
+            {"code": f"switch_{index}", "type": "Boolean", "name": f"Switch {index}"} for index in range(1, 7)
+        ], "status_spec": [{"code": "relay_status", "type": "Enum", "name": "Relay status"}],
+    }]}}
+    existing = integrations.validate_config({"tuya": {"region": "eu_central", "client_id": "client-id", "client_secret": "secret-value-123", "devices": [{"device_id": "device_123", "name": "Cloud name"}]}}, existing={})
+    existing["tuya"]["devices"][0]["functions"] = synced["tuya"]["devices"][0]["functions"]
+    existing["tuya"]["devices"][0]["status_spec"] = synced["tuya"]["devices"][0]["status_spec"]
+    edited_payload = {"tuya": {"region": "eu_central", "client_id": "client-id", "client_secret": "secret-value-123", "devices": [{
+        "device_id": "device_123", "name": "Luzes da frente", "name_source": "local", "room": "Jardim", "floor": "Exterior",
+        "channel_labels": {"switch_1": "Canteiro esquerdo", "switch_6": "Portão"},
+        "capability_labels": {"switch_1": "Canteiro esquerdo", "relay_status": "Estado do relé"},
+    }]}}
+    updated = integrations.validate_config(edited_payload, existing=existing)
+    public_device = integrations.public_config(updated)["tuya"]["devices"][0]
+    assert public_device["name"] == "Luzes da frente"
+    assert public_device["room"] == "Jardim" and public_device["floor"] == "Exterior"
+    assert public_device["switch_channels"] == [f"switch_{index}" for index in range(1, 7)]
+    assert public_device["channel_labels"]["switch_6"] == "Portão"
+    assert public_device["capability_labels"]["relay_status"] == "Estado do relé"
+    invalid = {"tuya": {**edited_payload["tuya"], "devices": [{**edited_payload["tuya"]["devices"][0], "capability_labels": {"not_synced": "Inventado"}}]}}
+    with pytest.raises(ValueError, match="invalid_tuya_capability_label"):
+        integrations.validate_config(invalid, existing=existing)
+
+
 @pytest.mark.parametrize("payload", [
     {"deye": {"host": "8.8.8.8", "port": 502, "unit_id": 1}},
     {"antminer": {"host": "gateway.example.com", "port": 4028}},

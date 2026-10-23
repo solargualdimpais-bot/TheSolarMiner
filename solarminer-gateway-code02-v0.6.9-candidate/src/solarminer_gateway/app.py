@@ -49,7 +49,7 @@ from . import updates as update_manager
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.57"
+PACKAGE_VERSION = "0.6.58"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -497,7 +497,7 @@ def _run_automatic_dispatch() -> dict[str, Any]:
                     result_states[load["id"]] = "BLOCKED_MINIMUM_DWELL"
                     continue
                 try:
-                    result = hardware_integrations.control_tuya_switch(tuya_config, device_id, desired == "ON")
+                    result = hardware_integrations.control_tuya_switch(tuya_config, device_id, desired == "ON", code=code)
                     outcome = "APPLIED" if result.get("state_confirmed") else "UNCONFIRMED"
                     if result.get("state_confirmed"):
                         with _dispatch_lock:
@@ -960,7 +960,10 @@ def energy_engine_configure(payload: dict[str, Any], session: dict[str, Any] = D
                     raise ValueError("invalid_flexible_load")
                 if load.get("control_type") in {"tuya_smart", "tuya_breaker"}:
                     device = tuya_by_id.get(load.get("tuya_device_id"))
-                    if not device or device.get("switch_code") != load.get("tuya_switch_code"):
+                    allowed_codes = {entry.get("code") for entry in (device or {}).get("functions", []) if isinstance(entry, dict) and str(entry.get("type", "")).lower() in {"bool", "boolean"}}
+                    if device and device.get("switch_code"):
+                        allowed_codes.add(device["switch_code"])
+                    if not device or load.get("tuya_switch_code") not in allowed_codes:
                         raise ValueError("load_tuya_device_or_switch_code_not_configured")
             result = energy_engine.save_config(conn, config_payload)
             audit(conn, session["user_id"], "energy.engine.configure", "energy-engine", "success", {
@@ -1027,7 +1030,18 @@ def hardware_integrations_configure(payload: dict[str, Any], session: dict[str, 
 
 
 @app.post("/api/v1/integrations/tuya/sync")
-def tuya_devices_sync(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+async def tuya_devices_sync(request: Request, session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Run a cancellable sync and stop it if the Owner cancels the request."""
+    cancelled = threading.Event()
+    work = asyncio.create_task(asyncio.to_thread(_tuya_devices_sync_work, session, cancelled))
+    while not work.done():
+        if await request.is_disconnected():
+            cancelled.set()
+        await asyncio.sleep(0.2)
+    return await work
+
+
+def _tuya_devices_sync_work(session: dict[str, Any], cancelled: threading.Event) -> dict[str, Any]:
     """Owner-triggered Tuya inventory sync; local keys remain Gateway-only."""
     with db() as conn:
         actor = _revalidate_actor(conn, session, "manage_gateway")
@@ -1040,7 +1054,7 @@ def tuya_devices_sync(session: dict[str, Any] = Depends(require_permission("mana
                 raise HTTPException(409, "tuya_not_configured")
             if not tuya.get("uid"):
                 raise HTTPException(409, "tuya_uid_required")
-            synced = hardware_integrations.synchronize_tuya_devices(tuya)
+            synced = hardware_integrations.synchronize_tuya_devices(tuya, cancelled=cancelled)
             current = {item.get("device_id"): item for item in tuya.get("devices", [])
                        if isinstance(item, dict) and isinstance(item.get("device_id"), str)}
             imported = {item["device_id"]: item for item in synced["devices"]}
@@ -1071,6 +1085,12 @@ def tuya_devices_sync(session: dict[str, Any] = Depends(require_permission("mana
                     "secrets_returned": False}
         except HTTPException:
             raise
+        except hardware_integrations.TuyaSyncCancelled:
+            audit(conn, session["user_id"], "hardware.tuya.sync", "gateway", "cancelled", {
+                "secrets_returned": False,
+            })
+            conn.commit()
+            raise HTTPException(409, "tuya_sync_cancelled") from None
         except (ValueError, RuntimeError) as exc:
             reason = str(exc)[:120]
             audit(conn, session["user_id"], "hardware.tuya.sync", "gateway", "failed", {
@@ -1321,17 +1341,17 @@ def tuya_switch_control(payload: dict[str, Any], session: dict[str, Any] = Depen
     """Owner-only explicit Tuya switch command for an already configured device."""
     with db() as conn:
         _require_owner(session, conn)
-        if not isinstance(payload, dict) or set(payload) != {"device_id", "on"}:
+        if not isinstance(payload, dict) or not {"device_id", "on"}.issubset(payload) or set(payload) - {"device_id", "on", "code"}:
             raise HTTPException(422, "tuya_switch_payload_invalid")
-        device_id, requested_on = payload.get("device_id"), payload.get("on")
-        if not isinstance(device_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", device_id) or not isinstance(requested_on, bool):
+        device_id, requested_on, code = payload.get("device_id"), payload.get("on"), payload.get("code")
+        if not isinstance(device_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", device_id) or not isinstance(requested_on, bool) or (code is not None and (not isinstance(code, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", code))):
             raise HTTPException(422, "tuya_switch_payload_invalid")
         try:
             config = hardware_integrations.load_config().get("tuya", {})
-            result = hardware_integrations.control_tuya_switch(config, device_id, requested_on)
+            result = hardware_integrations.control_tuya_switch(config, device_id, requested_on, code=code)
             outcome = "success" if result.get("state_confirmed") else "unconfirmed"
             audit(conn, session["user_id"], "hardware.tuya.switch", device_id, outcome, {
-                "requested_on": requested_on, "state_confirmed": bool(result.get("state_confirmed")),
+                "requested_on": requested_on, "channel_code": code or result.get("switch_code"), "state_confirmed": bool(result.get("state_confirmed")),
                 "control_command_sent": True,
             })
             return result
@@ -2359,7 +2379,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.57"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.58"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

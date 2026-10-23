@@ -59,9 +59,9 @@ test("Owner recovery file parser accepts a generated key and rejects malformed/o
 });
 
 test("new PWA static cache version is changed and USB limitations are documented", () => {
-  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.20-house-photo-controls/);
-  assert.match(manifest, /v0\.5\.20/);
-  assert.equal(packageJson.version, "0.5.20");
+  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.21-house-photo-controls/);
+  assert.match(manifest, /v0\.5\.21/);
+  assert.equal(packageJson.version, "0.5.21");
   const docs = read("OWNER_USB_AND_ACCESS.md");
   assert.match(docs, /texto simples/);
   assert.match(docs, /não valida certificados TLS/);
@@ -94,10 +94,10 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   assert.match(embeddedApp, /startGatewayTailscale/);
   assert.match(embeddedApp, /liveHomeMetric\("Painéis"/);
   assert.match(embeddedApp, /liveMinerHomeMetric\(\)/);
-  assert.match(embeddedWorker, /static-v0\.5\.20-house-photo-controls/);
+  assert.match(embeddedWorker, /static-v0\.5\.21-house-photo-controls/);
   assert.match(embeddedHtml, /data-owner-tab="gateway"/);
   assert.doesNotMatch(embeddedHtml, /data-owner-panel="console"/);
-  assert.match(embeddedHtml, /Atualiza automaticamente enquanto esta área estiver aberta/);
+  assert.match(embeddedHtml, /Carrega em .Atualizar consola. para consultar os dados mais recentes/);
   assert.match(embeddedHtml, /id="gateway-console-output"/);
   assert.match(embeddedHtml, /gateway-console-services/);
   assert.match(embeddedHtml, /gateway-console-resources/);
@@ -105,15 +105,15 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   assert.match(embeddedApp, /gatewayConsoleServiceLabels/);
   assert.match(embeddedApp, /gatewayConsoleBytes/);
   assert.match(embeddedAuth, /\/api\/v1\/system\/console/);
-  assert.match(embeddedApp, /activeOwnerTab === "gateway"/);
-  assert.match(embeddedApp, /}, 10_000\)/);
+  assert.match(embeddedApp, /activeOwnerTab = name/);
+  assert.doesNotMatch(embeddedApp, /refreshGatewayConsole\(\{ silent: true \}\)/);
   assert.doesNotMatch(embeddedHtml, /gateway-console-update-check/);
   assert.doesNotMatch(embeddedHtml, /gateway-console-command/);
   assert.match(embeddedWorker, /password-device-login/);
-  assert.match(embeddedHtml, /OWNER PWA 0\.5\.20/);
+  assert.match(embeddedHtml, /OWNER PWA 0\.5\.21/);
   assert.match(embeddedHtml, /gateway-password-login-form/);
-  assert.match(control, /^Version: 0\.6\.57$/m);
-  assert.match(installer, /solarminer-gateway_0\.6\.57_amd64.deb/);
+  assert.match(control, /^Version: 0\.6\.58$/m);
+  assert.match(installer, /solarminer-gateway_0\.6\.58_amd64.deb/);
   assert.match(embeddedApp, /RECOVERY_BLOCKED/);
   assert.match(embeddedApp, /rollbackFailure/);
   assert.match(installer, /install-tailscale\.sh/);
@@ -122,4 +122,14 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   assert.equal(embeddedWorker, serviceWorker);
   assert.equal(embeddedCss, read("styles.css"));
   assert.equal(embeddedManifest, manifest);
+});
+
+test("Tuya devices expose a local editor with channel names and Gateway-only persistence", () => {
+  assert.match(app, /data-edit-tuya-device/);
+  assert.match(app, /function openTuyaDeviceEditor/);
+  assert.match(app, /data-tuya-capability-label/);
+  assert.match(app, /name_source:"local"/);
+  assert.match(app, /saveGatewayHardwareIntegrationConfig\(\{tuya:\{devices:next\}\}\)/);
+  assert.match(app, /Dispositivo e canal Tuya/);
+  assert.match(app, /device\.channel_labels\?\./);
 });

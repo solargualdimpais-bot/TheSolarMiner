@@ -9,8 +9,72 @@ let automationEditingId = "";
 const state = { page: "inicio", mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], energyEngine: null, siteProfile: null, tuyaDevices: [], tuyaReadings: [], lastUpdated: null, lastMeasurementAt: null, refreshing: false, demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [] };
 let houseView={tab:"overview",floorId:null,roomId:null};
 let lastTuyaReadAt=0;
+let operationDialogResolve=null;
 const $ = (selector) => document.querySelector(selector);
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+function renderOperationDialog({title,message,actions=[],locked=false,progress=false,link=null}={}){
+  const dialog=$("#operation-dialog"),messageNode=$("#operation-dialog-message"),linkNode=$("#operation-dialog-link"),actionsNode=$("#operation-dialog-actions");
+  if(!dialog||!messageNode||!actionsNode)return;
+  $("#operation-dialog-title").textContent=title||"SolarMiner";
+  messageNode.textContent=message||"";
+  messageNode.dataset.progress=String(Boolean(progress));
+  dialog.dataset.locked=String(Boolean(locked));
+  linkNode.replaceChildren();
+  linkNode.hidden=!link;
+  if(link){const anchor=document.createElement("a");anchor.className="button secondary";anchor.href=link.href;anchor.target="_blank";anchor.rel="noopener noreferrer";anchor.textContent=link.label||"Abrir ligação";linkNode.append(anchor);}
+  actionsNode.replaceChildren();
+  for(const action of actions){
+    const button=document.createElement("button");button.type="button";button.className=`button ${action.primary?"primary":"secondary"}`;button.textContent=action.label;
+    button.addEventListener("click",()=>dialog.close(action.value||"ok"));actionsNode.append(button);
+  }
+  dialog.oncancel=event=>{if(dialog.dataset.locked==="true")event.preventDefault();};
+  if(!dialog.open)dialog.showModal();
+}
+function showOperationDialog(options={}){
+  const dialog=$("#operation-dialog");
+  if(!dialog)return Promise.resolve("ok");
+  return new Promise(resolve=>{
+    operationDialogResolve=resolve;
+    const onClose=()=>{dialog.removeEventListener("close",onClose);const result=dialog.returnValue||"dismiss";operationDialogResolve=null;resolve(result);};
+    dialog.addEventListener("close",onClose);
+    renderOperationDialog(options);
+  });
+}
+function updateOperationDialog(options={}){renderOperationDialog(options);}
+async function showOperationResult(title,message){return showOperationDialog({title,message,actions:[{label:"OK",value:"ok",primary:true}]});}
+const terminalUpdateStates=new Set(["COMMITTED","FAILED","ROLLED_BACK","RECOVERY_BLOCKED","CURRENT"]);
+function updateStatusMessage(result){
+  const status=String(result?.status||"UNKNOWN").toUpperCase();
+  const version=result?.installed_version||result?.target_version||"";
+  if(status==="COMMITTED")return `Atualização concluída${version?` para a versão ${version}`:""}.`;
+  if(status==="ROLLED_BACK")return `A atualização falhou e o Gateway recuperou a versão anterior${version?` (${version})`:""}.`;
+  if(status==="FAILED"||status==="RECOVERY_BLOCKED")return `A atualização não foi concluída${version?`. Versão de destino: ${version}`:"."} Consulta a Consola para ver o diagnóstico.`;
+  if(status==="CURRENT")return `O Gateway já está atualizado${version?` com a versão ${version}`:""}.`;
+  return `A atualização continua em curso${version?` para a versão ${version}`:""}.`;
+}
+async function watchGatewayUpdate({initial=null,timeoutMs=12*60*1000}={}){
+  let result=initial,started=Date.now();
+  updateOperationDialog({title:"Atualização do Gateway",message:updateStatusMessage(result||{}),locked:true,progress:true});
+  while(Date.now()-started<timeoutMs){
+    if(result&&terminalUpdateStates.has(String(result.status||"").toUpperCase()))return result;
+    await new Promise(resolve=>setTimeout(resolve,2500));
+    try{result=await readGatewayUpdateStatus();updateOperationDialog({title:"Atualização do Gateway",message:updateStatusMessage(result),locked:true,progress:true});}
+    catch{updateOperationDialog({title:"Atualização do Gateway",message:"O Gateway está a reiniciar. A aguardar que volte a responder…",locked:true,progress:true});}
+  }
+  return result;
+}
+async function applyVerifiedGatewayUpdate(update){
+  const button=$("#gateway-update-apply");if(button)button.disabled=true;
+  const progress=showOperationDialog({title:"Atualização do Gateway",message:`A iniciar a atualização para a versão ${update.available_version}…`,locked:true,progress:true});
+  try{
+    const accepted=await applyGatewayUpdate(update.available_version);verifiedGatewayUpdate=null;
+    const final=await watchGatewayUpdate({initial:accepted});
+    const committed=String(final?.status||"").toUpperCase()==="COMMITTED";
+    renderOperationDialog({title:committed?"Atualização concluída":"Atualização terminada",message:updateStatusMessage(final),actions:[{label:"OK",value:"ok",primary:true}]});
+  }catch(error){renderOperationDialog({title:"Falha na atualização",message:error.message||"O Gateway não conseguiu aplicar a atualização.",actions:[{label:"OK",value:"ok",primary:true}]});}
+  finally{if(button)button.disabled=false;}
+  await progress;
+}
 const userFacingSaveError = (error) => { const message=String(error?.message||""); if(message.includes("site_location_not_found")) return "O Gateway não encontrou essa cidade. Escreve cidade e país, por exemplo, Coimbra, Portugal."; if(message.includes("site_location_lookup_failed")) return "O Gateway não conseguiu consultar o serviço de localização. Verifica a ligação à Internet e tenta novamente."; return message||"Não foi possível guardar as alterações."; };
 const pageLabel = (id) => id === "inicio" ? "Visão geral" : id === "owner" ? "Owner" : (CATEGORIES.find(c => c.id === id)?.label || getWorkspacePageLabel(id) || "Mais áreas");
 const timeLabel = (value) => value ? new Intl.DateTimeFormat("pt-PT", { dateStyle: "short", timeStyle: "medium" }).format(new Date(value)) : "Sem atualização";
@@ -241,10 +305,13 @@ function renderLiveEnergyEngine() {
   ${ownerConfig?`<section class="panel feature-panel"><div class="panel-header"><div><p class="eyebrow">CONFIGURAÇÃO OWNER · GUARDADA NO GATEWAY</p><h2>Capacidade e reserva da bateria</h2></div></div><p>O Gateway inicia uma âncora de tensão pelo pico dos últimos 30 dias, guarda-a no Gateway e integra cada nova amostra de carga/descarga uma só vez; não usa o SOC do inversor no cálculo operacional. Define a capacidade online e o SOC mínimo de corte.</p><div class="ws-config-grid"><label class="feature-field">Capacidade total (kWh)<input id="engine-battery-capacity" type="number" min="0" max="10000" step="0.1" value="${esc(data.configuration?.battery_capacity_kwh ?? "")}" placeholder="Ex.: 15"></label><label class="feature-field">SOC mínimo de reserva (%)<input id="engine-minimum-soc" type="number" min="0" max="99.9" step="1" value="${esc(data.configuration?.minimum_soc_percent ?? 20)}"></label><label class="feature-field">SOC máximo de carga (%)<input id="engine-maximum-soc" type="number" min="0.1" max="100" step="1" value="${esc(data.configuration?.maximum_soc_percent ?? 100)}"></label></div><div class="ws-actions"><button class="button primary" id="engine-save-config">Guardar bateria</button><span id="engine-config-status" class="ws-inline-note"></span></div></section><section class="panel feature-panel"><div class="panel-header"><div><p class="eyebrow">CARGAS FLEXÍVEIS · ATÉ 64</p><h2>Mineradora, AQS e aquecimento</h2></div><span class="source-tag">OWNER</span></div><p>Configura várias baterias e cargas sem alterar código: mineradora, cada AQS (smart ou por disjuntor Tuya), carregador EV, soalho radiante/toalheiro e cargas genéricas. Guarda as listas como JSON. Os códigos e IDs Tuya têm de corresponder a dispositivos configurados acima.</p><label class="feature-field">Bancos de bateria<input id="engine-banks-json" type="text" value="${esc(JSON.stringify(data.configuration?.battery_banks || []))}" aria-describedby="engine-json-help"></label><label class="feature-field">Cargas flexíveis<textarea id="engine-loads-json" rows="12" spellcheck="false">${esc(JSON.stringify(data.configuration?.loads || [], null, 2))}</textarea></label><p id="engine-json-help" class="field-note">Cada banco usa id, name, capacity_kwh, minimum_soc_percent, maximum_soc_percent e active (true online; false offline). Bancos em paralelo partilham tensão; por exemplo, três bancos de 15 kWh online somam 45 kWh. Cada carga usa id, name, kind, control_type, rated_power_w, priority, enabled e automatic. A lista aceita 64 cargas e 8 bancos.</p><fieldset><legend>Comissionamento e automatização</legend><label><input id="engine-deye-map-verified" type="checkbox" ${data.configuration?.automation?.deye_map_verified ? "checked" : ""}> Confirmo que validei no local o mapa Deye, os sinais de carga/descarga e o sentido dos CTs.</label><label><input id="engine-commissioned" type="checkbox" ${data.configuration?.automation?.commissioned ? "checked" : ""}> Confirmo que configurei limites, potência nominal e prioridades das cargas.</label><label><input id="engine-automation-enabled" type="checkbox" ${data.configuration?.automation?.enabled ? "checked" : ""}> Permitir despacho automático do Gateway.</label><label class="feature-field">Margem de excedente (W)<input id="engine-surplus-margin" type="number" min="0" max="10000" step="50" value="${esc(data.configuration?.automation?.surplus_margin_w ?? 250)}"></label><p class="field-note">Até à validação física, o despacho permanece bloqueado. As decisões usam telemetria Deye a cada 30 s e o ciclo de decisão tem mínimo de 5 min.</p></fieldset><div class="ws-actions"><button class="button primary" id="engine-save-equipment-config">Guardar cargas e automatização</button><span id="engine-equipment-config-status" class="ws-inline-note"></span></div></section>`:""}`;
 }
 function renderLoadBuilder() {
-  const devices = state.tuyaDevices.filter(device => device.switch_code);
+  const devices = (state.tuyaDevices||[]).flatMap(device=>{
+    const switches=(device.functions||[]).filter(item=>["bool","boolean"].includes(String(item.type||"").toLowerCase()));
+    return switches.length?switches.map((item,index)=>({device,code:item.code,label:device.capability_labels?.[item.code]||device.channel_labels?.[item.code]||item.name||`Canal ${index+1}`})):(device.switch_code?[{device,code:device.switch_code,label:"Interruptor"}]:[]);
+  });
   const loads = state.energyEngine?.configuration?.loads || [];
   const relays = loads.filter(load => load.enabled && load.automatic && ["tuya_smart", "tuya_breaker"].includes(load.control_type));
-  return `<section class="panel"><h3>Adicionar equipamento</h3><div class="ws-config-grid"><label class="feature-field">Nome<input id="engine-load-name" maxlength="120" placeholder="Ex.: AQS 2"></label><label class="feature-field">Tipo<select id="engine-load-kind"><option value="water_heater">AQS</option><option value="underfloor_heating">Soalho radiante / toalheiro</option><option value="miner">Mineradora</option><option value="ev_charger">Carregador EV</option><option value="generic">Outra carga</option></select></label><label class="feature-field">Comando<select id="engine-load-control"><option value="tuya_smart">Interruptor smart Tuya</option><option value="tuya_breaker">Disjuntor Tuya</option><option value="antminer_braiins">Braiins OS</option><option value="manual">Manual</option><option value="tesla_fleet">Tesla Fleet (leitura apenas)</option></select></label><label class="feature-field">Potência nominal (W)<input id="engine-load-rated" type="number" min="1" max="100000" step="1" value="1500"></label><label class="feature-field">Potência mínima (W, mineradora)<input id="engine-load-minimum" type="number" min="1" max="2900" step="1" value="800"></label><label class="feature-field">Potência máxima (W, mineradora)<input id="engine-load-maximum" type="number" min="1" max="2900" step="1" value="2500"></label><label class="feature-field">Prioridade (menor número primeiro)<input id="engine-load-priority" type="number" min="1" max="100" value="10"></label><label class="feature-field">Dispositivo Tuya<select id="engine-load-tuya-device"><option value="">${devices.length ? "Escolhe dispositivo" : "Configura interruptores Tuya no Owner primeiro"}</option>${devices.map(device=>`<option value="${esc(device.device_id)}" data-code="${esc(device.switch_code)}">${esc(device.name)} · ${esc(device.device_id)}</option>`).join("")}</select></label><label class="feature-field">Relé de alimentação mineradora<select id="engine-load-miner-relay"><option value="">Escolhe uma carga Tuya automática</option>${relays.map(load=>`<option value="${esc(load.id)}">${esc(load.name)} · ${esc(load.id)}</option>`).join("")}</select></label><label class="feature-field"><input id="engine-load-automatic" type="checkbox"> Elegível para automatização</label></div><div class="ws-actions"><button class="button secondary" id="engine-add-load" type="button">Adicionar à lista</button><span class="ws-inline-note">O equipamento só é guardado quando carregares em “Guardar cargas e automatização”.</span></div></section>`;
+  return `<section class="panel"><h3>Adicionar equipamento</h3><div class="ws-config-grid"><label class="feature-field">Nome<input id="engine-load-name" maxlength="120" placeholder="Ex.: AQS 2"></label><label class="feature-field">Tipo<select id="engine-load-kind"><option value="water_heater">AQS</option><option value="underfloor_heating">Soalho radiante / toalheiro</option><option value="miner">Mineradora</option><option value="ev_charger">Carregador EV</option><option value="generic">Outra carga</option></select></label><label class="feature-field">Comando<select id="engine-load-control"><option value="tuya_smart">Interruptor smart Tuya</option><option value="tuya_breaker">Disjuntor Tuya</option><option value="antminer_braiins">Braiins OS</option><option value="manual">Manual</option><option value="tesla_fleet">Tesla Fleet (leitura apenas)</option></select></label><label class="feature-field">Potência nominal (W)<input id="engine-load-rated" type="number" min="1" max="100000" step="1" value="1500"></label><label class="feature-field">Potência mínima (W, mineradora)<input id="engine-load-minimum" type="number" min="1" max="2900" step="1" value="800"></label><label class="feature-field">Potência máxima (W, mineradora)<input id="engine-load-maximum" type="number" min="1" max="2900" step="1" value="2500"></label><label class="feature-field">Prioridade (menor número primeiro)<input id="engine-load-priority" type="number" min="1" max="100" value="10"></label><label class="feature-field">Dispositivo e canal Tuya<select id="engine-load-tuya-device"><option value="">${devices.length ? "Escolhe dispositivo e canal" : "Sincroniza os interruptores Tuya no Owner primeiro"}</option>${devices.map(item=>`<option value="${esc(item.device.device_id)}" data-code="${esc(item.code)}">${esc(item.device.name)} · ${esc(item.label)} · ${esc(item.code)}</option>`).join("")}</select></label><label class="feature-field">Relé de alimentação mineradora<select id="engine-load-miner-relay"><option value="">Escolhe uma carga Tuya automática</option>${relays.map(load=>`<option value="${esc(load.id)}">${esc(load.name)} · ${esc(load.id)}</option>`).join("")}</select></label><label class="feature-field"><input id="engine-load-automatic" type="checkbox"> Elegível para automatização</label></div><div class="ws-actions"><button class="button secondary" id="engine-add-load" type="button">Adicionar à lista</button><span class="ws-inline-note">O equipamento só é guardado quando carregares em “Guardar cargas e automatização”.</span></div></section>`;
 }
 function card(item) {
   const category = CATEGORIES.find(c => c.id === item.category) || { icon: "•", label: item.category };
@@ -584,7 +651,9 @@ function renderGatewayUtilityPage(page){
   if(page==="profile")return `<div class="page-heading"><div><p class="eyebrow">CONTA DO GATEWAY</p><h1>Perfil</h1><p>Identidade e permissões confirmadas pelo Gateway nesta sessão.</p></div></div><section class="panel"><div class="device-detail-grid"><div class="detail-item"><small>Utilizador</small><strong>${esc(user.username||"—")}</strong></div><div class="detail-item"><small>Papel</small><strong>${esc(user.role||"—")}</strong></div><div class="detail-item"><small>Sessão</small><strong>${sessionInfo().authenticated?"Autenticada":"Sem sessão"}</strong></div><div class="detail-item"><small>Gateway</small><strong>${esc(state.mode==="LIVE"?"Ligado":"Indisponível")}</strong></div></div><p class="field-note">Permissões, utilizadores e dispositivos autorizados são geridos no Gateway. Preferências visuais deste browser não alteram essas permissões.</p><button class="button secondary" id="profile-open-gateway" type="button">Gerir ligação</button></section>`;
   const cards=items.filter(item=>page!=="devices"||! ["inversores","baterias"].includes(item.category)).map(item=>`<article class="panel detail-panel"><div class="panel-header"><div><p class="eyebrow">${esc(item.category||"EQUIPAMENTO")}</p><h2>${esc(item.name)}</h2></div><span class="source-tag">${esc(item.connection_state||item.status||"UNKNOWN")}</span></div><p>${esc([item.manufacturer,item.model,item.protocol].filter(Boolean).join(" · ")||"Sem detalhes de fabricante/modelo")}</p>${item.readings?.length?`<div class="device-detail-grid telemetry-grid">${item.readings.map(reading=>`<div class="detail-item"><small>${esc(reading.evidence?.label||reading.field)}</small><strong>${esc(formatReading(reading).value)} ${esc(reading.unit||"")}</strong><small>${esc(reading.trust||"UNKNOWN")}</small></div>`).join("")}</div>`:`<div class="empty-state">Sem leituras registadas.</div>`}</article>`).join("");
   const controlledInventory=page==="devices"?"<p>Equipamentos nesta lista podem ser controlados pelo Gateway. O Deye, as baterias e outros equipamentos de leitura ficam nas áreas de Energia.</p>":"<p>Equipamentos recebidos da base de dados do Gateway, agrupados nesta vista.</p>";
-  return `<div class="page-heading"><div><p class="eyebrow">${page==="devices"?"CONTROLO · GATEWAY":"INVENTÁRIO · GATEWAY"}</p><h1>${page==="casa"?"Casa":"Dispositivos"}</h1>${controlledInventory}</div>${page==="energia"?"":`<button class="button secondary" id="gateway-area-refresh">Atualizar ↻</button>`}</div>${page==="devices"&&sessionInfo().user?.role==="owner"?`<section class="panel"><div class="panel-header"><div><p class="eyebrow">CONFIGURAÇÃO</p><h2>Adicionar ou configurar dispositivos</h2></div><button class="button secondary" data-page="owner">Abrir gestão Owner</button></div><p class="field-note">As integrações e credenciais de equipamentos são configuradas no Gateway pelo Owner.</p></section>`:""}<div class="equipment-grid">${cards||`<div class="empty-state">Ainda não existem dispositivos controláveis registados no Gateway. Os inversores e baterias, que só fornecem leituras, estão disponíveis em Energia.</div>`}</div>`;
+  const tuyaCards=page==="devices"?(state.tuyaDevices||[]).map(device=>{const channels=(device.functions||[]).filter(item=>["bool","boolean"].includes(String(item.type||"").toLowerCase()));const identity=[device.category,device.product_name].filter(Boolean).join(" · ");const glyph=tuyaDeviceGlyph(device);return `<button type="button" class="panel detail-panel tuya-inventory-card" data-edit-tuya-device="${esc(device.device_id)}"><div class="panel-header"><div class="tuya-device-glyph" aria-hidden="true">${glyph}</div><div><p class="eyebrow">TUYA / MOES${identity?` · ${esc(identity)}`:""}</p><h2>${esc(device.name)}</h2></div><span class="source-tag">${device.online===true?"ONLINE":device.online===false?"OFFLINE":"TUYA"}</span></div><p>${channels.length?`${channels.length} canal${channels.length===1?"":"is"} · `:""}${esc(device.room||"Sem divisão atribuída")}${device.floor?` · ${esc(device.floor)}`:""}</p><span class="text-link">Ver características e editar ↗</span></button>`;}).join(""):"";
+  const emptyInventory=!cards&&!tuyaCards?`<div class="empty-state">Ainda não existem dispositivos registados no Gateway. Os inversores e baterias ficam nas áreas de Energia.</div>`:"";
+  return `<div class="page-heading"><div><p class="eyebrow">${page==="devices"?"CONTROLO · GATEWAY":"INVENTÁRIO · GATEWAY"}</p><h1>${page==="casa"?"Casa":"Dispositivos"}</h1>${controlledInventory}</div>${page==="energia"?"":`<button class="button secondary" id="gateway-area-refresh">Atualizar ↻</button>`}</div>${page==="devices"&&sessionInfo().user?.role==="owner"?`<section class="panel"><div class="panel-header"><div><p class="eyebrow">CONFIGURAÇÃO</p><h2>Dispositivos sincronizados</h2></div><button class="button secondary" data-page="owner">Abrir gestão Owner</button></div><p class="field-note">Toca num dispositivo para editar os nomes dos canais e atribuir uma divisão. Estas alterações ficam no Gateway e não mudam nomes na conta Tuya.</p></section>`:""}<div class="equipment-grid">${cards}${tuyaCards}${emptyInventory}</div>`;
 }
 function renderGatewayHousePage(){
   const profile=state.siteProfile||{floors:[]}, owner=sessionInfo().authenticated&&sessionInfo().user?.role==="owner";
@@ -1108,9 +1177,6 @@ function renderGatewayConsoleLogs({ preserveScroll = false } = {}) {
 $("#gateway-console-service-filter")?.addEventListener("change", () => renderGatewayConsoleLogs());
 $("#gateway-console-level-filter")?.addEventListener("change", () => renderGatewayConsoleLogs());
 $("#gateway-console-refresh")?.addEventListener("click", refreshGatewayConsole);
-setInterval(() => {
-  if (activeOwnerTab === "gateway" && !$("#gateway-owner-page")?.hidden) refreshGatewayConsole({ silent: true });
-}, 10_000);
 let verifiedGatewayUpdate = null;
 let inviteQrObjectUrl = null;
 let ownerRecoveryFingerprint = "";
@@ -1171,6 +1237,7 @@ function updateSessionUi() {
 async function refreshHardwareIntegrationConfig() {
   const config = await readGatewayHardwareIntegrationConfig();
   const deye = config.deye || {}, miner = config.antminer || {}, tuya = config.tuya || {};
+  state.tuyaDevices=tuya.devices||[];
   $("#hardware-deye-host").value = deye.host || "";
   $("#hardware-deye-port").value = deye.port || 502;
   $("#hardware-deye-unit").value = deye.unit_id ?? 1;
@@ -1191,10 +1258,32 @@ async function refreshHardwareIntegrationConfig() {
   renderTuyaDeviceCards(tuya.devices || []);
   return config;
 }
+function tuyaDeviceGlyph(device) {
+  const identity = `${device.category || ""} ${device.product_name || ""}`.toLowerCase();
+  if (/breaker|circuit|disjuntor|circuito/.test(identity)) return "▤";
+  if (/switch|relay|interruptor|rele/.test(identity) || (device.functions || []).filter(item => ["bool", "boolean"].includes(String(item.type || "").toLowerCase())).length > 1) return "⏻";
+  if (/sensor|temperature|humidity|motion/.test(identity)) return "◉";
+  return "⌁";
+}
 function renderTuyaDeviceCards(devices) {
   const list = $("#tuya-device-list");
   if (!list) return;
-  list.innerHTML = devices.length ? devices.map(device => {const functions=Array.isArray(device.functions)?device.functions:[];const statuses=Array.isArray(device.status_spec)?device.status_spec:[];const schema=[...functions.map(item=>`ordem ${item.code} (${item.type})`),...statuses.map(item=>`leitura ${item.code} (${item.type})`)].slice(0,12).join(" · ");return `<article class="tuya-device-card" data-tuya-device="${esc(device.device_id)}"><h4>${esc(device.name)}</h4><p class="field-note">${esc(device.device_id)}${device.category?` · ${esc(device.category)}`:""}${device.online===true?" · online":device.online===false?" · offline":""}${device.local_key_available?" · chave local guardada no Gateway":" · chave local indisponível"}</p>${device.product_name?`<p class="field-note">${esc(device.product_name)}</p>`:""}${schema?`<p class="field-note">${esc(schema)}</p>`:""}<div class="dialog-actions"><button type="button" class="button secondary" data-tuya-read="${esc(device.device_id)}">Ler este dispositivo</button>${device.switch_code ? `<button type="button" class="button secondary" data-tuya-switch="on" data-device-id="${esc(device.device_id)}">Ligar</button><button type="button" class="button secondary" data-tuya-switch="off" data-device-id="${esc(device.device_id)}">Desligar</button>` : ""}</div><div class="connection-result" data-tuya-status="${esc(device.device_id)}" role="status" aria-live="polite">Sem leitura recente.</div><pre class="integration-result" data-tuya-result="${esc(device.device_id)}" hidden></pre></article>`;}).join("") : `<p class="field-note">Ainda não há dispositivos Tuya configurados.</p>`;
+  list.innerHTML = devices.length ? devices.map(device => {const functions=Array.isArray(device.functions)?device.functions:[];const statuses=Array.isArray(device.status_spec)?device.status_spec:[];const schema=[...functions.map(item=>`ordem ${item.code} (${item.type})`),...statuses.map(item=>`leitura ${item.code} (${item.type})`)].slice(0,12).join(" · ");return `<article class="tuya-device-card" data-tuya-device="${esc(device.device_id)}"><h4><span class="tuya-device-glyph" aria-hidden="true">${tuyaDeviceGlyph(device)}</span> ${esc(device.name)}</h4><p class="field-note">${esc(device.device_id)}${device.category?` · ${esc(device.category)}`:""}${device.online===true?" · online":device.online===false?" · offline":""}${device.local_key_available?" · chave local guardada no Gateway":" · chave local indisponível"}</p>${device.product_name?`<p class="field-note">${esc(device.product_name)}</p>`:""}${schema?`<p class="field-note">${esc(schema)}</p>`:""}<div class="dialog-actions"><button type="button" class="button secondary" data-edit-tuya-device="${esc(device.device_id)}">Características e editar</button><button type="button" class="button secondary" data-tuya-read="${esc(device.device_id)}">Ler este dispositivo</button>${device.switch_code ? `<button type="button" class="button secondary" data-tuya-switch="on" data-device-id="${esc(device.device_id)}">Ligar</button><button type="button" class="button secondary" data-tuya-switch="off" data-device-id="${esc(device.device_id)}">Desligar</button>` : ""}</div><div class="connection-result" data-tuya-status="${esc(device.device_id)}" role="status" aria-live="polite">Sem leitura recente.</div><pre class="integration-result" data-tuya-result="${esc(device.device_id)}" hidden></pre></article>`;}).join("") : `<p class="field-note">Ainda não há dispositivos Tuya configurados.</p>`;
+}
+function openTuyaDeviceEditor(device){
+  if(sessionInfo().user?.role!=="owner")return;
+  const channels=(device.functions||[]).filter(item=>["bool","boolean"].includes(String(item.type||"").toLowerCase()));
+  const allFunctions=Array.isArray(device.functions)?device.functions:[],statuses=Array.isArray(device.status_spec)?device.status_spec:[];
+  const glyph=tuyaDeviceGlyph(device);
+  const localLabel= item=>device.capability_labels?.[item.code]||device.channel_labels?.[item.code]||item.name||item.code;
+  const channelRows=channels.map((item,index)=>`<label class="tuya-channel-edit"><span><strong>${esc(localLabel(item)||`Canal ${index+1}`)}</strong><small>${esc(item.code)} · ${esc(item.type||"interruptor")}</small></span><input type="text" maxlength="80" data-tuya-capability-label="${esc(item.code)}" value="${esc(localLabel(item)||`Canal ${index+1}`)}" aria-label="Nome do canal ${esc(index+1)}"></label>`).join("");
+  const capabilityRows=allFunctions.filter(item=>!channels.includes(item)).map(item=>`<label class="tuya-capability-row"><span><strong>${esc(item.name||item.code||"Função")}</strong><small>${esc(item.code||"")} · ${esc(item.type||"tipo desconhecido")} · ${esc(typeof item.values==="string"?item.values:JSON.stringify(item.values??{}))}</small></span><input type="text" maxlength="80" data-tuya-capability-label="${esc(item.code)}" value="${esc(localLabel(item))}" aria-label="Nome local da característica ${esc(item.name||item.code||"")}"></label>`).join("");
+  const statusRows=statuses.map(item=>`<label class="tuya-capability-row"><span><strong>${esc(item.name||item.code||"Leitura")}</strong><small>${esc(item.code||"")} · ${esc(item.type||"tipo desconhecido")}</small></span><input type="text" maxlength="80" data-tuya-capability-label="${esc(item.code)}" value="${esc(localLabel(item))}" aria-label="Nome local da leitura ${esc(item.name||item.code||"")}"></label>`).join("");
+  const dialog=document.createElement("dialog");dialog.className="settings-dialog tuya-device-editor";
+  dialog.innerHTML=`<form method="dialog" class="dialog-header"><div><p class="eyebrow">${glyph} · ${esc(device.category||device.product_name||"TUYA / MOES")}</p><h2>${esc(device.name)}</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></form><form class="dialog-body" id="tuya-device-edit-form"><p class="field-note">Os dados abaixo vieram da sincronização. Podes editar os nomes locais do dispositivo, dos canais e das características. Guardar altera apenas a base do Gateway; não altera definições na conta Tuya.</p><div class="device-detail-grid"><div class="detail-item"><small>Tipo / categoria</small><strong>${esc(device.category||"Não identificado")}</strong></div><div class="detail-item"><small>Número de canais digitais</small><strong>${channels.length}</strong></div><div class="detail-item"><small>Estado cloud</small><strong>${device.online===true?"Online":device.online===false?"Offline":"Desconhecido"}</strong></div><div class="detail-item"><small>Chave local</small><strong>${device.local_key_available?"Disponível no Gateway":"Não disponível"}</strong></div></div><label>Nome do dispositivo<input name="name" maxlength="120" required value="${esc(device.name)}"></label><div class="ws-config-grid"><label>Piso<input name="floor" maxlength="120" value="${esc(device.floor||"")}" placeholder="Ex.: Rés-do-chão"></label><label>Divisão<input name="room" maxlength="120" value="${esc(device.room||"")}" placeholder="Ex.: Luzes canteiros frente"></label></div><h3>Canais disponíveis</h3>${channels.length?`<p class="field-note">Define um nome local por saída. Os automatismos podem escolher o canal exato pelo código Tuya.</p><div class="tuya-channel-list">${channelRows}</div>`:`<p class="field-note">A Tuya não indicou canais digitais para este equipamento.</p>`}<h3>Outras funções recebidas</h3><div class="tuya-capability-list">${capabilityRows||`<p class="field-note">Sem outras funções no esquema recebido.</p>`}</div><h3>Leituras recebidas</h3><div class="tuya-capability-list">${statusRows||`<p class="field-note">Sem leituras no esquema recebido.</p>`}</div><p class="connection-result" id="tuya-device-edit-status" role="status" aria-live="polite"></p><div class="dialog-actions"><button type="button" class="button secondary" data-tuya-editor-cancel>Cancelar</button><button type="submit" class="button primary">Guardar no Gateway</button></div></form>`;
+  document.body.append(dialog);dialog.addEventListener("close",()=>dialog.remove());dialog.querySelector("[data-tuya-editor-cancel]").addEventListener("click",()=>dialog.close("cancel"));
+  dialog.querySelector("#tuya-device-edit-form").addEventListener("submit",async event=>{event.preventDefault();const form=event.currentTarget,save=form.querySelector('[type="submit"]'),status=form.querySelector("#tuya-device-edit-status");save.disabled=true;status.textContent="A guardar alterações locais no Gateway…";try{const config=await readGatewayHardwareIntegrationConfig(),labels={};for(const input of form.querySelectorAll("[data-tuya-capability-label]"))labels[input.dataset.tuyaCapabilityLabel]=input.value.trim();const next=(config.tuya?.devices||[]).map(item=>item.device_id===device.device_id?{...item,name:form.elements.name.value.trim(),name_source:"local",room:form.elements.room.value.trim(),floor:form.elements.floor.value.trim(),channel_labels:Object.fromEntries(channels.map(channel=>[channel.code,labels[channel.code]||""])),capability_labels:labels}:item);await saveGatewayHardwareIntegrationConfig({tuya:{devices:next}});await refreshHardwareIntegrationConfig();dialog.close("saved");render();}catch(error){status.textContent=`Não foi possível guardar no Gateway: ${error.message}`;save.disabled=false;}});
+  dialog.showModal();
 }
 function setProviderResult(provider, result) {
   const payload = result[provider];
@@ -1254,16 +1343,24 @@ $("#tuya-save").addEventListener("click", event => {
 $("#tuya-sync").addEventListener("click", async event => {
   const status = $("#tuya-status"), button = event.currentTarget;
   if (!ownerCanManageHardware("#tuya-status")) return;
+  const controller=new AbortController();
+  const dialogClosed=showOperationDialog({title:"Sincronização Tuya",message:"A sincronizar dispositivos e capacidades da Tuya Cloud. Podes cancelar; o Gateway interrompe a sincronização entre pedidos.",progress:true,actions:[{label:"Cancelar",value:"cancel"}]});
+  dialogClosed.then(result=>{if(result==="cancel"||result==="dismiss")controller.abort();});
   button.disabled = true;
-  status.textContent = "A sincronizar dispositivos e capacidades da Tuya Cloud…";
+  status.textContent = "";
   try {
     const current = await readGatewayHardwareIntegrationConfig();
     await saveGatewayHardwareIntegrationConfig({tuya:{region:$("#hardware-tuya-region").value,client_id:$("#hardware-tuya-client-id").value.trim()||current.tuya?.client_id,client_secret:$("#hardware-tuya-client-secret").value||undefined,uid:$("#hardware-tuya-uid").value.trim()||current.tuya?.uid,devices:parseTuyaDevices().length?parseTuyaDevices():current.tuya?.devices||[]}});
     $("#hardware-tuya-client-secret").value="";
-    const result=await syncGatewayTuyaDevices();
-    status.textContent=`Sincronização concluída: ${result.device_count} dispositivos; ${result.local_keys_available} chaves locais guardadas no Gateway; ${result.schema_failures} consultas de capacidades falharam.`;
+    if(controller.signal.aborted)throw new DOMException("Sincronização cancelada.","AbortError");
+    const result=await syncGatewayTuyaDevices({signal:controller.signal});
+    updateOperationDialog({title:"Sincronização concluída",message:`Foram sincronizados ${result.device_count} dispositivos. ${result.schema_failures ? `${result.schema_failures} consultas de capacidades não responderam.` : "As capacidades foram consultadas."}`,actions:[{label:"OK",value:"ok",primary:true}]});
+    await dialogClosed;
     await refreshHardwareIntegrationConfig();
-  } catch(error) { status.textContent=`Sincronização Tuya falhou: ${error.message}`; }
+  } catch(error) {
+    if(error?.name==="AbortError")await showOperationResult("Sincronização cancelada","O Gateway interrompeu a sincronização. A configuração da conta ficou guardada.");
+    else {updateOperationDialog({title:"Sincronização Tuya falhou",message:error.message||"O Gateway não conseguiu sincronizar os dispositivos.",actions:[{label:"OK",value:"ok",primary:true}]});await dialogClosed;}
+  }
   finally { button.disabled=false; }
 });
 async function readHardwareProvider(provider, deviceId = undefined, statusSelector = `#${provider}-status`, resultSelector = `#${provider}-result`) {
@@ -1284,7 +1381,8 @@ async function readHardwareProvider(provider, deviceId = undefined, statusSelect
 $("#deye-read").addEventListener("click", () => readHardwareProvider("deye"));
 $("#antminer-read").addEventListener("click", () => readHardwareProvider("antminer"));
 $("#tuya-device-list").addEventListener("click", async event => {
-  const read = event.target.closest("[data-tuya-read]"), toggle = event.target.closest("[data-tuya-switch]");
+  const edit = event.target.closest("[data-edit-tuya-device]"), read = event.target.closest("[data-tuya-read]"), toggle = event.target.closest("[data-tuya-switch]");
+  if (edit) { const device=state.tuyaDevices.find(item=>item.device_id===edit.dataset.editTuyaDevice); if(device)openTuyaDeviceEditor(device); return; }
   if (read) {
     const id = read.dataset.tuyaRead;
     read.disabled = true;
@@ -1349,6 +1447,8 @@ async function refreshTeslaEvConfig() {
 }
 
 $("#page-content").addEventListener("click", async event => {
+  const tuyaCard=event.target.closest("[data-edit-tuya-device]");
+  if(tuyaCard){const device=state.tuyaDevices.find(item=>item.device_id===tuyaCard.dataset.editTuyaDevice);if(device)openTuyaDeviceEditor(device);return;}
   const chartPoint=event.target.closest(".solar-chart-hit");
   if(chartPoint){
     const tooltip=chartPoint.closest(".solar-chart-wrap")?.querySelector(".solar-chart-tooltip");
@@ -1580,25 +1680,38 @@ $("#gateway-update-check").addEventListener("click", async () => {
   button.disabled = true;
   verifiedGatewayUpdate = null;
   setGatewayUpdateDetails(null);
-  showGatewayUpdateMessage("A validar repositório permitido, manifesto, assinatura e pacote…");
+  const checking=showOperationDialog({title:"Verificar atualização",message:"A verificar o pacote e a assinatura…",locked:true,progress:true});
   try {
     const result = await checkGatewayUpdate($("#gateway-update-repository").value.trim());
     setGatewayUpdateDetails(result);
     if (result.status === "verified_staged") {
-      showGatewayUpdateMessage(result.activation_available
-        ? "Pacote verificado e pronto. Revê a versão e confirma explicitamente para aplicar."
-        : "Pacote assinado e transferido, mas o preflight de recuperação bloqueou a aplicação.");
+      if(result.activation_available){
+        renderOperationDialog({title:"Atualização verificada",message:`Versão instalada: ${result.installed_version||"desconhecida"}. Nova versão: ${result.available_version}. Queres aplicar agora?`,actions:[{label:"Cancelar",value:"cancel"},{label:"Atualizar",value:"apply",primary:true}]});
+        const choice=await checking;
+        if(choice==="apply")await applyVerifiedGatewayUpdate(result);
+      } else {
+        renderOperationDialog({title:"Atualização bloqueada",message:"O pacote foi verificado, mas a verificação de recuperação bloqueou a instalação.",actions:[{label:"OK",value:"ok",primary:true}]});
+        await checking;
+      }
     } else if (result.status === "current") {
-      showGatewayUpdateMessage(`O Gateway já está atualizado. Versão verificada: ${result.latest_version}.`);
+      renderOperationDialog({title:"Gateway atualizado",message:`Versão verificada: ${result.latest_version||result.installed_version||"atual"}.`,actions:[{label:"OK",value:"ok",primary:true}]});await checking;
     } else {
-      showGatewayUpdateMessage(`Atualização bloqueada: ${gatewayUpdateFailureText(result.message)}`);
+      renderOperationDialog({title:"Verificação falhou",message:gatewayUpdateFailureText(result.message),actions:[{label:"OK",value:"ok",primary:true}]});await checking;
     }
   } catch (error) {
-    showGatewayUpdateMessage(`Não foi possível verificar a atualização: ${error.message}`);
+    renderOperationDialog({title:"Verificação falhou",message:error.message||"Não foi possível verificar a atualização.",actions:[{label:"OK",value:"ok",primary:true}]});await checking;
   } finally { button.disabled = false; }
 });
-$("#gateway-update-refresh").addEventListener("click", () => refreshGatewayUpdateStatus()
-  .catch(error => showGatewayUpdateMessage(`Não foi possível consultar o estado: ${error.message}`)));
+$("#gateway-update-refresh").addEventListener("click", async () => {
+  const checking=showOperationDialog({title:"Estado da atualização",message:"A consultar o Gateway…",locked:true,progress:true});
+  try{
+    let result=await refreshGatewayUpdateStatus();
+    const status=String(result.status||"").toUpperCase();
+    if(!terminalUpdateStates.has(status))result=await watchGatewayUpdate({initial:result});
+    renderOperationDialog({title:status==="COMMITTED"?"Atualização concluída":"Estado da atualização",message:updateStatusMessage(result),actions:[{label:"OK",value:"ok",primary:true}]});
+  }catch(error){renderOperationDialog({title:"Não foi possível consultar",message:error.message||"O Gateway não respondeu.",actions:[{label:"OK",value:"ok",primary:true}]});}
+  await checking;
+});
 async function refreshGatewayTailscale() {
   const info=sessionInfo();
   if(!info.authenticated || info.user.role!=="owner") throw new Error("Apenas o Owner autenticado pode gerir Tailscale.");
@@ -1619,32 +1732,38 @@ async function refreshGatewayTailscale() {
     `Tailscale ativo e HTTPS pronto: ${result.endpoint}. Não são necessárias portas no router.`;
   return result;
 }
-$("#gateway-tailscale-refresh").addEventListener("click",()=>refreshGatewayTailscale()
-  .catch(error=>{$("#gateway-tailscale-status").textContent=`Não foi possível consultar o Tailscale: ${error.message}`;}));
+$("#gateway-tailscale-refresh").addEventListener("click",async()=>{
+  const pending=showOperationDialog({title:"Verificar Tailscale",message:"A consultar o estado e o HTTPS…",locked:true,progress:true});
+  try{const result=await refreshGatewayTailscale();renderOperationDialog({title:result.https_ready?"Acesso remoto pronto":"Verificação do Tailscale",message:$("#gateway-tailscale-status").textContent,actions:[{label:"OK",value:"ok",primary:true}]});}
+  catch(error){renderOperationDialog({title:"Falha no Tailscale",message:error.message||"Não foi possível consultar o estado.",actions:[{label:"OK",value:"ok",primary:true}]});}
+  await pending;
+});
 $("#gateway-tailscale-connect").addEventListener("click",async()=>{
   const button=$("#gateway-tailscale-connect"), status=$("#gateway-tailscale-status");
-  button.disabled=true; status.textContent="A pedir ao Gateway para iniciar a ligação Tailscale…";
+  button.disabled=true; const pending=showOperationDialog({title:"Ligar ao Tailscale",message:"A pedir ao Gateway para iniciar a ligação…",locked:true,progress:true});
   try {
     const result=await startGatewayTailscale();
     if(result.auth_url){
       status.replaceChildren(document.createTextNode("Abre este link e aprova o Gateway na tua conta Tailscale: "));
       const link=document.createElement("a"); link.href=result.auth_url; link.target="_blank"; link.rel="noopener noreferrer"; link.textContent="Autorizar Gateway no Tailscale";
       status.append(link);
-    } else status.textContent="O Gateway já está ligado ao Tailscale. Toca em Detetar estado para confirmar o endereço HTTPS.";
-  } catch(error){status.textContent=`O Gateway não conseguiu iniciar o Tailscale: ${error.message}`;}
-  finally{button.disabled=false;}
+      renderOperationDialog({title:"Autorizar Gateway",message:"Abre a página do Tailscale e aprova o Gateway. Depois volta aqui e toca em Detetar estado.",link:{href:result.auth_url,label:"Abrir autorização Tailscale"},actions:[{label:"OK",value:"ok",primary:true}]});
+    } else {status.textContent="O Gateway já está ligado ao Tailscale. Toca em Detetar estado para confirmar o endereço HTTPS.";renderOperationDialog({title:"Tailscale",message:status.textContent,actions:[{label:"OK",value:"ok",primary:true}]});}
+  } catch(error){status.textContent=`O Gateway não conseguiu iniciar o Tailscale: ${error.message}`;renderOperationDialog({title:"Falha no Tailscale",message:status.textContent,actions:[{label:"OK",value:"ok",primary:true}]});}
+  finally{button.disabled=false;} await pending;
 });
 $("#gateway-tailscale-save").addEventListener("click",async()=>{
   const button=$("#gateway-tailscale-save"), status=$("#gateway-tailscale-status"), field=$("#gateway-tailscale-endpoint");
   const value=field.value.trim();
-  button.disabled=true; status.textContent="A guardar o endereço Tailscale no Gateway…";
+  button.disabled=true; const pending=showOperationDialog({title:"Guardar Tailscale",message:"A guardar o endereço no Gateway…",locked:true,progress:true});
   try {
     const result=await configureGatewayTailscale(value || null);
     if(result.endpoint){try{localStorage.setItem("solarminer-gateway-tailscale-endpoint-v1",result.endpoint);}catch{}}
     else {try{localStorage.removeItem("solarminer-gateway-tailscale-endpoint-v1");}catch{}}
     status.textContent=value ? `Endereço guardado no Gateway: ${result.endpoint}.` : "Endereço manual removido; será usada a deteção automática quando estiver disponível.";
-  } catch(error){status.textContent=`Não foi possível guardar o endereço: ${error.message}`;}
-  finally{button.disabled=false;}
+    renderOperationDialog({title:"Tailscale guardado",message:value?"O endereço foi guardado no Gateway.":"O endereço manual foi removido.",actions:[{label:"OK",value:"ok",primary:true}]});
+  } catch(error){status.textContent=`Não foi possível guardar o endereço: ${error.message}`;renderOperationDialog({title:"Falha ao guardar",message:error.message||"Não foi possível guardar o endereço.",actions:[{label:"OK",value:"ok",primary:true}]});}
+  finally{button.disabled=false;} await pending;
 });
 $("#gateway-tailscale-use").addEventListener("click",()=>{
   const field=$("#gateway-tailscale-endpoint"), endpoint=field.value.trim();
@@ -1662,18 +1781,9 @@ $("#gateway-update-apply").addEventListener("click", async () => {
     showGatewayUpdateMessage("Não há pacote verificado e aplicável nesta sessão Owner.");
     return;
   }
-  if (!confirm(`Aplicar a versão ${update.available_version}? O Gateway fará backup, ativação e health check, com rollback se falhar.`)) return;
-  const button = $("#gateway-update-apply");
-  button.disabled = true;
-  showGatewayUpdateMessage(`A enfileirar a atualização ${update.available_version}…`);
-  try {
-    const result = await applyGatewayUpdate(update.available_version);
-    verifiedGatewayUpdate = null;
-    showGatewayUpdateMessage(`Atualização aceite pelo Gateway: ${result.status || "APPLY_QUEUED"} · operação ${result.operation_id || "sem identificador"}. Usa “Atualizar estado” para acompanhar.`);
-    await refreshGatewayUpdateStatus();
-  } catch (error) {
-    showGatewayUpdateMessage(`A aplicação foi bloqueada ou falhou: ${error.message}`);
-  } finally { button.disabled = false; }
+  const confirmation=showOperationDialog({title:"Confirmar atualização",message:`Versão instalada: ${update.installed_version||"desconhecida"}. Nova versão: ${update.available_version}. Queres aplicar?`,actions:[{label:"Cancelar",value:"cancel"},{label:"Atualizar",value:"apply",primary:true}]});
+  if(await confirmation!=="apply")return;
+  await applyVerifiedGatewayUpdate(update);
 });
 
 async function refreshInviteList() {

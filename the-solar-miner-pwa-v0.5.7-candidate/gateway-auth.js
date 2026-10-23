@@ -58,7 +58,7 @@ export async function loadDeviceIdentity(gatewayUrl) {
   const normalized = validateGatewayUrl(gatewayUrl, { allowLocalHttp: ["localhost", "127.0.0.1", "::1"].includes(location.hostname.replace(/^\[|\]$/g, "")) }).origin;
   return identityDbRequest("readonly", store => store.get(normalized));
 }
-async function gatewayRequest(baseUrl, path, { method = "GET", body, authenticated = false, token = bearerToken } = {}) {
+async function gatewayRequest(baseUrl, path, { method = "GET", body, authenticated = false, token = bearerToken, signal } = {}) {
   const base = validateGatewayUrl(baseUrl, { allowLocalHttp: ["localhost", "127.0.0.1", "::1"].includes(location.hostname.replace(/^\[|\]$/g, "")) });
   const headers = { Accept: "application/json" };
   if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -68,7 +68,7 @@ async function gatewayRequest(baseUrl, path, { method = "GET", body, authenticat
   }
   const response = await fetch(new URL(path, base.origin), {
     method, headers, body: body === undefined ? undefined : JSON.stringify(body),
-    credentials: "omit", cache: "no-store", redirect: "error",
+    credentials: "omit", cache: "no-store", redirect: "error", signal,
   });
   let data = null;
   try { data = await response.json(); } catch { /* HTTP error body may be empty or non-JSON. */ }
@@ -346,8 +346,8 @@ export async function saveGatewayHardwareIntegrationConfig(config) {
   if (!config || typeof config !== "object") throw new Error("Configuração de equipamentos inválida.");
   return gatewayApi("/api/v1/integrations/hardware", { method: "PUT", body: config });
 }
-export async function syncGatewayTuyaDevices() {
-  return gatewayApi("/api/v1/integrations/tuya/sync", { method: "POST", body: {} });
+export async function syncGatewayTuyaDevices({ signal } = {}) {
+  return gatewayApi("/api/v1/integrations/tuya/sync", { method: "POST", body: {}, signal });
 }
 export async function readGatewayHardwareIntegrations() {
   return gatewayApi("/api/v1/integrations/hardware/read", { method: "POST", body: {} });
@@ -366,9 +366,10 @@ export async function controlGatewayAntminer(action, watt) {
   }
   return gatewayApi("/api/v1/integrations/antminer/control", { method: "POST", body });
 }
-export async function controlGatewayTuyaSwitch(deviceId, on) {
+export async function controlGatewayTuyaSwitch(deviceId, on, code = undefined) {
   if (typeof deviceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(deviceId) || typeof on !== "boolean") throw new Error("Comando Tuya inválido.");
-  return gatewayApi("/api/v1/integrations/tuya/switch", { method: "POST", body: { device_id: deviceId, on } });
+  if (code !== undefined && (typeof code !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(code))) throw new Error("Canal Tuya inválido.");
+  return gatewayApi("/api/v1/integrations/tuya/switch", { method: "POST", body: { device_id: deviceId, on, ...(code ? { code } : {}) } });
 }
 export async function controlGatewayTuyaLevel(deviceId, percent) {
   if (typeof deviceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(deviceId) || !Number.isInteger(percent) || percent < 0 || percent > 100) throw new Error("Comando Tuya percentual inválido.");

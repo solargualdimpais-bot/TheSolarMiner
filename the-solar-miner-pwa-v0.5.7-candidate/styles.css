@@ -385,3 +385,13 @@ html[data-font="small"]{--font-ui-scale:.9;}html[data-font="normal"]{--font-ui-s
 @media(max-width:680px){.gateway-house-floor-tabs{gap:3px}.gateway-house-floor-tabs button{padding:9px;font-size:11px}.gateway-house-photo-view{min-height:220px}.gateway-house-photo-view.room-photo{min-height:190px}}
 
 .gateway-house-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.gateway-house-room-tile i{display:none}
+
+.operation-dialog{width:min(440px,calc(100% - 28px));border-color:#66583a;background:rgba(23,23,22,.94);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
+.operation-dialog::backdrop{background:rgba(0,0,0,.58);backdrop-filter:blur(4px)}
+.operation-dialog-message{margin:0;color:var(--text);font-size:14px;line-height:1.55}
+.operation-dialog-message[data-progress="true"]::before{content:"";display:inline-block;width:13px;height:13px;margin:0 9px -2px 0;border:2px solid #dcc99c44;border-top-color:var(--gold);border-radius:50%;animation:operation-spin .75s linear infinite}
+.operation-dialog-link{margin-top:16px}
+.operation-dialog-link[hidden]{display:none}
+.operation-dialog .dialog-actions{justify-content:flex-end}
+@keyframes operation-spin{to{transform:rotate(360deg)}}
+.tuya-inventory-card{width:100%;text-align:left;color:var(--text);cursor:pointer}.tuya-device-glyph{display:grid;place-items:center;flex:0 0 42px;height:42px;border:1px solid var(--gold-2);border-radius:12px;background:#302a1e;color:var(--gold);font-size:22px}.tuya-inventory-card .panel-header>div:nth-child(2){flex:1}.tuya-device-editor{width:min(720px,calc(100% - 24px))}.tuya-channel-list,.tuya-capability-list{display:grid;gap:8px;margin:10px 0 18px}.tuya-channel-edit,.tuya-capability-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--panel-2)}.tuya-channel-edit span,.tuya-capability-row{min-width:0}.tuya-channel-edit strong,.tuya-capability-row strong{display:block}.tuya-channel-edit small,.tuya-capability-row span,.tuya-capability-row small{display:block;color:var(--muted);font-size:11px;margin-top:4px}.tuya-channel-edit input{max-width:240px}.tuya-capability-row{align-items:flex-start;flex-direction:column;gap:0}.tuya-capability-row small{overflow-wrap:anywhere;white-space:pre-wrap}@media(max-width:600px){.tuya-channel-edit{align-items:flex-start;flex-direction:column}.tuya-channel-edit input{max-width:none;width:100%}}

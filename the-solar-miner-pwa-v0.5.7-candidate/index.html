@@ -53,7 +53,7 @@
           <div class="panel"><div class="panel-header"><div><p class="eyebrow">LIGAÇÃO SEGURA</p><h3>Ligação ao Gateway</h3></div></div><p class="field-note">Configura o endereço e inicia sessão no Gateway.</p><button id="owner-open-gateway" class="button primary" type="button">Configurar ligação</button><div id="owner-gateway-status" class="connection-result" role="status" aria-live="polite"></div></div>
           <section class="panel gateway-auth-panel" id="gateway-console-management">
             <div class="panel-header"><div><p class="eyebrow">OPERAÇÃO DO GATEWAY</p><h3>Consola do Gateway</h3></div><span class="source-tag">OWNER · LEITURA</span></div>
-            <p class="field-note">Estado dos serviços, uso de CPU, memória e armazenamento, e registos recentes do Gateway. Atualiza automaticamente enquanto esta área estiver aberta. Esta vista é só de leitura.</p>
+            <p class="field-note">Estado dos serviços, uso de CPU, memória e armazenamento, e registos recentes do Gateway. Carrega em “Atualizar consola” para consultar os dados mais recentes. Esta vista é só de leitura.</p>
             <div class="dialog-actions"><button id="gateway-console-refresh" class="button secondary" type="button">Atualizar consola</button></div>
             <div id="gateway-console-status" class="connection-result" role="status" aria-live="polite">A consola só está disponível numa sessão Owner autenticada.</div>
             <h4 class="gateway-console-section-title">Serviços</h4>
@@ -115,7 +115,7 @@
       </section>
       </section>
 
-      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.5.20</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
+      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.5.21</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
     </main>
   </div>
 
@@ -201,6 +201,14 @@
       <p class="field-note">O MAC é apenas metadata declarada, não prova identidade. Se não o souberes, mantém `00:00:00:00:00:00` como valor não verificado.</p>
       <div id="gateway-recovery-result" class="connection-result" role="status" aria-live="polite"></div>
       <div id="gateway-recovery-new-key-panel" hidden class="invite-created"><strong>Nova chave — a anterior foi consumida</strong><textarea id="gateway-recovery-new-key" rows="3" readonly></textarea><button id="gateway-download-new-recovery-key" class="button secondary" type="button">Descarregar para substituir o ficheiro da pen</button></div>
+    </div>
+  </dialog>
+  <dialog id="operation-dialog" class="settings-dialog operation-dialog" aria-labelledby="operation-dialog-title" aria-describedby="operation-dialog-message">
+    <div class="dialog-header"><div><p class="eyebrow">SOLARMINER · OPERAÇÃO</p><h2 id="operation-dialog-title">A processar</h2></div></div>
+    <div class="dialog-body">
+      <p id="operation-dialog-message" class="operation-dialog-message" role="status" aria-live="polite"></p>
+      <div id="operation-dialog-link" class="operation-dialog-link" hidden></div>
+      <div id="operation-dialog-actions" class="dialog-actions"></div>
     </div>
   </dialog>
   <dialog id="context-editor" class="settings-dialog context-editor" aria-labelledby="context-editor-title">

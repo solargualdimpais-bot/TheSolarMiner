@@ -23,6 +23,10 @@ from typing import Any
 
 from . import deye_modbus
 
+
+class TuyaSyncCancelled(Exception):
+    """Raised when an Owner cancels an in-progress inventory sync."""
+
 TUYA_REGIONS = {
     "china": "https://openapi.tuyacn.com",
     "us": "https://openapi.tuyaus.com",
@@ -102,7 +106,7 @@ def public_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
         "deye": {k: config.get("deye", {}).get(k) for k in ("host", "port", "unit_id", "model") if config.get("deye", {}).get(k) is not None},
         "antminer": {k: config.get("antminer", {}).get(k) for k in ("host", "port", "rest_port", "model") if config.get("antminer", {}).get(k) is not None},
         "antminer_control_configured": bool(config.get("antminer", {}).get("username") and config.get("antminer", {}).get("password")),
-        "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "uid": tuya.get("uid"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": [{"device_id": x.get("device_id"), "name": x.get("name"), "switch_code": x.get("switch_code"), "level_code": x.get("level_code"), "level_min": x.get("level_min", 0), "level_max": x.get("level_max", 100), "category": x.get("category"), "product_id": x.get("product_id"), "product_name": x.get("product_name"), "online": x.get("online"), "cloud_source": x.get("cloud_source"), "cloud_missing": x.get("cloud_missing", False), "local_key_available": bool(x.get("local_key")), "functions": x.get("functions", []), "status_spec": x.get("status_spec", []), "current_status": x.get("current_status", []), "last_status_at": x.get("last_status_at")} for x in tuya.get("devices", []) if isinstance(x, dict)], "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
+        "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "uid": tuya.get("uid"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": [{"device_id": x.get("device_id"), "name": x.get("name"), "room": x.get("room", ""), "floor": x.get("floor", ""), "name_source": x.get("name_source", "cloud"), "switch_code": x.get("switch_code"), "switch_channels": [item.get("code") for item in x.get("functions", []) if isinstance(item, dict) and str(item.get("type", "")).lower() in {"bool", "boolean"}], "channel_labels": x.get("channel_labels", {}), "capability_labels": x.get("capability_labels", {}), "level_code": x.get("level_code"), "level_min": x.get("level_min", 0), "level_max": x.get("level_max", 100), "category": x.get("category"), "product_id": x.get("product_id"), "product_name": x.get("product_name"), "online": x.get("online"), "cloud_source": x.get("cloud_source"), "cloud_missing": x.get("cloud_missing", False), "local_key_available": bool(x.get("local_key")), "functions": x.get("functions", []), "status_spec": x.get("status_spec", []), "current_status": x.get("current_status", []), "last_status_at": x.get("last_status_at")} for x in tuya.get("devices", []) if isinstance(x, dict)], "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
         "secrets_returned": False,
     }
 
@@ -202,6 +206,30 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
             for key in ("local_key", "product_id", "product_name", "category", "online", "ip", "functions", "status_spec", "current_status", "last_status_at", "cloud_source", "cloud_missing", "last_synced_at"):
                 if key in previous:
                     normalized_device[key] = previous[key]
+            name_source = device.get("name_source", previous.get("name_source", "cloud"))
+            if name_source not in {"cloud", "local"}: raise ValueError("invalid_tuya_name_source")
+            normalized_device["name_source"] = name_source
+            if name_source == "local": normalized_device["local_name"] = name.strip()
+            for key in ("room", "floor"):
+                value = device.get(key, previous.get(key, ""))
+                if not isinstance(value, str) or len(value) > 120: raise ValueError(f"invalid_tuya_{key}")
+                normalized_device[key] = value.strip()
+            channel_labels = device.get("channel_labels", previous.get("channel_labels", {}))
+            if not isinstance(channel_labels, dict) or len(channel_labels) > 32: raise ValueError("invalid_tuya_channel_labels")
+            available_codes = {entry.get("code") for entry in previous.get("functions", []) if isinstance(entry, dict) and str(entry.get("type", "")).lower() in {"bool", "boolean"}}
+            clean_labels = {}
+            for code, label in channel_labels.items():
+                if code not in available_codes or not isinstance(label, str) or len(label) > 80: raise ValueError("invalid_tuya_channel_label")
+                clean_labels[code] = label.strip()
+            normalized_device["channel_labels"] = clean_labels
+            capability_labels = device.get("capability_labels", previous.get("capability_labels", {}))
+            if not isinstance(capability_labels, dict) or len(capability_labels) > 64: raise ValueError("invalid_tuya_capability_labels")
+            all_codes = {entry.get("code") for entry in [*previous.get("functions", []), *previous.get("status_spec", [])] if isinstance(entry, dict) and isinstance(entry.get("code"), str)}
+            clean_capability_labels = {}
+            for code, label in capability_labels.items():
+                if code not in all_codes or not isinstance(label, str) or len(label) > 80: raise ValueError("invalid_tuya_capability_label")
+                clean_capability_labels[code] = label.strip()
+            normalized_device["capability_labels"] = clean_capability_labels
             if switch_code is not None:
                 if not isinstance(switch_code, str) or not 1 <= len(switch_code) <= 64 or not all(c.isalnum() or c in "_-" for c in switch_code): raise ValueError("invalid_tuya_switch_code")
                 normalized_device["switch_code"] = switch_code
@@ -334,7 +362,7 @@ def read_tuya(config: dict[str, Any]) -> list[dict[str, Any]]:
     return output
 
 
-def synchronize_tuya_devices(config: dict[str, Any]) -> dict[str, Any]:
+def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Event | None = None) -> dict[str, Any]:
     """Import the Tuya project's inventory and safe device capabilities.
 
     Device local keys are persisted in the private Gateway config only. This
@@ -345,6 +373,11 @@ def synchronize_tuya_devices(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("tuya_credentials_required")
     if not config.get("uid"):
         raise ValueError("tuya_uid_required")
+    def check_cancelled() -> None:
+        if cancelled is not None and cancelled.is_set():
+            raise TuyaSyncCancelled("tuya_sync_cancelled")
+
+    check_cancelled()
     try:
         auth = _tuya_request(config, "/v1.0/token?grant_type=1")
     except (RuntimeError, ValueError) as exc:
@@ -360,6 +393,7 @@ def synchronize_tuya_devices(config: dict[str, Any]) -> dict[str, Any]:
     seen_cursors: set[str] = set()
     pages = 0
     while True:
+        check_cancelled()
         query = {"page_size": "20"}
         if cursor:
             query["last_id"] = cursor
@@ -371,6 +405,7 @@ def synchronize_tuya_devices(config: dict[str, Any]) -> dict[str, Any]:
             rows = _tuya_request(config, path, token).get("result")
         except (RuntimeError, ValueError) as exc:
             raise RuntimeError(f"tuya_inventory_request_failed:{str(exc)[:80]}") from exc
+        check_cancelled()
         if not isinstance(rows, list):
             raise RuntimeError("tuya_device_list_invalid")
         pages += 1
@@ -383,7 +418,7 @@ def synchronize_tuya_devices(config: dict[str, Any]) -> dict[str, Any]:
             previous = by_id.get(device_id, {})
             item = {
                 "device_id": device_id,
-                "name": str(row.get("customName") or row.get("name") or previous.get("name") or "Tuya device")[:120],
+                "name": str(previous.get("local_name") if previous.get("name_source") == "local" else (row.get("customName") or row.get("name") or previous.get("name") or "Tuya device"))[:120],
                 "category": str(row.get("category") or previous.get("category") or "")[:64],
                 "product_id": str(row.get("productId") or row.get("product_id") or previous.get("product_id") or "")[:128],
                 "product_name": str(row.get("productName") or row.get("product_name") or previous.get("product_name") or "")[:120],
@@ -398,7 +433,7 @@ def synchronize_tuya_devices(config: dict[str, Any]) -> dict[str, Any]:
                 item["local_key"] = key
             elif isinstance(previous.get("local_key"), str):
                 item["local_key"] = previous["local_key"]
-            for retained in ("switch_code", "level_code", "level_min", "level_max", "favorite", "room", "floor"):
+            for retained in ("switch_code", "level_code", "level_min", "level_max", "favorite", "room", "floor", "name_source", "local_name", "channel_labels", "capability_labels"):
                 if retained in previous:
                     item[retained] = previous[retained]
             discovered.append(item)
@@ -418,6 +453,7 @@ def synchronize_tuya_devices(config: dict[str, Any]) -> dict[str, Any]:
     # reported without discarding the successfully imported inventory.
     details_failures = 0
     for item in discovered:
+        check_cancelled()
         quoted = urllib.parse.quote(item["device_id"], safe="")
         try:
             details = _tuya_request(config, f"/v2.0/cloud/thing/{quoted}", token).get("result")
@@ -428,7 +464,8 @@ def synchronize_tuya_devices(config: dict[str, Any]) -> dict[str, Any]:
                 if details.get("ip"):
                     item["ip"] = str(details["ip"])[:64]
                 item["online"] = bool(details.get("is_online", details.get("online", item["online"])))
-                item["name"] = str(details.get("custom_name") or details.get("name") or item["name"])[:120]
+                if item.get("name_source") != "local":
+                    item["name"] = str(details.get("custom_name") or details.get("name") or item["name"])[:120]
                 item["product_id"] = str(details.get("product_id") or item["product_id"])[:128]
                 item["product_name"] = str(details.get("product_name") or item["product_name"])[:120]
                 item["category"] = str(details.get("category") or item["category"])[:64]
@@ -460,13 +497,15 @@ def synchronize_tuya_devices(config: dict[str, Any]) -> dict[str, Any]:
                 item["category"] = str(spec.get("category") or item["category"])[:64]
         except (RuntimeError, ValueError):
             details_failures += 1
+        check_cancelled()
 
+    check_cancelled()
     return {"devices": discovered, "device_count": len(discovered),
             "local_keys_available": sum(bool(item.get("local_key")) for item in discovered),
             "schema_failures": details_failures, "pages": pages}
 
 
-def control_tuya_switch(config: dict[str, Any], device_id: str, on: bool) -> dict[str, Any]:
+def control_tuya_switch(config: dict[str, Any], device_id: str, on: bool, code: str | None = None) -> dict[str, Any]:
     """Toggle only a switch datapoint explicitly assigned in Owner config."""
     if not isinstance(on, bool):
         raise ValueError("tuya_switch_state_must_be_boolean")
@@ -476,7 +515,12 @@ def control_tuya_switch(config: dict[str, Any], device_id: str, on: bool) -> dic
                    if isinstance(item, dict) and item.get("device_id") == device_id), None)
     if device is None:
         raise ValueError("tuya_device_not_configured")
-    code = device.get("switch_code")
+    code = code or device.get("switch_code")
+    allowed_codes = {entry.get("code") for entry in device.get("functions", []) if isinstance(entry, dict) and str(entry.get("type", "")).lower() in {"bool", "boolean"}}
+    if device.get("switch_code"):
+        allowed_codes.add(device["switch_code"])
+    if code not in allowed_codes:
+        raise ValueError("tuya_switch_function_code_not_configured")
     if not isinstance(code, str) or not code or not code.replace("_", "").replace("-", "").isalnum() or len(code) > 64:
         raise ValueError("tuya_switch_function_code_not_configured")
     auth = _tuya_request(config, "/v1.0/token?grant_type=1")
