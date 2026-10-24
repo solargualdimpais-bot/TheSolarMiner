@@ -34,7 +34,7 @@ except ImportError:
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, StrictStr
@@ -49,7 +49,7 @@ from . import updates as update_manager
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.71"
+PACKAGE_VERSION = "0.6.72"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -713,7 +713,7 @@ async def security_response_headers(request: Request, call_next):
         response.headers["Cache-Control"] = "no-store"
     if request.url.path in {"/", "/index.html", "/app.js", "/app-core.js", "/api-client.js", "/auth-client.js", "/gateway-connection.js", "/gateway-auth.js", "/workspace-ui.js", "/features-v053.js", "/demo-mode.js", "/styles.css", "/manifest.webmanifest", "/service-worker.js"} or request.url.path.startswith("/assets/"):
         response.headers["Content-Security-Policy"] = ("default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data:; font-src 'self'; connect-src 'self' http://localhost:* http://127.0.0.1:*; "
+            "img-src 'self' data:; font-src 'self'; connect-src 'self' wss: ws://localhost:* ws://127.0.0.1:* http://localhost:* http://127.0.0.1:*; "
             "object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'")
     return response
 
@@ -992,13 +992,24 @@ def write_site_profile(payload: dict[str, Any], session: dict[str, Any] = Depend
 
 
 @app.get("/api/v1/energy/engine")
-def energy_engine_summary(history_hours: int = 24, session: dict[str, Any] = Depends(require_permission("read"))) -> dict[str, Any]:
+def energy_engine_summary(history_hours: int = 24, history_until: datetime | None = None,
+                          session: dict[str, Any] = Depends(require_permission("read"))) -> dict[str, Any]:
     if isinstance(history_hours, bool) or not 1 <= history_hours <= 168:
         raise HTTPException(422, "history_hours_must_be_1_to_168")
+    if history_until is not None:
+        if history_until.tzinfo is None:
+            raise HTTPException(422, "history_until_requires_timezone")
+        history_until_utc = history_until.astimezone(timezone.utc)
+        now_utc = datetime.now(timezone.utc)
+        if history_until_utc > now_utc + timedelta(minutes=2) or history_until_utc < now_utc - timedelta(days=90):
+            raise HTTPException(422, "history_until_outside_retention_window")
+    else:
+        history_until_utc = None
     with db() as conn:
         with _energy_sample_lock:
             latest_sample = dict(_latest_deye_sample) if _latest_deye_sample else None
-        result = energy_engine.build_summary(conn, history_hours, latest_sample=latest_sample)
+        result = energy_engine.build_summary(conn, history_hours, latest_sample=latest_sample,
+                                             history_until=history_until_utc)
         result["sampling_interval_seconds"] = _energy_sample_interval_seconds()
         result["persistence_interval_seconds"] = 60
         result["live_sample_at"] = latest_sample.get("sampled_at") if latest_sample else None
@@ -2792,7 +2803,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.71"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.72"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(
@@ -3013,6 +3024,167 @@ def read_gateway_console(session: dict[str, Any] = Depends(current_session)) -> 
             "resources": resources if isinstance(resources, dict) else {},
             "truncated": result.get("truncated") is True,
             "scope": "Allowlisted Gateway service status, CPU/RAM/storage metrics and service logs; recent Tailscale/Nginx setup log tail."}
+
+
+@app.websocket("/api/v1/system/terminal/ws")
+async def gateway_terminal(websocket: WebSocket) -> None:
+    """Interactive bash PTY, restricted to a freshly authenticated Owner session."""
+    origin = websocket.headers.get("origin", "").rstrip("/")
+    host = websocket.headers.get("host", "").lower()
+    same_host = bool(origin and urlsplit(origin).netloc.lower() == host)
+    if not origin or not (same_host or origin in _CORS_ORIGINS):
+        await websocket.close(code=4403)
+        return
+    await websocket.accept()
+    try:
+        auth_message = await websocket.receive_json()
+        raw_token = auth_message.get("token") if isinstance(auth_message, dict) and auth_message.get("type") == "authenticate" else None
+        if not isinstance(raw_token, str) or not raw_token or len(raw_token) > 512:
+            await websocket.close(code=4401)
+            return
+        token_digest = token_hash(raw_token)
+    except (WebSocketDisconnect, ValueError, TypeError):
+        await websocket.close(code=4401)
+        return
+    try:
+        with db() as conn:
+            row = conn.execute("""SELECT s.*,u.username,u.role,u.status AS user_status,u.account_id,d.status AS device_status
+              FROM sessions s JOIN users u ON u.id=s.user_id JOIN devices d ON d.id=s.device_id
+              WHERE s.token_sha256=?""", (token_digest,)).fetchone()
+            if not row:
+                await websocket.close(code=4401)
+                return
+            session = dict(row)
+            actor = _revalidate_actor(conn, session, "manage_gateway")
+            if actor["role"] != "owner":
+                await websocket.close(code=4403)
+                return
+    except HTTPException:
+        await websocket.close(code=4401)
+        return
+
+    try:
+        import fcntl
+        import pty
+        import struct
+        import termios
+        import signal
+    except ImportError:
+        await websocket.send_json({"type": "error", "data": "Este Gateway não suporta um terminal PTY."})
+        await websocket.close(code=1011)
+        return
+
+    master_fd = slave_fd = None
+    process = None
+    reader_task = None
+    output_queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=64)
+    loop = asyncio.get_running_loop()
+    receive_task = output_task = None
+    try:
+        master_fd, slave_fd = pty.openpty()
+        try:
+            fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
+        except OSError:
+            pass
+        terminal_env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "TERM": "xterm-256color",
+                        "HOME": str(DATA_DIR), "USER": "solarminer", "SHELL": "/bin/bash"}
+        process = subprocess.Popen(
+            ["/bin/bash", "--noprofile", "--norc", "-i"], stdin=slave_fd, stdout=slave_fd,
+            stderr=slave_fd, cwd=str(DATA_DIR), env=terminal_env, close_fds=True, start_new_session=True,
+        )
+        os.close(slave_fd)
+        slave_fd = None
+
+        async def read_terminal_output() -> None:
+            normal_eof = False
+            try:
+                while True:
+                    chunk = await loop.run_in_executor(None, os.read, master_fd, 4096)
+                    if not chunk:
+                        normal_eof = True
+                        break
+                    await output_queue.put(chunk.decode("utf-8", errors="replace"))
+            except (OSError, asyncio.CancelledError):
+                pass
+            finally:
+                if normal_eof:
+                    await output_queue.put(None)
+
+        reader_task = asyncio.create_task(read_terminal_output())
+        with db() as conn:
+            actor = _revalidate_actor(conn, session, "manage_gateway")
+            audit(conn, actor["user_id"], "system.terminal.started", "owner_shell", "success", {})
+        await websocket.send_json({"type": "ready", "data": "Terminal ligado ao Gateway como utilizador solarminer. Ctrl+C interrompe o comando atual."})
+        receive_task = asyncio.create_task(websocket.receive_json())
+        output_task = asyncio.create_task(output_queue.get())
+        last_session_check = time.monotonic()
+        while True:
+            done, _ = await asyncio.wait({receive_task, output_task}, timeout=15,
+                                         return_when=asyncio.FIRST_COMPLETED)
+            if not done:
+                if time.monotonic() - last_session_check >= 30:
+                    try:
+                        with db() as conn:
+                            actor = _revalidate_actor(conn, session, "manage_gateway")
+                            if actor["role"] != "owner":
+                                break
+                    except HTTPException:
+                        break
+                    last_session_check = time.monotonic()
+                continue
+            if output_task in done:
+                output = output_task.result()
+                if output is None:
+                    await websocket.send_json({"type": "exit", "code": process.poll()})
+                    break
+                await websocket.send_json({"type": "output", "data": output})
+                output_task = asyncio.create_task(output_queue.get())
+            if receive_task in done:
+                message = receive_task.result()
+                kind = message.get("type") if isinstance(message, dict) else None
+                if kind == "close":
+                    break
+                if kind == "input":
+                    data = message.get("data")
+                    if not isinstance(data, str) or len(data.encode("utf-8")) > 8192:
+                        await websocket.send_json({"type": "error", "data": "Entrada demasiado longa."})
+                    else:
+                        os.write(master_fd, data.encode("utf-8"))
+                elif kind == "resize":
+                    rows = max(8, min(100, int(message.get("rows", 24))))
+                    cols = max(20, min(240, int(message.get("cols", 100))))
+                    fcntl.ioctl(master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+                receive_task = asyncio.create_task(websocket.receive_json())
+    except (WebSocketDisconnect, OSError, RuntimeError, ValueError):
+        pass
+    finally:
+        for task in (reader_task, receive_task, output_task):
+            if task:
+                task.cancel()
+        if process and process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=2)
+            except (OSError, subprocess.TimeoutExpired):
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+        for fd in (master_fd, slave_fd):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+        pending_tasks = [task for task in (reader_task, receive_task, output_task) if task]
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
+        try:
+            with db() as conn:
+                actor = _revalidate_actor(conn, session, "manage_gateway")
+                audit(conn, actor["user_id"], "system.terminal.closed", "owner_shell", "success", {})
+        except Exception:
+            pass
 
 
 @app.post("/api/v1/system/tailscale/connect")

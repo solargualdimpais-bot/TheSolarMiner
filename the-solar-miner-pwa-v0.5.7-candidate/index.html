@@ -67,6 +67,13 @@
             </div>
             <pre id="gateway-console-output" class="integration-result gateway-console-output" aria-label="Saída operacional recente do Gateway">A aguardar ligação autenticada ao Gateway.</pre>
           </section>
+          <section class="panel gateway-auth-panel gateway-terminal-panel" id="gateway-terminal-management">
+            <div class="panel-header"><div><p class="eyebrow">OPERAÇÃO DO GATEWAY</p><h3>Terminal do Gateway</h3></div><span class="source-tag">OWNER · LIVE</span></div>
+            <p class="field-note">Sem novo login: usa a sessão Owner ativa para executar comandos no Gateway e receber a saída em tempo real. A sessão corre com as permissões do serviço solarminer; comandos que exigem root não ficam disponíveis.</p>
+            <div class="dialog-actions"><button id="gateway-terminal-connect" class="button secondary" type="button">Ligar terminal</button><button id="gateway-terminal-disconnect" class="button secondary" type="button" disabled>Desligar</button><span id="gateway-terminal-status" class="connection-result" role="status" aria-live="polite">Só disponível numa sessão Owner autenticada.</span></div>
+            <pre id="gateway-terminal-output" class="gateway-terminal-output" aria-label="Terminal em tempo real" aria-live="polite">Terminal desligado.</pre>
+            <form id="gateway-terminal-form" class="gateway-terminal-input-row"><label for="gateway-terminal-command">Comando</label><input id="gateway-terminal-command" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Escreve um comando e prime Enter" disabled><button id="gateway-terminal-send" class="button primary" type="submit" disabled>Enviar</button></form>
+          </section>
         </section>
         <section class="panel gateway-auth-panel owner-tab-panel" data-owner-panel="access" id="gateway-invite-management" hidden>
         <div class="panel-header"><div><p class="eyebrow">ADMINISTRAÇÃO DO GATEWAY</p><h3>Convites de utilização única</h3></div><span class="source-tag">OWNER</span></div>
@@ -115,7 +122,7 @@
       </section>
       </section>
 
-      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.5.37</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
+      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.5.38</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
     </main>
   </div>
 

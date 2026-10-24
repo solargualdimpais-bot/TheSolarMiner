@@ -265,6 +265,19 @@ export async function readGatewayTailscale() {
 export async function readGatewayConsole() {
   return gatewayApi("/api/v1/system/console");
 }
+export function openGatewayTerminalSocket() {
+  if (!currentGateway || !bearerToken || currentUser?.role !== "owner") throw new Error("Inicia sessão como Owner para abrir o terminal.");
+  const socketUrl = new URL("/api/v1/system/terminal/ws", currentGateway);
+  socketUrl.protocol = socketUrl.protocol === "https:" ? "wss:" : "ws:";
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(socketUrl.toString());
+    socket.addEventListener("open", () => {
+      socket.send(JSON.stringify({ type: "authenticate", token: bearerToken }));
+      resolve(socket);
+    }, { once: true });
+    socket.addEventListener("error", () => reject(new Error("Não foi possível ligar ao terminal do Gateway.")), { once: true });
+  });
+}
 export async function configureGatewayTailscale(endpoint) {
   if (endpoint !== null && (typeof endpoint !== "string" || !endpoint.trim())) throw new Error("Indica um endereço Tailscale HTTPS ou deixa o campo vazio para deteção automática.");
   return gatewayApi("/api/v1/system/tailscale", { method: "PUT", body: { endpoint: endpoint === null ? null : endpoint.trim() } });
@@ -308,10 +321,12 @@ export async function updateGatewayUserStatus(userId, status, currentPassword) {
   if (typeof currentPassword !== "string" || !currentPassword) throw new Error("Introduz a palavra-passe atual do Owner.");
   return gatewayApi(`/api/v1/users/${encodeURIComponent(userId)}/status`, { method: "PATCH", body: { status, current_password: currentPassword } });
 }
-export async function readGatewayEnergy() {
+export async function readGatewayEnergy(historyHours = 24, historyUntil = null) {
+  const params = new URLSearchParams({ history_hours: String(historyHours) });
+  if (historyUntil) params.set("history_until", historyUntil);
   const [status, categories, equipment, engine, siteProfile] = await Promise.all([
     gatewayApi("/api/v1/status"), gatewayApi("/api/v1/energy/categories"), gatewayApi("/api/v1/energy/equipment"),
-    gatewayApi("/api/v1/energy/engine?history_hours=24"), gatewayApi("/api/v1/site/profile")
+    gatewayApi(`/api/v1/energy/engine?${params.toString()}`), gatewayApi("/api/v1/site/profile")
   ]);
   const liveReadings = engine?.latest_readings || {};
   const liveEquipment = (equipment.equipment || []).map(item => {

@@ -54,6 +54,30 @@ def login(client, owner, private, password="a-long-passphrase-01", nonce="login-
     })
 
 
+@pytest.mark.skipif(os.name != "posix", reason="O terminal PTY do Gateway corre em Linux/POSIX")
+def test_owner_terminal_executes_and_streams_real_gateway_shell(client, tmp_path, monkeypatch):
+    owner, private, _ = create_owner(client)
+    token = login(client, owner, private).json()["access_token"]
+    monkeypatch.setattr(gateway, "DATA_DIR", tmp_path)
+    with client.websocket_connect(
+        "/api/v1/system/terminal/ws",
+        headers={"origin": "https://solargualdimpais-bot.github.io"},
+    ) as socket:
+        socket.send_json({"type": "authenticate", "token": token})
+        ready = socket.receive_json()
+        assert ready["type"] == "ready"
+        socket.send_json({"type": "input", "data": "printf 'solarminer-terminal-ok\\n'\n"})
+        output = ""
+        for _ in range(10):
+            message = socket.receive_json()
+            if message["type"] == "output":
+                output += message["data"]
+                if "solarminer-terminal-ok" in output:
+                    break
+        assert "solarminer-terminal-ok" in output
+        socket.send_json({"type": "close"})
+
+
 def password_device_payload(private, public, username, password, nonce_value="new-device-password-login-01"):
     ts = int(time.time())
     public_der = serialization.load_pem_public_key(public.encode()).public_bytes(
