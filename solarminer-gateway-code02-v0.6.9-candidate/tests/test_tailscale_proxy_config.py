@@ -13,7 +13,9 @@ def test_nginx_proxies_verify_backend_using_certificate_dns_san():
     # must verify that DNS identity, rather than treating the upstream IP as a
     # DNS name when it validates the TLS certificate.
     assert 'DNS:localhost' in postinst
-    assert nginx_config.count("proxy_ssl_name localhost;") == 3
+    # The Gateway HTTP API, static PWA, Owner console, and interactive terminal
+    # each use a separately configured TLS-verified backend location.
+    assert nginx_config.count("proxy_ssl_name localhost;") == 4
     assert "proxy_ssl_name 127.0.0.1;" not in nginx_config
     assert "proxy_ssl_name localhost;" in tailscale_script
     assert "proxy_ssl_name 127.0.0.1;" not in tailscale_script

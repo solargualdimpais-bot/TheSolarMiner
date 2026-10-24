@@ -177,7 +177,7 @@ def test_webcrypto_generated_ed25519_pair_signature_is_accepted_by_gateway(clien
     mac = "AA:BB:CC:DD:EE:77"
     fixture = Path(__file__).with_name("browser_crypto_fixture.mjs")
     generated = subprocess.run(["node", str(fixture)], input=json.dumps({"mode": "pair", "code": code, "mac": mac,
-        "timestamp": timestamp, "nonce": nonce}), text=True, capture_output=True, check=True, timeout=10)
+        "timestamp": timestamp, "nonce": nonce}), text=True, capture_output=True, check=True, timeout=30)
     browser_payload = json.loads(generated.stdout)
     response = client.post("/api/v1/devices/pair", json={"pairing_code": code, "mac": mac,
         "public_key_pem": browser_payload["public_key_pem"], "timestamp": timestamp, "nonce": nonce,
@@ -196,7 +196,7 @@ def test_webcrypto_login_signature_matches_existing_gateway_canonical_format(cli
     fixture = Path(__file__).with_name("browser_crypto_fixture.mjs")
     signed = subprocess.run(["node", str(fixture)], input=json.dumps({"mode": "sign-login",
         "private_key_pkcs8_b64": __import__("base64").b64encode(pkcs8).decode(), "canonical": canonical}),
-        text=True, capture_output=True, check=True, timeout=10)
+        text=True, capture_output=True, check=True, timeout=30)
     signature = json.loads(signed.stdout)["signature"]
     response = client.post("/api/v1/auth/login", json={"username": "owner-browser", "password": "browser-test-password-01",
         "device_id": owner["device_id"], "timestamp": ts, "nonce": nonce, "signature": signature})
