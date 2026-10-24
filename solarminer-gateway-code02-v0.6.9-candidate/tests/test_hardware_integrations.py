@@ -1,8 +1,65 @@
 import json
+import hashlib
 
 import pytest
 
 from solarminer_gateway import integrations
+
+
+def test_deye_cloud_config_keeps_credentials_private_and_supports_centers():
+    config = integrations.validate_config({"deye_cloud": {
+        "data_center": "india", "app_id": "app-123", "app_secret": "app-secret-123",
+        "email": "owner@example.com", "password": "account-password",
+    }}, existing={})
+    public = integrations.public_config(config)
+    assert config["deye_cloud"]["data_center"] == "india"
+    assert public["deye_cloud"]["configured"] is True
+    assert public["deye_cloud"]["secrets_returned"] is False
+    assert "app-secret-123" not in json.dumps(public)
+    assert "account-password" not in json.dumps(public)
+    assert integrations.DEYE_CLOUD_BASES["india"].startswith("https://")
+
+
+def test_deye_cloud_token_hash_and_station_history_requests(monkeypatch):
+    calls = []
+
+    def request(center, path, **kwargs):
+        calls.append((center, path, kwargs))
+        if path == "/account/token":
+            assert kwargs["query"] == {"appId": "app-123"}
+            assert kwargs["body"] == {
+                "appSecret": "app-secret-123", "email": "owner@example.com",
+                "password": hashlib.sha256(b"account-password").hexdigest(),
+            }
+            return {"success": True, "code": 1000000, "accessToken": "Bearer cloud-token"}
+        assert kwargs["token"] == "Bearer cloud-token"
+        if path == "/station/list":
+            return {"success": True, "code": 1000000,
+                    "stationList": [{"id": 12345, "name": "Casa"}], "total": 1}
+        assert path == "/station/history/power"
+        body = kwargs["body"]
+        assert body["stationId"] == 12345
+        assert body["endTimestamp"] - body["startTimestamp"] <= 7 * 86400
+        return {"success": True, "code": 1000000, "stationDataItems": [
+            {"timeStamp": "2026-10-24T10:00:00Z", "generationPower": 1500}
+        ], "total": 1}
+
+    monkeypatch.setattr(integrations, "_deye_cloud_request", request)
+    config = {"data_center": "eu", "app_id": "app-123", "app_secret": "app-secret-123",
+              "email": "owner@example.com", "password": "account-password"}
+    stations = integrations.deye_cloud_list_stations(config)
+    history = integrations.deye_cloud_history(config, "12345", days=90)
+    assert stations == [{"station_id": 12345, "name": "Casa"}]
+    assert len(history) == 13
+    assert all(item[0] == "eu" for item in calls)
+    assert sum(path == "/account/token" for _, path, _ in calls) == 2
+    assert integrations._deye_cloud_timestamp(history[0]["timeStamp"]) == "2026-10-24T10:00:00+00:00"
+
+
+@pytest.mark.parametrize("station_id,days", [("../x", 90), ("123", 91), (True, 90)])
+def test_deye_cloud_history_rejects_invalid_station_or_range(station_id, days):
+    with pytest.raises(ValueError):
+        integrations.deye_cloud_history({"data_center": "eu"}, station_id, days=days)
 
 
 def test_private_target_validation_rejects_public_and_dns():

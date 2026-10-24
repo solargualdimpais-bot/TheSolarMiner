@@ -3,7 +3,7 @@ import { DEMO_CONTROL_CONFIG, createDemoControlState, updateDemoControl, toggleD
 import { renderWorkspacePage, renderHomePreferenceLinks, renderHouseSearch, handleWorkspaceAction, handleWorkspaceChange, applyPreferences, getWorkspacePageLabel, workspace, getEditableEntity, saveEditableEntity, saveDemoWorkspace, hydrateWorkspacePhotos } from "./workspace-ui.js";
 import { renderAutomationsPage, renderSolarProductionPage, renderDemoAdminPanel, handleFeatureAction, saveAutomationForm, addDemoUser, saveDemoUserEdit, saveSolarWeather, demoFeatures } from "./features-v053.js";
 import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classifyEndpoint, inferHostedGatewayEndpoint, PRESENCE_API_STATUS } from "./gateway-connection.js";
-import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, controlGatewayAntminer, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, discoverGatewayTuyaLanDevices, readGatewayHuaweiClients, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, controlGatewayAntminer, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, discoverGatewayTuyaLanDevices, readGatewayHuaweiClients, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging } from "./gateway-auth.js";
 
 let automationEditingId = "";
 const state = { page: "inicio", mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], energyEngine: null, siteProfile: null, tuyaDevices: [], tuyaReadings: [], lastUpdated: null, lastMeasurementAt: null, refreshing: false, demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [], engineHistoryChart: { open: false, dateKey: "", loading: false, error: null } };
@@ -11,6 +11,10 @@ let houseView={tab:"overview",floorId:null,roomId:null,planEditing:false};
 let housePlanPointer=null;
 let lastTuyaReadAt=0;
 let operationDialogResolve=null;
+let gatewayUpdateNotice=null;
+let gatewayAutoUpdateSuppressed=false;
+let gatewayUpdateCheckInProgress=false;
+let gatewayOwnerAutoCheckStarted=false;
 const $ = (selector) => document.querySelector(selector);
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
 function renderOperationDialog({title,message,actions=[],locked=false,progress=false,link=null}={}){
@@ -336,7 +340,7 @@ function renderLiveEnergyEngine() {
   const readingTile=(field,label)=>{const item=readings[field];return `<div class="detail-item"><small>${esc(label)}</small><strong>${item?`${esc(item.value)} ${esc(item.unit||"")}`:"—"}</strong><small>${item?`${esc(item.trust)} · ${esc(timeLabel(item.observed_at))}`:"Sem leitura"}</small></div>`;};
   const dispatchRows=(data.dispatch?.actions||[]).map(action=>`<div class="detail-item"><small>${esc(action.name||action.load_id)}</small><strong>${esc(action.state)}</strong><small>${Number.isFinite(action.target_power_w)?`${esc(action.target_power_w)} W · `:""}${esc(action.control_type||"")}</small></div>`).join("");
   const execution=data.dispatch_execution;
-  const solarSiteConfig=ownerConfig?`<section class="panel feature-panel"><div class="panel-header"><div><p class="eyebrow">SISTEMA FV · ENGINE</p><h2>Potência nominal calculada</h2></div><span class="source-tag">${data.forecast?.solar_potential?.capacity_source==="configured_pv_strings"?"STRINGS":"COMPATIBILIDADE"}</span></div><p>O Engine soma automaticamente a potência nominal das strings ativas. O valor agregado antigo mantém-se apenas como compatibilidade quando ainda não existem strings configuradas.</p><div class="battery-available-kwh"><small>Potência FV nominal total</small><strong>${Number.isFinite(Number(data.forecast?.solar_potential?.capacity_kw))?`${number(Number(data.forecast.solar_potential.capacity_kw),2)} kWp`:"Configura as strings em Owner → Painéis"}</strong></div></section>`:"";
+  const solarSiteConfig="";
   const solarDay=data.forecast?.solar_day||{};
   const solarForecastConfidence=solarDay.confidence==="MEDIUM_INDICATIVE"?"MÉDIA":solarDay.confidence==="LOW_INDICATIVE"?"BAIXA":solarDay.confidence||"SEM DADOS";
   const solarExpectedRemaining=solarDay.state==="ESTIMATED"?solarDay.remaining_estimate_kwh:null;
@@ -678,7 +682,9 @@ function renderAqsDialog(){
 }
 function renderPvStringsSection(config,isOwner){
   const strings=Array.isArray(config.pv_strings)?config.pv_strings:[];
-  return `<section class="panel detail-panel pv-strings-panel"><div class="panel-header"><div><p class="eyebrow">CONFIGURAÇÃO FV · GATEWAY</p><h2>Strings fotovoltaicas</h2></div>${isOwner?`<button class="button primary" id="pv-string-add" type="button">+ Adicionar string</button>`:""}</div><p class="field-note">A potência nominal total é calculada pelo número de painéis e pela potência de cada painel. O estado online/offline é a configuração da string.</p>${strings.length?`<div class="equipment-grid pv-string-grid">${strings.map((item,index)=>`<button class="detail-item pv-string-card" type="button" data-pv-string-edit="${esc(item.id)}" aria-label="${esc(item.name)}, MPPT ${item.mppt}, ${item.active===false?"offline":"online"}; duplo clique para editar"><small>${esc(item.name)}</small><strong>MPPT ${esc(item.mppt)} · ${item.active===false?"OFFLINE":"ONLINE"}</strong><span>${esc(item.manufacturer||"Fabricante não indicado")} · ${Number(item.panel_count)||0} painéis × ${Number(item.panel_power_w)||0} W</span><span>${Number(item.nominal_power_kw)>0?`${esc(new Intl.NumberFormat("pt-PT",{maximumFractionDigits:2}).format(Number(item.nominal_power_kw)))} kWp total`:"Potência nominal por indicar"}</span><span>Duplo clique para editar</span></button>`).join("")}</div>`:`<div class="empty-state">Ainda não há strings registadas.${isOwner?" Adiciona uma para identificar fabricante, painéis, MPPT e estado.":""}</div>`}${isOwner?renderPvStringDialog():""}</section>`;
+  const activeStrings=strings.filter(item=>item.active!==false);
+  const activeCapacityKw=activeStrings.reduce((sum,item)=>{const configured=Number(item.nominal_power_kw),derived=Number(item.panel_count)*Number(item.panel_power_w)/1000;return sum+(Number.isFinite(configured)&&configured>0?configured:Number.isFinite(derived)&&derived>0?derived:0);},0);
+  return `<section class="panel detail-panel pv-strings-panel"><div class="panel-header"><div><p class="eyebrow">CONFIGURAÇÃO FV · GATEWAY</p><h2>Strings fotovoltaicas</h2></div>${isOwner?`<button class="button primary" id="pv-string-add" type="button">+ Adicionar string</button>`:""}</div><p class="field-note">A potência nominal total é calculada pelo número de painéis e pela potência de cada painel. O estado online/offline é a configuração da string.</p><div class="device-detail-grid pv-string-summary"><div class="detail-item"><small>Potência nominal ativa</small><strong>${esc(new Intl.NumberFormat("pt-PT",{maximumFractionDigits:2}).format(activeCapacityKw))} kWp</strong><small>${activeStrings.length} de ${strings.length} strings online</small></div><div class="detail-item"><small>Strings registadas</small><strong>${strings.length}</strong><small>Guardadas na configuração do Gateway</small></div></div>${strings.length?`<div class="equipment-grid pv-string-grid">${strings.map((item,index)=>`<button class="detail-item pv-string-card" type="button" data-pv-string-edit="${esc(item.id)}" aria-label="${esc(item.name)}, MPPT ${item.mppt}, ${item.active===false?"offline":"online"}; duplo clique para editar"><small>${esc(item.name)}</small><strong>MPPT ${esc(item.mppt)} · ${item.active===false?"OFFLINE":"ONLINE"}</strong><span>${esc(item.manufacturer||"Fabricante não indicado")} · ${Number(item.panel_count)||0} painéis × ${Number(item.panel_power_w)||0} W</span><span>${Number(item.nominal_power_kw)>0?`${esc(new Intl.NumberFormat("pt-PT",{maximumFractionDigits:2}).format(Number(item.nominal_power_kw)))} kWp total`:"Potência nominal por indicar"}</span><span>Duplo clique para editar</span></button>`).join("")}</div>`:`<div class="empty-state">Ainda não há strings registadas.${isOwner?" Adiciona uma para identificar fabricante, painéis, MPPT e estado.":""}</div>`}${isOwner?renderPvStringDialog():""}</section>`;
 }
 function renderAqsSection(config,isOwner){
   const loads=(Array.isArray(config.loads)?config.loads:[]).filter(item=>item.kind==="water_heater");
@@ -786,11 +792,11 @@ function renderGatewayHousePage(){
   const planZoom=Number(selected?.plan_zoom||1);
   const floorTabs=`<nav class="gateway-house-floor-tabs" aria-label="Conteúdo do piso">${[["floor","⌂","Visão geral"],["floor-photo","▧","Fotografia"],["plan","▦","Planta"],["rooms","♧","Divisões"],["config","⚙","Configuração"]].map(([id,icon,label])=>`<button type="button" class="${activeTab===id?"active":""}" data-house-tab="${id}"><span aria-hidden="true">${icon}</span>${label}</button>`).join("")}</nav>`;
   const controls=owner?`<div class="gateway-house-owner-actions"><button class="button secondary" data-site-action="add-floor">＋ Adicionar piso</button>${selected?`<button class="text-link" data-site-action="rename-floor" data-floor-id="${esc(selected.id)}">Editar piso</button><button class="text-link danger-link" data-site-action="remove-floor" data-floor-id="${esc(selected.id)}">Remover</button>`:""}</div>`:"";
-  const overview=`<nav class="gateway-house-floor-nav" aria-label="Navegação por piso"><div class="gateway-house-floor-chips">${floorButtons}</div></nav>${selected?`<div class="gateway-house-section-head"><div><h2>${esc(selected.name)} · Divisões</h2><small>${rooms.length} divisões</small></div>${owner?`<button class="text-link" data-site-action="add-room" data-floor-id="${esc(selected.id)}">＋ Adicionar divisão</button>`:""}</div><div class="gateway-house-room-list">${rooms.map(room=>`<button class="gateway-house-room-row" type="button" data-house-select-room="${esc(room.id)}" data-house-room-floor="${esc(selected.id)}"><span class="gateway-house-icon">⌂</span><strong>${esc(room.name)}</strong><span class="gateway-house-arrow">›</span></button>`).join("")||`<div class="empty-state">Ainda não há divisões neste piso.</div>`}</div>${owner?`<div class="gateway-house-owner-actions"><button class="button secondary" data-house-tab="floor-photo">${selected.photo_data_url?"Fotografia":"Adicionar fotografia"}</button><button class="button secondary" data-house-tab="plan">Planta</button><button class="text-link" data-house-tab="config">Configurar piso</button></div>`:""}`:`<div class="gateway-house-section-head"><h2>Divisões de todos os pisos</h2>${owner?`<button class="text-link" data-site-action="add-floor">＋ Adicionar piso</button>`:""}</div>${allRoomGroups||`<div class="empty-state">Adiciona o primeiro piso para começar a organizar a casa.</div>`}`}`;
-  const floorOverview=selected?`<section class="gateway-house-floor-hero" ${selectedPhoto}><span>PISO</span><h1>${esc(selected.name)}</h1><div>${owner?`<button class="button secondary" data-site-action="upload-floor-photo" data-floor-id="${esc(selected.id)}">Substituir fotografia</button><button class="button secondary" data-site-action="upload-plan" data-floor-id="${esc(selected.id)}">${selected.plan_data_url?"Substituir planta":"Adicionar planta"}</button>`:""}</div></section><div class="gateway-house-section-head"><h2>Divisões</h2>${owner?`<button class="text-link" data-site-action="add-room" data-floor-id="${esc(selected.id)}">＋ Adicionar divisão</button>`:""}</div><div class="gateway-house-room-list">${rooms.map(room=>`<button class="gateway-house-room-row" type="button" data-house-select-room="${esc(room.id)}"><span class="gateway-house-icon">⌂</span><strong>${esc(room.name)}</strong><span class="gateway-house-arrow">›</span></button>`).join("")||`<div class="empty-state">Ainda não há divisões neste piso.</div>`}</div>${controls}`:`<div class="empty-state">Adiciona o primeiro piso para começar a organizar a casa.</div>`;
-  const planView=selected?`<div class="gateway-house-section-head"><div><small>CASA › ${esc(selected.name)}</small><h1>Planta do piso</h1></div><div><button class="text-link" data-house-tab="overview">← Casa</button>${owner?`<button class="text-link" data-site-action="upload-plan" data-floor-id="${esc(selected.id)}">${planImage?"Substituir planta":"＋ Adicionar planta"}</button>`:""}</div></div>${owner&&!planImage?`<section class="gateway-house-plan-empty"><span aria-hidden="true">▦</span><div><strong>Adiciona a planta deste piso</strong><small>A imagem fica no fundo; podes depois organizar e ajustar cada divisão.</small></div><button class="button secondary" data-site-action="upload-plan" data-floor-id="${esc(selected.id)}">Escolher imagem</button></section>`:""}${owner&&rooms.length?`<div class="gateway-house-plan-tools"><button type="button" class="${planEditing?"active":""}" data-house-plan-edit="true">${planEditing?"Concluir disposição":"Ajustar divisões"}</button>${planEditing?`<small>Arrasta uma divisão para a mover; usa o canto para ajustar o tamanho.</small>`:""}</div>`:""}<section class="gateway-house-plan${planImage?" has-image":""}" style="--plan-zoom:${planZoom}">${planImage?`<div class="gateway-house-plan-image" style="background-image:url('${esc(planImage)}')"></div>`:""}<div class="gateway-house-plan-tiles${planEditing?" is-editing":""}">${roomTiles}</div>${!rooms.length?`<div class="gateway-house-plan-no-rooms"><span>⌂</span><strong>As divisões aparecem aqui</strong><small>Adiciona as divisões deste piso para as organizar na planta.</small></div>`:""}</section>${owner&&planImage?`<label class="gateway-house-zoom">Tamanho da planta <output id="house-plan-zoom-value">${planZoom.toFixed(1)}×</output><input type="range" min="1" max="2.5" step=".05" value="${planZoom}" data-site-plan-zoom="${esc(selected.id)}"></label>`:""}<div class="gateway-house-section-head"><h2>Divisões</h2>${owner?`<button class="text-link" data-site-action="add-room" data-floor-id="${esc(selected.id)}">＋ Adicionar divisão</button>`:""}</div><div class="gateway-house-room-list">${rooms.map(room=>`<button class="gateway-house-room-row" type="button" data-house-select-room="${esc(room.id)}"><span class="gateway-house-icon">⌂</span><strong>${esc(room.name)}</strong><span class="gateway-house-arrow">›</span></button>`).join("")}</div>${controls}`:`<div class="empty-state">Seleciona um piso.</div>`;
+  const overview=`<nav class="gateway-house-floor-nav" aria-label="Navegação por piso"><div class="gateway-house-floor-chips">${floorButtons}</div></nav>${selected?`<div class="gateway-house-section-head"><div><h2>${esc(selected.name)} · Divisões</h2><small>${rooms.length} divisões</small></div>${owner?`<button class="button secondary" data-site-action="add-room" data-floor-id="${esc(selected.id)}">＋ Adicionar divisão</button>`:""}</div><div class="gateway-house-room-list">${rooms.map(room=>`<button class="gateway-house-room-row" type="button" data-house-select-room="${esc(room.id)}" data-house-room-floor="${esc(selected.id)}"><span class="gateway-house-icon">⌂</span><strong>${esc(room.name)}</strong><span class="gateway-house-arrow">›</span></button>`).join("")||`<div class="empty-state">Ainda não há divisões neste piso.</div>`}</div>${owner?`<div class="gateway-house-owner-actions"><button class="button secondary" data-house-tab="floor-photo">${selected.photo_data_url?"Fotografia":"Adicionar fotografia"}</button><button class="button secondary" data-house-tab="plan">Planta</button><button class="text-link" data-house-tab="config">Configurar piso</button></div>`:""}`:`<div class="gateway-house-section-head"><h2>Divisões de todos os pisos</h2>${owner?`<button class="text-link" data-site-action="add-floor">＋ Adicionar piso</button>`:""}</div>${allRoomGroups||`<div class="empty-state">Adiciona o primeiro piso para começar a organizar a casa.</div>`}`}`;
+  const floorOverview=selected?`<section class="gateway-house-floor-hero" ${selectedPhoto}><span>PISO</span><h1>${esc(selected.name)}</h1><div>${owner?`<button class="button secondary" data-site-action="upload-floor-photo" data-floor-id="${esc(selected.id)}">Substituir fotografia</button><button class="button secondary" data-site-action="upload-plan" data-floor-id="${esc(selected.id)}">${selected.plan_data_url?"Substituir planta":"Adicionar planta"}</button>`:""}</div></section><div class="gateway-house-section-head"><h2>Divisões</h2>${owner?`<button class="button secondary" data-site-action="add-room" data-floor-id="${esc(selected.id)}">＋ Adicionar divisão</button>`:""}</div><div class="gateway-house-room-list">${rooms.map(room=>`<button class="gateway-house-room-row" type="button" data-house-select-room="${esc(room.id)}"><span class="gateway-house-icon">⌂</span><strong>${esc(room.name)}</strong><span class="gateway-house-arrow">›</span></button>`).join("")||`<div class="empty-state">Ainda não há divisões neste piso.</div>`}</div>${controls}`:`<div class="empty-state">Adiciona o primeiro piso para começar a organizar a casa.</div>`;
+  const planView=selected?`<div class="gateway-house-section-head"><div><small>CASA › ${esc(selected.name)}</small><h1>Planta do piso</h1></div><div><button class="text-link" data-house-tab="overview">← Casa</button>${owner?`<button class="text-link" data-site-action="upload-plan" data-floor-id="${esc(selected.id)}">${planImage?"Substituir planta":"＋ Adicionar planta"}</button>`:""}</div></div>${owner&&!planImage?`<section class="gateway-house-plan-empty"><span aria-hidden="true">▦</span><div><strong>Adiciona a planta deste piso</strong><small>A imagem fica no fundo; podes depois organizar e ajustar cada divisão.</small></div><button class="button secondary" data-site-action="upload-plan" data-floor-id="${esc(selected.id)}">Escolher imagem</button></section>`:""}${owner&&rooms.length?`<div class="gateway-house-plan-tools"><button type="button" class="${planEditing?"active":""}" data-house-plan-edit="true">${planEditing?"Concluir disposição":"Ajustar divisões"}</button>${planEditing?`<small>Arrasta uma divisão para a mover; usa o canto para ajustar o tamanho.</small>`:""}</div>`:""}<section class="gateway-house-plan${planImage?" has-image":""}" style="--plan-zoom:${planZoom}">${planImage?`<div class="gateway-house-plan-image" style="background-image:url('${esc(planImage)}')"></div>`:""}<div class="gateway-house-plan-tiles${planEditing?" is-editing":""}">${roomTiles}</div>${!rooms.length?`<div class="gateway-house-plan-no-rooms"><span>⌂</span><strong>As divisões aparecem aqui</strong><small>Adiciona as divisões deste piso para as organizar na planta.</small></div>`:""}</section>${owner&&planImage?`<label class="gateway-house-zoom">Tamanho da planta <output id="house-plan-zoom-value">${planZoom.toFixed(1)}×</output><input type="range" min="1" max="2.5" step=".05" value="${planZoom}" data-site-plan-zoom="${esc(selected.id)}"></label>`:""}<div class="gateway-house-section-head"><h2>Divisões</h2>${owner?`<button class="button secondary" data-site-action="add-room" data-floor-id="${esc(selected.id)}">＋ Adicionar divisão</button>`:""}</div><div class="gateway-house-room-list">${rooms.map(room=>`<button class="gateway-house-room-row" type="button" data-house-select-room="${esc(room.id)}"><span class="gateway-house-icon">⌂</span><strong>${esc(room.name)}</strong><span class="gateway-house-arrow">›</span></button>`).join("")}</div>${controls}`:`<div class="empty-state">Seleciona um piso.</div>`;
   const photoView=selected?`<div class="gateway-house-section-head"><div><small>CASA › ${esc(selected.name)}</small><h1>Fotografia do piso</h1></div><div><button class="text-link" data-house-tab="overview">← Casa</button>${owner?`<button class="button secondary" data-site-action="upload-floor-photo" data-floor-id="${esc(selected.id)}">${selected.photo_data_url?"Substituir fotografia":"Adicionar fotografia"}</button>`:""}</div></div>${selected.photo_data_url?`<div class="gateway-house-photo-view" style="background-image:url('${esc(selected.photo_data_url)}')"></div>`:`<div class="empty-state">Ainda não foi adicionada uma fotografia a este piso.</div>`}`:`<div class="empty-state">Seleciona um piso.</div>`;
-  const configView=selected?`<div class="gateway-house-section-head"><div><small>CASA › ${esc(selected.name)}</small><h1>Configuração · ${esc(selected.name)}</h1></div><button class="text-link" data-house-tab="overview">← Casa</button></div><section class="gateway-house-config-card"><label>Nome do piso</label><div><strong>${esc(selected.name)}</strong>${owner?`<button class="button secondary" data-site-action="rename-floor" data-floor-id="${esc(selected.id)}">Renomear</button>`:""}</div></section><section class="gateway-house-config-card"><label>Fotografia do piso</label>${selected.photo_data_url?`<div class="gateway-house-photo-thumb" style="background-image:url('${esc(selected.photo_data_url)}')"></div>`:`<p class="field-note">Sem fotografia.</p>`}${owner?`<button class="button secondary" data-site-action="upload-floor-photo" data-floor-id="${esc(selected.id)}">${selected.photo_data_url?"Substituir fotografia":"Adicionar fotografia"}</button>`:""}</section><section class="gateway-house-config-card"><label>Planta e divisões (${rooms.length})</label><p class="field-note">A planta é guardada no Gateway e partilhada entre sessões.</p>${owner?`<button class="button secondary" data-site-action="upload-plan" data-floor-id="${esc(selected.id)}">${planImage?"Substituir planta":"Adicionar planta"}</button><button class="text-link" data-site-action="add-room" data-floor-id="${esc(selected.id)}">＋ Adicionar divisão</button>`:""}${rooms.map(room=>`<div class="gateway-house-config-room"><span>${esc(room.name)}</span>${owner?`<button class="text-link" data-site-action="upload-room-photo" data-floor-id="${esc(selected.id)}" data-room-id="${esc(room.id)}">${room.photo_data_url?"Substituir foto":"Adicionar foto"}</button><button class="text-link" data-site-action="rename-room" data-floor-id="${esc(selected.id)}" data-room-id="${esc(room.id)}">Renomear</button><button class="text-link danger-link" data-site-action="remove-room" data-floor-id="${esc(selected.id)}" data-room-id="${esc(room.id)}">Remover</button>`:""}</div>`).join("")}</section>`:`<div class="empty-state">Seleciona um piso.</div>`;
+  const configView=selected?`<div class="gateway-house-section-head"><div><small>CASA › ${esc(selected.name)}</small><h1>Configuração · ${esc(selected.name)}</h1></div><button class="text-link" data-house-tab="overview">← Casa</button></div><section class="gateway-house-config-card"><label>Nome do piso</label><div><strong>${esc(selected.name)}</strong>${owner?`<button class="button secondary" data-site-action="rename-floor" data-floor-id="${esc(selected.id)}">Renomear</button>`:""}</div></section><section class="gateway-house-config-card"><label>Fotografia do piso</label>${selected.photo_data_url?`<div class="gateway-house-photo-thumb" style="background-image:url('${esc(selected.photo_data_url)}')"></div>`:`<p class="field-note">Sem fotografia.</p>`}${owner?`<button class="button secondary" data-site-action="upload-floor-photo" data-floor-id="${esc(selected.id)}">${selected.photo_data_url?"Substituir fotografia":"Adicionar fotografia"}</button>`:""}</section><section class="gateway-house-config-card"><label>Planta e divisões (${rooms.length})</label><p class="field-note">A planta é guardada no Gateway e partilhada entre sessões.</p>${owner?`<button class="button secondary" data-site-action="upload-plan" data-floor-id="${esc(selected.id)}">${planImage?"Substituir planta":"Adicionar planta"}</button><button class="button secondary" data-site-action="add-room" data-floor-id="${esc(selected.id)}">＋ Adicionar divisão</button>`:""}${rooms.map(room=>`<div class="gateway-house-config-room"><span>${esc(room.name)}</span>${owner?`<button class="text-link" data-site-action="upload-room-photo" data-floor-id="${esc(selected.id)}" data-room-id="${esc(room.id)}">${room.photo_data_url?"Substituir foto":"Adicionar foto"}</button><button class="text-link" data-site-action="rename-room" data-floor-id="${esc(selected.id)}" data-room-id="${esc(room.id)}">Renomear</button><button class="text-link danger-link" data-site-action="remove-room" data-floor-id="${esc(selected.id)}" data-room-id="${esc(room.id)}">Remover</button>`:""}</div>`).join("")}</section>`:`<div class="empty-state">Seleciona um piso.</div>`;
   const room=rooms.find(item=>item.id===houseView.roomId);
   const roomView=room?`<div class="gateway-house-section-head"><div><small>${esc(selected?.name||"Piso")} › DIVISÃO</small><h1>${esc(room.name)}</h1></div><button class="text-link" data-house-tab="overview">← Casa</button></div>${room.photo_data_url?`<div class="gateway-house-photo-view room-photo" style="background-image:url('${esc(room.photo_data_url)}')"></div>`:`<div class="gateway-house-photo-empty"><span>⌂</span><p>Ainda não foi adicionada uma fotografia a esta divisão.</p></div>`}<section class="gateway-house-room-detail"><h2>${esc(room.name)}</h2><p>Os dispositivos desta divisão aparecerão aqui quando forem associados a esta divisão.</p>${owner?`<button class="button secondary" data-site-action="upload-room-photo" data-floor-id="${esc(selected.id)}" data-room-id="${esc(room.id)}">${room.photo_data_url?"Substituir fotografia":"Adicionar fotografia"}</button><button class="text-link" data-site-action="rename-room" data-floor-id="${esc(selected.id)}" data-room-id="${esc(room.id)}">Renomear divisão</button><button class="text-link danger-link" data-site-action="remove-room" data-floor-id="${esc(selected.id)}" data-room-id="${esc(room.id)}">Remover divisão</button>`:""}</section>`:`<div class="empty-state">Seleciona uma divisão.</div>`;
   const content=activeTab==="room"?roomView:activeTab==="plan"?planView:activeTab==="floor-photo"?photoView:activeTab==="config"?configView:overview;
@@ -1194,7 +1200,7 @@ $("#page-content").addEventListener("change",async e=>{
   if(photoInput){
     const file=photoInput.files?.[0], kind=photoInput.dataset.photoKind, floorId=photoInput.dataset.floorId, roomId=photoInput.dataset.roomId;
     photoInput.value="";if(!file||sessionInfo().user?.role!=="owner")return;
-    try{const readable=await makeBrowserReadablePhoto(file),photo=await readAndCompressImage(readable),current=state.siteProfile||{name:"Solar Energy",floors:[]},floors=structuredClone(current.floors||[]),floor=floors.find(item=>item.id===floorId);if(!floor)throw new Error("O piso selecionado já não existe.");if(kind==="plan")floor.plan_data_url=photo;else if(kind==="room"){const room=floor.rooms.find(item=>item.id===roomId);if(!room)throw new Error("A divisão selecionada já não existe.");room.photo_data_url=photo;}else floor.photo_data_url=photo;state.siteProfile=await saveGatewaySiteProfile({...current,floors});render();showFeatureNotice(kind==="plan"?"Planta guardada no Gateway.":kind==="room"?"Fotografia da divisão guardada no Gateway.":"Fotografia do piso guardada no Gateway.");}
+    try{const readable=await makeBrowserReadablePhoto(file),photo=await readAndCompressImage(readable),saved=await saveGatewaySitePhoto({kind,floorId,roomId,photoDataUrl:photo}),floor=saved.floors?.find(item=>item.id===floorId);if(!floor)throw new Error("O Gateway não confirmou o piso atualizado.");if(kind==="plan")floor.plan_data_url=photo;else if(kind==="room"){const room=floor.rooms?.find(item=>item.id===roomId);if(!room)throw new Error("O Gateway não confirmou a divisão atualizada.");room.photo_data_url=photo;}else floor.photo_data_url=photo;state.siteProfile=saved;render();showFeatureNotice(kind==="plan"?"Planta guardada no Gateway.":kind==="room"?"Fotografia da divisão guardada no Gateway.":"Fotografia do piso guardada no Gateway.");}
     catch(error){showFeatureNotice(`Não foi possível guardar a imagem: ${error.message}`);}return;
   }
   const zoom=e.target.closest("[data-site-plan-zoom]");if(zoom){const current=state.siteProfile||{floors:[]},floors=structuredClone(current.floors||[]),floor=floors.find(item=>item.id===zoom.dataset.sitePlanZoom);if(!floor)return;floor.plan_zoom=Number(zoom.value);const out=$("#house-plan-zoom-value");if(out)out.textContent=`${Number(zoom.value).toFixed(1)}×`;try{state.siteProfile=await saveGatewaySiteProfile({...current,floors});}catch(error){showFeatureNotice(`Não foi possível guardar o tamanho da planta: ${error.message}`);}return;}
@@ -1513,12 +1519,14 @@ function updateSessionUi() {
   const isOwner = Boolean(info.authenticated && info.user.role === "owner");
   $("#owner-nav-item").hidden = !isOwner;
   $("#owner-mobile-link").hidden = !isOwner;
+  renderGatewayUpdateBanner();
   if (info.authenticated) {
     const presence = presenceInfo();
     status.textContent = `Sessão autenticada: ${info.user.username} (${info.user.role}) · token apenas em memória · presença da sessão: ${presence.state || "unknown"}; não prova presença física.`;
     invitePanel.hidden = info.user.role !== "owner";
     userPanel.hidden = info.user.role !== "owner";
     if (info.user.role === "owner") {
+      if(!gatewayOwnerAutoCheckStarted){gatewayOwnerAutoCheckStarted=true;setTimeout(()=>runGatewayUpdateCheck({automatic:true}),1200);}
       refreshInviteList().catch(error => { $("#gateway-invite-list").textContent = `Não foi possível consultar convites: ${error.message}`; });
       refreshGatewayUsers().catch(error => { $("#gateway-user-list").textContent = `Não foi possível consultar utilizadores: ${error.message}`; });
     }
@@ -1543,6 +1551,7 @@ function updateSessionUi() {
       });
     }
   } else {
+    gatewayOwnerAutoCheckStarted=false;
     status.textContent = "Sem sessão ativa. Ao testar o endpoint, este dispositivo tenta autenticar-se pela identidade guardada.";
     invitePanel.hidden = true;
     userPanel.hidden = true;
@@ -1557,10 +1566,15 @@ function updateSessionUi() {
 async function refreshHardwareIntegrationConfig() {
   const config = await readGatewayHardwareIntegrationConfig();
   const deye = config.deye || {}, miner = config.antminer || {}, tuya = config.tuya || {};
+  const deyeCloud=config.deye_cloud||{};
   state.tuyaDevices=tuya.devices||[];
   $("#hardware-deye-host").value = deye.host || "";
   $("#hardware-deye-port").value = deye.port || 502;
   $("#hardware-deye-unit").value = deye.unit_id ?? 1;
+  $("#deye-cloud-center").value=deyeCloud.data_center||"eu";
+  $("#deye-cloud-app-id").value=deyeCloud.app_id||"";
+  $("#deye-cloud-email").value=deyeCloud.email||"";
+  $("#deye-cloud-app-secret").value="";$("#deye-cloud-password").value="";
   $("#hardware-antminer-host").value = miner.host || "";
   $("#hardware-antminer-port").value = miner.port || 4028;
   $("#hardware-antminer-rest-port").value = miner.rest_port || 80;
@@ -1581,6 +1595,7 @@ async function refreshHardwareIntegrationConfig() {
   $("#huawei-router-status").textContent = config.huawei_router?.configured
     ? `Huawei configurado em ${config.huawei_router.host}; palavra-passe guardada apenas no Gateway.`
     : "Indica o IP e as credenciais locais do Huawei para tentar ler a lista de clientes.";
+  $("#deye-cloud-status").textContent=deyeCloud.configured?"Acesso Deye Cloud guardado no Gateway. Os segredos não são devolvidos à PWA.":"Configura a aplicação de developer Deye e a conta para importar o histórico.";
   renderTuyaDeviceCards(tuya.devices || []);
   return config;
 }
@@ -1681,6 +1696,35 @@ function parseTuyaDevices() {
 $("#deye-save").addEventListener("click", event => {
   const host = $("#hardware-deye-host").value.trim();
   saveHardwareProvider("deye", { enabled: Boolean(host), host, port: Number($("#hardware-deye-port").value), unit_id: Number($("#hardware-deye-unit").value), model: "SUN-15K-SG05LP3-EU-SM2" }, event.currentTarget, "deye-status");
+});
+$("#deye-cloud-save").addEventListener("click",async event=>{
+  const button=event.currentTarget,status=$("#deye-cloud-status");if(!ownerCanManageHardware("#deye-cloud-status"))return;
+  button.disabled=true;status.textContent="A guardar as credenciais apenas no Gateway…";
+  try{
+    const existing=await readGatewayHardwareIntegrationConfig(),previous=existing.deye_cloud||{};
+    const payload={data_center:$("#deye-cloud-center").value,app_id:$("#deye-cloud-app-id").value.trim()||previous.app_id,email:$("#deye-cloud-email").value.trim()||previous.email};
+    if($("#deye-cloud-app-secret").value)payload.app_secret=$("#deye-cloud-app-secret").value;
+    if($("#deye-cloud-password").value)payload.password=$("#deye-cloud-password").value;
+    const saved=await saveGatewayHardwareIntegrationConfig({deye_cloud:payload});
+    $("#deye-cloud-app-secret").value="";$("#deye-cloud-password").value="";
+    status.textContent=saved.deye_cloud?.configured?"Acesso à Deye Cloud guardado no Gateway. Segredos ocultos.":"Configuração incompleta.";
+  }catch(error){status.textContent=`Não foi possível guardar o acesso Deye Cloud: ${error.message}`;}
+  finally{button.disabled=false;}
+});
+$("#deye-cloud-stations").addEventListener("click",async event=>{
+  const button=event.currentTarget,status=$("#deye-cloud-status"),select=$("#deye-cloud-station");if(!ownerCanManageHardware("#deye-cloud-status"))return;
+  button.disabled=true;status.textContent="A autenticar e a consultar as estações Deye…";
+  try{const result=await readGatewayDeyeCloudStations();select.innerHTML='<option value="">Seleciona a estação</option>'+(result.stations||[]).map(item=>`<option value="${esc(item.station_id)}">${esc(item.name)} · ${esc(item.station_id)}</option>`).join("");status.textContent=`Foram encontradas ${(result.stations||[]).length} estação(ões). As credenciais continuam apenas no Gateway.`;}
+  catch(error){status.textContent=`Não foi possível consultar a Deye Cloud: ${error.message}`;}
+  finally{button.disabled=false;}
+});
+$("#deye-cloud-import").addEventListener("click",async event=>{
+  const button=event.currentTarget,status=$("#deye-cloud-status"),stationId=$("#deye-cloud-station").value;if(!ownerCanManageHardware("#deye-cloud-status"))return;
+  if(!stationId){status.textContent="Lê as estações e seleciona uma antes de importar.";return;}
+  button.disabled=true;status.textContent="A importar o histórico dos últimos 90 dias. As amostras locais serão preservadas…";
+  try{const result=await importGatewayDeyeCloudHistory(stationId);status.textContent=`Importação concluída: ${result.readings_added} leituras novas de ${result.source_rows} amostras. Histórico local preservado.`;await refreshGatewayReadings();}
+  catch(error){status.textContent=`A importação do histórico falhou: ${error.message}`;}
+  finally{button.disabled=false;}
 });
 $("#antminer-save").addEventListener("click", event => {
   const host = $("#hardware-antminer-host").value.trim();
@@ -2055,6 +2099,14 @@ function showGatewayUpdateMessage(message) {
   const target = $("#gateway-update-message");
   if (target) target.textContent = message;
 }
+function renderGatewayUpdateBanner(){
+  const banner=$("#gateway-update-banner"),label=$("#gateway-update-banner-label");
+  if(!banner||!label)return;
+  if(!gatewayUpdateNotice){try{const version=localStorage.getItem("solarminer-gateway-update-notice-v1");if(version)gatewayUpdateNotice={available_version:version};}catch{}}
+  const currentSession=sessionInfo(),owner=Boolean(currentSession.authenticated&&currentSession.user?.role==="owner");
+  banner.hidden=!owner||!gatewayUpdateNotice;
+  if(gatewayUpdateNotice)label.textContent=`Atualização ${gatewayUpdateNotice.available_version} disponível · toca para verificar novamente`;
+}
 function setGatewayUpdateDetails(result) {
   const details = $("#gateway-update-details");
   const apply = $("#gateway-update-apply");
@@ -2118,35 +2170,45 @@ async function refreshGatewayUpdateStatus() {
     : `Estado da atualização: ${result.status || "desconhecido"}${result.target_version ? ` · destino ${result.target_version}` : ""}.`);
   return result;
 }
-$("#gateway-update-check").addEventListener("click", async () => {
+async function runGatewayUpdateCheck({automatic=false}={}) {
   const info = sessionInfo();
-  if (!info.authenticated || info.user.role !== "owner") { showGatewayUpdateMessage("Só o Owner autenticado pode verificar atualizações."); return; }
+  if (!info.authenticated || info.user.role !== "owner") { if(!automatic)showGatewayUpdateMessage("Só o Owner autenticado pode verificar atualizações."); return; }
+  if(gatewayUpdateCheckInProgress)return;
+  gatewayUpdateCheckInProgress=true;
   const button = $("#gateway-update-check");
-  button.disabled = true;
+  if(button)button.disabled = true;
   verifiedGatewayUpdate = null;
   setGatewayUpdateDetails(null);
-  const checking=showOperationDialog({title:"Verificar atualização",message:"A verificar o pacote e a assinatura…",locked:true,progress:true});
+  const checking=automatic?null:showOperationDialog({title:"Verificar atualização",message:"A verificar o pacote e a assinatura…",locked:true,progress:true});
   try {
-    const result = await checkGatewayUpdate($("#gateway-update-repository").value.trim());
+    let repositoryUrl=$("#gateway-update-repository")?.value.trim()||"";
+    if(!repositoryUrl){const source=await readGatewayUpdateSource();repositoryUrl=source.repository_url||"";if(repositoryUrl&&$("#gateway-update-repository"))$("#gateway-update-repository").value=repositoryUrl;}
+    if(!repositoryUrl)throw new Error("Não há um repositório de atualização autorizado configurado no Gateway.");
+    const result = await checkGatewayUpdate(repositoryUrl);
     setGatewayUpdateDetails(result);
     if (result.status === "verified_staged") {
       if(result.activation_available){
-        renderOperationDialog({title:"Atualização verificada",message:`Versão instalada: ${result.installed_version||"desconhecida"}. Nova versão: ${result.available_version}. Queres aplicar agora?`,actions:[{label:"Cancelar",value:"cancel"},{label:"Atualizar",value:"apply",primary:true}]});
-        const choice=await checking;
-        if(choice==="apply")await applyVerifiedGatewayUpdate(result);
+        gatewayUpdateNotice=result;gatewayAutoUpdateSuppressed=true;try{localStorage.setItem("solarminer-gateway-update-notice-v1",result.available_version);}catch{}renderGatewayUpdateBanner();
+        const prompt={title:"Atualização verificada",message:`Versão instalada: ${result.installed_version||"desconhecida"}. Nova versão: ${result.available_version}. Queres aplicar agora?`,actions:[{label:"Cancelar",value:"cancel"},{label:"Atualizar",value:"apply",primary:true}]};
+        const choice=automatic?await showOperationDialog(prompt):(renderOperationDialog(prompt),await checking);
+        if(choice==="apply"){gatewayUpdateNotice=null;try{localStorage.removeItem("solarminer-gateway-update-notice-v1");}catch{}renderGatewayUpdateBanner();await applyVerifiedGatewayUpdate(result);}
+        else {gatewayUpdateNotice=result;renderGatewayUpdateBanner();}
       } else {
         renderOperationDialog({title:"Atualização bloqueada",message:"O pacote foi verificado, mas a verificação de recuperação bloqueou a instalação.",actions:[{label:"OK",value:"ok",primary:true}]});
-        await checking;
+        gatewayUpdateNotice=result;gatewayAutoUpdateSuppressed=true;renderGatewayUpdateBanner();if(!automatic)await checking;else await new Promise(resolve=>{$("#operation-dialog").addEventListener("close",resolve,{once:true});});
       }
     } else if (result.status === "current") {
-      renderOperationDialog({title:"Gateway atualizado",message:`Versão verificada: ${result.latest_version||result.installed_version||"atual"}.`,actions:[{label:"OK",value:"ok",primary:true}]});await checking;
+      gatewayUpdateNotice=null;gatewayAutoUpdateSuppressed=false;try{localStorage.removeItem("solarminer-gateway-update-notice-v1");}catch{}renderGatewayUpdateBanner();
+      if(!automatic){renderOperationDialog({title:"Gateway atualizado",message:`Versão verificada: ${result.latest_version||result.installed_version||"atual"}.`,actions:[{label:"OK",value:"ok",primary:true}]});await checking;}
     } else {
-      renderOperationDialog({title:"Verificação falhou",message:gatewayUpdateFailureText(result.message),actions:[{label:"OK",value:"ok",primary:true}]});await checking;
+      if(!automatic){renderOperationDialog({title:"Verificação falhou",message:gatewayUpdateFailureText(result.message),actions:[{label:"OK",value:"ok",primary:true}]});await checking;}
     }
   } catch (error) {
-    renderOperationDialog({title:"Verificação falhou",message:error.message||"Não foi possível verificar a atualização.",actions:[{label:"OK",value:"ok",primary:true}]});await checking;
-  } finally { button.disabled = false; }
-});
+    if(!automatic){renderOperationDialog({title:"Verificação falhou",message:error.message||"Não foi possível verificar a atualização.",actions:[{label:"OK",value:"ok",primary:true}]});await checking;}
+  } finally { gatewayUpdateCheckInProgress=false;if(button)button.disabled=false; }
+}
+$("#gateway-update-check").addEventListener("click", () => runGatewayUpdateCheck());
+$("#gateway-update-banner").addEventListener("click", () => runGatewayUpdateCheck());
 async function refreshGatewayTailscale() {
   const info=sessionInfo();
   if(!info.authenticated || info.user.role!=="owner") throw new Error("Apenas o Owner autenticado pode gerir Tailscale.");
@@ -2303,3 +2365,8 @@ setInterval(() => {
     refreshGatewayReadings();
   }
 }, 10_000);
+setInterval(() => {
+  const info=sessionInfo();
+  if(document.visibilityState!=="visible"||!info.authenticated||info.user?.role!=="owner"||gatewayAutoUpdateSuppressed||gatewayUpdateCheckInProgress||$("#operation-dialog")?.open)return;
+  runGatewayUpdateCheck({automatic:true});
+},60_000);

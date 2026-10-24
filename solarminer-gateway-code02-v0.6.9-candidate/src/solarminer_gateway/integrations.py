@@ -21,6 +21,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,11 @@ TESLA_API_BASES = {
     "china": "https://fleet-api.prd.cn.vn.cloud.tesla.cn",
 }
 TESLA_AUTH_URL = "https://fleet-auth.prd.vn.cloud.tesla.com/oauth2/v3/token"
+DEYE_CLOUD_BASES = {
+    "eu": "https://eu1-developer.deyecloud.com/v1.0",
+    "am": "https://us1-developer.deyecloud.com/v1.0",
+    "india": "https://in1-developer.deyecloud.com/v1.0",
+}
 MAX_CONFIG_BYTES = 1_048_576
 MAX_TUYA_DEVICES = 200
 CGMINER_COMMANDS = ("summary", "stats", "devs")
@@ -116,6 +122,7 @@ def save_config(value: dict[str, Any]) -> dict[str, Any]:
 def public_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
     config = value if value is not None else load_config()
     tuya = config.get("tuya", {}) if isinstance(config.get("tuya", {}), dict) else {}
+    deye_cloud = config.get("deye_cloud", {}) if isinstance(config.get("deye_cloud", {}), dict) else {}
     return {
         "deye": {k: config.get("deye", {}).get(k) for k in ("host", "port", "unit_id", "model") if config.get("deye", {}).get(k) is not None},
         "antminer": {k: config.get("antminer", {}).get(k) for k in ("host", "port", "rest_port", "model") if config.get("antminer", {}).get(k) is not None},
@@ -123,6 +130,9 @@ def public_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
         "huawei_router": {"host": config.get("huawei_router", {}).get("host", "192.168.8.1"),
                           "username": config.get("huawei_router", {}).get("username", "admin"),
                           "configured": bool(config.get("huawei_router", {}).get("password"))},
+        "deye_cloud": {"data_center": deye_cloud.get("data_center", "eu"), "app_id": deye_cloud.get("app_id"),
+                       "email": deye_cloud.get("email"), "configured": bool(deye_cloud.get("app_id") and deye_cloud.get("app_secret") and deye_cloud.get("email") and deye_cloud.get("password")),
+                       "secrets_returned": False},
         "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "uid": tuya.get("uid"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": [{"device_id": x.get("device_id"), "name": x.get("name"), "room": x.get("room", ""), "floor": x.get("floor", ""), "name_source": x.get("name_source", "cloud"), "switch_code": x.get("switch_code"), "switch_channels": [item.get("code") for item in x.get("functions", []) if isinstance(item, dict) and str(item.get("type", "")).lower() in {"bool", "boolean"}], "channel_labels": x.get("channel_labels", {}), "capability_labels": x.get("capability_labels", {}), "level_code": x.get("level_code"), "level_min": x.get("level_min", 0), "level_max": x.get("level_max", 100), "category": x.get("category"), "product_id": x.get("product_id"), "product_name": x.get("product_name"), "online": x.get("online"), "ip": x.get("local_ip", ""), "local_ip": x.get("local_ip", ""), "local_mac": x.get("local_mac", ""), "local_protocol": x.get("local_protocol", "3.3"), "local_dps_map": x.get("local_dps_map", {}), "local_control_state": x.get("local_control_state", "not_tested"), "cloud_source": x.get("cloud_source"), "cloud_missing": x.get("cloud_missing", False), "local_key_available": bool(x.get("local_key")), "functions": x.get("functions", []), "status_spec": x.get("status_spec", []), "current_status": x.get("current_status", []), "last_status_at": x.get("last_status_at")} for x in tuya.get("devices", []) if isinstance(x, dict)], "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
         "secrets_returned": False,
     }
@@ -160,7 +170,7 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
     if "tesla" in payload:
         raise ValueError("tesla_config_must_use_ev_api")
     old = existing if existing is not None else load_config()
-    result: dict[str, Any] = {k: old.get(k, {}) for k in ("deye", "antminer", "tuya", "huawei_router")}
+    result: dict[str, Any] = {k: old.get(k, {}) for k in ("deye", "antminer", "tuya", "huawei_router", "deye_cloud")}
     result["tesla"] = old.get("tesla", {})
     if "deye" in payload:
         item = payload["deye"]
@@ -209,6 +219,31 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
             result["huawei_router"] = {"host": host, "username": username.strip(), "password": password}
         else:
             result["huawei_router"] = {}
+    if "deye_cloud" in payload:
+        item = payload["deye_cloud"]
+        if not isinstance(item, dict):
+            raise ValueError("invalid_deye_cloud_config")
+        if item.get("enabled", True):
+            center = item.get("data_center", result.get("deye_cloud", {}).get("data_center", "eu"))
+            if center not in DEYE_CLOUD_BASES:
+                raise ValueError("invalid_deye_cloud_data_center")
+            previous = result.get("deye_cloud", {})
+            app_id = item.get("app_id", previous.get("app_id"))
+            app_secret = item.get("app_secret") or previous.get("app_secret")
+            email = item.get("email", previous.get("email"))
+            password = item.get("password") or previous.get("password")
+            if not isinstance(app_id, str) or not 1 <= len(app_id) <= 256:
+                raise ValueError("invalid_deye_cloud_app_id")
+            if not isinstance(app_secret, str) or not 8 <= len(app_secret) <= 512:
+                raise ValueError("invalid_deye_cloud_app_secret")
+            if not isinstance(email, str) or not 3 <= len(email) <= 320 or "@" not in email:
+                raise ValueError("invalid_deye_cloud_email")
+            if not isinstance(password, str) or not 1 <= len(password) <= 512:
+                raise ValueError("invalid_deye_cloud_password")
+            result["deye_cloud"] = {"data_center": center, "app_id": app_id.strip(), "app_secret": app_secret,
+                                    "email": email.strip(), "password": password}
+        else:
+            result["deye_cloud"] = {}
     if "tuya" in payload:
         item = payload["tuya"]
         if not isinstance(item, dict): raise ValueError("invalid_tuya_config")
@@ -1210,6 +1245,118 @@ def read_tesla(config: dict[str, Any], persist_rotated_token=None) -> tuple[dict
         output.append({"vehicle_id": vehicle_id, "name": vehicle.get("display_name"), "vin_suffix": vin[-4:] if isinstance(vin, str) and len(vin) >= 4 else None,
                        "charge_state": safe_charge, "trust": "LIVE_UNVERIFIED"})
     return ({"vehicles": output, "selected_count": len(selected), "source": "TESLA_FLEET_API_EV_CHARGING_READ_ONLY", "trust": "LIVE_UNVERIFIED", "control_commands_sent": False, "observed_at": time.time()}, rotated_refresh)
+
+
+def _deye_cloud_request(center: str, path: str, *, method: str = "POST", body: dict[str, Any] | None = None,
+                        token: str | None = None, query: dict[str, Any] | None = None) -> dict[str, Any]:
+    if center not in DEYE_CLOUD_BASES or not path.startswith("/") or ".." in path:
+        raise ValueError("invalid_deye_cloud_endpoint")
+    url = DEYE_CLOUD_BASES[center] + path
+    if query:
+        url += "?" + urllib.parse.urlencode(query)
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = token if token.lower().startswith("bearer ") else "Bearer " + token
+    data = json.dumps(body or {}, separators=(",", ":")).encode("utf-8") if method != "GET" else None
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            raw = response.read(4 * 1024 * 1024 + 1)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError("deye_cloud_http_error") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError("deye_cloud_connection_failed") from exc
+    if len(raw) > 4 * 1024 * 1024:
+        raise RuntimeError("deye_cloud_response_too_large")
+    try:
+        result = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("deye_cloud_invalid_response") from exc
+    if not isinstance(result, dict):
+        raise RuntimeError("deye_cloud_invalid_response")
+    if result.get("success") is False or result.get("code") not in (None, 1000000, "1000000"):
+        raise RuntimeError("deye_cloud_request_rejected")
+    return result
+
+
+def _deye_cloud_token(config: dict[str, Any]) -> str:
+    center = config.get("data_center", "eu")
+    app_id = config.get("app_id")
+    secret = config.get("app_secret")
+    email = config.get("email")
+    password = config.get("password")
+    if center not in DEYE_CLOUD_BASES or not all(isinstance(value, str) and value for value in (app_id, secret, email, password)):
+        raise ValueError("deye_cloud_not_configured")
+    result = _deye_cloud_request(center, "/account/token", query={"appId": app_id}, body={
+        "appSecret": secret, "email": email,
+        "password": hashlib.sha256(password.encode("utf-8")).hexdigest(),
+    })
+    token = result.get("accessToken")
+    if not isinstance(token, str) or not token:
+        raise RuntimeError("deye_cloud_token_missing")
+    return token
+
+
+def deye_cloud_list_stations(config: dict[str, Any]) -> list[dict[str, Any]]:
+    token = _deye_cloud_token(config)
+    stations: list[dict[str, Any]] = []
+    for page in range(1, 101):
+        result = _deye_cloud_request(config.get("data_center", "eu"), "/station/list", token=token,
+                                     body={"page": page, "size": 100})
+        batch = result.get("stationListItems", result.get("stationList", []))
+        if not isinstance(batch, list):
+            raise RuntimeError("deye_cloud_station_list_invalid")
+        stations.extend({"station_id": item.get("id", item.get("stationId")),
+                         "name": item.get("name", item.get("stationName", "Deye station"))}
+                        for item in batch if isinstance(item, dict) and item.get("id", item.get("stationId")) is not None)
+        total = result.get("total")
+        if not batch or (isinstance(total, int) and len(stations) >= total) or len(batch) < 100:
+            break
+    return stations[:10000]
+
+
+def _deye_cloud_timestamp(value: Any) -> str | None:
+    try:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            stamp = float(value)
+            if stamp > 10_000_000_000:
+                stamp /= 1000
+            return datetime.fromtimestamp(stamp, timezone.utc).isoformat(timespec="seconds")
+        if isinstance(value, str) and value:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc).isoformat(timespec="seconds")
+    except (OverflowError, OSError, ValueError):
+        return None
+    return None
+
+
+def deye_cloud_history(config: dict[str, Any], station_id: str | int, *, days: int = 90) -> list[dict[str, Any]]:
+    if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 90:
+        raise ValueError("deye_cloud_history_days_out_of_range")
+    if isinstance(station_id, bool) or not str(station_id).isdigit() or len(str(station_id)) > 32:
+        raise ValueError("invalid_deye_cloud_station_id")
+    token = _deye_cloud_token(config)
+    end = int(datetime.now(timezone.utc).timestamp())
+    start = end - days * 86400
+    result_rows: list[dict[str, Any]] = []
+    chunk_start = start
+    while chunk_start < end:
+        chunk_end = min(end, chunk_start + 7 * 86400)
+        for page in range(1, 1001):
+            result = _deye_cloud_request(config.get("data_center", "eu"), "/station/history/power", token=token,
+                query={"page": page, "size": 200}, body={"stationId": int(station_id),
+                    "startTimestamp": chunk_start, "endTimestamp": chunk_end})
+            batch = result.get("stationDataItems", [])
+            if not isinstance(batch, list):
+                raise RuntimeError("deye_cloud_history_invalid")
+            result_rows.extend(item for item in batch if isinstance(item, dict))
+            total = result.get("total")
+            if not batch or (isinstance(total, int) and page * 200 >= total) or len(batch) < 200:
+                break
+        chunk_start = chunk_end
+    return result_rows
 
 
 def collect(config: dict[str, Any]) -> dict[str, Any]:

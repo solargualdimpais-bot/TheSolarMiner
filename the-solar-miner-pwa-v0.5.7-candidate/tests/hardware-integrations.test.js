@@ -32,6 +32,22 @@ test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV 
   assert.doesNotMatch(auth, /tuya.*localStorage/i);
 });
 
+test("Deye Cloud history connection is configured by the Owner and runs only on explicit actions", () => {
+  const html = read("../index.html");
+  const app = read("../app.js");
+  const auth = read("../gateway-auth.js");
+  for (const id of ["deye-cloud-center", "deye-cloud-app-id", "deye-cloud-app-secret", "deye-cloud-email", "deye-cloud-password", "deye-cloud-save", "deye-cloud-stations", "deye-cloud-station", "deye-cloud-import"]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+  assert.match(app, /\$\("#deye-cloud-save"\)\.addEventListener\("click"/);
+  assert.match(app, /\$\("#deye-cloud-stations"\)\.addEventListener\("click"/);
+  assert.match(app, /\$\("#deye-cloud-import"\)\.addEventListener\("click"/);
+  assert.match(app, /\$\("#deye-cloud-app-secret"\)\.value="";\$\("#deye-cloud-password"\)\.value=""/);
+  assert.match(auth, /\/api\/v1\/integrations\/deye-cloud\/stations/);
+  assert.match(auth, /\/api\/v1\/integrations\/deye-cloud\/history\/import/);
+  assert.match(html, /Importar histórico de 90 dias/);
+});
+
 test("live navigation renders Gateway data without the demo renderer overriding operational pages", () => {
   const app = read("../app.js");
   assert.match(app, /state\.mode!=="SIMULATED"&&liveAreaPages\.includes/);

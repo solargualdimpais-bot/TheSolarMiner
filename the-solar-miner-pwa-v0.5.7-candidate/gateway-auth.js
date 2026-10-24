@@ -350,6 +350,10 @@ export async function saveGatewaySiteProfile(profile) {
   if (!profile || typeof profile !== "object") throw new Error("Perfil da propriedade inválido.");
   return gatewayApi("/api/v1/site/profile", { method: "PUT", body: profile });
 }
+export async function saveGatewaySitePhoto({ kind, floorId, roomId = "", photoDataUrl }) {
+  if (!new Set(["floor", "plan", "room"]).has(kind) || !floorId || typeof photoDataUrl !== "string") throw new Error("Fotografia do piso inválida.");
+  return gatewayApi("/api/v1/site/profile/photo", { method: "PUT", body: { kind, floor_id: floorId, room_id: roomId, photo_data_url: photoDataUrl } });
+}
 export async function saveGatewayEnergyEngineConfig(config) {
   if (!config || typeof config !== "object") throw new Error("Configuração energética inválida.");
   return gatewayApi("/api/v1/energy/engine/config", { method: "PUT", body: config });
@@ -360,6 +364,13 @@ export async function readGatewayHardwareIntegrationConfig() {
 export async function saveGatewayHardwareIntegrationConfig(config) {
   if (!config || typeof config !== "object") throw new Error("Configuração de equipamentos inválida.");
   return gatewayApi("/api/v1/integrations/hardware", { method: "PUT", body: config });
+}
+export async function readGatewayDeyeCloudStations() {
+  return gatewayApi("/api/v1/integrations/deye-cloud/stations", { method: "POST", body: {} });
+}
+export async function importGatewayDeyeCloudHistory(stationId) {
+  if (!/^\d{1,32}$/.test(String(stationId ?? ""))) throw new Error("Seleciona uma estação Deye válida.");
+  return gatewayApi("/api/v1/integrations/deye-cloud/history/import", { method: "POST", body: { station_id: String(stationId) } });
 }
 export async function syncGatewayTuyaDevices({ signal } = {}) {
   return gatewayApi("/api/v1/integrations/tuya/sync", { method: "POST", body: {}, signal });

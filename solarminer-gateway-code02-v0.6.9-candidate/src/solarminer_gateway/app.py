@@ -49,7 +49,7 @@ from . import updates as update_manager
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.73"
+PACKAGE_VERSION = "0.6.74"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -991,6 +991,36 @@ def write_site_profile(payload: dict[str, Any], session: dict[str, Any] = Depend
         return result
 
 
+@app.put("/api/v1/site/profile/photo")
+def write_site_profile_photo(payload: dict[str, Any], session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    with db() as conn:
+        _require_owner(session, conn)
+        if not isinstance(payload, dict) or set(payload) != {"kind", "floor_id", "room_id", "photo_data_url"}:
+            raise HTTPException(422, "invalid_site_photo_request")
+        kind, floor_id, room_id = payload["kind"], payload["floor_id"], payload["room_id"]
+        if kind not in {"floor", "plan", "room"} or not isinstance(floor_id, str):
+            raise HTTPException(422, "invalid_site_photo_target")
+        profile = site_profile.get_profile(conn)
+        floor = next((item for item in profile["floors"] if item["id"] == floor_id), None)
+        if floor is None:
+            raise HTTPException(404, "site_floor_not_found")
+        if kind == "room":
+            room = next((item for item in floor["rooms"] if item["id"] == room_id), None)
+            if room is None:
+                raise HTTPException(404, "site_room_not_found")
+            room["photo_data_url"] = payload["photo_data_url"]
+        elif kind == "plan":
+            floor["plan_data_url"] = payload["photo_data_url"]
+        else:
+            floor["photo_data_url"] = payload["photo_data_url"]
+        try:
+            result = site_profile.save_profile(conn, profile)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        audit(conn, session["user_id"], "site.profile.photo_configure", f"{kind}:{floor_id}", "success", {})
+        return result
+
+
 @app.get("/api/v1/energy/engine")
 def energy_engine_summary(history_hours: int = 24, history_until: datetime | None = None,
                           session: dict[str, Any] = Depends(require_permission("read"))) -> dict[str, Any]:
@@ -1102,7 +1132,7 @@ def hardware_integrations_configure(payload: dict[str, Any], session: dict[str, 
             updated = hardware_integrations.validate_config(payload, old)
             result = hardware_integrations.save_config(updated)
             audit(conn, session["user_id"], "hardware.integrations.configure", "gateway", "success", {
-                "providers": sorted(k for k in ("deye", "antminer", "tuya", "huawei_router") if k in payload),
+                "providers": sorted(k for k in ("deye", "deye_cloud", "antminer", "tuya", "huawei_router") if k in payload),
                 "provider_secrets_returned": False,
             })
             return result
@@ -1112,6 +1142,101 @@ def hardware_integrations_configure(payload: dict[str, Any], session: dict[str, 
         except (OSError, json.JSONDecodeError) as exc:
             LOG.error("Hardware integration configuration save failed (%s)", type(exc).__name__)
             raise HTTPException(500, "integration_config_save_failed") from exc
+
+
+def _require_deye_cloud_config() -> dict[str, Any]:
+    config = hardware_integrations.load_config().get("deye_cloud", {})
+    if not isinstance(config, dict) or not config.get("app_id") or not config.get("app_secret") or not config.get("email") or not config.get("password"):
+        raise HTTPException(409, "deye_cloud_not_configured")
+    return config
+
+
+@app.post("/api/v1/integrations/deye-cloud/stations")
+def deye_cloud_stations(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+    try:
+        stations = hardware_integrations.deye_cloud_list_stations(_require_deye_cloud_config())
+        with db() as conn:
+            audit(conn, session["user_id"], "hardware.deye_cloud.stations", "deye-cloud", "success", {"station_count": len(stations)})
+        return {"stations": stations, "secrets_returned": False}
+    except HTTPException:
+        raise
+    except (RuntimeError, ValueError, OSError) as exc:
+        reason = str(exc) if isinstance(exc, ValueError) else "deye_cloud_request_failed"
+        raise HTTPException(502, reason) from exc
+
+
+@app.post("/api/v1/integrations/deye-cloud/history/import")
+def deye_cloud_history_import(payload: dict[str, Any], session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+    try:
+        station_id = payload.get("station_id") if isinstance(payload, dict) else None
+        rows = hardware_integrations.deye_cloud_history(_require_deye_cloud_config(), station_id, days=90)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except (RuntimeError, OSError) as exc:
+        raise HTTPException(502, "deye_cloud_history_import_failed") from exc
+
+    now_text = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    hardware_config = hardware_integrations.load_config()
+    deye_lan = hardware_config.get("deye", {}) if isinstance(hardware_config.get("deye", {}), dict) else {}
+    identity_source = (f"{deye_lan.get('host', '')}|{deye_lan.get('unit_id', 1)}" if deye_lan.get("host")
+                       else f"deye-cloud|{station_id}")
+    identity = hashlib.sha256(identity_source.encode("utf-8")).hexdigest()[:16]
+    inverter_equipment_id = f"deye-inverter-{identity}"
+    battery_equipment_id = f"deye-battery-{identity}"
+    with db() as conn:
+        energy_registry.ensure_schema(conn)
+        if not conn.execute("SELECT 1 FROM energy_equipment WHERE id=?", (inverter_equipment_id,)).fetchone():
+            energy_registry.upsert_equipment(conn, {"category": "inversores", "name": "Deye Inversor",
+                "manufacturer": "Deye", "model": "Cloud history", "protocol": "Deye Cloud OpenAPI",
+                "connection_state": "CONNECTED", "declared_capabilities": ["pv_power", "load_power"],
+                "implemented_capabilities": ["historical_readings"], "verified_capabilities": [], "config": {}, "limitations": []},
+                equipment_id=inverter_equipment_id)
+        if not conn.execute("SELECT 1 FROM energy_equipment WHERE id=?", (battery_equipment_id,)).fetchone():
+            energy_registry.upsert_equipment(conn, {"category": "baterias", "name": "Deye Bateria",
+                "manufacturer": "Deye", "model": "Cloud history", "protocol": "Deye Cloud OpenAPI",
+                "connection_state": "CONNECTED", "declared_capabilities": ["battery_power", "battery_soc"],
+                "implemented_capabilities": ["historical_readings"], "verified_capabilities": [], "config": {}, "limitations": []},
+                equipment_id=battery_equipment_id)
+        inserted = 0
+        mapped = {"generationPower": (inverter_equipment_id, "pv_total_power", "W"),
+                  "consumptionPower": (inverter_equipment_id, "load_total_power", "W"),
+                  "gridPower": (inverter_equipment_id, "grid_power", "W"),
+                  "batterySOC": (battery_equipment_id, "battery_soc_percent", "%"),
+                  "batteryVoltage": (battery_equipment_id, "battery_voltage", "V"),
+                  "chargePower": (battery_equipment_id, "battery_charge_power", "W"),
+                  "dischargePower": (battery_equipment_id, "battery_discharge_power", "W")}
+        for item in rows:
+            observed = hardware_integrations._deye_cloud_timestamp(item.get("timeStamp", item.get("dateTime", item.get("timestamp"))))
+            if not observed:
+                continue
+            values = dict(item)
+            charge, discharge = values.get("chargePower"), values.get("dischargePower")
+            if isinstance(charge, (int, float)) and not isinstance(charge, bool) and isinstance(discharge, (int, float)) and not isinstance(discharge, bool):
+                values["batteryOutputPower"] = float(discharge) - float(charge)
+            mapped["batteryOutputPower"] = (battery_equipment_id, "battery_output_power", "W")
+            for source_field, (equipment_id, field, unit) in mapped.items():
+                value = values.get(source_field)
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+                    continue
+                cur = conn.execute("INSERT OR IGNORE INTO energy_readings VALUES(?,?,?,?,?,?,?,?,?)",
+                    (str(uuid.uuid4()), equipment_id, field, json.dumps(float(value)), unit, observed,
+                     "DEYE_CLOUD_HISTORY", "LIVE_UNVERIFIED", json.dumps({"station_id": str(station_id), "origin": "Deye Cloud OpenAPI"})))
+                inserted += cur.rowcount
+        audit(conn, session["user_id"], "hardware.deye_cloud.history_import", "deye-cloud", "success",
+              {"station_id": str(station_id), "source_rows": len(rows), "readings_added": inserted, "days": 90})
+    return {"status": "imported", "station_id": str(station_id), "source_rows": len(rows),
+            "readings_added": inserted, "range_days": 90, "source": "DEYE_CLOUD_HISTORY",
+            "local_history_preserved": True, "secrets_returned": False, "completed_at": now_text}
 
 
 @app.post("/api/v1/integrations/tuya/sync")
@@ -2803,7 +2928,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.73"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.74"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(
