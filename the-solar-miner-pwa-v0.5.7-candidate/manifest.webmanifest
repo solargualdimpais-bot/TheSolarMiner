@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.38: terminal Owner em tempo real e consulta Huawei local.",
+  "description": "The Solar Miner PWA v0.5.39: terminal Owner em tempo real e consulta Huawei local.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",
