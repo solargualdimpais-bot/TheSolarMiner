@@ -1941,7 +1941,7 @@ $("#tuya-lan-discovery").addEventListener("click", async event => {
   }finally{button.disabled=false;}
 });
 async function readHardwareProvider(provider, deviceId = undefined, statusSelector = `#${provider}-status`, resultSelector = `#${provider}-result`) {
-  if (!ownerCanManageHardware(statusSelector)) return;
+  if (!ownerCanManageHardware(statusSelector)) return "Só o Owner autenticado pode gerir este equipamento.";
   const status = $(statusSelector), output = $(resultSelector);
   status.textContent = `A consultar apenas ${provider === "deye" ? "o Deye" : provider === "antminer" ? "a Antminer" : "o dispositivo Tuya selecionado"}…`;
   if (output) output.hidden = true;
@@ -1953,14 +1953,22 @@ async function readHardwareProvider(provider, deviceId = undefined, statusSelect
       if (output) { output.textContent = JSON.stringify(device || result, null, 2); output.hidden = false; }
     } else setProviderResult(provider, result);
     if (provider === "deye" || provider === "antminer") await refreshGatewayReadings();
-  } catch (error) { status.textContent = `Leitura falhou: ${error.message}`; }
+    return status.textContent;
+  } catch (error) {
+    status.textContent = `Leitura falhou: ${error.message}`;
+    return status.textContent;
+  }
 }
 function tuyaLanReasonText(reason){
   const messages={private_lan_target_required:"IP local não configurado ou inválido. Abre o dispositivo, edita o IP local e guarda.",tuya_local_key_missing:"A chave local não está disponível no Gateway.",tuya_lan_driver_unavailable:"O controlador LAN não está disponível nesta instalação.",tuya_local_datapoint_mapping_required:"Falta mapear o canal do equipamento para o respetivo DPS local.",tuya_lan_status_unavailable:"O equipamento não devolveu leituras LAN válidas.",tuya_connection_failed:"O Gateway não conseguiu obter resposta do equipamento pela rede local.",tuya_lan_read_unavailable:"Não foi possível obter uma resposta LAN deste equipamento."};
   return messages[reason]||String(reason).replaceAll("_"," ");
 }
 $("#deye-read").addEventListener("click", () => readHardwareProvider("deye"));
-$("#antminer-read").addEventListener("click", () => readHardwareProvider("antminer"));
+async function testAntminerWithDialog(title = "Resultado do teste Antminer") {
+  const message = await readHardwareProvider("antminer");
+  await showOperationResult(title, message || "A leitura não devolveu uma mensagem.");
+}
+$("#antminer-read").addEventListener("click", () => testAntminerWithDialog());
 $("#tuya-device-list").addEventListener("click", async event => {
   const edit = event.target.closest("[data-edit-tuya-device]"), read = event.target.closest("[data-tuya-read]"), toggle = event.target.closest("[data-tuya-switch]");
   if (edit) { const device=state.tuyaDevices.find(item=>item.device_id===edit.dataset.editTuyaDevice); if(device)openTuyaDeviceEditor(device); return; }
@@ -1978,19 +1986,26 @@ async function sendAntminerControl(action) {
   const watt = Number($("#hardware-antminer-watt").value);
   if (action === "set_power_target" && (!Number.isInteger(watt) || watt < 1 || watt > 2900)) { status.textContent = "Indica um alvo entre 1 e 2900 W."; return; }
   const prompt = action === "set_power_target" ? `Enviar ao Antminer a ordem para definir o alvo de potência em ${watt} W?` : `Confirmas que queres ${labels[action]} no Antminer?`;
-  if (!confirm(prompt)) return;
+  const confirmation = await showOperationDialog({title:"Confirmar comando Antminer",message:prompt,actions:[{label:"Cancelar",value:"cancel"},{label:"Confirmar",value:"confirm",primary:true}]});
+  if (confirmation !== "confirm") return;
   const buttons = ["antminer-power-target", "antminer-pause", "antminer-stop", "antminer-start"].map(id => $("#" + id));
   buttons.forEach(button => { button.disabled = true; });
   status.textContent = `A enviar o comando “${labels[action]}” ao Antminer…`;
   try {
     const result = await controlGatewayAntminer(action, watt);
-    if (action === "set_power_target") status.textContent = `Comando aceite pelo Braiins OS: alvo aplicado ${result.applied_watt} W.`;
+    let message;
+    if (action === "set_power_target") message = `Comando aceite pelo Braiins OS: alvo aplicado ${result.applied_watt} W.`;
     else if (typeof result.already_in_requested_state === "boolean") {
       const state = result.already_in_requested_state ? "já estava nesse estado" : "aceite pelo Braiins OS";
-      status.textContent = `Comando “${labels[action]}” ${state}.`;
-    } else status.textContent = `Comando “${labels[action]}” aceite pelo Braiins OS.`;
-    if (action === "start") await readHardwareProvider("antminer");
-  } catch (error) { status.textContent = `O Gateway não conseguiu executar o comando: ${error.message}`; }
+      message = `Comando “${labels[action]}” ${state}.`;
+    } else message = `Comando “${labels[action]}” aceite pelo Braiins OS.`;
+    status.textContent = message;
+    await showOperationResult("Resposta do Antminer", message);
+    if (action === "start") await testAntminerWithDialog("Estado após iniciar a mineração");
+  } catch (error) {
+    status.textContent = `O Gateway não conseguiu executar o comando: ${error.message}`;
+    await showOperationResult("Falha no comando Antminer", status.textContent);
+  }
   finally { buttons.forEach(button => { button.disabled = false; }); }
 }
 $("#antminer-power-target").addEventListener("click", () => sendAntminerControl("set_power_target"));
