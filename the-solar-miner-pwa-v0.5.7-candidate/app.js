@@ -1834,7 +1834,7 @@ $("#deye-cloud-import").addEventListener("click",async event=>{
 });
 $("#antminer-save").addEventListener("click", event => {
   const host = $("#hardware-antminer-host").value.trim();
-  saveHardwareProvider("antminer", { enabled: Boolean(host), port: Number($("#hardware-antminer-port").value), rest_port: Number($("#hardware-antminer-rest-port").value), password: $("#hardware-antminer-password").value, model: "S19K Pro" }, event.currentTarget, "antminer-status");
+  saveHardwareProvider("antminer", { enabled: Boolean(host), host, port: Number($("#hardware-antminer-port").value), rest_port: Number($("#hardware-antminer-rest-port").value), password: $("#hardware-antminer-password").value, model: "S19K Pro" }, event.currentTarget, "antminer-status");
 });
 $("#tuya-save").addEventListener("click", event => {
   const devices = parseTuyaDevices();

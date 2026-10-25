@@ -4,7 +4,7 @@ set -eu
 
 [ "$(id -u)" -eq 0 ] || { echo "Executa como root: sh repair-existing-from-usb.sh" >&2; exit 1; }
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-TARGET_VERSION=0.6.82
+TARGET_VERSION=0.6.83
 PACKAGE="$HERE/solarminer-gateway_${TARGET_VERSION}_amd64.deb"
 MANIFEST="$HERE/solarminer-release.json"
 PUBLIC_KEY="$HERE/release-pubkey.pem"
