@@ -2421,23 +2421,18 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
     available = None
     charge_headroom = None
     bank_summary = []
-    # The inverter's SOC is deliberately not used as the operating SOC. The
-    # Gateway estimates SOC from a recent voltage ceiling and integrated power.
+    # Prefer a continuous Gateway estimate. If it is unavailable, retain a fresh,
+    # explicitly sourced inverter SOC as a reported measurement; imported Cloud
+    # history and stale SOC must never be used for current energy/autonomy.
     soc, soc_estimate = _estimate_battery_soc_persistent(
         conn, battery_voltage_history, battery_power_history, capacity, 0.0, max_soc)
-    # A Deye-reported 100% is accepted for display only when fresh SOC agrees
-    # with the learned pack-voltage ceiling and near-zero charge. This recovers
-    # a full-battery state when the coulomb estimator lacks a continuous anchor,
-    # while preventing an old/imported SOC value from masquerading as live.
+    # A fresh, non-cloud Deye SOC is a reported measurement, not a Gateway
+    # estimate. Use it as a fallback when integration is unavailable, and retain
+    # its source label so consumers can distinguish measured from estimated SOC.
     battery_voltage = _number(battery_readings, "battery_voltage")
     battery_charge_power = _number(battery_readings, "battery_charge_power")
-    reported_voltage_peak = max((float(point["value"]) for point in battery_voltage_history
-                                 if isinstance(point.get("value"), (int, float))
-                                 and not isinstance(point.get("value"), bool)), default=None)
-    reported_full_charge = (deye_soc_fresh and deye_soc is not None and deye_soc >= 99.5
-                            and battery_voltage is not None and reported_voltage_peak is not None
-                            and battery_voltage >= reported_voltage_peak - 0.15
-                            and battery_charge_power is not None and abs(battery_charge_power) <= 20)
+    reported_live_soc = (deye_soc if deye_soc_fresh and deye_soc is not None
+                         and math.isfinite(deye_soc) and 0 <= deye_soc <= 100 else None)
     voltage_item = battery_readings.get("battery_voltage")
     charge_item = battery_readings.get("battery_charge_power")
     def fresh_local(item: dict[str, Any] | None) -> bool:
@@ -2449,33 +2444,34 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
         battery_voltage_history, battery_power_history, battery_voltage, battery_charge_power)
         if fresh_local(voltage_item) and fresh_local(charge_item) else None)
     inferred_voltage_full = soc is None and voltage_plateau is not None
-    displayed_soc = (soc if soc is not None else max_soc if inferred_voltage_full
-                     else 100.0 if reported_full_charge else None)
+    displayed_soc = (soc if soc is not None else reported_live_soc if reported_live_soc is not None
+                     else max_soc if inferred_voltage_full else None)
     displayed_soc_source = ("gateway_energy_integrated" if soc is not None else
+                            "deye_live_reported" if reported_live_soc is not None else
                             "gateway_voltage_plateau_inferred" if inferred_voltage_full else
-                            "deye_full_charge_confirmed" if reported_full_charge else "unavailable")
+                            "unavailable")
     if inferred_voltage_full:
         soc_estimate = {**soc_estimate, **voltage_plateau,
                         "reason": "VOLTAGE_PLATEAU_CONFIRMED_WITH_LOCAL_CHARGE_TAPER"}
-    elif soc is None and reported_full_charge:
-        soc_estimate = {**soc_estimate, "state": "DEYE_SOC_REPORTED_ONLY",
+    elif soc is None and reported_live_soc is not None:
+        soc_estimate = {**soc_estimate, "state": "DEYE_SOC_REPORTED_LIVE",
                         "reported_source": displayed_soc_source,
-                        "reason": "FRESH_FULL_SOC_CONFIRMED_BY_BATTERY_VOLTAGE_CEILING_AND_LOW_CHARGE"}
-    if soc is not None and banks:
+                        "reason": "FRESH_NON_CLOUD_INVERTER_SOC_USED_WITH_SOURCE_LABEL"}
+    if displayed_soc is not None and banks:
         capacity = sum(float(bank["capacity_kwh"]) for bank in banks)
-        bank_summary = [{**bank, "estimated_soc_percent": soc if bank.get("active", True) else None,
+        bank_summary = [{**bank, "estimated_soc_percent": displayed_soc if bank.get("active", True) else None,
                          "voltage_max_30d_v": soc_estimate.get("voltage_max_30d_v"),
                          "soc_estimate_state": soc_estimate.get("state"),
-                         "energy_above_minimum_kwh": round(bank["capacity_kwh"] * max(0.0, soc-bank["minimum_soc_percent"]) / 100, 3) if bank.get("active", True) else 0.0,
-                         "charge_headroom_kwh": round(bank["capacity_kwh"] * max(0.0, bank["maximum_soc_percent"]-soc) / 100, 3) if bank.get("active", True) else 0.0}
+                         "energy_above_minimum_kwh": round(bank["capacity_kwh"] * max(0.0, displayed_soc-bank["minimum_soc_percent"]) / 100, 3) if bank.get("active", True) else 0.0,
+                         "charge_headroom_kwh": round(bank["capacity_kwh"] * max(0.0, bank["maximum_soc_percent"]-displayed_soc) / 100, 3) if bank.get("active", True) else 0.0}
                         for bank in all_banks]
         available = round(sum(item["energy_above_minimum_kwh"] for item in bank_summary), 3)
         charge_headroom = round(sum(item["charge_headroom_kwh"] for item in bank_summary), 3)
         min_soc = round(sum(b["capacity_kwh"] * b["minimum_soc_percent"] for b in banks) / capacity, 2)
         max_soc = min(float(b["maximum_soc_percent"]) for b in banks)
-    elif soc is not None and capacity is not None:
-        available = round(float(capacity) * max(0.0, soc - min_soc) / 100.0, 3)
-        charge_headroom = round(float(capacity) * max(0.0, max_soc - soc) / 100.0, 3)
+    elif displayed_soc is not None and capacity is not None:
+        available = round(float(capacity) * max(0.0, displayed_soc - min_soc) / 100.0, 3)
+        charge_headroom = round(float(capacity) * max(0.0, max_soc - displayed_soc) / 100.0, 3)
     battery_autonomy = _estimate_battery_autonomy(available, load, autonomy_load_history)
     latest_at = max((r.get("observed_at", "") for r in [*inverter_readings.values(), *battery_readings.values()]), default=None)
     forecast = _linear_forecast(history["pv_total_power"], pv, 15.0)

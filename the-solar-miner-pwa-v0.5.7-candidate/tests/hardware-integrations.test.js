@@ -11,7 +11,9 @@ test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV 
   for (const id of ["gateway-hardware-management", "hardware-deye-host", "hardware-antminer-host", "hardware-antminer-password", "hardware-antminer-rest-port", "hardware-tuya-client-secret", "hardware-tuya-uid", "deye-save", "deye-read", "antminer-save", "tuya-save", "tuya-sync", "tuya-device-list", "owner-open-gateway"]) assert.match(html, new RegExp(`id="${id}"`));
   for (const id of ["antminer-management-panel", "antminer-refresh-management", "antminer-management-output", "antminer-management-status", "antminer-management-diagnosis", "antminer-management-operation", "antminer-management-submit"]) assert.match(app, new RegExp(`id="${id}"`));
   assert.match(app, /antminerReadOperations=\[\[/);
-  for (const operation of ["api_version", "details", "errors", "hashboards", "stats", "configuration", "constraints", "cooling", "network_details", "tuner", "performance_mode", "power_target", "target_profiles", "efficiency_profile", "pools", "advanced_settings", "advanced_schema", "network", "auto_upgrade", "license", "locate_state"]) assert.match(app, new RegExp(String.raw`\["${operation}",`));
+  for (const operation of ["api_version", "details", "errors", "hashboards", "stats", "configuration", "constraints", "cooling", "network_details", "tuner", "performance_mode", "target_profiles", "efficiency_profile", "pools", "advanced_settings", "advanced_schema", "network", "auto_upgrade", "license", "locate_state"]) assert.match(app, new RegExp(String.raw`\["${operation}",`));
+  assert.doesNotMatch(app.match(/const antminerReadOperations=\[\[([\s\S]*?)\];/)?.[0]||"", /\["power_target"/);
+  assert.match(app, /if\(operation==="tuner"\)\{[\s\S]*?Alvo do perfil[\s\S]*?Alvo atual[\s\S]*?Hashrate medido[\s\S]*?Consumo estimado[\s\S]*?id="antminer-section-apply-watt"/);
   assert.match(app, /antminerWriteOperations=\[\[/);
   for (const operation of ["set_power_target", "power_target_default", "power_target_increment", "power_target_decrement", "power_target_relative", "set_hashrate_target", "hashrate_target_default", "hashrate_target_increment", "hashrate_target_decrement", "hashrate_target_relative", "performance_mode", "dps", "quick_ramping", "quick_ramping_default", "reset_tuned_profiles", "cooling_mode", "advanced_settings", "network", "hashboards", "auto_upgrade", "pools_batch", "create_pool_group", "update_pool_group", "delete_pool_group", "locate"]) assert.match(app, new RegExp(String.raw`\["${operation}",`));
   for (const operation of ["start", "resume", "pause", "stop", "restart", "reboot"]) assert.ok(app.includes(`data-antminer-write="${operation}"`));
@@ -57,6 +59,36 @@ test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV 
   assert.match(auth, /\/api\/v1\/energy\/ev\/tesla\/read/);
   assert.doesNotMatch(app, /hardware-tesla-(?:region|client-id|refresh-token|vehicles)/);
   assert.doesNotMatch(auth, /tuya.*localStorage/i);
+});
+
+test("Antminer power target prefers the active tuner target over the saved profile target", () => {
+  const app = read("../app.js");
+  const helper = app.match(/function antminerCurrentPowerTarget\(data\)\{[\s\S]*?\n\}/)?.[0];
+  assert.ok(helper, "current-target parser exists");
+  const parseTarget = new Function(`${helper}; return antminerCurrentPowerTarget;`)();
+  assert.deepEqual(parseTarget({mode_state:{power_target_mode_state:{
+    current_target:{watt:2500}, profile:{target:{watt:1900}},
+  }}}), {current:2500, profile:1900});
+  assert.deepEqual(parseTarget({modeState:{powerTargetModeState:{
+    currentTarget:{watt:2400}, profile:{target:{watt:1900}},
+  }}}), {current:2400, profile:1900});
+});
+
+test("Antminer power command result exposes Braiins-applied watts, including a clamp", () => {
+  const app = read("../app.js");
+  const helper = app.match(/function antminerSetPowerResponseWatt\(result\)\{[\s\S]*?\n\}/)?.[0];
+  assert.ok(helper, "power-response parser exists");
+  const parseWatt = new Function(`${helper}; return antminerSetPowerResponseWatt;`)();
+  assert.equal(parseWatt({operation:"set_power_target", data:{watt:2000}}), 2000);
+  assert.equal(parseWatt({operation:"set_power_target", data:{watt:2500}}), 2500);
+  assert.equal(parseWatt({operation:"set_power_target", data:{watt:"not-a-wattage"}}), null);
+});
+
+test("periodic Gateway refresh preserves open dialogs and renders updated data after closing", () => {
+  const app = read("../app.js");
+  assert.match(app, /function renderAfterLiveRefresh\(\)\s*\{\s*if \(document\.querySelector\("dialog\[open\]"\)\) \{ state\.pendingLiveRender = true;/);
+  assert.match(app, /document\.addEventListener\("close", \(\) => \{\s*if \(state\.pendingLiveRender && !document\.querySelector\("dialog\[open\]"\)\)/);
+  assert.equal((app.match(/renderAfterLiveRefresh\(\);/g) || []).length, 2);
 });
 
 test("Deye Cloud history connection is configured by the Owner and runs only on explicit actions", () => {

@@ -239,11 +239,14 @@ def test_fresh_deye_soc_and_pack_ceiling_confirm_full_battery_without_dispatch_e
         "protocol": "Deye Cloud OpenAPI", "connection_state": "CONNECTED"}, equipment_id="deye-inverter-cloud")
     battery = energy_registry.upsert_equipment(conn, {"category": "baterias", "name": "Bateria",
         "protocol": "Deye Cloud OpenAPI", "connection_state": "CONNECTED"}, equipment_id="deye-battery-cloud")
-    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc)
+    insert_reading(conn, battery["id"], "battery_voltage", 55, "V",
+                   (now-timedelta(minutes=1)).isoformat(timespec="seconds"))
+    stamp = now.isoformat(timespec="seconds")
     for equipment, field, value, unit in ((inverter, "pv_total_power", 1800, "W"),
                                           (inverter, "load_total_power", 1700, "W"),
                                           (battery, "battery_soc_percent", 100, "%"),
-                                          (battery, "battery_voltage", 55, "V"),
+                                          (battery, "battery_voltage", 54, "V"),
                                           (battery, "battery_charge_power", 5, "W")):
         energy_registry.add_reading(conn, equipment["id"], {"field": field, "value": value, "unit": unit,
             "observed_at": stamp, "source": "DEYE_MODBUS_FC03_CANDIDATE_MAP", "trust": "LIVE_UNVERIFIED"})
@@ -251,7 +254,8 @@ def test_fresh_deye_soc_and_pack_ceiling_confirm_full_battery_without_dispatch_e
     result = energy_engine.build_summary(conn)
     assert result["current"]["battery_soc_percent"] == 100
     assert result["current"]["battery_soc_integrated_percent"] is None
-    assert result["current"]["battery_soc_source"] == "deye_full_charge_confirmed"
+    assert result["current"]["battery_soc_source"] == "deye_live_reported"
+    assert result["current"]["battery_energy_available_kwh_above_minimum"] == 16
     assert energy_engine.build_dispatch_plan(
         {**result["current"], "pv_power_w": 1800, "load_power_w": 1700},
         {"automation": {"enabled": True, "commissioned": True, "deye_map_verified": True}},
@@ -563,15 +567,15 @@ def test_only_online_parallel_battery_banks_contribute_capacity():
     assert summary["current"]["battery_energy_available_kwh_above_minimum"] is None
 
 
-def test_battery_energy_is_unknown_without_owner_declared_capacity():
+def test_battery_energy_is_unknown_without_capacity_but_fresh_reported_soc_remains_visible():
     conn = database()
     battery = energy_registry.upsert_equipment(conn, {"category": "baterias", "name": "Deye battery"}, "deye-battery-test")
     insert_reading(conn, battery["id"], "battery_soc", 100, "%", datetime.now(timezone.utc).isoformat())
     result = energy_engine.build_summary(conn)
-    assert result["current"]["battery_soc_percent"] is None
+    assert result["current"]["battery_soc_percent"] == 100
+    assert result["current"]["battery_soc_source"] == "deye_live_reported"
     assert result["current"]["battery_energy_available_kwh_above_minimum"] is None
-    assert result["current"]["battery_soc_source"] == "unavailable"
-    assert result["current"]["battery_at_configured_maximum"] is False
+    assert result["current"]["battery_at_configured_maximum"] is True
 
 
 def test_offlining_parallel_bank_removes_its_proportional_energy_share():
@@ -602,19 +606,25 @@ def test_offlining_parallel_bank_removes_its_proportional_energy_share():
     assert remaining_energy == 10
 
 
-def test_deye_reported_soc_alone_never_becomes_gateway_estimated_soc():
+def test_fresh_deye_reported_soc_drives_energy_and_autonomy_when_integrator_is_unavailable():
     conn = database()
+    inverter = energy_registry.upsert_equipment(conn, {"category": "inversores", "name": "Deye"}, "deye-inverter-soc-test")
     battery = energy_registry.upsert_equipment(conn, {"category": "baterias", "name": "Battery"}, "deye-battery-test")
     energy_engine.save_config(conn, {"battery_capacity_kwh": 30})
+    insert_reading(conn, inverter["id"], "load_total_power", 1800, "W", datetime.now(timezone.utc).isoformat())
     insert_reading(conn, battery["id"], "battery_soc", 100, "%", datetime.now(timezone.utc).isoformat())
     current = energy_engine.build_summary(conn)["current"]
     assert current["battery_inverter_reported_soc_percent"] == 100
-    assert current["battery_soc_percent"] is None
-    assert current["battery_energy_available_kwh_above_minimum"] is None
-    assert current["battery_soc_estimate"]["reason"] == "NO_BATTERY_VOLTAGE_HISTORY"
+    assert current["battery_soc_percent"] == 100
+    assert current["battery_soc_source"] == "deye_live_reported"
+    assert current["battery_soc_integrated_percent"] is None
+    assert current["battery_energy_available_kwh_above_minimum"] == 24
+    assert current["battery_autonomy_forecast"]["state"] == "ESTIMATED"
+    assert current["battery_autonomy_forecast"]["hours"] > 0
+    assert current["battery_soc_estimate"]["reason"] == "FRESH_NON_CLOUD_INVERTER_SOC_USED_WITH_SOURCE_LABEL"
 
 
-def test_live_half_minute_sample_overrides_current_without_changing_history():
+def test_live_half_minute_sample_updates_reported_soc_without_changing_history():
     conn = database()
     inverter = energy_registry.upsert_equipment(conn, {"category": "inversores", "name": "Deye"}, "deye-inverter-test")
     battery = energy_registry.upsert_equipment(conn, {"category": "baterias", "name": "Battery"}, "deye-battery-test")
@@ -632,7 +642,8 @@ def test_live_half_minute_sample_overrides_current_without_changing_history():
     })
 
     assert result["current"]["pv_power_w"] == 1800
-    assert result["current"]["battery_soc_percent"] is None
+    assert result["current"]["battery_soc_percent"] == 82
+    assert result["current"]["battery_soc_source"] == "deye_live_reported"
     assert result["latest_readings"]["pv_total_power"]["observed_at"] == fresh
     assert result["latest_readings"]["pv_total_power"]["trust"] == "LIVE_UNVERIFIED"
     assert [point["value"] for point in result["history"]["pv_total_power"]] == [1000]
