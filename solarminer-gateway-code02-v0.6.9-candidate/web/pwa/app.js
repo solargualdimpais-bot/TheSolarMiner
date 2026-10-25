@@ -1965,30 +1965,39 @@ function tuyaLanReasonText(reason){
 }
 $("#deye-read").addEventListener("click", () => readHardwareProvider("deye"));
 async function testAntminerWithDialog(title = "Resultado do teste Antminer") {
-  const message = await readHardwareProvider("antminer");
-  await showOperationResult(title, message || "A leitura não devolveu uma mensagem.");
-}
-$("#antminer-read").addEventListener("click", () => testAntminerWithDialog());
-async function testAntminerControlWithDialog() {
-  const button = $("#antminer-control-test"), status = $("#antminer-status");
+  const button = $("#antminer-read"), status = $("#antminer-status");
   if (!ownerCanManageHardware("#antminer-status")) return;
-  button.disabled = true; status.textContent = "A validar o controlo sem alterar o alvo atual…";
+  button.disabled = true;
+  const finished = showOperationDialog({title:"Teste Antminer",message:"A consultar a telemetria e a verificar o controlo sem alterar o alvo de potência…",locked:true,progress:true});
+  const results = [];
   try {
-    const result = await testGatewayAntminerControl();
-    const message = result.connection_state === "control_verified"
-      ? `O Braiins OS aceitou a ordem de controlo. O alvo manteve-se em ${result.applied_watt} W; a mineração não foi pausada nem parada.`
-      : `A API respondeu, mas o alvo devolvido (${result.applied_watt} W) não corresponde ao alvo enviado (${result.previous_target_watt} W).`;
+    try {
+      const reading = await readGatewayHardwareProvider("antminer");
+      setProviderResult("antminer", reading);
+      await refreshGatewayReadings();
+      results.push($("#antminer-status")?.textContent || "Telemetria recebida do Antminer.");
+    } catch (error) {
+      results.push(`Leitura: falhou — ${error.message}`);
+    }
+    try {
+      const control = await testGatewayAntminerControl();
+      if (control.connection_state === "control_verified") {
+        results.push(`Controlo: aceite pela Braiins OS; alvo confirmado em ${control.applied_watt} W e reenviado sem alteração.`);
+      } else {
+        results.push(`Controlo: a Braiins OS devolveu ${control.applied_watt} W, diferente dos ${control.previous_target_watt} W enviados.`);
+      }
+    } catch (error) {
+      results.push(error.message === "antminer_control_probe_target_unavailable"
+        ? "Controlo: não foi possível ler um alvo atual; por segurança, nenhuma ordem foi enviada."
+        : `Controlo: falhou — ${error.message}`);
+    }
+    const message = results.join("\n\n");
     status.textContent = message;
-    await showOperationResult("Teste de controlo Antminer", message);
-  } catch (error) {
-    const message = error.message === "antminer_control_probe_target_unavailable"
-      ? "Não foi possível confirmar o alvo atual; por segurança, não foi enviada nenhuma ordem."
-      : `O teste de controlo falhou: ${error.message}`;
-    status.textContent = message;
-    await showOperationResult("Teste de controlo Antminer", message);
+    updateOperationDialog({title,message,actions:[{label:"OK",value:"ok",primary:true}]});
+    await finished;
   } finally { button.disabled = false; }
 }
-$("#antminer-control-test").addEventListener("click", testAntminerControlWithDialog);
+$("#antminer-read").addEventListener("click", () => testAntminerWithDialog());
 $("#tuya-device-list").addEventListener("click", async event => {
   const edit = event.target.closest("[data-edit-tuya-device]"), read = event.target.closest("[data-tuya-read]"), toggle = event.target.closest("[data-tuya-switch]");
   if (edit) { const device=state.tuyaDevices.find(item=>item.device_id===edit.dataset.editTuyaDevice); if(device)openTuyaDeviceEditor(device); return; }
