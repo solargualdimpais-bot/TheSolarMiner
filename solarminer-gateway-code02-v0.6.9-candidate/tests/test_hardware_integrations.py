@@ -311,6 +311,29 @@ def test_antminer_control_rejects_missing_credentials_and_out_of_range_power(mon
         integrations.control_antminer(config, "reboot")
 
 
+def test_antminer_password_only_config_defaults_braiins_username_to_root():
+    configured = integrations.validate_config({"antminer": {
+        "host": "192.168.8.69", "port": 4028, "rest_port": 80, "password": "secret"
+    }}, existing={})
+    assert configured["antminer"]["username"] == "root"
+    assert integrations.public_config(configured)["antminer_control_configured"] is True
+
+
+def test_antminer_control_authenticates_with_fixed_root_and_password_only(monkeypatch):
+    calls = []
+
+    def request(host, port, path, **kwargs):
+        calls.append((host, port, path, kwargs))
+        if path == "/api/v1/auth/login":
+            return {"token": "session-token"}
+        return True
+
+    monkeypatch.setattr(integrations, "_bos_rest_request", request)
+    result = integrations.control_antminer({"host": "192.168.8.69", "password": "secret"}, "start")
+    assert calls[0][3]["payload"] == {"username": "root", "password": "secret"}
+    assert result["control_command_sent"] is True
+
+
 def test_deye_sg05lp3_reads_full_candidate_telemetry_without_fc43(monkeypatch):
     monkeypatch.setattr(integrations, "probe_tcp", lambda host, port, timeout: {"state": "tcp_reachable", "host": host, "port": port})
     monkeypatch.setattr(integrations.deye_modbus, "read_device_identification",

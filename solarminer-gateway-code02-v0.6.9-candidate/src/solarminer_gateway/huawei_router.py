@@ -49,7 +49,7 @@ class HuaweiHiLinkClient:
         self.token = ""
 
     def _request(self, path: str, *, body: bytes | None = None, token: bool = False) -> tuple[bytes, Any]:
-        headers = {"Accept": "application/xml,text/xml", "User-Agent": "SolarMiner-Gateway/0.6.81"}
+        headers = {"Accept": "application/xml,text/xml", "User-Agent": "SolarMiner-Gateway/0.6.82"}
         if body is not None:
             headers["Content-Type"] = "application/xml; charset=UTF-8"
         if token and self.token:

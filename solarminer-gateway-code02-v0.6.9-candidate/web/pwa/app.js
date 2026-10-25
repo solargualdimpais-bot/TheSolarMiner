@@ -1669,7 +1669,6 @@ async function refreshHardwareIntegrationConfig() {
   $("#hardware-antminer-host").value = miner.host || "";
   $("#hardware-antminer-port").value = miner.port || 4028;
   $("#hardware-antminer-rest-port").value = miner.rest_port || 80;
-  $("#hardware-antminer-username").value = "";
   $("#hardware-antminer-password").value = "";
   $("#hardware-tuya-region").value = tuya.region || "eu_central";
   $("#hardware-tuya-client-id").value = tuya.client_id || "";
@@ -1835,7 +1834,7 @@ $("#deye-cloud-import").addEventListener("click",async event=>{
 });
 $("#antminer-save").addEventListener("click", event => {
   const host = $("#hardware-antminer-host").value.trim();
-  saveHardwareProvider("antminer", { enabled: Boolean(host), host, port: Number($("#hardware-antminer-port").value), rest_port: Number($("#hardware-antminer-rest-port").value), username: $("#hardware-antminer-username").value.trim(), password: $("#hardware-antminer-password").value, model: "S19K Pro" }, event.currentTarget, "antminer-status");
+  saveHardwareProvider("antminer", { enabled: Boolean(host), port: Number($("#hardware-antminer-port").value), rest_port: Number($("#hardware-antminer-rest-port").value), password: $("#hardware-antminer-password").value, model: "S19K Pro" }, event.currentTarget, "antminer-status");
 });
 $("#tuya-save").addEventListener("click", event => {
   const devices = parseTuyaDevices();

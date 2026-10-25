@@ -174,7 +174,7 @@ def public_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "deye": {k: config.get("deye", {}).get(k) for k in ("host", "port", "unit_id", "model") if config.get("deye", {}).get(k) is not None},
         "antminer": {k: config.get("antminer", {}).get(k) for k in ("host", "port", "rest_port", "model") if config.get("antminer", {}).get(k) is not None},
-        "antminer_control_configured": bool(config.get("antminer", {}).get("username") and config.get("antminer", {}).get("password")),
+        "antminer_control_configured": bool(config.get("antminer", {}).get("password")),
         "huawei_router": {"host": config.get("huawei_router", {}).get("host", "192.168.8.1"),
                           "username": config.get("huawei_router", {}).get("username", "admin"),
                           "configured": bool(config.get("huawei_router", {}).get("password"))},
@@ -245,9 +245,10 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
             model = item.get("model", "S19K Pro")
             if model != "S19K Pro": raise ValueError("unsupported_antminer_model")
             old_antminer = result.get("antminer", {})
-            username = item.get("username") or old_antminer.get("username")
+            # The Braiins OS web UI uses its local root account without asking
+            # the operator to enter a username. Keep that fixed identity.
+            username = "root"
             password = item.get("password") or old_antminer.get("password")
-            if username is not None and (not isinstance(username, str) or not 1 <= len(username) <= 128): raise ValueError("invalid_antminer_username")
             if password is not None and (not isinstance(password, str) or not 1 <= len(password) <= 512): raise ValueError("invalid_antminer_password")
             result["antminer"] = {"host": host, "port": port, "rest_port": rest_port, "model": model,
                                   "username": username, "password": password}
@@ -904,11 +905,11 @@ def _bos_rest_request(host: str, port: int, path: str, *, method: str = "GET",
 
 
 def _bos_rest_login(config: dict[str, Any]) -> str:
-    username, password = config.get("username"), config.get("password")
-    if not isinstance(username, str) or not username or not isinstance(password, str) or not password:
+    password = config.get("password")
+    if not isinstance(password, str) or not password:
         raise RuntimeError("antminer_control_credentials_required")
     response = _bos_rest_request(config["host"], config.get("rest_port", 80), "/api/v1/auth/login",
-                                method="POST", payload={"username": username, "password": password})
+                                method="POST", payload={"username": "root", "password": password})
     if not isinstance(response, dict):
         raise RuntimeError("antminer_api_login_response_invalid")
     token = response.get("token")
