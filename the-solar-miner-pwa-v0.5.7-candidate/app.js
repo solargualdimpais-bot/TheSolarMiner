@@ -2020,6 +2020,7 @@ async function sendAntminerControl(action) {
   const buttons = ["antminer-power-target", "antminer-pause", "antminer-stop", "antminer-start"].map(id => $("#" + id));
   buttons.forEach(button => { button.disabled = true; });
   status.textContent = `A enviar o comando “${labels[action]}” ao Antminer…`;
+  const finished = showOperationDialog({title:"Comando Antminer",message:`A enviar “${labels[action]}” ao Gateway e a aguardar a resposta do Braiins OS…`,locked:true,progress:true});
   try {
     const result = await controlGatewayAntminer(action, watt);
     let message;
@@ -2029,11 +2030,13 @@ async function sendAntminerControl(action) {
       message = `Comando “${labels[action]}” ${state}.`;
     } else message = `Comando “${labels[action]}” aceite pelo Braiins OS.`;
     status.textContent = message;
-    await showOperationResult("Resposta do Antminer", message);
+    updateOperationDialog({title:"Resposta do Antminer",message,actions:[{label:"OK",value:"ok",primary:true}]});
+    await finished;
     if (action === "start") await testAntminerWithDialog("Estado após iniciar a mineração");
   } catch (error) {
     status.textContent = `O Gateway não conseguiu executar o comando: ${error.message}`;
-    await showOperationResult("Falha no comando Antminer", status.textContent);
+    updateOperationDialog({title:"Falha no comando Antminer",message:status.textContent,actions:[{label:"OK",value:"ok",primary:true}]});
+    await finished;
   }
   finally { buttons.forEach(button => { button.disabled = false; }); }
 }

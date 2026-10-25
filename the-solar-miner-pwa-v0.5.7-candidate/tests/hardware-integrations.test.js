@@ -39,7 +39,10 @@ test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV 
   assert.match(app, /data-favorite-level/);
   assert.match(auth, /"set_power_target", "pause", "stop", "start"/);
   assert.match(app, /showOperationDialog\(\{title:"Confirmar comando Antminer"/);
-  assert.match(app, /await showOperationResult\("Resposta do Antminer", message\)/);
+  assert.match(app, /A enviar “\$\{labels\[action\]\}” ao Gateway e a aguardar a resposta do Braiins OS/);
+  assert.match(app, /updateOperationDialog\(\{title:"Falha no comando Antminer"/);
+  assert.match(app, /updateOperationDialog\(\{title:"Resposta do Antminer",message,actions:/);
+  assert.match(app, /await finished/);
   assert.match(app, /await testAntminerWithDialog\("Estado após iniciar a mineração"\)/);
   assert.match(auth, /\/api\/v1\/energy\/ev\/tesla\/read/);
   assert.doesNotMatch(app, /hardware-tesla-(?:region|client-id|refresh-token|vehicles)/);
