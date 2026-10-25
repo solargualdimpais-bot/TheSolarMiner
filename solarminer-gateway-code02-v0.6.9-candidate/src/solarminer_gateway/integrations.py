@@ -211,6 +211,8 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
         if item.get("enabled", True):
             host = _private_ip(item.get("host", "192.168.8.1"))
             username = item.get("username", result.get("huawei_router", {}).get("username", "admin"))
+            if isinstance(username, str) and not username.strip():
+                username = "admin"
             password = item.get("password") or result.get("huawei_router", {}).get("password")
             if not isinstance(username, str) or not 1 <= len(username) <= 128 or any(ord(c) < 32 for c in username):
                 raise ValueError("invalid_huawei_router_username")
@@ -1263,7 +1265,14 @@ def _deye_cloud_request(center: str, path: str, *, method: str = "POST", body: d
         with urllib.request.urlopen(request, timeout=20) as response:
             raw = response.read(4 * 1024 * 1024 + 1)
     except urllib.error.HTTPError as exc:
-        raise RuntimeError("deye_cloud_http_error") from exc
+        reasons = {
+            401: "deye_cloud_auth_rejected",
+            403: "deye_cloud_permission_denied",
+            404: "deye_cloud_endpoint_not_found",
+            429: "deye_cloud_rate_limited",
+            504: "deye_cloud_upstream_timeout",
+        }
+        raise RuntimeError(reasons.get(exc.code, f"deye_cloud_http_{exc.code}")) from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise RuntimeError("deye_cloud_connection_failed") from exc
     if len(raw) > 4 * 1024 * 1024:
@@ -1275,7 +1284,10 @@ def _deye_cloud_request(center: str, path: str, *, method: str = "POST", body: d
     if not isinstance(result, dict):
         raise RuntimeError("deye_cloud_invalid_response")
     if result.get("success") is False or result.get("code") not in (None, 1000000, "1000000"):
-        raise RuntimeError("deye_cloud_request_rejected")
+        code = str(result.get("code", "unknown"))
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", code):
+            code = "unknown"
+        raise RuntimeError(f"deye_cloud_api_rejected_{code}")
     return result
 
 

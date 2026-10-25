@@ -48,6 +48,31 @@ test("Deye Cloud history connection is configured by the Owner and runs only on 
   assert.match(html, /Importar histórico de 90 dias/);
 });
 
+test("Gateway terminal waits for server authentication and explains WebSocket failures", () => {
+  const app = read("../app.js");
+  const auth = read("../gateway-auth.js");
+  assert.match(auth, /\/api\/v1\/system\/terminal\/diagnostics/);
+  assert.match(auth, /message\?\.type === "ready"/);
+  assert.match(auth, /websocket_handshake_failed/);
+  assert.match(app, /A API do Gateway responde e o terminal está disponível, mas a ligação WebSocket falhou/);
+  assert.match(app, /appendGatewayTerminalOutput\(`\\r\\n\[Diagnóstico\]/);
+});
+
+test("Huawei password-only CPE flow hides the username field and uses the protocol default", () => {
+  const html = read("../index.html");
+  const app = read("../app.js");
+  assert.doesNotMatch(html, /id="huawei-router-username"/);
+  assert.match(html, /Este modelo pede apenas a palavra-passe/);
+  assert.match(app, /username="admin"/);
+});
+
+test("Deye Cloud import explains HTTP 504 as a Gateway or proxy timeout", () => {
+  const app = read("../app.js");
+  const auth = read("../gateway-auth.js");
+  assert.match(app, /error\.status===504\?"O Gateway\/proxy expirou à espera da resposta da importação de 90 dias/);
+  assert.match(auth, /deye_cloud_upstream_timeout:/);
+});
+
 test("live navigation renders Gateway data without the demo renderer overriding operational pages", () => {
   const app = read("../app.js");
   assert.match(app, /state\.mode!=="SIMULATED"&&liveAreaPages\.includes/);

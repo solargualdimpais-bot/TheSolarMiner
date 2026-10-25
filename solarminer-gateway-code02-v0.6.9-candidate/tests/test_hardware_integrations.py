@@ -3,7 +3,40 @@ import hashlib
 
 import pytest
 
-from solarminer_gateway import integrations
+from solarminer_gateway import integrations, huawei_router
+
+
+def test_huawei_password_only_login_uses_admin_hash_without_username_xml():
+    client = huawei_router.HuaweiHiLinkClient({"host": "192.168.8.1", "password": "router-password"})
+    client.token = "tok-info-value"
+    requests = []
+    client._load_token = lambda: None
+
+    def request(path, *, body=None, token=False):
+        requests.append((path, body, token))
+        if path == "api/user/state-login":
+            return b"<response><State>1</State><password_type>4</password_type></response>", {}
+        if path == "api/user/login":
+            return b"<response>OK</response>", {"__RequestVerificationTokenone": "next-token"}
+        raise AssertionError(f"Unexpected Huawei request: {path}")
+
+    client._request = request
+    client._login()
+
+    login_request = next(item for item in requests if item[0] == "api/user/login")
+    body = login_request[1]
+    root = huawei_router.ET.fromstring(body)
+    assert root.find("Username") is None
+    assert root.findtext("password_type") == "4"
+    password_hash = huawei_router.base64.b64encode(
+        huawei_router.hashlib.sha256(b"router-password").hexdigest().encode("ascii")
+    )
+    challenge = b"admin" + password_hash + b"tok-info-value"
+    expected = huawei_router.base64.b64encode(
+        huawei_router.hashlib.sha256(challenge).hexdigest().encode("ascii")
+    ).decode("ascii")
+    assert root.findtext("Password") == expected
+    assert client.token == "next-token"
 
 
 def test_deye_cloud_config_keeps_credentials_private_and_supports_centers():

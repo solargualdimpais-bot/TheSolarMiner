@@ -1,6 +1,6 @@
 PYTHON ?= python3
 OUT ?= dist
-PACKAGE = $(OUT)/solarminer-gateway_0.6.74_amd64.deb
+PACKAGE = $(OUT)/solarminer-gateway_0.6.75_amd64.deb
 
 .PHONY: test deb test-package clean
 

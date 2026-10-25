@@ -54,6 +54,21 @@ def login(client, owner, private, password="a-long-passphrase-01", nonce="login-
     })
 
 
+def test_owner_terminal_diagnostics_reports_runtime_capabilities(client):
+    owner, private, _ = create_owner(client)
+    session = login(client, owner, private)
+    assert session.status_code == 200, session.text
+    response = client.get("/api/v1/system/terminal/diagnostics", headers={
+        "Authorization": f"Bearer {session.json()['access_token']}"
+    })
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert isinstance(result["available"], bool)
+    assert isinstance(result["pty_available"], bool)
+    assert isinstance(result["shell_available"], bool)
+    assert result["available"] is (result["pty_available"] and result["shell_available"])
+
+
 @pytest.mark.skipif(os.name != "posix", reason="O terminal PTY do Gateway corre em Linux/POSIX")
 def test_owner_terminal_executes_and_streams_real_gateway_shell(client, tmp_path, monkeypatch):
     owner, private, _ = create_owner(client)

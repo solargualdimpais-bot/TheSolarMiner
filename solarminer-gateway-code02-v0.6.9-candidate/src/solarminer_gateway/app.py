@@ -49,7 +49,7 @@ from . import updates as update_manager
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.74"
+PACKAGE_VERSION = "0.6.75"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -1165,7 +1165,7 @@ def deye_cloud_stations(session: dict[str, Any] = Depends(require_permission("ma
     except HTTPException:
         raise
     except (RuntimeError, ValueError, OSError) as exc:
-        reason = str(exc) if isinstance(exc, ValueError) else "deye_cloud_request_failed"
+        reason = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else "deye_cloud_connection_failed"
         raise HTTPException(502, reason) from exc
 
 
@@ -1183,7 +1183,8 @@ def deye_cloud_history_import(payload: dict[str, Any], session: dict[str, Any] =
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except (RuntimeError, OSError) as exc:
-        raise HTTPException(502, "deye_cloud_history_import_failed") from exc
+        reason = str(exc) if isinstance(exc, RuntimeError) else "deye_cloud_connection_failed"
+        raise HTTPException(502, reason) from exc
 
     now_text = datetime.now(timezone.utc).isoformat(timespec="seconds")
     hardware_config = hardware_integrations.load_config()
@@ -2928,7 +2929,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.74"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.75"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(
@@ -3149,6 +3150,29 @@ def read_gateway_console(session: dict[str, Any] = Depends(current_session)) -> 
             "resources": resources if isinstance(resources, dict) else {},
             "truncated": result.get("truncated") is True,
             "scope": "Allowlisted Gateway service status, CPU/RAM/storage metrics and service logs; recent Tailscale/Nginx setup log tail."}
+
+
+@app.get("/api/v1/system/terminal/diagnostics")
+def gateway_terminal_diagnostics(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Explain whether the authenticated Gateway runtime can provide a PTY terminal."""
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_only")
+    try:
+        import fcntl  # noqa: F401
+        import pty  # noqa: F401
+        import termios  # noqa: F401
+        pty_available = os.name == "posix"
+    except ImportError:
+        pty_available = False
+    shell_available = Path("/bin/bash").is_file()
+    return {
+        "available": pty_available and shell_available,
+        "pty_available": pty_available,
+        "shell_available": shell_available,
+        "platform": os.name,
+    }
 
 
 @app.websocket("/api/v1/system/terminal/ws")

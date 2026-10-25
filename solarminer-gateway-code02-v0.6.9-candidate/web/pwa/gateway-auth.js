@@ -89,7 +89,14 @@ async function gatewayRequest(baseUrl, path, { method = "GET", body, authenticat
       device_not_associated: "Este dispositivo ainda não está associado a essa conta. Confirma as credenciais ou remove a identidade antiga deste browser.",
       ev_tesla_not_configured: "Configura primeiro a ligação Tesla em Energia → Carregador EV.",
       ev_tesla_read_failed: "O Gateway não conseguiu ler o estado de carga Tesla. Confirma a região, a autorização Fleet e o veículo selecionado.",
-      invalid_tesla_vehicle_ids: "Seleciona apenas um veículo Tesla para o carregamento."
+      invalid_tesla_vehicle_ids: "Seleciona apenas um veículo Tesla para o carregamento.",
+      deye_cloud_auth_rejected: "A Deye Cloud recusou a autenticação. Confirma App ID, App Secret, e-mail, palavra-passe e centro de dados.",
+      deye_cloud_permission_denied: "A Deye Cloud autenticou o pedido, mas recusou o acesso a esta conta ou estação.",
+      deye_cloud_endpoint_not_found: "A Deye Cloud não reconheceu o endpoint para este centro de dados. Confirma a região selecionada.",
+      deye_cloud_rate_limited: "A Deye Cloud limitou os pedidos. Aguarda antes de tentar importar novamente.",
+      deye_cloud_upstream_timeout: "A Deye Cloud demorou demasiado a responder ao pedido de histórico.",
+      deye_cloud_connection_failed: "O Gateway não conseguiu estabelecer ligação à Deye Cloud.",
+      deye_cloud_invalid_response: "A Deye Cloud devolveu uma resposta que o Gateway não conseguiu interpretar."
     })[detail] || detail;
     const error = new Error(message);
     error.status = response.status;
@@ -265,17 +272,63 @@ export async function readGatewayTailscale() {
 export async function readGatewayConsole() {
   return gatewayApi("/api/v1/system/console");
 }
+export async function readGatewayTerminalDiagnostics() {
+  return gatewayApi("/api/v1/system/terminal/diagnostics");
+}
 export function openGatewayTerminalSocket() {
   if (!currentGateway || !bearerToken || currentUser?.role !== "owner") throw new Error("Inicia sessão como Owner para abrir o terminal.");
   const socketUrl = new URL("/api/v1/system/terminal/ws", currentGateway);
   socketUrl.protocol = socketUrl.protocol === "https:" ? "wss:" : "ws:";
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(socketUrl.toString());
-    socket.addEventListener("open", () => {
-      socket.send(JSON.stringify({ type: "authenticate", token: bearerToken }));
-      resolve(socket);
-    }, { once: true });
-    socket.addEventListener("error", () => reject(new Error("Não foi possível ligar ao terminal do Gateway.")), { once: true });
+    let settled = false;
+    const timer = setTimeout(() => fail("O Gateway aceitou a ligação, mas não confirmou a sessão do terminal dentro do tempo esperado.", "timeout"), 10000);
+    const cleanup = () => {
+      clearTimeout(timer);
+      socket.removeEventListener("open", onOpen);
+      socket.removeEventListener("message", onMessage);
+      socket.removeEventListener("close", onClose);
+      socket.removeEventListener("error", onError);
+    };
+    const fail = (message, code) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      const error = new Error(message);
+      error.code = code;
+      reject(error);
+      socket.close();
+    };
+    const onOpen = () => {
+      try { socket.send(JSON.stringify({ type: "authenticate", token: bearerToken })); }
+      catch { fail("A ligação abriu, mas não foi possível enviar a autenticação ao Gateway.", "send_failed"); }
+    };
+    const onMessage = event => {
+      let message;
+      try { message = JSON.parse(event.data); } catch { return; }
+      if (message?.type === "ready") {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(socket);
+      } else if (message?.type === "error") {
+        fail(typeof message.data === "string" ? message.data : "O serviço de terminal recusou a ligação.", "gateway_error");
+      }
+    };
+    const onClose = event => {
+      const reasons = {
+        4401: ["A sessão Owner expirou ou não foi aceite pelo Gateway. Termina sessão e volta a entrar.", "unauthorized"],
+        4403: ["O Gateway recusou o acesso Owner ou a origem da PWA para o terminal.", "forbidden"],
+        1011: ["O Gateway aceitou a ligação, mas não conseguiu iniciar o terminal. A verificação de compatibilidade pode indicar a causa.", "gateway_failure"],
+      };
+      const [text, code] = reasons[event.code] || ["O WebSocket foi fechado antes de o Gateway confirmar o terminal.", `close_${event.code || 0}`];
+      fail(text, code);
+    };
+    const onError = () => fail("O navegador não conseguiu concluir o handshake WebSocket com o Gateway.", "websocket_handshake_failed");
+    socket.addEventListener("open", onOpen);
+    socket.addEventListener("message", onMessage);
+    socket.addEventListener("close", onClose);
+    socket.addEventListener("error", onError);
   });
 }
 export async function configureGatewayTailscale(endpoint) {

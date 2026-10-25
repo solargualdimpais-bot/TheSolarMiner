@@ -49,7 +49,7 @@ class HuaweiHiLinkClient:
         self.token = ""
 
     def _request(self, path: str, *, body: bytes | None = None, token: bool = False) -> tuple[bytes, Any]:
-        headers = {"Accept": "application/xml,text/xml", "User-Agent": "SolarMiner-Gateway/0.6.72"}
+        headers = {"Accept": "application/xml,text/xml", "User-Agent": "SolarMiner-Gateway/0.6.75"}
         if body is not None:
             headers["Content-Type"] = "application/xml; charset=UTF-8"
         if token and self.token:
@@ -77,6 +77,8 @@ class HuaweiHiLinkClient:
 
     @staticmethod
     def _text(root: ET.Element, name: str, default: str = "") -> str:
+        if root.tag.rsplit("}", 1)[-1] == name:
+            return (root.text or "").strip() or default
         item = root.find(f".//{name}")
         return (item.text or "").strip() if item is not None else default
 
@@ -101,7 +103,9 @@ class HuaweiHiLinkClient:
         challenge = self.username.encode("utf-8") + password_hash + self.token.encode("utf-8")
         response_hash = base64.b64encode(hashlib.sha256(challenge).hexdigest().encode("ascii")).decode("ascii")
         request_root = ET.Element("request")
-        ET.SubElement(request_root, "Username").text = self.username
+        # The 4G CPE 5 web UI asks only for a password. Keep the fixed admin
+        # identity in the challenge hash, but omit Username from the XML body
+        # to support the password-only login flow discussed for this firmware.
         ET.SubElement(request_root, "Password").text = response_hash
         ET.SubElement(request_root, "password_type").text = "4"
         payload = ET.tostring(request_root, encoding="utf-8", xml_declaration=True)

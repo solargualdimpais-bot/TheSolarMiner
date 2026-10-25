@@ -3,7 +3,7 @@ import { DEMO_CONTROL_CONFIG, createDemoControlState, updateDemoControl, toggleD
 import { renderWorkspacePage, renderHomePreferenceLinks, renderHouseSearch, handleWorkspaceAction, handleWorkspaceChange, applyPreferences, getWorkspacePageLabel, workspace, getEditableEntity, saveEditableEntity, saveDemoWorkspace, hydrateWorkspacePhotos } from "./workspace-ui.js";
 import { renderAutomationsPage, renderSolarProductionPage, renderDemoAdminPanel, handleFeatureAction, saveAutomationForm, addDemoUser, saveDemoUserEdit, saveSolarWeather, demoFeatures } from "./features-v053.js";
 import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classifyEndpoint, inferHostedGatewayEndpoint, PRESENCE_API_STATUS } from "./gateway-connection.js";
-import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, controlGatewayAntminer, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, discoverGatewayTuyaLanDevices, readGatewayHuaweiClients, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, controlGatewayAntminer, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, discoverGatewayTuyaLanDevices, readGatewayHuaweiClients, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging } from "./gateway-auth.js";
 
 let automationEditingId = "";
 const state = { page: "inicio", mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], energyEngine: null, siteProfile: null, tuyaDevices: [], tuyaReadings: [], lastUpdated: null, lastMeasurementAt: null, refreshing: false, demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [], engineHistoryChart: { open: false, dateKey: "", loading: false, error: null } };
@@ -1473,7 +1473,23 @@ async function connectGatewayTerminal() {
   } catch (error) {
     gatewayTerminalSocket = null;
     button.disabled = false;
-    status.textContent = `Não foi possível abrir o terminal: ${error.message}`;
+    let detail = error.message;
+    if (error.code === "websocket_handshake_failed" || error.code?.startsWith("close_1006") || error.code === "timeout") {
+      try {
+        const diagnostic = await readGatewayTerminalDiagnostics();
+        if (!diagnostic.available) {
+          detail = !diagnostic.pty_available
+            ? "A API do Gateway respondeu, mas este sistema não disponibiliza o terminal PTY."
+            : "A API do Gateway respondeu, mas a shell do terminal não está instalada.";
+        } else {
+          detail = "A API do Gateway responde e o terminal está disponível, mas a ligação WebSocket falhou. O bloqueio está no encaminhamento HTTPS/Tailscale ou na configuração do proxy; esta verificação não executou comandos.";
+        }
+      } catch (diagnosticError) {
+        detail = `${error.message} A verificação autenticada da API também falhou: ${diagnosticError.message}`;
+      }
+    }
+    status.textContent = `Não foi possível abrir o terminal: ${detail}`;
+    appendGatewayTerminalOutput(`\r\n[Diagnóstico] ${detail}\r\n`);
   }
 }
 function disconnectGatewayTerminal() {
@@ -1585,7 +1601,6 @@ async function refreshHardwareIntegrationConfig() {
   $("#hardware-tuya-uid").value = tuya.uid || "";
   $("#hardware-tuya-client-secret").value = "";
   $("#huawei-router-host").value = config.huawei_router?.host || "192.168.8.1";
-  $("#huawei-router-username").value = config.huawei_router?.username || "admin";
   $("#huawei-router-password").value = "";
   $("#hardware-tuya-devices").value = (tuya.devices || []).map(device => `${device.device_id} | ${device.name}${device.switch_code ? ` | ${device.switch_code}` : ""}${device.level_code ? ` | ${device.level_code} | ${device.level_min ?? 0} | ${device.level_max ?? 100}` : ""}`).join("\n");
   $("#deye-status").textContent = deye.host ? `Deye configurado em ${deye.host}:${deye.port || 502}, Unit ID ${deye.unit_id ?? 1}.` : "Deye ainda não configurado.";
@@ -1723,7 +1738,7 @@ $("#deye-cloud-import").addEventListener("click",async event=>{
   if(!stationId){status.textContent="Lê as estações e seleciona uma antes de importar.";return;}
   button.disabled=true;status.textContent="A importar o histórico dos últimos 90 dias. As amostras locais serão preservadas…";
   try{const result=await importGatewayDeyeCloudHistory(stationId);status.textContent=`Importação concluída: ${result.readings_added} leituras novas de ${result.source_rows} amostras. Histórico local preservado.`;await refreshGatewayReadings();}
-  catch(error){status.textContent=`A importação do histórico falhou: ${error.message}`;}
+  catch(error){const detail=error.status===504?"O Gateway/proxy expirou à espera da resposta da importação de 90 dias. Isto não confirma que a Deye tenha recusado o acesso; verifica se surgiram novas amostras antes de repetir.":error.message;status.textContent=`A importação do histórico falhou: ${detail}`;}
   finally{button.disabled=false;}
 });
 $("#antminer-save").addEventListener("click", event => {
@@ -1739,7 +1754,7 @@ $("#huawei-router-save").addEventListener("click", async event => {
   if(!ownerCanManageHardware("#tuya-status"))return;
   button.disabled=true;
   try{
-    const host=$("#huawei-router-host").value.trim(),username=$("#huawei-router-username").value.trim(),password=$("#huawei-router-password").value;
+    const host=$("#huawei-router-host").value.trim(),username="admin",password=$("#huawei-router-password").value;
     const saved=await saveGatewayHardwareIntegrationConfig({huawei_router:{host,username,...(password?{password}:{})}});
     $("#huawei-router-password").value="";
     status.textContent=saved.huawei_router?.configured?`Acesso local guardado no Gateway para ${saved.huawei_router.host}.`:`Endereço guardado; introduz a palavra-passe antes de consultar.`;
