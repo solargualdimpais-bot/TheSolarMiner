@@ -301,6 +301,25 @@ def test_antminer_control_probe_sends_no_write_without_a_current_positive_target
     assert calls == ["/api/v1/auth/login", "/api/v1/performance/tuner-state"]
 
 
+def test_antminer_control_probe_accepts_snake_case_tuner_state_and_string_watts(monkeypatch):
+    calls = []
+
+    def request(_host, _port, path, **kwargs):
+        calls.append((path, kwargs))
+        if path == "/api/v1/auth/login": return {"token": "session-token"}
+        if path == "/api/v1/performance/tuner-state":
+            return {"mode_state": {"power_target_mode_state": {"current_target": {"watt": "2500"}}}}
+        assert kwargs["method"] == "PUT" and kwargs["payload"] == {"watt": 2500}
+        return {"watt": "2500"}
+
+    monkeypatch.setattr(integrations, "_bos_rest_request", request)
+    result = integrations.test_antminer_control({"host": "192.168.8.69", "password": "secret"})
+    assert result["connection_state"] == "control_verified"
+    assert result["previous_target_watt"] == result["applied_watt"] == 2500
+    assert result["mining_state_changed"] is False
+    assert len(calls) == 3
+
+
 @pytest.mark.parametrize("action,path", [("pause", "/api/v1/actions/pause"),
                                            ("stop", "/api/v1/actions/stop"),
                                            ("start", "/api/v1/actions/start")])

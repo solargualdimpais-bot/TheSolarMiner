@@ -955,10 +955,14 @@ def test_antminer_control(config: dict[str, Any]) -> dict[str, Any]:
     rest_port = config.get("rest_port", 80)
     token = _bos_rest_login(config)
     state = _bos_rest_request(host, rest_port, "/api/v1/performance/tuner-state", token=token)
-    try:
-        current_watt = state["mode_state"]["powertargetmodestate"]["current_target"]["watt"]
-    except (KeyError, TypeError) as exc:
-        raise RuntimeError("antminer_control_probe_target_unavailable") from exc
+    mode_state = state.get("mode_state", state.get("modeState")) if isinstance(state, dict) else None
+    power_state = (mode_state.get("powertargetmodestate") or mode_state.get("power_target_mode_state")
+                   or mode_state.get("powerTargetModeState")) if isinstance(mode_state, dict) else None
+    current_target = (power_state.get("current_target", power_state.get("currentTarget"))
+                      if isinstance(power_state, dict) else None)
+    current_watt = current_target.get("watt") if isinstance(current_target, dict) else None
+    if isinstance(current_watt, str) and re.fullmatch(r"[0-9]{1,5}", current_watt):
+        current_watt = int(current_watt)
     if isinstance(current_watt, bool) or not isinstance(current_watt, int) or not 1 <= current_watt <= 2900:
         raise RuntimeError("antminer_control_probe_target_unavailable")
     response = _bos_rest_request(host, rest_port, "/api/v1/performance/power-target", method="PUT",
@@ -966,6 +970,8 @@ def test_antminer_control(config: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(response, dict):
         raise RuntimeError("antminer_control_probe_response_invalid")
     applied_watt = response.get("watt")
+    if isinstance(applied_watt, str) and re.fullmatch(r"[0-9]{1,5}", applied_watt):
+        applied_watt = int(applied_watt)
     if isinstance(applied_watt, bool) or not isinstance(applied_watt, int):
         raise RuntimeError("antminer_control_probe_response_invalid")
     return {"action": "test_control", "previous_target_watt": current_watt,
