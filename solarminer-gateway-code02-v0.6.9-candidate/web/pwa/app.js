@@ -50,8 +50,13 @@ async function showOperationResult(title,message){return showOperationDialog({ti
 const terminalUpdateStates=new Set(["COMMITTED","FAILED","ROLLED_BACK","RECOVERY_BLOCKED","CURRENT"]);
 function updateStatusMessage(result){
   const status=String(result?.status||"UNKNOWN").toUpperCase();
-  const version=result?.installed_version||result?.target_version||"";
-  if(status==="COMMITTED")return `Atualização concluída${version?` para a versão ${version}`:""}.`;
+  const version=status==="COMMITTED"
+    ? result?.target_version||result?.details?.pipeline?.target_version||result?.installed_version||""
+    : result?.installed_version||result?.target_version||"";
+  if(status==="COMMITTED"){
+    const previous=result?.installed_version;
+    return `Atualização concluída${version?`: versão ${previous&&previous!==version?`${previous} → `:""}${version}`:""}.`;
+  }
   if(status==="ROLLED_BACK")return `A atualização falhou e o Gateway recuperou a versão anterior${version?` (${version})`:""}.`;
   if(status==="FAILED"||status==="RECOVERY_BLOCKED")return `A atualização não foi concluída${version?`. Versão de destino: ${version}`:"."} Consulta a Consola para ver o diagnóstico.`;
   if(status==="CURRENT")return `O Gateway já está atualizado${version?` com a versão ${version}`:""}.`;

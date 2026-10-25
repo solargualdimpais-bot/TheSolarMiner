@@ -49,7 +49,7 @@ test("new browser sign-in sends password only to the HTTPS Gateway and stores de
 });
 
 test("service worker only caches allowlisted static resources and versions cache explicitly", () => {
-  assert.match(sw, /the-solar-miner-static-v0\.5\.44-console-errors/);
+  assert.match(sw, /the-solar-miner-static-v0\.5\.45-console-errors/);
   assert.match(sw, /url\.pathname\.includes\("\/api\/v1\/"\)/);
   assert.match(sw, /request\.headers\.has\("Authorization"\)/);
   assert.match(sw, /request\.headers\.has\("Cookie"\)/);
@@ -57,6 +57,11 @@ test("service worker only caches allowlisted static resources and versions cache
   assert.match(sw, /CACHE_PREFIXES/);
   assert.match(sw, /503/);
   assert.doesNotMatch(sw, /caches\.match\("\.\/index\.html"\)/);
+});
+
+test("completed Gateway update reports the target version and distinguishes the previous version", () => {
+  assert.match(app, /status==="COMMITTED"[\s\S]{0,220}result\?\.target_version\|\|result\?\.details\?\.pipeline\?\.target_version/);
+  assert.match(app, /versão \$\{previous&&previous!==version\?`\$\{previous\} → `:""\}\$\{version\}/);
 });
 
 test("real API failure states do not relabel demo readings as LIVE", () => {
