@@ -10,6 +10,7 @@ import hmac
 import errno
 import ipaddress
 import json
+import math
 import os
 import re
 import sys
@@ -23,7 +24,7 @@ import urllib.request
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from . import deye_modbus
 from . import huawei_router
@@ -1344,16 +1345,25 @@ def _deye_cloud_timestamp(value: Any) -> str | None:
     return None
 
 
-def deye_cloud_history(config: dict[str, Any], station_id: str | int, *, days: int = 90) -> list[dict[str, Any]]:
+def deye_cloud_history(config: dict[str, Any], station_id: str | int, *, days: int = 90,
+                        progress_callback: Callable[[int, str], None] | None = None) -> list[dict[str, Any]]:
     if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 90:
         raise ValueError("deye_cloud_history_days_out_of_range")
     if isinstance(station_id, bool) or not str(station_id).isdigit() or len(str(station_id)) > 32:
         raise ValueError("invalid_deye_cloud_station_id")
+    def report(progress: int, message: str) -> None:
+        if progress_callback:
+            progress_callback(max(0, min(79, int(progress))), message)
+
+    report(2, "A autenticar na Deye Cloud…")
     token = _deye_cloud_token(config)
+    report(6, "Ligação efetuada; a descarregar o histórico…")
     end = int(datetime.now(timezone.utc).timestamp())
     start = end - days * 86400
     result_rows: list[dict[str, Any]] = []
     chunk_start = start
+    chunk_count = max(1, (days + 6) // 7)
+    chunk_index = 0
     while chunk_start < end:
         chunk_end = min(end, chunk_start + 7 * 86400)
         for page in range(1, 1001):
@@ -1365,9 +1375,19 @@ def deye_cloud_history(config: dict[str, Any], station_id: str | int, *, days: i
                 raise RuntimeError("deye_cloud_history_invalid")
             result_rows.extend(item for item in batch if isinstance(item, dict))
             total = result.get("total")
-            if not batch or (isinstance(total, int) and page * 200 >= total) or len(batch) < 200:
+            has_more_pages = bool(batch) and not (isinstance(total, int) and page * 200 >= total) and len(batch) >= 200
+            if isinstance(total, int) and total > 0:
+                page_fraction = min(1.0, page / max(1, math.ceil(total / 200)))
+            elif not has_more_pages:
+                page_fraction = 1.0
+            else:
+                page_fraction = min(0.85, page / (page + 4))
+            fraction = (chunk_index + page_fraction) / chunk_count
+            report(6 + round(72 * fraction), f"A descarregar amostras: {len(result_rows)} recebidas…")
+            if not has_more_pages:
                 break
         chunk_start = chunk_end
+        chunk_index += 1
     return result_rows
 
 

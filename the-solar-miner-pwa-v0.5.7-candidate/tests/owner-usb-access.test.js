@@ -38,6 +38,22 @@ test("Gateway administration is on an Owner-only page and live Home uses Gateway
   assert.match(app, /if \(page === "owner" && \(!sessionInfo\(\)\.authenticated \|\| sessionInfo\(\)\.user\.role !== "owner"\)\) return/);
 });
 
+test("Gateway console summarizes detected errors and filters logs to affected services", () => {
+  assert.match(html, /id="gateway-console-errors"/);
+  assert.match(html, /option value="errors">Só serviços com erros</);
+  assert.match(app, /function renderGatewayConsoleErrors\(\)/);
+  assert.match(app, /gatewayConsoleErrorPattern/);
+  assert.match(app, /gatewayConsoleDetectedErrorServices/);
+  assert.match(app, /Serviços marcados como falhados/);
+  assert.match(app, /gatewayConsoleServicePatterns\[service\]/);
+});
+
+test("Owner PWA checks for Gateway updates automatically every minute while active", () => {
+  assert.match(app, /setInterval\(\(\) => \{[\s\S]*?runGatewayUpdateCheck\(\{automatic:true\}\)[\s\S]*?\},60_000\)/);
+  assert.match(app, /document\.visibilityState!=="visible"/);
+  assert.match(html, /id="gateway-update-banner"/);
+});
+
 test("the recovery key can be downloaded only from the first-owner one-time display", () => {
   assert.match(html, /gateway-download-recovery-key/);
   assert.match(html, /gateway-owner-recovery-form/);
@@ -59,9 +75,9 @@ test("Owner recovery file parser accepts a generated key and rejects malformed/o
 });
 
 test("new PWA static cache version is changed and USB limitations are documented", () => {
-  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.41-deye-history/);
-  assert.match(manifest, /v0\.5\.41/);
-  assert.equal(packageJson.version, "0.5.41");
+  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.42-console-errors/);
+  assert.match(manifest, /v0\.5\.42/);
+  assert.equal(packageJson.version, "0.5.42");
   assert.doesNotMatch(html, /gateway-update-refresh|Atualizar estado/);
   assert.doesNotMatch(app, /gateway-update-refresh/);
   const docs = read("OWNER_USB_AND_ACCESS.md");
@@ -96,7 +112,7 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   assert.match(embeddedApp, /startGatewayTailscale/);
   assert.match(embeddedApp, /liveHomeMetric\("Painéis"/);
   assert.match(embeddedApp, /liveMinerHomeMetric\(\)/);
-  assert.match(embeddedWorker, /static-v0\.5\.41-deye-history/);
+  assert.match(embeddedWorker, /static-v0\.5\.42-console-errors/);
   assert.match(embeddedHtml, /data-owner-tab="gateway"/);
   assert.doesNotMatch(embeddedHtml, /data-owner-panel="console"/);
   assert.match(embeddedHtml, /Carrega em .Atualizar consola. para consultar os dados mais recentes/);
@@ -112,10 +128,10 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   assert.doesNotMatch(embeddedHtml, /gateway-console-update-check/);
   assert.doesNotMatch(embeddedHtml, /gateway-console-command/);
   assert.match(embeddedWorker, /password-device-login/);
-  assert.match(embeddedHtml, /OWNER PWA 0\.5\.41/);
+  assert.match(embeddedHtml, /OWNER PWA 0\.5\.42/);
   assert.match(embeddedHtml, /gateway-password-login-form/);
-  assert.match(control, /^Version: 0\.6\.75$/m);
-  assert.match(installer, /solarminer-gateway_0\.6\.75_amd64.deb/);
+  assert.match(control, /^Version: 0\.6\.76$/m);
+  assert.match(installer, /solarminer-gateway_0\.6\.76_amd64.deb/);
   assert.match(embeddedApp, /RECOVERY_BLOCKED/);
   assert.match(embeddedApp, /rollbackFailure/);
   assert.match(installer, /install-tailscale\.sh/);

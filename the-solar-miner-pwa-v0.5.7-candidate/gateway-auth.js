@@ -421,9 +421,26 @@ export async function saveGatewayHardwareIntegrationConfig(config) {
 export async function readGatewayDeyeCloudStations() {
   return gatewayApi("/api/v1/integrations/deye-cloud/stations", { method: "POST", body: {} });
 }
-export async function importGatewayDeyeCloudHistory(stationId) {
+export async function importGatewayDeyeCloudHistory(stationId, onProgress = () => {}) {
   if (!/^\d{1,32}$/.test(String(stationId ?? ""))) throw new Error("Seleciona uma estação Deye válida.");
-  return gatewayApi("/api/v1/integrations/deye-cloud/history/import", { method: "POST", body: { station_id: String(stationId) } });
+  const job = await gatewayApi("/api/v1/integrations/deye-cloud/history/import", { method: "POST", body: { station_id: String(stationId) } });
+  if (!job?.job_id) throw new Error("O Gateway não iniciou a importação do histórico.");
+  const startedAt = Date.now();
+  let current = job;
+  while (Date.now() - startedAt < 15 * 60 * 1000) {
+    onProgress(current);
+    if (current.status === "completed") return current.result;
+    if (current.status === "failed") {
+      const error = new Error(current.error?.message || "deye_cloud_history_import_failed");
+      error.status = current.error?.status;
+      throw error;
+    }
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    current = await gatewayApi(`/api/v1/integrations/deye-cloud/history/import/${encodeURIComponent(job.job_id)}`);
+  }
+  const error = new Error("O Gateway continua a processar a importação, mas a PWA deixou de aguardar. Verifica o histórico antes de repetir.");
+  error.status = 504;
+  throw error;
 }
 export async function syncGatewayTuyaDevices({ signal } = {}) {
   return gatewayApi("/api/v1/integrations/tuya/sync", { method: "POST", body: {}, signal });

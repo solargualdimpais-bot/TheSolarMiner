@@ -30,6 +30,8 @@ DIAGNOSTIC_SECRET_PATTERNS = (
 )
 TAILSCALE_CERT_LOG = "/var/log/solarminer-tailscale-cert.log"
 TAILSCALE_CERT_LOG_MAX_BYTES = 12_000
+NGINX_ERROR_LOG = "/var/log/nginx/error.log"
+NGINX_ERROR_LOG_MAX_BYTES = 8_000
 CONSOLE_SERVICES = {
     "solarminer-gateway.service": "gateway",
     "solarminer-recovery.service": "offline_recovery",
@@ -106,23 +108,33 @@ def _redact_diagnostics(value: str) -> str:
     return value[-24000:]
 
 
-def _read_tailscale_cert_log() -> str:
-    """Read only the fixed, root-owned Tailscale certificate service log."""
+def _read_fixed_root_log(path: str, max_bytes: int) -> str:
+    """Read a bounded tail from one fixed, root-owned regular log file."""
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
-        descriptor = os.open(TAILSCALE_CERT_LOG, flags)
+        descriptor = os.open(path, flags)
         with os.fdopen(descriptor, "rb") as stream:
             metadata = os.fstat(stream.fileno())
             if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_size <= 0:
                 return ""
-            stream.seek(max(0, metadata.st_size - TAILSCALE_CERT_LOG_MAX_BYTES))
-            data = stream.read(TAILSCALE_CERT_LOG_MAX_BYTES)
+            stream.seek(max(0, metadata.st_size - max_bytes))
+            data = stream.read(max_bytes)
         text = data.decode("utf-8", errors="replace")
-        if metadata.st_size > TAILSCALE_CERT_LOG_MAX_BYTES:
+        if metadata.st_size > max_bytes:
             text = text.partition("\n")[2]
         return text.strip()
     except (OSError, ValueError):
         return ""
+
+
+def _read_tailscale_cert_log() -> str:
+    """Read only the fixed, root-owned Tailscale certificate service log."""
+    return _read_fixed_root_log(TAILSCALE_CERT_LOG, TAILSCALE_CERT_LOG_MAX_BYTES)
+
+
+def _read_nginx_error_log() -> str:
+    """Read the bounded Nginx error tail to diagnose API and WebSocket proxy failures."""
+    return _read_fixed_root_log(NGINX_ERROR_LOG, NGINX_ERROR_LOG_MAX_BYTES)
 
 
 def handle_request(raw: bytes, runner=subprocess.run) -> dict[str, object]:
@@ -190,6 +202,9 @@ def handle_request(raw: bytes, runner=subprocess.run) -> dict[str, object]:
             nginx_output = "Nginx configuration check could not run."
         if nginx_output:
             logs += "\n\n--- Current Nginx configuration validation ---\n" + nginx_output
+        nginx_errors = _read_nginx_error_log()
+        if nginx_errors:
+            logs += "\n\n--- Recent Nginx proxy errors ---\n" + nginx_errors
         cert_log = _read_tailscale_cert_log()
         if cert_log:
             logs += "\n\n--- SolarMiner Tailscale certificate and Nginx setup log ---\n" + cert_log

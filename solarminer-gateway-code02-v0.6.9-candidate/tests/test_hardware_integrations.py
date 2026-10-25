@@ -55,6 +55,7 @@ def test_deye_cloud_config_keeps_credentials_private_and_supports_centers():
 
 def test_deye_cloud_token_hash_and_station_history_requests(monkeypatch):
     calls = []
+    progress = []
 
     def request(center, path, **kwargs):
         calls.append((center, path, kwargs))
@@ -81,12 +82,16 @@ def test_deye_cloud_token_hash_and_station_history_requests(monkeypatch):
     config = {"data_center": "eu", "app_id": "app-123", "app_secret": "app-secret-123",
               "email": "owner@example.com", "password": "account-password"}
     stations = integrations.deye_cloud_list_stations(config)
-    history = integrations.deye_cloud_history(config, "12345", days=90)
+    history = integrations.deye_cloud_history(config, "12345", days=90,
+                                               progress_callback=lambda percent, message: progress.append((percent, message)))
     assert stations == [{"station_id": 12345, "name": "Casa"}]
     assert len(history) == 13
     assert all(item[0] == "eu" for item in calls)
     assert sum(path == "/account/token" for _, path, _ in calls) == 2
     assert integrations._deye_cloud_timestamp(history[0]["timeStamp"]) == "2026-10-24T10:00:00+00:00"
+    assert progress[0][0] == 2 and "autenticar" in progress[0][1]
+    assert progress[-1][0] == 78
+    assert all(left[0] <= right[0] for left, right in zip(progress, progress[1:]))
 
 
 @pytest.mark.parametrize("station_id,days", [("../x", 90), ("123", 91), (True, 90)])

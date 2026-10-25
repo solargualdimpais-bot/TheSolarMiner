@@ -461,6 +461,36 @@ def test_expired_bootstrap_is_not_reissued_after_reinitialization(client):
     assert row["state"] == "expired"
 
 
+def test_deye_cloud_history_import_runs_as_owner_scoped_progress_job(client, monkeypatch):
+    owner, private, _ = create_owner(client)
+    token = login(client, owner, private).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    def fake_history(config, station_id, *, days, progress_callback):
+        assert station_id == "12345" and days == 90
+        progress_callback(34, "A descarregar amostras: 200 recebidas…")
+        progress_callback(78, "A descarregar amostras: 400 recebidas…")
+        return []
+
+    monkeypatch.setattr(gateway, "_require_deye_cloud_config", lambda: {"app_id": "configured"})
+    monkeypatch.setattr(gateway.hardware_integrations, "deye_cloud_history", fake_history)
+    monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: {})
+    started = client.post("/api/v1/integrations/deye-cloud/history/import", json={"station_id": "12345"}, headers=headers)
+    assert started.status_code == 200, started.text
+    job_id = started.json()["job_id"]
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        status = client.get(f"/api/v1/integrations/deye-cloud/history/import/{job_id}", headers=headers)
+        assert status.status_code == 200, status.text
+        if status.json()["status"] == "completed":
+            break
+        time.sleep(0.01)
+    assert status.json()["status"] == "completed"
+    assert status.json()["progress"] == 100
+    assert status.json()["result"]["source_rows"] == 0
+    assert client.get(f"/api/v1/integrations/deye-cloud/history/import/{job_id}").status_code == 401
+
+
 def test_concurrent_bootstrap_creates_only_one_owner(tmp_path, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     monkeypatch.setattr(gateway, "DB_PATH", tmp_path / "concurrent.db")

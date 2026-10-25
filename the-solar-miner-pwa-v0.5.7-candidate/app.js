@@ -1324,6 +1324,7 @@ $("#owner-open-gateway")?.addEventListener("click", () => $("#gateway-dialog").s
 $("#owner-gateway-status").textContent = "Configura e autentica a ligação pelo botão acima.";
 $("#owner-nav-item").addEventListener("click", () => selectOwnerTab(activeOwnerTab));
 let gatewayConsoleRefreshInFlight = false;
+let gatewayConsoleServices = {};
 const gatewayConsoleServiceLabels = {
   gateway: "SolarMiner Gateway", nginx: "Nginx", tailscale: "Tailscale",
   daily_update_check: "Verificação diária de atualizações",
@@ -1377,9 +1378,11 @@ async function refreshGatewayConsole({ silent = false } = {}) {
   if (!silent) status.textContent = "A consultar a saída recente do Gateway…";
   try {
     const result = await readGatewayConsole();
+    gatewayConsoleServices = result.services && typeof result.services === "object" ? result.services : {};
     renderGatewayConsoleMetrics(result);
     gatewayConsoleLogs = result.logs || "Sem saída recente dos serviços autorizados.";
     renderGatewayConsoleLogs({ preserveScroll: true });
+    renderGatewayConsoleErrors();
     status.textContent = `Atualizado ${timeLabel(result.captured_at)} · registos mais recentes no fim${result.truncated ? " · conteúdo limitado" : ""}.`;
   } catch (error) {
     status.textContent = `Não foi possível consultar a consola: ${error.message}`;
@@ -1388,6 +1391,58 @@ async function refreshGatewayConsole({ silent = false } = {}) {
   }
 }
 let gatewayConsoleLogs = "";
+const gatewayConsoleErrorPattern = /\b(error|err|failed|failure|fatal|emerg|critical|exception|traceback)\b|\[emerg\]/i;
+const gatewayConsoleServicePatterns = {
+  gateway: /solarminer[-_ ]gateway|uvicorn|fastapi/i,
+  nginx: /nginx|current nginx configuration validation/i,
+  tailscale: /tailscale|tailscale-cert/i,
+  updates: /solarminer-update|recovery|rollback|preflight|update-apply|broker/i,
+};
+function gatewayConsoleLineService(line) {
+  return Object.entries(gatewayConsoleServicePatterns).find(([, pattern]) => pattern.test(line))?.[0] || "unknown";
+}
+function gatewayConsoleDetectedErrorServices() {
+  const detected = new Set(Object.entries(gatewayConsoleServices).filter(([, state]) => state === "failed").map(([name]) => name));
+  for (const line of gatewayConsoleLogs.split("\n")) {
+    if (gatewayConsoleErrorPattern.test(line)) {
+      const service = gatewayConsoleLineService(line);
+      detected.add(service);
+    }
+  }
+  return detected;
+}
+function renderGatewayConsoleErrors() {
+  const host = $("#gateway-console-errors");
+  if (!host) return;
+  const failed = Object.entries(gatewayConsoleServices).filter(([, state]) => state === "failed");
+  const errors = gatewayConsoleLogs.split("\n").filter(line => gatewayConsoleErrorPattern.test(line)).slice(-5);
+  host.replaceChildren();
+  if (!failed.length && !errors.length) {
+    host.classList.remove("has-errors");
+    host.textContent = "Sem falhas ou erros explícitos nos serviços e registos consultados.";
+    return;
+  }
+  host.classList.add("has-errors");
+  const title = document.createElement("strong");
+  title.textContent = "Possíveis erros detetados";
+  host.append(title);
+  const summary = document.createElement("p");
+  summary.textContent = failed.length
+    ? `Serviços marcados como falhados: ${failed.map(([name]) => gatewayConsoleServiceLabels[name] || name).join(", ")}.`
+    : "Há linhas de erro nos registos; o estado dos serviços não indica falha ativa.";
+  host.append(summary);
+  if (errors.length) {
+    const list = document.createElement("ul");
+    for (const line of errors) {
+      const item = document.createElement("li");
+      const service = gatewayConsoleLineService(line);
+      const label = gatewayConsoleServiceLabels[service] || (service === "unknown" ? "Serviço não identificado" : service);
+      item.textContent = `${label}: ${line}`;
+      list.append(item);
+    }
+    host.append(list);
+  }
+}
 function renderGatewayConsoleLogs({ preserveScroll = false } = {}) {
   const output = $("#gateway-console-output");
   if (!output) return;
@@ -1404,19 +1459,15 @@ function renderGatewayConsoleLogs({ preserveScroll = false } = {}) {
   }
   datedLines.sort((a, b) => a.timestamp - b.timestamp || a.index - b.index);
   const chronologicalLines = [...otherLines, ...datedLines].map(entry => entry.line);
-  const servicePatterns = {
-    gateway: /solarminer[-_ ]gateway|uvicorn|fastapi/i,
-    nginx: /nginx|current nginx configuration validation/i,
-    tailscale: /tailscale|tailscale-cert/i,
-    updates: /solarminer-update|recovery|rollback|preflight|update-apply/i,
-  };
   const levelPatterns = {
     error: /\b(error|err|failed|failure|fatal|emerg|critical)\b|\[emerg\]/i,
     warning: /\b(warn|warning)\b/i,
     info: /\b(info|notice)\b/i,
   };
   const filtered = chronologicalLines.filter(line =>
-    (service === "all" || servicePatterns[service]?.test(line)) &&
+    (service === "all" || (service === "errors"
+      ? gatewayConsoleErrorPattern.test(line) && gatewayConsoleDetectedErrorServices().has(gatewayConsoleLineService(line))
+      : gatewayConsoleServicePatterns[service]?.test(line))) &&
     (level === "all" || levelPatterns[level]?.test(line))
   );
   output.textContent = filtered.join("\n") || "Sem registos para estes filtros.";
@@ -1734,12 +1785,12 @@ $("#deye-cloud-stations").addEventListener("click",async event=>{
   finally{button.disabled=false;}
 });
 $("#deye-cloud-import").addEventListener("click",async event=>{
-  const button=event.currentTarget,status=$("#deye-cloud-status"),stationId=$("#deye-cloud-station").value;if(!ownerCanManageHardware("#deye-cloud-status"))return;
+  const button=event.currentTarget,status=$("#deye-cloud-status"),progress=$("#deye-cloud-progress"),progressBar=$("#deye-cloud-progress-bar"),progressLabel=$("#deye-cloud-progress-label"),stationId=$("#deye-cloud-station").value;if(!ownerCanManageHardware("#deye-cloud-status"))return;
   if(!stationId){status.textContent="Lê as estações e seleciona uma antes de importar.";return;}
-  button.disabled=true;status.textContent="A importar o histórico dos últimos 90 dias. As amostras locais serão preservadas…";
-  try{const result=await importGatewayDeyeCloudHistory(stationId);status.textContent=`Importação concluída: ${result.readings_added} leituras novas de ${result.source_rows} amostras. Histórico local preservado.`;await refreshGatewayReadings();}
+  button.disabled=true;if(progress)progress.hidden=false;if(progressBar)progressBar.value=0;if(progressLabel)progressLabel.textContent="A contactar a Deye Cloud…";status.textContent="A importação pode demorar alguns minutos. As amostras locais serão preservadas…";
+  try{const result=await importGatewayDeyeCloudHistory(stationId,job=>{if(progressBar)progressBar.value=Number(job.progress)||0;if(progressLabel)progressLabel.textContent=job.message||"A importar histórico…";});status.textContent=`Importação concluída: ${result.readings_added} leituras novas de ${result.source_rows} amostras. Histórico local preservado.`;await refreshGatewayReadings();}
   catch(error){const detail=error.status===504?"O Gateway/proxy expirou à espera da resposta da importação de 90 dias. Isto não confirma que a Deye tenha recusado o acesso; verifica se surgiram novas amostras antes de repetir.":error.message;status.textContent=`A importação do histórico falhou: ${detail}`;}
-  finally{button.disabled=false;}
+  finally{button.disabled=false;if(progress)progress.hidden=true;}
 });
 $("#antminer-save").addEventListener("click", event => {
   const host = $("#hardware-antminer-host").value.trim();

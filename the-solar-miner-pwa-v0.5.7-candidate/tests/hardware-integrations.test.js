@@ -39,12 +39,21 @@ test("Deye Cloud history connection is configured by the Owner and runs only on 
   for (const id of ["deye-cloud-center", "deye-cloud-app-id", "deye-cloud-app-secret", "deye-cloud-email", "deye-cloud-password", "deye-cloud-save", "deye-cloud-stations", "deye-cloud-station", "deye-cloud-import"]) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
+  assert.match(html, /id="deye-cloud-progress"[\s\S]*?<progress[^>]+Progresso da importação do histórico Deye/);
+  assert.match(app, /if\(progress\)progress\.hidden=false/);
+  assert.match(app, /if\(progress\)progress\.hidden=true/);
+  assert.match(app, /A importação pode demorar alguns minutos/);
   assert.match(app, /\$\("#deye-cloud-save"\)\.addEventListener\("click"/);
   assert.match(app, /\$\("#deye-cloud-stations"\)\.addEventListener\("click"/);
   assert.match(app, /\$\("#deye-cloud-import"\)\.addEventListener\("click"/);
   assert.match(app, /\$\("#deye-cloud-app-secret"\)\.value="";\$\("#deye-cloud-password"\)\.value=""/);
   assert.match(auth, /\/api\/v1\/integrations\/deye-cloud\/stations/);
   assert.match(auth, /\/api\/v1\/integrations\/deye-cloud\/history\/import/);
+  assert.match(auth, /async function importGatewayDeyeCloudHistory\(stationId, onProgress/);
+  assert.match(auth, /history\/import\/\$\{encodeURIComponent\(job\.job_id\)\}/);
+  assert.match(auth, /current\.status === "completed"/);
+  assert.match(auth, /current\.status === "failed"/);
+  assert.match(app, /importGatewayDeyeCloudHistory\(stationId,job=>\{if\(progressBar\)progressBar\.value=Number\(job\.progress\)\|\|0/);
   assert.match(html, /Importar histórico de 90 dias/);
 });
 

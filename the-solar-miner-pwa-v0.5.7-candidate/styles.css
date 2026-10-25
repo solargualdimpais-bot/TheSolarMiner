@@ -356,6 +356,14 @@ html[data-font="small"]{--font-ui-scale:.9;}html[data-font="normal"]{--font-ui-s
 .gateway-console-filters{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0 8px}
 .gateway-console-filters label{display:grid;gap:5px;min-width:170px;color:var(--muted,#aaa);font-size:10px}
 .gateway-console-filters select{min-height:36px;padding:7px 10px;border:1px solid var(--line,#30302b);border-radius:9px;background:var(--panel-2,#1e1e1b);color:var(--text,#f5f2eb);font:inherit}
+.gateway-console-errors{margin:12px 0;padding:12px 14px;border:1px solid var(--line,#30302b);border-radius:12px;color:var(--muted,#aaa);font-size:12px}
+.gateway-console-errors.has-errors{border-color:rgba(229,107,93,.55);background:rgba(229,107,93,.08);color:var(--text,#f5f2eb)}
+.gateway-console-errors p{margin:6px 0}
+.gateway-console-errors ul{margin:8px 0 0;padding-left:18px;display:grid;gap:5px;max-height:220px;overflow:auto;overflow-wrap:anywhere}
+.deye-cloud-progress{display:grid;grid-template-columns:minmax(90px,180px) 1fr;align-items:center;gap:10px;margin:10px 0;padding:10px 12px;border:1px solid var(--line,#30302b);border-radius:10px;background:var(--panel-2,#1e1e1b);color:var(--muted,#aaa);font-size:12px}
+.deye-cloud-progress[hidden]{display:none}
+.deye-cloud-progress progress{width:100%;height:8px;accent-color:var(--gold-2,#d8bf82)}
+@media(max-width:520px){.deye-cloud-progress{grid-template-columns:1fr;gap:6px}}
 
 /* Owner photo framing controls and compact, elegant weather presentation. */
 .context-editor-preview{position:relative;aspect-ratio:3.2/1;min-height:140px;border:1px solid var(--line);border-radius:0;overflow:hidden;margin:12px 0;background:#101010;touch-action:none;cursor:grab;user-select:none}

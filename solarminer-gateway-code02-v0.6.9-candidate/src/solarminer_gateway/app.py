@@ -49,7 +49,7 @@ from . import updates as update_manager
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.75"
+PACKAGE_VERSION = "0.6.76"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -72,6 +72,8 @@ _energy_sample_lock = threading.Lock()
 _latest_deye_sample: dict[str, Any] | None = None
 _dispatch_lock = threading.Lock()
 _dispatch_last_sent: dict[str, tuple[str, float]] = {}
+_deye_history_jobs_lock = threading.Lock()
+_deye_history_jobs: dict[str, dict[str, Any]] = {}
 
 ROLES = {"owner", "admin", "operator", "viewer"}
 PERMISSIONS = {
@@ -1175,69 +1177,126 @@ def deye_cloud_history_import(payload: dict[str, Any], session: dict[str, Any] =
         actor = _revalidate_actor(conn, session, "manage_gateway")
         if actor["role"] != "owner":
             raise HTTPException(403, "owner_required")
+    station_id = payload.get("station_id") if isinstance(payload, dict) else None
+    if isinstance(station_id, bool) or not str(station_id or "").isdigit() or len(str(station_id)) > 32:
+        raise HTTPException(422, "invalid_deye_cloud_station_id")
+    job_id = secrets.token_urlsafe(18)
+    with _deye_history_jobs_lock:
+        for existing_id, existing in _deye_history_jobs.items():
+            if existing.get("owner_id") == session["user_id"] and existing.get("status") in {"queued", "running"}:
+                return {"job_id": existing_id, "status": existing["status"], "progress": existing["progress"],
+                        "phase": existing["phase"], "message": existing["message"]}
+        _deye_history_jobs[job_id] = {"owner_id": session["user_id"], "status": "queued", "progress": 0,
+                                      "phase": "queued", "message": "Importação na fila…", "updated_at": time.time()}
+    threading.Thread(target=_run_deye_cloud_history_import,
+                     args=(job_id, session["user_id"], str(station_id)), daemon=True,
+                     name="deye-cloud-history-import").start()
+    return {"job_id": job_id, "status": "queued", "progress": 0, "phase": "queued", "message": "Importação na fila…"}
+
+
+def _set_deye_history_job(job_id: str, **updates: Any) -> None:
+    with _deye_history_jobs_lock:
+        job = _deye_history_jobs.get(job_id)
+        if job is not None:
+            job.update(updates, updated_at=time.time())
+
+
+def _run_deye_cloud_history_import(job_id: str, owner_id: str, station_id: str) -> None:
     try:
-        station_id = payload.get("station_id") if isinstance(payload, dict) else None
-        rows = hardware_integrations.deye_cloud_history(_require_deye_cloud_config(), station_id, days=90)
-    except HTTPException:
-        raise
+        _set_deye_history_job(job_id, status="running", phase="connecting", progress=1,
+                              message="A autenticar e a ligar à Deye Cloud…")
+        rows = hardware_integrations.deye_cloud_history(
+            _require_deye_cloud_config(), station_id, days=90,
+            progress_callback=lambda value, message: _set_deye_history_job(
+                job_id, status="running", phase="downloading", progress=max(1, min(78, value)), message=message))
+        total_rows = len(rows)
+        _set_deye_history_job(job_id, phase="saving", progress=80,
+                              message=f"A gravar {total_rows} amostras no histórico local…", source_rows=total_rows)
+        now_text = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        hardware_config = hardware_integrations.load_config()
+        deye_lan = hardware_config.get("deye", {}) if isinstance(hardware_config.get("deye", {}), dict) else {}
+        identity_source = (f"{deye_lan.get('host', '')}|{deye_lan.get('unit_id', 1)}" if deye_lan.get("host")
+                           else f"deye-cloud|{station_id}")
+        identity = hashlib.sha256(identity_source.encode("utf-8")).hexdigest()[:16]
+        inverter_equipment_id = f"deye-inverter-{identity}"
+        battery_equipment_id = f"deye-battery-{identity}"
+        with db() as conn:
+            energy_registry.ensure_schema(conn)
+            if not conn.execute("SELECT 1 FROM energy_equipment WHERE id=?", (inverter_equipment_id,)).fetchone():
+                energy_registry.upsert_equipment(conn, {"category": "inversores", "name": "Deye Inversor",
+                    "manufacturer": "Deye", "model": "Cloud history", "protocol": "Deye Cloud OpenAPI",
+                    "connection_state": "CONNECTED", "declared_capabilities": ["pv_power", "load_power"],
+                    "implemented_capabilities": ["historical_readings"], "verified_capabilities": [], "config": {}, "limitations": []},
+                    equipment_id=inverter_equipment_id)
+            if not conn.execute("SELECT 1 FROM energy_equipment WHERE id=?", (battery_equipment_id,)).fetchone():
+                energy_registry.upsert_equipment(conn, {"category": "baterias", "name": "Deye Bateria",
+                    "manufacturer": "Deye", "model": "Cloud history", "protocol": "Deye Cloud OpenAPI",
+                    "connection_state": "CONNECTED", "declared_capabilities": ["battery_power", "battery_soc"],
+                    "implemented_capabilities": ["historical_readings"], "verified_capabilities": [], "config": {}, "limitations": []},
+                    equipment_id=battery_equipment_id)
+            inserted = 0
+            mapped = {"generationPower": (inverter_equipment_id, "pv_total_power", "W"),
+                      "consumptionPower": (inverter_equipment_id, "load_total_power", "W"),
+                      "gridPower": (inverter_equipment_id, "grid_power", "W"),
+                      "batterySOC": (battery_equipment_id, "battery_soc_percent", "%"),
+                      "batteryVoltage": (battery_equipment_id, "battery_voltage", "V"),
+                      "chargePower": (battery_equipment_id, "battery_charge_power", "W"),
+                      "dischargePower": (battery_equipment_id, "battery_discharge_power", "W")}
+            for index, item in enumerate(rows, start=1):
+                observed = hardware_integrations._deye_cloud_timestamp(item.get("timeStamp", item.get("dateTime", item.get("timestamp"))))
+                if not observed:
+                    continue
+                values = dict(item)
+                charge, discharge = values.get("chargePower"), values.get("dischargePower")
+                if isinstance(charge, (int, float)) and not isinstance(charge, bool) and isinstance(discharge, (int, float)) and not isinstance(discharge, bool):
+                    values["batteryOutputPower"] = float(discharge) - float(charge)
+                mapped["batteryOutputPower"] = (battery_equipment_id, "battery_output_power", "W")
+                for source_field, (equipment_id, field, unit) in mapped.items():
+                    value = values.get(source_field)
+                    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+                        continue
+                    cur = conn.execute("INSERT OR IGNORE INTO energy_readings VALUES(?,?,?,?,?,?,?,?,?)",
+                        (str(uuid.uuid4()), equipment_id, field, json.dumps(float(value)), unit, observed,
+                         "DEYE_CLOUD_HISTORY", "LIVE_UNVERIFIED", json.dumps({"station_id": str(station_id), "origin": "Deye Cloud OpenAPI"})))
+                    inserted += cur.rowcount
+                if index == total_rows or index % 100 == 0:
+                    progress = 80 + round(18 * index / max(1, total_rows))
+                    _set_deye_history_job(job_id, phase="saving", progress=progress,
+                                          message=f"A gravar amostras: {index} de {total_rows} processadas…",
+                                          processed_rows=index, readings_added=inserted)
+            audit(conn, owner_id, "hardware.deye_cloud.history_import", "deye-cloud", "success",
+                  {"station_id": str(station_id), "source_rows": len(rows), "readings_added": inserted, "days": 90})
+            result = {"status": "imported", "station_id": str(station_id), "source_rows": len(rows),
+                      "readings_added": inserted, "range_days": 90, "source": "DEYE_CLOUD_HISTORY",
+                      "local_history_preserved": True, "secrets_returned": False, "completed_at": now_text}
+            _set_deye_history_job(job_id, status="completed", phase="completed", progress=100,
+                                  message=f"Importação concluída: {inserted} leituras novas.", result=result)
+
+    except HTTPException as exc:
+        _set_deye_history_job(job_id, status="failed", phase="failed", error={"status": exc.status_code,
+                              "message": str(exc.detail)})
     except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
+        _set_deye_history_job(job_id, status="failed", phase="failed", error={"status": 422, "message": str(exc)})
     except (RuntimeError, OSError) as exc:
         reason = str(exc) if isinstance(exc, RuntimeError) else "deye_cloud_connection_failed"
-        raise HTTPException(502, reason) from exc
+        _set_deye_history_job(job_id, status="failed", phase="failed", error={"status": 502, "message": reason})
+    except Exception as exc:
+        LOG.exception("Deye Cloud history import failed (%s)", type(exc).__name__)
+        _set_deye_history_job(job_id, status="failed", phase="failed",
+                              error={"status": 500, "message": "deye_cloud_history_import_failed"})
 
-    now_text = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    hardware_config = hardware_integrations.load_config()
-    deye_lan = hardware_config.get("deye", {}) if isinstance(hardware_config.get("deye", {}), dict) else {}
-    identity_source = (f"{deye_lan.get('host', '')}|{deye_lan.get('unit_id', 1)}" if deye_lan.get("host")
-                       else f"deye-cloud|{station_id}")
-    identity = hashlib.sha256(identity_source.encode("utf-8")).hexdigest()[:16]
-    inverter_equipment_id = f"deye-inverter-{identity}"
-    battery_equipment_id = f"deye-battery-{identity}"
+
+@app.get("/api/v1/integrations/deye-cloud/history/import/{job_id}")
+def deye_cloud_history_import_status(job_id: str, session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
     with db() as conn:
-        energy_registry.ensure_schema(conn)
-        if not conn.execute("SELECT 1 FROM energy_equipment WHERE id=?", (inverter_equipment_id,)).fetchone():
-            energy_registry.upsert_equipment(conn, {"category": "inversores", "name": "Deye Inversor",
-                "manufacturer": "Deye", "model": "Cloud history", "protocol": "Deye Cloud OpenAPI",
-                "connection_state": "CONNECTED", "declared_capabilities": ["pv_power", "load_power"],
-                "implemented_capabilities": ["historical_readings"], "verified_capabilities": [], "config": {}, "limitations": []},
-                equipment_id=inverter_equipment_id)
-        if not conn.execute("SELECT 1 FROM energy_equipment WHERE id=?", (battery_equipment_id,)).fetchone():
-            energy_registry.upsert_equipment(conn, {"category": "baterias", "name": "Deye Bateria",
-                "manufacturer": "Deye", "model": "Cloud history", "protocol": "Deye Cloud OpenAPI",
-                "connection_state": "CONNECTED", "declared_capabilities": ["battery_power", "battery_soc"],
-                "implemented_capabilities": ["historical_readings"], "verified_capabilities": [], "config": {}, "limitations": []},
-                equipment_id=battery_equipment_id)
-        inserted = 0
-        mapped = {"generationPower": (inverter_equipment_id, "pv_total_power", "W"),
-                  "consumptionPower": (inverter_equipment_id, "load_total_power", "W"),
-                  "gridPower": (inverter_equipment_id, "grid_power", "W"),
-                  "batterySOC": (battery_equipment_id, "battery_soc_percent", "%"),
-                  "batteryVoltage": (battery_equipment_id, "battery_voltage", "V"),
-                  "chargePower": (battery_equipment_id, "battery_charge_power", "W"),
-                  "dischargePower": (battery_equipment_id, "battery_discharge_power", "W")}
-        for item in rows:
-            observed = hardware_integrations._deye_cloud_timestamp(item.get("timeStamp", item.get("dateTime", item.get("timestamp"))))
-            if not observed:
-                continue
-            values = dict(item)
-            charge, discharge = values.get("chargePower"), values.get("dischargePower")
-            if isinstance(charge, (int, float)) and not isinstance(charge, bool) and isinstance(discharge, (int, float)) and not isinstance(discharge, bool):
-                values["batteryOutputPower"] = float(discharge) - float(charge)
-            mapped["batteryOutputPower"] = (battery_equipment_id, "battery_output_power", "W")
-            for source_field, (equipment_id, field, unit) in mapped.items():
-                value = values.get(source_field)
-                if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
-                    continue
-                cur = conn.execute("INSERT OR IGNORE INTO energy_readings VALUES(?,?,?,?,?,?,?,?,?)",
-                    (str(uuid.uuid4()), equipment_id, field, json.dumps(float(value)), unit, observed,
-                     "DEYE_CLOUD_HISTORY", "LIVE_UNVERIFIED", json.dumps({"station_id": str(station_id), "origin": "Deye Cloud OpenAPI"})))
-                inserted += cur.rowcount
-        audit(conn, session["user_id"], "hardware.deye_cloud.history_import", "deye-cloud", "success",
-              {"station_id": str(station_id), "source_rows": len(rows), "readings_added": inserted, "days": 90})
-    return {"status": "imported", "station_id": str(station_id), "source_rows": len(rows),
-            "readings_added": inserted, "range_days": 90, "source": "DEYE_CLOUD_HISTORY",
-            "local_history_preserved": True, "secrets_returned": False, "completed_at": now_text}
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+    with _deye_history_jobs_lock:
+        job = _deye_history_jobs.get(job_id)
+        if not job or job.get("owner_id") != session["user_id"]:
+            raise HTTPException(404, "deye_cloud_history_job_not_found")
+        return {key: value for key, value in job.items() if key != "owner_id"}
 
 
 @app.post("/api/v1/integrations/tuya/sync")
@@ -2929,7 +2988,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.75"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.76"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(
