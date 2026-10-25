@@ -947,6 +947,32 @@ def control_antminer(config: dict[str, Any], action: str, watt: int | None = Non
             "control_command_sent": True}
 
 
+def test_antminer_control(config: dict[str, Any]) -> dict[str, Any]:
+    """Verify authenticated control by reapplying the current positive target unchanged."""
+    if not isinstance(config, dict) or not config.get("host"):
+        raise RuntimeError("antminer_not_configured")
+    host = _private_ip(config["host"])
+    rest_port = config.get("rest_port", 80)
+    token = _bos_rest_login(config)
+    state = _bos_rest_request(host, rest_port, "/api/v1/performance/tuner-state", token=token)
+    try:
+        current_watt = state["mode_state"]["powertargetmodestate"]["current_target"]["watt"]
+    except (KeyError, TypeError) as exc:
+        raise RuntimeError("antminer_control_probe_target_unavailable") from exc
+    if isinstance(current_watt, bool) or not isinstance(current_watt, int) or not 1 <= current_watt <= 2900:
+        raise RuntimeError("antminer_control_probe_target_unavailable")
+    response = _bos_rest_request(host, rest_port, "/api/v1/performance/power-target", method="PUT",
+                                token=token, payload={"watt": current_watt})
+    if not isinstance(response, dict):
+        raise RuntimeError("antminer_control_probe_response_invalid")
+    applied_watt = response.get("watt")
+    if isinstance(applied_watt, bool) or not isinstance(applied_watt, int):
+        raise RuntimeError("antminer_control_probe_response_invalid")
+    return {"action": "test_control", "previous_target_watt": current_watt,
+            "applied_watt": applied_watt, "connection_state": "control_verified" if applied_watt == current_watt else "control_mismatch",
+            "control_command_sent": True, "mining_state_changed": False}
+
+
 def probe_tcp(host: str, port: int, timeout: float = 2.0) -> dict[str, Any]:
     """Confirm private-LAN TCP reachability without sending a device command."""
     address = _private_ip(host)

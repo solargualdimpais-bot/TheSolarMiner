@@ -8,7 +8,7 @@ test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV 
   const html = read("../index.html");
   const app = read("../app.js");
   const auth = read("../gateway-auth.js");
-  for (const id of ["gateway-hardware-management", "hardware-deye-host", "hardware-antminer-host", "hardware-antminer-password", "hardware-antminer-rest-port", "antminer-power-target", "antminer-pause", "antminer-stop", "antminer-start", "hardware-tuya-client-secret", "hardware-tuya-uid", "deye-save", "deye-read", "antminer-save", "antminer-read", "tuya-save", "tuya-sync", "tuya-device-list", "owner-open-gateway"]) assert.match(html, new RegExp(`id="${id}"`));
+  for (const id of ["gateway-hardware-management", "hardware-deye-host", "hardware-antminer-host", "hardware-antminer-password", "hardware-antminer-rest-port", "antminer-power-target", "antminer-pause", "antminer-stop", "antminer-start", "antminer-control-test", "hardware-tuya-client-secret", "hardware-tuya-uid", "deye-save", "deye-read", "antminer-save", "antminer-read", "tuya-save", "tuya-sync", "tuya-device-list", "owner-open-gateway"]) assert.match(html, new RegExp(`id="${id}"`));
   assert.doesNotMatch(html, /hardware-antminer-username/);
   assert.doesNotMatch(app, /hardware-antminer-username/);
   assert.match(app, /saveHardwareProvider\("antminer", \{ enabled: Boolean\(host\), host,/);
@@ -19,7 +19,7 @@ test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV 
   assert.match(app, /info\.user\.role !== "owner"/);
   assert.match(app, /saveGatewayHardwareIntegrationConfig/);
   assert.match(app, /readGatewayHardwareProvider/);
-  assert.match(app, /leitura confirmada em /i);
+  assert.match(app, /telemetria confirmada em /i);
   assert.match(app, /hashing reportado/);
   assert.match(auth, /antminer_control_credentials_required/);
   assert.match(auth, /O teste de ligação é independente do controlo/);
@@ -27,6 +27,8 @@ test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV 
   assert.match(app, /hardware-tuya-client-secret"\)\.value = ""/);
   assert.match(auth, /\/api\/v1\/integrations\/hardware\/\$\{provider\}\/read/);
   assert.match(auth, /\/api\/v1\/integrations\/antminer\/control/);
+  assert.match(auth, /\/api\/v1\/integrations\/antminer\/test-control/);
+  assert.match(html, /Testar controlo sem alterar potência/);
   assert.match(auth, /\/api\/v1\/integrations\/tuya\/level/);
   assert.match(auth, /\/api\/v1\/integrations\/tuya\/sync/);
   assert.match(app, /syncGatewayTuyaDevices/);

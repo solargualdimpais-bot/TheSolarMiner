@@ -264,6 +264,43 @@ def test_antminer_control_uses_authenticated_braiins_public_api(monkeypatch):
     assert all(call[0:2] == ("192.168.8.69", 80) for call in calls)
 
 
+def test_antminer_control_probe_reapplies_current_target_without_changing_mining_state(monkeypatch):
+    calls = []
+
+    def request(host, port, path, **kwargs):
+        calls.append((path, kwargs))
+        if path == "/api/v1/auth/login":
+            return {"token": "session-token"}
+        assert kwargs["token"] == "session-token"
+        if path == "/api/v1/performance/tuner-state":
+            return {"mode_state": {"powertargetmodestate": {"current_target": {"watt": 2500}}}}
+        assert path == "/api/v1/performance/power-target"
+        assert kwargs["method"] == "PUT" and kwargs["payload"] == {"watt": 2500}
+        return {"watt": 2500}
+
+    monkeypatch.setattr(integrations, "_bos_rest_request", request)
+    result = integrations.test_antminer_control({"host": "192.168.8.69", "password": "secret"})
+    assert result == {"action": "test_control", "previous_target_watt": 2500, "applied_watt": 2500,
+                      "connection_state": "control_verified", "control_command_sent": True,
+                      "mining_state_changed": False}
+    assert [path for path, _ in calls] == ["/api/v1/auth/login", "/api/v1/performance/tuner-state",
+                                          "/api/v1/performance/power-target"]
+
+
+def test_antminer_control_probe_sends_no_write_without_a_current_positive_target(monkeypatch):
+    calls = []
+
+    def request(_host, _port, path, **_kwargs):
+        calls.append(path)
+        if path == "/api/v1/auth/login": return {"token": "session-token"}
+        return {"mode_state": {"powertargetmodestate": {"current_target": {"watt": 0}}}}
+
+    monkeypatch.setattr(integrations, "_bos_rest_request", request)
+    with pytest.raises(RuntimeError, match="antminer_control_probe_target_unavailable"):
+        integrations.test_antminer_control({"host": "192.168.8.69", "password": "secret"})
+    assert calls == ["/api/v1/auth/login", "/api/v1/performance/tuner-state"]
+
+
 @pytest.mark.parametrize("action,path", [("pause", "/api/v1/actions/pause"),
                                            ("stop", "/api/v1/actions/stop"),
                                            ("start", "/api/v1/actions/start")])

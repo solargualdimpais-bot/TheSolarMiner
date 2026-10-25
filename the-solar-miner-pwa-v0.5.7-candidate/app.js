@@ -3,7 +3,7 @@ import { DEMO_CONTROL_CONFIG, createDemoControlState, updateDemoControl, toggleD
 import { renderWorkspacePage, renderHomePreferenceLinks, renderHouseSearch, handleWorkspaceAction, handleWorkspaceChange, applyPreferences, getWorkspacePageLabel, workspace, getEditableEntity, saveEditableEntity, saveDemoWorkspace, hydrateWorkspacePhotos } from "./workspace-ui.js";
 import { renderAutomationsPage, renderSolarProductionPage, renderDemoAdminPanel, handleFeatureAction, saveAutomationForm, addDemoUser, saveDemoUserEdit, saveSolarWeather, demoFeatures } from "./features-v053.js";
 import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classifyEndpoint, inferHostedGatewayEndpoint, PRESENCE_API_STATUS } from "./gateway-connection.js";
-import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, controlGatewayAntminer, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, discoverGatewayTuyaLanDevices, readGatewayHuaweiClients, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, controlGatewayAntminer, testGatewayAntminerControl, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, discoverGatewayTuyaLanDevices, readGatewayHuaweiClients, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging } from "./gateway-auth.js";
 
 let automationEditingId = "";
 const state = { page: "inicio", mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], energyEngine: null, siteProfile: null, tuyaDevices: [], tuyaReadings: [], lastUpdated: null, lastMeasurementAt: null, refreshing: false, demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [], engineHistoryChart: { open: false, dateKey: "", loading: false, error: null } };
@@ -1763,7 +1763,7 @@ function setProviderResult(provider, result) {
       let hash=Number(summary["GHS 5s"]);if(!Number.isFinite(hash)){const mhs=Number(summary["MHS 5s"]);hash=Number.isFinite(mhs)?mhs/1000:Number(summary["GHS av"]);}
       const hashObserved=Number.isFinite(hash)&&hash>=0,hashRate=hashObserved?new Intl.NumberFormat("pt-PT",{maximumFractionDigits:1}).format(hash/1000)+" TH/s":"hashrate não reportado",miningState=hashObserved?(hash>0?"hashing reportado":"hashrate zero; ligado mas sem hashing reportado"):"hashrate não reportado";
       const watts=Number(tuner.ApproximateMinerPowerConsumption),power=Number.isFinite(watts)&&watts>=0?" · potência reportada "+new Intl.NumberFormat("pt-PT",{maximumFractionDigits:0}).format(watts)+" W":"";
-      minerText=" · leitura confirmada em "+payload.host+":"+payload.port+"; "+miningState+" ("+hashRate+")"+power+"; comandos de mineração usam a API Braiins OS separada.";
+      minerText=" · telemetria confirmada em "+payload.host+":"+payload.port+"; "+miningState+" ("+hashRate+")"+power+"; controlo disponível pela API Braiins OS: iniciar, pausar, parar e definir potência.";
     }
     status.textContent = `${provider === "deye" ? "Deye" : provider === "antminer" ? "Antminer" : "Tuya"}: ${stateText}${reason}${metricText}${minerText}`;
   }
@@ -1969,6 +1969,26 @@ async function testAntminerWithDialog(title = "Resultado do teste Antminer") {
   await showOperationResult(title, message || "A leitura não devolveu uma mensagem.");
 }
 $("#antminer-read").addEventListener("click", () => testAntminerWithDialog());
+async function testAntminerControlWithDialog() {
+  const button = $("#antminer-control-test"), status = $("#antminer-status");
+  if (!ownerCanManageHardware("#antminer-status")) return;
+  button.disabled = true; status.textContent = "A validar o controlo sem alterar o alvo atual…";
+  try {
+    const result = await testGatewayAntminerControl();
+    const message = result.connection_state === "control_verified"
+      ? `O Braiins OS aceitou a ordem de controlo. O alvo manteve-se em ${result.applied_watt} W; a mineração não foi pausada nem parada.`
+      : `A API respondeu, mas o alvo devolvido (${result.applied_watt} W) não corresponde ao alvo enviado (${result.previous_target_watt} W).`;
+    status.textContent = message;
+    await showOperationResult("Teste de controlo Antminer", message);
+  } catch (error) {
+    const message = error.message === "antminer_control_probe_target_unavailable"
+      ? "Não foi possível confirmar o alvo atual; por segurança, não foi enviada nenhuma ordem."
+      : `O teste de controlo falhou: ${error.message}`;
+    status.textContent = message;
+    await showOperationResult("Teste de controlo Antminer", message);
+  } finally { button.disabled = false; }
+}
+$("#antminer-control-test").addEventListener("click", testAntminerControlWithDialog);
 $("#tuya-device-list").addEventListener("click", async event => {
   const edit = event.target.closest("[data-edit-tuya-device]"), read = event.target.closest("[data-tuya-read]"), toggle = event.target.closest("[data-tuya-switch]");
   if (edit) { const device=state.tuyaDevices.find(item=>item.device_id===edit.dataset.editTuyaDevice); if(device)openTuyaDeviceEditor(device); return; }

@@ -473,6 +473,9 @@ export async function controlGatewayAntminer(action, watt) {
   }
   return gatewayApi("/api/v1/integrations/antminer/control", { method: "POST", body });
 }
+export async function testGatewayAntminerControl() {
+  return gatewayApi("/api/v1/integrations/antminer/test-control", { method: "POST", body: {} });
+}
 export async function controlGatewayTuyaSwitch(deviceId, on, code = undefined) {
   if (typeof deviceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(deviceId) || typeof on !== "boolean") throw new Error("Comando Tuya inválido.");
   if (code !== undefined && (typeof code !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(code))) throw new Error("Canal Tuya inválido.");

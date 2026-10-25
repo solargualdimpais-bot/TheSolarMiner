@@ -49,7 +49,7 @@ from . import updates as update_manager
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.84"
+PACKAGE_VERSION = "0.6.85"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -1523,10 +1523,10 @@ def _persist_antminer_telemetry(conn: sqlite3.Connection, miner: dict[str, Any] 
         pass
     energy_registry.upsert_equipment(conn, {
         "category": "mineradoras", "name": "Antminer S19K Pro", "manufacturer": "Bitmain",
-        "model": "S19K Pro", "protocol": "Braiins OS CGMiner-compatible read-only",
+        "model": "S19K Pro", "protocol": "Braiins OS · telemetria CGMiner + controlo REST",
         "connection_state": "CONNECTED", "status": "CONFIGURED",
-        "declared_capabilities": ["read-only mining telemetry"],
-        "implemented_capabilities": ["CGMiner summary/stats/devs", "Braiins tuner status when available"],
+        "declared_capabilities": ["mining telemetry", "mining control via Braiins OS REST"],
+        "implemented_capabilities": ["CGMiner summary/stats/devs telemetry", "Braiins REST start/pause/stop/power target", "Braiins tuner status when available"],
         "verified_capabilities": [], "limitations": ["Model identity is configured, not verified by the API response."],
         "config": {"host": host, "port": miner.get("port", 4028), "trust": "LIVE_UNVERIFIED"},
     }, equipment_id=equipment_id)
@@ -1996,6 +1996,37 @@ def antminer_control(payload: dict[str, Any], session: dict[str, Any] = Depends(
             LOG.error("Antminer control failed (%s)", type(exc).__name__)
             audit(conn, session["user_id"], "hardware.antminer.control", "antminer", "failed", {"action": action, "reason": type(exc).__name__, "control_command_sent": False})
             raise HTTPException(502, "antminer_control_failed") from exc
+
+
+@app.post("/api/v1/integrations/antminer/test-control")
+def antminer_test_control(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Prove control without pausing or stopping: resend the current target unchanged."""
+    with db() as conn:
+        _require_owner(session, conn)
+        try:
+            config = hardware_integrations.load_config().get("antminer", {})
+            result = hardware_integrations.test_antminer_control(config)
+            outcome = "success" if result.get("connection_state") == "control_verified" else "failed"
+            audit(conn, session["user_id"], "hardware.antminer.test_control", "antminer", outcome, {
+                "previous_target_watt": result.get("previous_target_watt"),
+                "applied_watt": result.get("applied_watt"), "control_command_sent": True,
+                "mining_state_changed": False,
+            })
+            return result
+        except RuntimeError as exc:
+            reason = str(exc)[:120]
+            LOG.error("Antminer control probe failed reason=%s", reason)
+            audit(conn, session["user_id"], "hardware.antminer.test_control", "antminer", "failed", {
+                "reason": reason, "control_command_sent": reason != "antminer_control_probe_target_unavailable",
+                "mining_state_changed": False,
+            })
+            raise HTTPException(502, reason) from exc
+        except (OSError, json.JSONDecodeError) as exc:
+            LOG.error("Antminer control probe failed (%s)", type(exc).__name__)
+            audit(conn, session["user_id"], "hardware.antminer.test_control", "antminer", "failed", {
+                "reason": type(exc).__name__, "control_command_sent": False, "mining_state_changed": False,
+            })
+            raise HTTPException(502, "antminer_control_probe_failed") from exc
 
 
 @app.post("/api/v1/integrations/tuya/switch")
@@ -3043,7 +3074,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.84"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.85"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(
