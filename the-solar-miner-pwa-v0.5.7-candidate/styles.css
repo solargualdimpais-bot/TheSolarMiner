@@ -392,12 +392,12 @@ html[data-font="small"]{--font-ui-scale:.9;}html[data-font="normal"]{--font-ui-s
 .solar-chart-hit{fill:transparent;stroke:transparent;pointer-events:all;cursor:pointer}
 .solar-chart-hit:focus{outline:none;fill:rgba(220,201,156,.08);stroke:rgba(220,201,156,.32);stroke-width:1}
 .solar-chart-wrap{position:relative;width:100%}
-.solar-chart-tooltip{position:absolute;top:12%;left:50%;transform:translateX(-50%);display:grid;gap:5px;min-width:175px;padding:10px 13px;border:1px solid rgba(220,201,156,.34);background:rgba(18,18,17,.68);backdrop-filter:blur(8px);border-radius:9px;color:var(--text);font-size:11px;line-height:1.35;pointer-events:none;box-shadow:0 8px 28px rgba(0,0,0,.18)}
+.solar-chart-tooltip{position:absolute;top:0;left:0;transform:none;z-index:2;display:grid;gap:5px;width:max-content;max-width:calc(100% - 20px);min-width:175px;padding:10px 13px;border:1px solid rgba(220,201,156,.34);background:rgba(18,18,17,.9);backdrop-filter:blur(8px);border-radius:9px;color:var(--text);font-size:11px;line-height:1.35;pointer-events:none;box-shadow:0 8px 28px rgba(0,0,0,.24);transition:left .12s ease,top .12s ease}
 .solar-chart-tooltip[hidden]{display:none}
 .solar-chart-tooltip strong{color:var(--gold);font-size:12px;font-weight:550}
 .solar-chart-legend{display:flex;justify-content:center;gap:24px;flex-wrap:wrap;padding:2px 0 7px;color:#d0ccbf;font-size:12px}
 .solar-chart-legend span{display:flex;align-items:center;gap:8px}
-.solar-chart-legend i{display:inline-block;width:18px;height:3px;border-radius:2px;background:#a9c7d9}
+.solar-chart-legend i{display:inline-block;width:18px;height:7px;border-radius:3px;background:rgba(188,169,190,.34);border:1px solid rgba(188,169,190,.64)}
 .solar-chart-legend .solar-legend-pv{background:#79bce8}
 .solar-chart-legend .solar-legend-potential{background:#dcc99c}
 .gateway-console-section-title{margin:22px 0 9px;font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted,#aaa)}

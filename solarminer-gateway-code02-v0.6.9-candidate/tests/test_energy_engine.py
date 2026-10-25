@@ -112,6 +112,34 @@ def test_load_forecast_bounds_a_persistent_rising_trend():
     assert result["six_hour_value"] <= 1.5
 
 
+def test_engine_quarter_hour_projection_uses_daily_calibration_and_weighted_load_profile():
+    now = datetime(2026, 10, 25, 10, 0, tzinfo=timezone.utc)
+    expected = [{"observed_at": (now+timedelta(hours=hour)).isoformat(), "value": 2.0, "unit": "kW"}
+                for hour in range(1, 7)]
+    potential = [{"observed_at": (now+timedelta(hours=hour)).isoformat(), "value": 3.0, "unit": "kW"}
+                 for hour in range(1, 7)]
+    result = energy_engine._engine_quarter_hour_projection(
+        now, expected, potential,
+        [{"load_power_w": 1000, "duration_hours": 6, "history_days": 3}],
+        day_end=now+timedelta(hours=6), actual_today_kwh=5.0,
+        expected_remaining_kwh=6.0, potential_remaining_kwh=9.0,
+        confidence="MEDIUM_INDICATIVE")
+
+    assert result["state"] == "ESTIMATED"
+    assert result["cadence_minutes"] == 15
+    assert result["source_resolution_minutes"] == 60
+    assert result["confidence"] == "MEDIUM_INDICATIVE"
+    assert result["values"][0]["forecast_at"] == "2026-10-25T10:15+00:00"
+    assert result["values"][1]["forecast_at"] == "2026-10-25T10:30+00:00"
+    assert result["values"][0]["solar_expected_power_kw"] == 1.0
+    assert result["values"][0]["solar_potential_power_kw"] == 1.5
+    assert result["values"][0]["load_power_kw"] == 1.0
+    assert result["values"][0]["expected_net_cumulative_kwh"] == 0.0
+    assert result["values"][0]["potential_net_cumulative_kwh"] == 0.125
+    assert result["values"][0]["estimated_daily_pv_kwh"] == 5.25
+    assert result["values"][0]["expected_net_remaining_kwh_6h"] == 0.0
+
+
 def test_battery_autonomy_blends_current_load_with_weighted_same_hour_history():
     now = datetime(2026, 10, 24, 12, 5, tzinfo=timezone.utc)
     history = [{"observed_at": (now - timedelta(days=day, hours=hour)).isoformat(),

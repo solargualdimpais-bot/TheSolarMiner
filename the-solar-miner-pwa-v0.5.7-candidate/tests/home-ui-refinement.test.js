@@ -32,6 +32,31 @@ test("Home favorites expose local device controls and responsive typography", ()
   assert.match(css, /property-hero \.hero-content h1\{font-family:Georgia/);
 });
 
+test("Live Home stays compact and the forecast plus daily history live in Energy", () => {
+  const liveHome = app.match(/function renderOverview\(\) \{[\s\S]*?if \(state\.mode !== "SIMULATED"\) \{([\s\S]*?)\n  \}\n  const totals/)?.[1] || "";
+  const energyArea = app.match(/function renderGatewayArea\(page\) \{([\s\S]*?)\n\}\nfunction renderGatewayUtilityPage/)?.[1] || "";
+  assert.match(liveHome, /Dispositivos favoritos/);
+  assert.doesNotMatch(liveHome, /Equipamentos e leituras|Equipamentos ativos|flowPanel\(\)|chart\(\)/);
+  assert.match(energyArea, /energyForecastHistory=page==="energia"/);
+  assert.match(energyArea, /Produção, consumo e potencial/);
+  assert.match(energyArea, /Exploração diária/);
+  assert.match(energyArea, /id="engine-chart-open"/);
+  assert.match(energyArea, /renderEngineHistoryDialog\(\)/);
+});
+
+test("Forecast chart uses quarter-hour values and a dismissible tooltip away from the tapped point", () => {
+  assert.match(app, /const quarterHour=15\*60\*1000/);
+  assert.match(app, /forecast\.solar_projection_15m\?\.values/);
+  assert.match(app, /expected_net_remaining_kwh_6h/);
+  assert.match(app, /for\(let stamp=quarterStart;stamp<=quarterEnd;stamp\+=quarterHour\)/);
+  assert.match(app, /minute:'2-digit'\}\)\}\"><title>Ver valores das/);
+  assert.match(app, /tooltip\.style\.left=`\$\{left\}px`/);
+  assert.match(app, /tooltip\.style\.top=`\$\{top\}px`/);
+  assert.match(app, /const openChartTooltip=\$\("\.solar-chart-tooltip:not\(\[hidden\]\)"\);if\(openChartTooltip\)openChartTooltip\.hidden=true/);
+  assert.match(css, /\.solar-chart-tooltip\{position:absolute;top:0;left:0;transform:none;z-index:2/);
+  assert.match(app, /rgba\(188,169,190,\.34\)/);
+});
+
 test("Home favorite controls use a centered plus-only add button and the open-ring power symbol", () => {
   assert.match(app, /class="favorite-add-button" id="home-favorite-plus"/);
   assert.match(css, /\.home-favorites \.favorite-manage\{flex-direction:column;justify-content:center/);
