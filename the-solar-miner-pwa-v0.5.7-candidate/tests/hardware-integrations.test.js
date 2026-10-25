@@ -13,7 +13,8 @@ test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV 
   assert.match(app, /antminerReadOperations=\[\[/);
   for (const operation of ["api_version", "details", "errors", "hashboards", "stats", "configuration", "constraints", "cooling", "network_details", "tuner", "performance_mode", "target_profiles", "efficiency_profile", "pools", "advanced_settings", "advanced_schema", "network", "auto_upgrade", "license", "locate_state"]) assert.match(app, new RegExp(String.raw`\["${operation}",`));
   assert.doesNotMatch(app.match(/const antminerReadOperations=\[\[([\s\S]*?)\];/)?.[0]||"", /\["power_target"/);
-  assert.match(app, /if\(operation==="tuner"\)\{[\s\S]*?Alvo do perfil[\s\S]*?Alvo atual[\s\S]*?Hashrate medido[\s\S]*?Consumo estimado[\s\S]*?id="antminer-section-apply-watt"/);
+  assert.match(app, /const antminerReadCategories=\[\[[\s\S]*?\["Potência","ϟ",\["tuner"\]\]/);
+  assert.match(app, /if\(operation==="tuner"\)\{[\s\S]*?Alvo do perfil[\s\S]*?Alvo ativo agora[\s\S]*?Hashrate médio[\s\S]*?Consumo estimado pelo tuner[\s\S]*?id="antminer-section-apply-watt"/);
   assert.match(app, /antminerWriteOperations=\[\[/);
   for (const operation of ["set_power_target", "power_target_default", "power_target_increment", "power_target_decrement", "power_target_relative", "set_hashrate_target", "hashrate_target_default", "hashrate_target_increment", "hashrate_target_decrement", "hashrate_target_relative", "performance_mode", "dps", "quick_ramping", "quick_ramping_default", "reset_tuned_profiles", "cooling_mode", "advanced_settings", "network", "hashboards", "auto_upgrade", "pools_batch", "create_pool_group", "update_pool_group", "delete_pool_group", "locate"]) assert.match(app, new RegExp(String.raw`\["${operation}",`));
   for (const operation of ["start", "resume", "pause", "stop", "restart", "reboot"]) assert.ok(app.includes(`data-antminer-write="${operation}"`));

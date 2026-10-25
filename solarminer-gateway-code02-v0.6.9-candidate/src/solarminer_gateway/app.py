@@ -281,7 +281,14 @@ def db() -> Any:
     if INSTANCE_MARKER.exists() and not DB_PATH.is_file():
         raise sqlite3.OperationalError("database missing for initialized instance")
     DB_PATH.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    conn = sqlite3.connect(DB_PATH, timeout=10, isolation_level=None)
+    # Once initialized, never let SQLite's default create-if-missing behavior
+    # resurrect an empty database if another task removes the file after the
+    # check above. The read-write URI closes that TOCTOU window.
+    if INSTANCE_MARKER.exists():
+        conn = sqlite3.connect(DB_PATH.resolve().as_uri() + "?mode=rw", uri=True,
+                               timeout=10, isolation_level=None)
+    else:
+        conn = sqlite3.connect(DB_PATH, timeout=10, isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA recursive_triggers=ON")
