@@ -154,6 +154,16 @@ test("Tuya device editor opens a Gateway event log for state, availability and a
   assert.match(app, /esc\(item\.ip\)/);
 });
 
+test("Tuya profiles can be inferred or overridden and breakers expose one control", () => {
+  const gatewayIntegrations = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/integrations.py", import.meta.url), "utf8");
+  assert.match(gatewayIntegrations, /def classify_tuya_device\(/);
+  assert.match(gatewayIntegrations, /断路器/);
+  assert.match(gatewayIntegrations, /device_kind_override/);
+  assert.match(app, /name="device_kind_override"/);
+  assert.match(app, /Disjuntor · um botão ON\/OFF/);
+  assert.match(app, /if\(\(device\.device_kind_override\|\|device\.device_kind\)==="breaker"\)codes=\[/);
+});
+
 test("Energy page shows Gateway daily solar estimate and battery energy above cut-off", () => {
   assert.match(app, /engine\.forecast\?\.solar_day/);
   assert.match(app, /Produção solar prevista até ao fim do dia/);

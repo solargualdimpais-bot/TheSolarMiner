@@ -94,6 +94,61 @@ def test_deye_cloud_token_hash_and_station_history_requests(monkeypatch):
     assert all(left[0] <= right[0] for left, right in zip(progress, progress[1:]))
 
 
+def test_deye_cloud_history_splits_timed_out_intervals(monkeypatch):
+    requests = []
+
+    def request(center, path, **kwargs):
+        if path == "/account/token":
+            return {"success": True, "code": 1000000, "accessToken": "cloud-token"}
+        start = kwargs["body"]["startTimestamp"]
+        end = kwargs["body"]["endTimestamp"]
+        requests.append((start, end))
+        if end - start > 86400:
+            raise RuntimeError("deye_cloud_upstream_timeout")
+        return {"success": True, "code": 1000000, "stationDataItems": [], "total": 0}
+
+    monkeypatch.setattr(integrations, "_deye_cloud_request", request)
+    result = integrations.deye_cloud_history(
+        {"data_center": "eu", "app_id": "id", "app_secret": "secret", "email": "e@example.com", "password": "pw"},
+        12345, days=2,
+    )
+    assert result == []
+    assert len(requests) > 3
+    assert any(end - start > 86400 for start, end in requests)
+    assert all(end - start <= 86400 for start, end in requests[-2:])
+
+
+@pytest.mark.parametrize(("device", "expected_kind", "expected_channels"), [
+    ({"category": "dlq", "product_name": "智能断路器", "functions": [
+        {"code": "switch_1", "type": "Boolean"}, {"code": "trip_reset", "type": "Boolean"}]}, "breaker", 1),
+    ({"category": "kg", "product_name": "six channel relay", "functions": [
+        {"code": f"switch_{index}", "type": "Boolean"} for index in range(1, 7)]}, "multi_switch", 6),
+    ({"category": "cl", "product_name": "curtain motor", "functions": []}, "blind", 0),
+])
+def test_tuya_device_profile_is_inferred_from_product_and_schema(device, expected_kind, expected_channels):
+    profile = integrations.classify_tuya_device(device)
+    assert profile["device_kind"] == expected_kind
+    assert profile["channel_count"] == expected_channels
+    assert profile["device_kind_label"]
+
+
+def test_owner_can_override_tuya_device_profile_and_return_to_automatic():
+    existing = {"tuya": {"client_id": "client", "client_secret": "secret-value-123", "devices": [{
+        "device_id": "breaker_1", "name": "Disjuntor", "category": "dlq", "product_name": "断路器",
+        "functions": [{"code": "switch_1", "type": "Boolean"}, {"code": "trip_reset", "type": "Boolean"}],
+    }]}}
+    edited = integrations.validate_config({"tuya": {"devices": [{
+        "device_id": "breaker_1", "name": "Disjuntor", "device_kind_override": "breaker",
+    }]}}, existing=existing)
+    public = integrations.public_config(edited)["tuya"]["devices"][0]
+    assert public["device_kind"] == "breaker"
+    assert public["channel_count"] == 1
+    auto = integrations.validate_config({"tuya": {"devices": [{
+        "device_id": "breaker_1", "name": "Disjuntor", "device_kind_override": "auto",
+    }]}}, existing=edited)
+    assert "device_kind_override" not in auto["tuya"]["devices"][0]
+
+
 @pytest.mark.parametrize("station_id,days", [("../x", 90), ("123", 91), (True, 90)])
 def test_deye_cloud_history_rejects_invalid_station_or_range(station_id, days):
     with pytest.raises(ValueError):

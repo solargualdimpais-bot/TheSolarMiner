@@ -69,6 +69,53 @@ CGMINER_COMMANDS = ("summary", "stats", "devs")
 CGMINER_OPTIONAL_READ_COMMANDS = ("tunerstatus",)
 _TESLA_EV_READ_LOCK = threading.Lock()
 
+TUYA_DEVICE_KINDS = {
+    "breaker": "Disjuntor", "switch": "Interruptor", "multi_switch": "Interruptor multicanal",
+    "dimmer": "Regulador de luz", "blind": "Estore / persiana", "socket": "Tomada",
+    "light": "Luz", "sensor": "Sensor", "unknown": "Equipamento Tuya",
+}
+
+
+def classify_tuya_device(device: dict[str, Any]) -> dict[str, Any]:
+    """Infer a Tuya UI profile from product/category and declared capabilities.
+
+    This is intentionally a small, transparent vocabulary rather than an
+    external translator: ambiguous products remain editable in Owner.
+    """
+    text = " ".join(str(device.get(key) or "") for key in ("category", "product_name", "name"))
+    text = text.casefold()
+    functions = device.get("functions") if isinstance(device.get("functions"), list) else []
+    bool_functions = [item for item in functions if isinstance(item, dict) and str(item.get("type", "")).casefold() in {"bool", "boolean"}]
+    category = str(device.get("category") or "").casefold()
+    if category in {"dlq", "breaker", "circuit_breaker"} or any(token in text for token in ("breaker", "circuit breaker", "disjuntor", "断路器", "空气开关", "漏电保护")):
+        kind, confidence = "breaker", "high"
+    elif category in {"cl", "blind", "curtain"} or any(token in text for token in ("curtain", "blind", "estore", "persiana", "窗帘", "卷帘")):
+        kind, confidence = "blind", "high"
+    elif any(token in text for token in ("dimmer", "dimming", "调光", "调光开关")):
+        kind, confidence = "dimmer", "high"
+    elif category in {"cz", "socket", "outlet"} or any(token in text for token in ("socket", "outlet", "tomada", "插座")):
+        kind, confidence = "socket", "high"
+    elif category in {"dj", "light", "lighting"} or any(token in text for token in ("light", "lamp", "luz", "灯", "照明")):
+        kind, confidence = "light", "high"
+    elif category in {"cgq", "sensor"} or any(token in text for token in ("sensor", "温湿度", "传感器")):
+        kind, confidence = "sensor", "medium"
+    elif len(bool_functions) > 1:
+        kind, confidence = "multi_switch", "medium"
+    elif category in {"kg", "switch"} or bool_functions or any(token in text for token in ("switch", "relay", "interruptor", "继电器", "开关")):
+        kind, confidence = "switch", "medium"
+    else:
+        kind, confidence = "unknown", "low"
+    if kind == "breaker":
+        channel_count = 1 if bool_functions or device.get("switch_code") else 0
+    elif kind == "multi_switch":
+        channel_count = len(bool_functions)
+    elif kind in {"switch", "dimmer", "socket", "light"}:
+        channel_count = max(1, len(bool_functions)) if bool_functions or device.get("switch_code") else 0
+    else:
+        channel_count = 0
+    return {"device_kind": kind, "device_kind_label": TUYA_DEVICE_KINDS[kind],
+            "device_kind_confidence": confidence, "channel_count": channel_count}
+
 
 def _data_dir() -> Path:
     return Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
@@ -134,7 +181,7 @@ def public_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
         "deye_cloud": {"data_center": deye_cloud.get("data_center", "eu"), "app_id": deye_cloud.get("app_id"),
                        "email": deye_cloud.get("email"), "configured": bool(deye_cloud.get("app_id") and deye_cloud.get("app_secret") and deye_cloud.get("email") and deye_cloud.get("password")),
                        "secrets_returned": False},
-        "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "uid": tuya.get("uid"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": [{"device_id": x.get("device_id"), "name": x.get("name"), "room": x.get("room", ""), "floor": x.get("floor", ""), "name_source": x.get("name_source", "cloud"), "switch_code": x.get("switch_code"), "switch_channels": [item.get("code") for item in x.get("functions", []) if isinstance(item, dict) and str(item.get("type", "")).lower() in {"bool", "boolean"}], "channel_labels": x.get("channel_labels", {}), "capability_labels": x.get("capability_labels", {}), "level_code": x.get("level_code"), "level_min": x.get("level_min", 0), "level_max": x.get("level_max", 100), "category": x.get("category"), "product_id": x.get("product_id"), "product_name": x.get("product_name"), "online": x.get("online"), "ip": x.get("local_ip", ""), "local_ip": x.get("local_ip", ""), "local_mac": x.get("local_mac", ""), "local_protocol": x.get("local_protocol", "3.3"), "local_dps_map": x.get("local_dps_map", {}), "local_control_state": x.get("local_control_state", "not_tested"), "cloud_source": x.get("cloud_source"), "cloud_missing": x.get("cloud_missing", False), "local_key_available": bool(x.get("local_key")), "functions": x.get("functions", []), "status_spec": x.get("status_spec", []), "current_status": x.get("current_status", []), "last_status_at": x.get("last_status_at")} for x in tuya.get("devices", []) if isinstance(x, dict)], "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
+        "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "uid": tuya.get("uid"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": [{"device_id": x.get("device_id"), "name": x.get("name"), "room": x.get("room", ""), "floor": x.get("floor", ""), "name_source": x.get("name_source", "cloud"), "switch_code": x.get("switch_code"), "switch_channels": [item.get("code") for item in x.get("functions", []) if isinstance(item, dict) and str(item.get("type", "")).lower() in {"bool", "boolean"}], "channel_count": x.get("channel_count", 0), "device_kind": x.get("device_kind", "unknown"), "device_kind_label": x.get("device_kind_label", TUYA_DEVICE_KINDS["unknown"]), "device_kind_confidence": x.get("device_kind_confidence", "low"), "device_kind_override": x.get("device_kind_override"), "channel_labels": x.get("channel_labels", {}), "capability_labels": x.get("capability_labels", {}), "level_code": x.get("level_code"), "level_min": x.get("level_min", 0), "level_max": x.get("level_max", 100), "category": x.get("category"), "product_id": x.get("product_id"), "product_name": x.get("product_name"), "online": x.get("online"), "ip": x.get("local_ip", ""), "local_ip": x.get("local_ip", ""), "local_mac": x.get("local_mac", ""), "local_protocol": x.get("local_protocol", "3.3"), "local_dps_map": x.get("local_dps_map", {}), "local_control_state": x.get("local_control_state", "not_tested"), "cloud_source": x.get("cloud_source"), "cloud_missing": x.get("cloud_missing", False), "local_key_available": bool(x.get("local_key")), "functions": x.get("functions", []), "status_spec": x.get("status_spec", []), "current_status": x.get("current_status", []), "last_status_at": x.get("last_status_at")} for x in tuya.get("devices", []) if isinstance(x, dict)], "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
         "secrets_returned": False,
     }
 
@@ -273,9 +320,31 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
             # Cloud-imported secrets and capability metadata can only come from
             # the Gateway's previous trusted inventory, never from PWA input.
             previous = existing_devices.get(device_id, {})
-            for key in ("local_key", "local_ip", "local_mac", "local_protocol", "local_dps_map", "local_control_state", "product_id", "product_name", "category", "online", "ip", "functions", "status_spec", "current_status", "last_status_at", "cloud_source", "cloud_missing", "last_synced_at"):
+            for key in ("local_key", "local_ip", "local_mac", "local_protocol", "local_dps_map", "local_control_state", "product_id", "product_name", "category", "online", "ip", "functions", "status_spec", "current_status", "last_status_at", "cloud_source", "cloud_missing", "last_synced_at", "device_kind", "device_kind_label", "device_kind_confidence", "channel_count"):
                 if key in previous:
                     normalized_device[key] = previous[key]
+            kind_override = device.get("device_kind_override", previous.get("device_kind_override"))
+            if kind_override not in (None, "auto"):
+                if kind_override not in TUYA_DEVICE_KINDS:
+                    raise ValueError("invalid_tuya_device_kind")
+                normalized_device["device_kind_override"] = kind_override
+            profile = classify_tuya_device(previous)
+            effective_kind = kind_override if kind_override not in (None, "auto") else profile["device_kind"]
+            if effective_kind in TUYA_DEVICE_KINDS:
+                profile["device_kind"] = effective_kind
+                profile["device_kind_label"] = TUYA_DEVICE_KINDS[effective_kind]
+                if kind_override not in (None, "auto"):
+                    profile["device_kind_confidence"] = "manual"
+                bool_functions = [entry for entry in previous.get("functions", [])
+                                  if isinstance(entry, dict) and str(entry.get("type", "")).casefold() in {"bool", "boolean"}]
+                if effective_kind == "breaker":
+                    profile["channel_count"] = 1 if bool_functions else 0
+                    if bool_functions and not device.get("switch_code"):
+                        normalized_device["switch_code"] = next((entry.get("code") for entry in bool_functions
+                            if entry.get("code") in {"switch", "switch_1"}), bool_functions[0].get("code"))
+                elif effective_kind == "multi_switch":
+                    profile["channel_count"] = len(bool_functions)
+            normalized_device.update(profile)
             name_source = device.get("name_source", previous.get("name_source", "cloud"))
             if name_source not in {"cloud", "local"}: raise ValueError("invalid_tuya_name_source")
             normalized_device["name_source"] = name_source
@@ -650,6 +719,24 @@ def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Eve
                 item["category"] = str(spec.get("category") or item["category"])[:64]
         except (RuntimeError, ValueError):
             details_failures += 1
+        profile = classify_tuya_device(item)
+        bool_functions = [entry for entry in item.get("functions", [])
+                          if isinstance(entry, dict) and str(entry.get("type", "")).casefold() in {"bool", "boolean"}]
+        override = item.get("device_kind_override")
+        if override in TUYA_DEVICE_KINDS:
+            profile["device_kind"] = override
+            profile["device_kind_label"] = TUYA_DEVICE_KINDS[override]
+            profile["device_kind_confidence"] = "manual"
+            if override == "breaker":
+                profile["channel_count"] = 1 if bool_functions else 0
+            elif override == "multi_switch":
+                profile["channel_count"] = len(bool_functions)
+        item.update(profile)
+        if profile["device_kind"] == "breaker" and bool_functions and not item.get("switch_code"):
+            # A breaker is represented as one on/off control, even when a
+            # cloud schema happens to advertise extra boolean metadata.
+            item["switch_code"] = next((entry.get("code") for entry in bool_functions
+                                         if entry.get("code") in {"switch", "switch_1"}), bool_functions[0].get("code"))
         check_cancelled()
 
     check_cancelled()
@@ -1263,7 +1350,7 @@ def _deye_cloud_request(center: str, path: str, *, method: str = "POST", body: d
     data = json.dumps(body or {}, separators=(",", ":")).encode("utf-8") if method != "GET" else None
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(request, timeout=20) as response:
+        with urllib.request.urlopen(request, timeout=45) as response:
             raw = response.read(4 * 1024 * 1024 + 1)
     except urllib.error.HTTPError as exc:
         reasons = {
@@ -1274,7 +1361,13 @@ def _deye_cloud_request(center: str, path: str, *, method: str = "POST", body: d
             504: "deye_cloud_upstream_timeout",
         }
         raise RuntimeError(reasons.get(exc.code, f"deye_cloud_http_{exc.code}")) from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    except (TimeoutError, socket.timeout) as exc:
+        raise RuntimeError("deye_cloud_upstream_timeout") from exc
+    except urllib.error.URLError as exc:
+        if isinstance(getattr(exc, "reason", None), (TimeoutError, socket.timeout)):
+            raise RuntimeError("deye_cloud_upstream_timeout") from exc
+        raise RuntimeError("deye_cloud_connection_failed") from exc
+    except OSError as exc:
         raise RuntimeError("deye_cloud_connection_failed") from exc
     if len(raw) > 4 * 1024 * 1024:
         raise RuntimeError("deye_cloud_response_too_large")
@@ -1361,33 +1454,55 @@ def deye_cloud_history(config: dict[str, Any], station_id: str | int, *, days: i
     end = int(datetime.now(timezone.utc).timestamp())
     start = end - days * 86400
     result_rows: list[dict[str, Any]] = []
-    chunk_start = start
-    chunk_count = max(1, (days + 6) // 7)
-    chunk_index = 0
-    while chunk_start < end:
-        chunk_end = min(end, chunk_start + 7 * 86400)
-        for page in range(1, 1001):
-            result = _deye_cloud_request(config.get("data_center", "eu"), "/station/history/power", token=token,
-                query={"page": page, "size": 200}, body={"stationId": int(station_id),
-                    "startTimestamp": chunk_start, "endTimestamp": chunk_end})
-            batch = result.get("stationDataItems", [])
-            if not isinstance(batch, list):
-                raise RuntimeError("deye_cloud_history_invalid")
-            result_rows.extend(item for item in batch if isinstance(item, dict))
-            total = result.get("total")
-            has_more_pages = bool(batch) and not (isinstance(total, int) and page * 200 >= total) and len(batch) >= 200
-            if isinstance(total, int) and total > 0:
-                page_fraction = min(1.0, page / max(1, math.ceil(total / 200)))
-            elif not has_more_pages:
-                page_fraction = 1.0
+    chunks: list[tuple[int, int]] = []
+    cursor = start
+    while cursor < end:
+        chunk_end = min(end, cursor + 7 * 86400)
+        chunks.append((cursor, chunk_end))
+        cursor = chunk_end
+    completed_span = 0
+    while chunks:
+        chunk_start, chunk_end = chunks.pop(0)
+        span = chunk_end - chunk_start
+        try:
+            chunk_rows: list[dict[str, Any]] = []
+            for page in range(1, 1001):
+                result = _deye_cloud_request(config.get("data_center", "eu"), "/station/history/power", token=token,
+                    query={"page": page, "size": 200}, body={"stationId": int(station_id),
+                        "startTimestamp": chunk_start, "endTimestamp": chunk_end})
+                batch = result.get("stationDataItems", [])
+                if not isinstance(batch, list):
+                    raise RuntimeError("deye_cloud_history_invalid")
+                chunk_rows.extend(item for item in batch if isinstance(item, dict))
+                total = result.get("total")
+                has_more_pages = bool(batch) and not (isinstance(total, int) and page * 200 >= total) and len(batch) >= 200
+                if isinstance(total, int) and total > 0:
+                    page_fraction = min(1.0, page / max(1, math.ceil(total / 200)))
+                elif not has_more_pages:
+                    page_fraction = 1.0
+                else:
+                    page_fraction = min(0.85, page / (page + 4))
+                covered = completed_span + span * page_fraction
+                fraction = covered / max(1, days * 86400)
+                report(6 + round(72 * fraction), f"A descarregar amostras: {len(result_rows) + len(chunk_rows)} recebidas…")
+                if not has_more_pages:
+                    break
             else:
-                page_fraction = min(0.85, page / (page + 4))
-            fraction = (chunk_index + page_fraction) / chunk_count
-            report(6 + round(72 * fraction), f"A descarregar amostras: {len(result_rows)} recebidas…")
-            if not has_more_pages:
-                break
-        chunk_start = chunk_end
-        chunk_index += 1
+                raise RuntimeError("deye_cloud_history_page_limit")
+            result_rows.extend(chunk_rows)
+            completed_span += span
+        except RuntimeError as exc:
+            # A history query is read-only. If the API/proxy times out on a
+            # large interval, retry with smaller intervals, down to one day.
+            if "upstream_timeout" not in str(exc) or span <= 86400:
+                raise
+            midpoint = chunk_start + span // 2
+            midpoint = (midpoint // 3600) * 3600
+            if midpoint <= chunk_start or midpoint >= chunk_end:
+                raise
+            chunks[0:0] = [(chunk_start, midpoint), (midpoint, chunk_end)]
+            report(6 + round(72 * completed_span / max(1, days * 86400)),
+                   f"A consulta demorou; a reduzir o intervalo para continuar ({len(result_rows)} amostras recebidas)…")
     return result_rows
 
 
