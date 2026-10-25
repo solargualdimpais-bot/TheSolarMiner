@@ -49,7 +49,7 @@ from . import updates as update_manager
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.91"
+PACKAGE_VERSION = "0.6.92"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -1159,6 +1159,14 @@ def energy_engine_configure(payload: dict[str, Any], session: dict[str, Any] = D
             raise HTTPException(422, str(exc)) from exc
 
 
+@app.get("/api/v1/energy/engine/config")
+def energy_engine_configuration(session: dict[str, Any] = Depends(require_permission("read"))) -> dict[str, Any]:
+    """Return saved Engine settings only to the Owner who can edit them."""
+    with db() as conn:
+        _require_owner(session, conn)
+        return energy_engine.get_config(conn)
+
+
 @app.get("/api/v1/energy/equipment")
 def energy_equipment_list(category: str | None = None, session: dict[str, Any] = Depends(require_permission("read"))) -> dict[str, Any]:
     try:
@@ -1545,6 +1553,77 @@ def _persist_antminer_telemetry(conn: sqlite3.Connection, miner: dict[str, Any] 
         energy_registry.add_reading(conn, equipment_id, {
             "field": field, "value": value, "unit": unit, "observed_at": observed_at,
             "source": "BRAIINS_CGMINER_READ_ONLY", "trust": "LIVE_UNVERIFIED",
+            "evidence": {"api_field": api_field, "control_commands_sent": False},
+        })
+    return len(metrics)
+
+
+def _persist_antminer_braiins_tuner(conn: sqlite3.Connection, config: dict[str, Any],
+                                    result: dict[str, Any] | None) -> int:
+    """Feed authenticated Braiins tuner readings into the same live equipment card."""
+    if (not isinstance(result, dict) or result.get("operation") != "tuner"
+            or result.get("state") != "read_data"):
+        return 0
+    host = config.get("host") if isinstance(config, dict) else None
+    data = result.get("data")
+    if not isinstance(host, str) or not host or not isinstance(data, dict):
+        return 0
+    mode = data.get("mode_state", data.get("modeState", {}))
+    if not isinstance(mode, dict):
+        mode = {}
+    power_state = (mode.get("powertargetmodestate") or mode.get("power_target_mode_state")
+                   or mode.get("powerTargetModeState") or {})
+    if not isinstance(power_state, dict):
+        power_state = {}
+    profile = power_state.get("profile") or {}
+    if not isinstance(profile, dict):
+        profile = {}
+    current = power_state.get("current_target", power_state.get("currentTarget")) or {}
+    if not isinstance(current, dict):
+        current = {}
+    measured = profile.get("measured_hashrate", profile.get("measuredHashrate")) or {}
+    estimated = profile.get("estimated_power_consumption", profile.get("estimatedPowerConsumption")) or {}
+    profile_target = profile.get("target", profile.get("power_target")) or {}
+    if not isinstance(measured, dict):
+        measured = {}
+    if not isinstance(estimated, dict):
+        estimated = {}
+    if not isinstance(profile_target, dict):
+        profile_target = {}
+
+    metrics: list[tuple[str, float, str, str]] = []
+
+    def add_metric(field: str, value: Any, unit: str, api_field: str) -> None:
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)) and value >= 0:
+            metrics.append((field, round(float(value), 3), unit, api_field))
+
+    add_metric("miner_hashrate_avg_ghs", measured.get("gigahash_per_second", measured.get("gigahashPerSecond")),
+               "GH/s", "tuner_state.profile.measured_hashrate.gigahash_per_second")
+    add_metric("miner_power_w", estimated.get("watt"), "W",
+               "tuner_state.profile.estimated_power_consumption.watt")
+    add_metric("miner_power_limit_w", current.get("watt"), "W",
+               "tuner_state.current_target.watt")
+    add_metric("miner_power_profile_w", profile_target.get("watt"), "W",
+               "tuner_state.profile.target.watt")
+    if not metrics:
+        return 0
+
+    identity = hashlib.sha256(host.encode("utf-8")).hexdigest()[:16]
+    equipment_id = f"braiins-antminer-{identity}"
+    observed_at = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    energy_registry.upsert_equipment(conn, {
+        "category": "mineradoras", "name": "Antminer S19K Pro", "manufacturer": "Bitmain",
+        "model": "S19K Pro", "protocol": "Braiins OS REST · tuner",
+        "connection_state": "CONNECTED", "status": "CONFIGURED",
+        "declared_capabilities": ["Braiins tuner telemetry", "mining control via Braiins OS REST"],
+        "implemented_capabilities": ["Braiins REST tuner state", "CGMiner summary/stats/devs telemetry"],
+        "verified_capabilities": [], "limitations": ["Model identity is configured, not verified by the API response."],
+        "config": {"host": host, "trust": "LIVE_UNVERIFIED"},
+    }, equipment_id=equipment_id)
+    for field, value, unit, api_field in metrics:
+        energy_registry.add_reading(conn, equipment_id, {
+            "field": field, "value": value, "unit": unit, "observed_at": observed_at,
+            "source": "BRAIINS_REST_TUNER", "trust": "LIVE_UNVERIFIED",
             "evidence": {"api_field": api_field, "control_commands_sent": False},
         })
     return len(metrics)
@@ -2056,8 +2135,11 @@ def antminer_management(payload: dict[str, Any], session: dict[str, Any] = Depen
             config = hardware_integrations.load_config().get("antminer", {})
             result = hardware_integrations.antminer_management(config, operation, payload=body,
                                                                 resource_id=resource_id)
+            if operation == "tuner":
+                result["energy_readings_persisted"] = _persist_antminer_braiins_tuner(conn, config, result)
             audit(conn, session["user_id"], f"hardware.antminer.{operation}", "antminer",
                   "success", {"operation": operation, "command_sent": result.get("command_sent", False)})
+            conn.commit()
             return result
         except ValueError as exc:
             audit(conn, session["user_id"], f"hardware.antminer.{operation}", "antminer", "rejected",
@@ -3121,7 +3203,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.91"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.92"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

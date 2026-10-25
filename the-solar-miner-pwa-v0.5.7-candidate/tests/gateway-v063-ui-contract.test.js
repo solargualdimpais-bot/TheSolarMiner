@@ -35,6 +35,10 @@ test("PV string editor captures module details and derives total nominal power",
   assert.match(app, /state\.page=pageBeforeSave;\s*render\(\);window\.scrollTo\(\{top:scrollBeforeSave,behavior:"auto"\}\)/);
   assert.match(energyEngine, /"panel_count"/);
   assert.match(energyEngine, /"panel_power_w"/);
+  assert.match(app, /const saved=await saveGatewayEnergyEngineConfig\(\{pv_strings:strings\}\)/);
+  assert.match(app, /const savedStrings=Array\.isArray\(saved\?\.pv_strings\)/);
+  assert.match(energyEngine, /"pv_strings": normalized_pv_strings/);
+  assert.match(gatewayApp, /@app\.get\("\/api\/v1\/energy\/engine\/config"\)/);
 });
 
 test("LAN discovery tries the local neighbor cache after broadcast errors", () => {

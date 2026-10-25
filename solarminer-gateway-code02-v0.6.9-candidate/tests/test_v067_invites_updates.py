@@ -57,6 +57,21 @@ def test_owner_invite_create_list_and_revoke(client):
     assert revoked.status_code == 200
     assert client.post(f"/api/v1/invites/{body['invite_id']}/revoke",headers=h).status_code == 409
 
+def test_owner_energy_engine_configuration_round_trip(client):
+    token = owner_session(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    configured = [{"id": "pv-string-roof-1", "name": "Telhado", "manufacturer": "Example",
+                   "panel_count": 8, "panel_power_w": 450, "mppt": 1,
+                   "nominal_power_kw": 3.6, "active": True}]
+    saved = client.put("/api/v1/energy/engine/config", headers=headers,
+                       json={"pv_strings": configured, "battery_capacity_kwh": 10})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["pv_strings"] == configured
+    loaded = client.get("/api/v1/energy/engine/config", headers=headers)
+    assert loaded.status_code == 200, loaded.text
+    assert loaded.json()["pv_strings"] == configured
+    assert loaded.json()["battery_capacity_kwh"] == 10
+
 def test_invite_redeem_atomic_and_single_use(client):
     token=owner_session(client); h={"Authorization":f"Bearer {token}"}
     invite=client.post("/api/v1/invites",headers=h,json={"role":"operator","label":"new operator"}).json()
@@ -426,6 +441,27 @@ def test_hardware_provider_read_is_independent_and_owner_only(client, monkeypatc
     assert miner_readings["miner_hashrate_5s_ghs"] == 120000
     assert miner_readings["miner_power_w"] == 2300
     assert miner_readings["miner_power_limit_w"] == 2500
+
+    # The normal miner card must also receive the authenticated Braiins tuner
+    # readings, even when the CGMiner endpoint does not report live values.
+    monkeypatch.setattr(gateway.hardware_integrations, "antminer_management", lambda config, operation, **kwargs: {
+        "operation": operation, "state": "read_data", "command_sent": False,
+        "data": {"mode_state": {"powertargetmodestate": {
+            "current_target": {"watt": 1000},
+            "profile": {"target": {"watt": 1800},
+                        "measured_hashrate": {"gigahash_per_second": 42000},
+                        "estimated_power_consumption": {"watt": 924}},
+        }}},
+    })
+    tuner = client.post("/api/v1/integrations/antminer/management", headers=headers, json={"operation": "tuner"})
+    assert tuner.status_code == 200 and tuner.json()["energy_readings_persisted"] == 4
+    miner_equipment = client.get("/api/v1/energy/equipment?category=mineradoras", headers=headers).json()["equipment"]
+    miner_readings = {reading["field"]: reading["value"] for reading in miner_equipment[0]["readings"]}
+    assert miner_readings["miner_hashrate_avg_ghs"] == 42000
+    assert miner_readings["miner_power_w"] == 924
+    assert miner_readings["miner_power_limit_w"] == 1000
+    assert miner_readings["miner_power_profile_w"] == 1800
+
     tuya = client.post("/api/v1/integrations/hardware/tuya/read", headers=headers, json={"device_id": "tuya_device_b"})
     assert tuya.status_code == 200 and len(tuya.json()["tuya"]) == 1
     assert seen_tuya_configs == [["tuya_device_b"]]

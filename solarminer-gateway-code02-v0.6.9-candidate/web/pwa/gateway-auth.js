@@ -388,9 +388,11 @@ export async function updateGatewayUserStatus(userId, status, currentPassword) {
 export async function readGatewayEnergy(historyHours = 24, historyUntil = null) {
   const params = new URLSearchParams({ history_hours: String(historyHours) });
   if (historyUntil) params.set("history_until", historyUntil);
-  const [status, categories, equipment, engine, siteProfile] = await Promise.all([
+  const isOwner = sessionInfo().user?.role === "owner";
+  const [status, categories, equipment, engine, siteProfile, configuration] = await Promise.all([
     gatewayApi("/api/v1/status"), gatewayApi("/api/v1/energy/categories"), gatewayApi("/api/v1/energy/equipment"),
-    gatewayApi(`/api/v1/energy/engine?${params.toString()}`), gatewayApi("/api/v1/site/profile")
+    gatewayApi(`/api/v1/energy/engine?${params.toString()}`), gatewayApi("/api/v1/site/profile"),
+    isOwner ? gatewayApi("/api/v1/energy/engine/config") : Promise.resolve(null)
   ]);
   const liveReadings = engine?.latest_readings || {};
   const liveEquipment = (equipment.equipment || []).map(item => {
@@ -405,6 +407,7 @@ export async function readGatewayEnergy(historyHours = 24, historyUntil = null) 
     const current = [...fields].map(field => ({ ...liveReadings[field], id: `live-${field}` }));
     return { ...item, readings: [...historical, ...current], last_communication_at: engine.updated_at || item.last_communication_at };
   });
+  if (isOwner && configuration) engine.configuration = configuration;
   return { status, categories: categories.categories || [], equipment: liveEquipment, engine, siteProfile, fetchedAt: new Date().toISOString() };
 }
 export async function readGatewaySiteProfile() {

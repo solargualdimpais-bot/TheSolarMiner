@@ -51,7 +51,7 @@ class HuaweiHiLinkClient:
         self.session_id = ""
 
     def _request(self, path: str, *, body: bytes | None = None, token: bool = False) -> tuple[bytes, Any]:
-        headers = {"Accept": "application/xml,text/xml", "User-Agent": "SolarMiner-Gateway/0.6.91"}
+        headers = {"Accept": "application/xml,text/xml", "User-Agent": "SolarMiner-Gateway/0.6.92"}
         headers["X-Requested-With"] = "XMLHttpRequest"
         if self.session_id:
             headers["Cookie"] = f"SessionID={self.session_id}"

@@ -70,6 +70,7 @@ cp "$ROOT/docs/CODE02_V064_TESTING.md" "$STAGE/usr/share/doc/solarminer-gateway/
 cp "$ROOT/docs/CODE02_V065_AUTH.md" "$STAGE/usr/share/doc/solarminer-gateway/CODE02_V065_AUTH.md"
 cp "$ROOT/docs/CODE02_V069_IMPLEMENTATION.md" "$STAGE/usr/share/doc/solarminer-gateway/CODE02_V069_IMPLEMENTATION.md"
 cp "$ROOT/docs/CHANGELOG_V069.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V069.md"
+cp "$ROOT/docs/CHANGELOG_V0692.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0692.md"
 cp "$ROOT/docs/CHANGELOG_V0613.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0613.md"
 cp "$ROOT/docs/CHANGELOG_V0616.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0616.md"
 cp "$ROOT/docs/CHANGELOG_V0618.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0618.md"
