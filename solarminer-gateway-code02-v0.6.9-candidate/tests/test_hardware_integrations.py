@@ -272,14 +272,32 @@ def test_antminer_start_stop_pause_use_only_fixed_actions(monkeypatch, action, p
 
     def request(host, port, route, **kwargs):
         calls.append((route, kwargs))
-        return {"token": "session-token"} if route.endswith("/auth/login") else {"accepted": True}
+        return {"token": "session-token"} if route.endswith("/auth/login") else False
 
     monkeypatch.setattr(integrations, "_bos_rest_request", request)
     result = integrations.control_antminer({"host": "192.168.8.69", "username": "root", "password": "secret"}, action)
     assert result["connection_state"] == "control_applied"
     assert result["control_command_sent"] is True
+    assert result["already_in_requested_state"] is False
     assert calls[-1][0] == path
     assert calls[-1][1]["method"] == "PUT"
+
+
+def test_braiins_rest_accepts_boolean_action_response(monkeypatch):
+    class FakeResponse:
+        def __enter__(self): return self
+        def __exit__(self, *_): return False
+        def read(self, _size): return b"false"
+
+    class FakeOpener:
+        def open(self, _request, timeout):
+            assert timeout == 8.0
+            return FakeResponse()
+
+    monkeypatch.setattr(integrations.urllib.request, "build_opener", lambda *_args: FakeOpener())
+    result = integrations._bos_rest_request("192.168.8.69", 80, "/api/v1/actions/start", method="PUT",
+                                             token="session-token")
+    assert result is False
 
 
 def test_antminer_control_rejects_missing_credentials_and_out_of_range_power(monkeypatch):

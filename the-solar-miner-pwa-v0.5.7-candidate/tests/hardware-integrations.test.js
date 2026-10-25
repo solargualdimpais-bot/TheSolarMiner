@@ -16,8 +16,8 @@ test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV 
   assert.match(app, /info\.user\.role !== "owner"/);
   assert.match(app, /saveGatewayHardwareIntegrationConfig/);
   assert.match(app, /readGatewayHardwareProvider/);
-  assert.match(app, /ligação confirmada ao IP /i);
-  assert.match(app, /respostas válidas:/);
+  assert.match(app, /leitura confirmada em /i);
+  assert.match(app, /hashing reportado/);
   assert.match(auth, /antminer_control_credentials_required/);
   assert.match(auth, /O teste de ligação é independente do controlo/);
   assert.match(app, /saveGatewayHardwareIntegrationConfig\(\{ \[provider\]: payload \}\)/);

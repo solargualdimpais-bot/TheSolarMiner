@@ -450,11 +450,11 @@ function liveMinerHomeMetric() {
   return liveHomeMetric("Mineradora", hashThs, hashUnit, "▦", detail, extra, "mineradoras");
 }
 function renderSolarDayBalance(projection) {
-  const point=projection.find(item=>Number.isFinite(item.item?.solar_expected_remaining_to_day_end_kwh)&&Number.isFinite(item.item?.load_remaining_to_day_end_kwh)&&Number.isFinite(item.item?.solar_available_after_load_to_day_end_kwh));
+  const point=projection.find(item=>Number.isFinite(item.item?.solar_expected_remaining_to_day_end_kwh));
   const fmt=value=>Number(value).toLocaleString("pt-PT",{minimumFractionDigits:2,maximumFractionDigits:2});
   const when=point?new Date(point.stamp).toLocaleTimeString("pt-PT",{hour:"2-digit",minute:"2-digit"}):"—";
-  const pv=point?fmt(point.item.solar_expected_remaining_to_day_end_kwh):"—",load=point?fmt(point.item.load_remaining_to_day_end_kwh):"—",net=point?fmt(point.item.solar_available_after_load_to_day_end_kwh):"—";
-  return `<section class="solar-day-balance" data-solar-day-balance aria-label="Energia solar disponível até ao fim do dia"><div class="solar-day-balance-title"><strong>Saldo solar previsto até ao fim do dia</strong><span data-balance-time>${point?`a partir das ${when}`:"sem dados suficientes"}</span></div><div class="solar-day-balance-values"><span>FV restante <b data-balance-pv>${pv} kWh</b></span><span>Consumo previsto <b data-balance-load>${load} kWh</b></span><span>Saldo disponível <b data-balance-net>${net} kWh</b></span></div></section>`;
+  const pv=point?fmt(point.item.solar_expected_remaining_to_day_end_kwh):"—";
+  return `<section class="solar-day-balance" data-solar-day-balance aria-label="FV restante até ao fim do dia"><div class="solar-day-balance-title"><strong>FV restante até ao fim do dia</strong><span data-balance-time>${point?`a partir das ${when}`:"sem previsão neste horário"}</span></div><div class="solar-day-balance-values"><b data-balance-pv>${pv} kWh</b></div></section>`;
 }function chart() {
   if (state.mode !== "SIMULATED") {
     const engine=state.energyEngine||{},history=engine.history||{},forecast=engine.forecast||{},now=Date.now(),start=now-3*3600000,end=now+6*3600000;
@@ -1752,17 +1752,19 @@ function setProviderResult(provider, result) {
   const output = $(`#${provider}-result`), status = $(`#${provider}-status`);
   if (output) { output.textContent = JSON.stringify(payload ?? result, null, 2); output.hidden = false; }
   if (status) {
-    const stateText = payload?.connection_state || (provider === "tuya" && payload?.length ? "api_responded" : "failed");
+    const rawState = payload?.connection_state || (provider === "tuya" && payload?.length ? "api_responded" : "failed");
+    const stateText = provider === "antminer" && rawState === "api_responded" ? "ligação de leitura ativa" : rawState;
     const reason = payload?.reason ? ` · ${payload.reason}` : "";
     const metricText = provider === "deye" && payload?.metrics ? ` · ${payload.metrics.length} leituras recebidas; não validadas pelo fabricante` : "";
-    let minerText = provider === "antminer" && payload?.responses ? " · API respondeu; comandos não enviados" : "";
+    let minerText = provider === "antminer" && payload?.responses ? " · telemetria em leitura; comandos disponíveis pela API Braiins OS separada" : "";
     if(provider==="antminer"&&payload?.connection_state==="api_responded"){
       const data=payload.data||{},summaryRows=data.summary?.SUMMARY,tunerRows=data.tunerstatus?.TUNERSTATUS;
       const summary=Array.isArray(summaryRows)?summaryRows.find(row=>row&&typeof row==="object")||{}:{};
       const tuner=Array.isArray(tunerRows)?tunerRows.find(row=>row&&typeof row==="object")||{}:{};
-      const hash=Number(summary["GHS av"]),hashRate=Number.isFinite(hash)&&hash>0?new Intl.NumberFormat("pt-PT",{maximumFractionDigits:1}).format(hash/1000)+" TH/s":"hashrate não reportado";
+      let hash=Number(summary["GHS 5s"]);if(!Number.isFinite(hash)){const mhs=Number(summary["MHS 5s"]);hash=Number.isFinite(mhs)?mhs/1000:Number(summary["GHS av"]);}
+      const hashObserved=Number.isFinite(hash)&&hash>=0,hashRate=hashObserved?new Intl.NumberFormat("pt-PT",{maximumFractionDigits:1}).format(hash/1000)+" TH/s":"hashrate não reportado",miningState=hashObserved?(hash>0?"hashing reportado":"hashrate zero; ligado mas sem hashing reportado"):"hashrate não reportado";
       const watts=Number(tuner.ApproximateMinerPowerConsumption),power=Number.isFinite(watts)&&watts>=0?" · potência reportada "+new Intl.NumberFormat("pt-PT",{maximumFractionDigits:0}).format(watts)+" W":"";
-      minerText=" · ligação confirmada ao IP "+payload.host+":"+payload.port+"; respostas válidas: "+(payload.commands||[]).join(", ")+"; "+hashRate+power+". Confirma leitura, não garante mineração normal.";
+      minerText=" · leitura confirmada em "+payload.host+":"+payload.port+"; "+miningState+" ("+hashRate+")"+power+"; comandos de mineração usam a API Braiins OS separada.";
     }
     status.textContent = `${provider === "deye" ? "Deye" : provider === "antminer" ? "Antminer" : "Tuya"}: ${stateText}${reason}${metricText}${minerText}`;
   }
@@ -1983,7 +1985,12 @@ async function sendAntminerControl(action) {
   status.textContent = `A enviar o comando “${labels[action]}” ao Antminer…`;
   try {
     const result = await controlGatewayAntminer(action, watt);
-    status.textContent = action === "set_power_target" ? `Comando aceite pelo Braiins OS: alvo aplicado ${result.applied_watt} W.` : `Comando “${labels[action]}” aceite pelo Braiins OS.`;
+    if (action === "set_power_target") status.textContent = `Comando aceite pelo Braiins OS: alvo aplicado ${result.applied_watt} W.`;
+    else if (typeof result.already_in_requested_state === "boolean") {
+      const state = result.already_in_requested_state ? "já estava nesse estado" : "aceite pelo Braiins OS";
+      status.textContent = `Comando “${labels[action]}” ${state}.`;
+    } else status.textContent = `Comando “${labels[action]}” aceite pelo Braiins OS.`;
+    if (action === "start") await readHardwareProvider("antminer");
   } catch (error) { status.textContent = `O Gateway não conseguiu executar o comando: ${error.message}`; }
   finally { buttons.forEach(button => { button.disabled = false; }); }
 }
@@ -2036,7 +2043,7 @@ $("#page-content").addEventListener("click", async event => {
     const tooltip=chartPoint.closest(".solar-chart-wrap")?.querySelector(".solar-chart-tooltip");
     const selection=chartPoint.closest("svg")?.querySelector(".solar-chart-selection");
     if(selection){const x=Number(chartPoint.getAttribute("x"))+Number(chartPoint.getAttribute("width"))/2;selection.setAttribute("x1",x);selection.setAttribute("x2",x);selection.setAttribute("visibility","visible");}
-    const balance=chartPoint.closest(".solar-chart-wrap")?.parentElement?.querySelector("[data-solar-day-balance]");if(balance){const fmtBalance=value=>value===""?"—":`${Number(value).toLocaleString("pt-PT",{minimumFractionDigits:2,maximumFractionDigits:2})} kWh`,whenBalance=new Date(Number(chartPoint.dataset.hour)).toLocaleTimeString("pt-PT",{hour:"2-digit",minute:"2-digit"});balance.querySelector("[data-balance-time]").textContent=chartPoint.dataset.netDay===""?"sem previsão neste horário":`a partir das ${whenBalance}`;balance.querySelector("[data-balance-pv]").textContent=fmtBalance(chartPoint.dataset.pvDay);balance.querySelector("[data-balance-load]").textContent=fmtBalance(chartPoint.dataset.loadDay);balance.querySelector("[data-balance-net]").textContent=fmtBalance(chartPoint.dataset.netDay);balance.classList.toggle("is-unavailable",chartPoint.dataset.netDay==="");}
+    const balance=chartPoint.closest(".solar-chart-wrap")?.parentElement?.querySelector("[data-solar-day-balance]");if(balance){const fmtBalance=value=>value===""?"—":`${Number(value).toLocaleString("pt-PT",{minimumFractionDigits:2,maximumFractionDigits:2})} kWh`,whenBalance=new Date(Number(chartPoint.dataset.hour)).toLocaleTimeString("pt-PT",{hour:"2-digit",minute:"2-digit"});balance.querySelector("[data-balance-time]").textContent=chartPoint.dataset.pvDay===""?"sem previsão neste horário":`a partir das ${whenBalance}`;balance.querySelector("[data-balance-pv]").textContent=fmtBalance(chartPoint.dataset.pvDay);balance.classList.toggle("is-unavailable",chartPoint.dataset.pvDay==="");}
     if(tooltip){const stamp=Number(chartPoint.dataset.hour),when=new Date(stamp).toLocaleTimeString("pt-PT",{hour:"2-digit",minute:"2-digit"}),isFuture=chartPoint.dataset.future==="true",kind=isFuture?"previsto":"medido",fmt=value=>value===""?"—":`${Number(value).toLocaleString("pt-PT",{maximumFractionDigits:2})} kW`,fmtEnergy=value=>value===""?"—":`${Number(value).toLocaleString("pt-PT",{maximumFractionDigits:2})} kWh`;tooltip.innerHTML=`<strong>${esc(when)} · ${kind}</strong><span>Consumo: ${fmt(chartPoint.dataset.load)}</span><span>${isFuture?"Produção prevista":"Produção efetiva"}: ${fmt(chartPoint.dataset.pv)}</span><span>Produção potencial: ${fmt(chartPoint.dataset.potential)}</span>${isFuture&&chartPoint.dataset.net!==""?`<span>Saldo restante no horizonte 6 h: ${fmtEnergy(chartPoint.dataset.net)}</span><span>Produção total estimada hoje: ${fmtEnergy(chartPoint.dataset.daily)}</span>`:""}`;tooltip.hidden=false;const wrap=chartPoint.closest(".solar-chart-wrap"),bounds=wrap?.getBoundingClientRect(),point=chartPoint.getBoundingClientRect();if(bounds){const width=tooltip.offsetWidth,height=tooltip.offsetHeight,pad=10,pointX=point.left+point.width/2-bounds.left,pointY=point.top+point.height/2-bounds.top;let left=pointX<bounds.width/2?pointX+18:pointX-width-18,top=pointY<bounds.height/2?pointY+18:pointY-height-18;left=Math.max(pad,Math.min(left,bounds.width-width-pad));top=Math.max(pad,Math.min(top,bounds.height-height-pad));if(Math.abs(left+width/2-pointX)<width/2+16)left=pointX<bounds.width/2?Math.min(bounds.width-width-pad,pointX+26):Math.max(pad,pointX-width-26);if(Math.abs(top+height/2-pointY)<height/2+16)top=pointY<bounds.height/2?Math.min(bounds.height-height-pad,pointY+26):Math.max(pad,pointY-height-26);tooltip.style.left=`${left}px`;tooltip.style.top=`${top}px`;}}
     return;
   }

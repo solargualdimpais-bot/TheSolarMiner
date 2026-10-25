@@ -850,7 +850,7 @@ def read_antminer(host: str, port: int = 4028, timeout: float = 2.0) -> dict[str
             raise RuntimeError(f"antminer_{command}_invalid_response")
         responses[command] = response
         if command in CGMINER_OPTIONAL_READ_COMMANDS: optional_commands.append(command)
-    return {"host": address, "port": port, "configured_model": "S19K Pro", "model_identity_verified": False, "protocol": "BOSminer CGMiner-compatible read-only", "connection_state": "api_responded", "commands": list(CGMINER_COMMANDS), "optional_commands": optional_commands, "data": responses, "trust": "LIVE_UNVERIFIED", "control_commands_sent": False, "observed_at": time.time()}
+    return {"host": address, "port": port, "configured_model": "S19K Pro", "model_identity_verified": False, "protocol": "read: BOSminer CGMiner-compatible; control: Braiins OS REST", "connection_state": "api_responded", "commands": list(CGMINER_COMMANDS), "optional_commands": optional_commands, "data": responses, "trust": "LIVE_UNVERIFIED", "control_commands_sent": False, "observed_at": time.time()}
 
 
 _BOS_CONTROL_ACTIONS = {
@@ -862,7 +862,7 @@ _BOS_CONTROL_ACTIONS = {
 
 def _bos_rest_request(host: str, port: int, path: str, *, method: str = "GET",
                       token: str | None = None, payload: dict[str, Any] | None = None,
-                      timeout: float = 8.0) -> dict[str, Any]:
+                      timeout: float = 8.0) -> dict[str, Any] | bool:
     """Call a fixed Braiins OS REST API path on a private miner address."""
     address = _private_ip(host)
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
@@ -896,7 +896,9 @@ def _bos_rest_request(host: str, port: int, path: str, *, method: str = "GET",
         data = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RuntimeError("antminer_api_invalid_json") from exc
-    if not isinstance(data, dict):
+    # Braiins action endpoints (start, pause, stop) return a JSON boolean,
+    # while login and power-target endpoints return JSON objects.
+    if not isinstance(data, (dict, bool)):
         raise RuntimeError("antminer_api_invalid_response")
     return data
 
@@ -907,6 +909,8 @@ def _bos_rest_login(config: dict[str, Any]) -> str:
         raise RuntimeError("antminer_control_credentials_required")
     response = _bos_rest_request(config["host"], config.get("rest_port", 80), "/api/v1/auth/login",
                                 method="POST", payload={"username": username, "password": password})
+    if not isinstance(response, dict):
+        raise RuntimeError("antminer_api_login_response_invalid")
     token = response.get("token")
     if not isinstance(token, str) or not token or len(token) > 4096:
         raise RuntimeError("antminer_api_login_response_invalid")
@@ -927,6 +931,8 @@ def control_antminer(config: dict[str, Any], action: str, watt: int | None = Non
     if action == "set_power_target":
         response = _bos_rest_request(host, rest_port, "/api/v1/performance/power-target", method="PUT",
                                     token=token, payload={"watt": watt})
+        if not isinstance(response, dict):
+            raise RuntimeError("antminer_power_target_response_invalid")
         result = response.get("watt")
         if isinstance(result, bool) or not isinstance(result, int):
             raise RuntimeError("antminer_power_target_response_invalid")
@@ -934,7 +940,9 @@ def control_antminer(config: dict[str, Any], action: str, watt: int | None = Non
                 "connection_state": "control_applied", "control_command_sent": True}
     method, path, payload = _BOS_CONTROL_ACTIONS[action]
     response = _bos_rest_request(host, rest_port, path, method=method, token=token, payload=payload)
+    already_in_requested_state = response if isinstance(response, bool) else None
     return {"action": action, "result": response, "connection_state": "control_applied",
+            "already_in_requested_state": already_in_requested_state,
             "control_command_sent": True}
 
 

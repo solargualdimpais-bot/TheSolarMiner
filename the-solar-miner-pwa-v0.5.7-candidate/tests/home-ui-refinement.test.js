@@ -49,7 +49,7 @@ test("Forecast chart uses quarter-hour values and a dismissible tooltip away fro
   assert.match(app, /forecast\.solar_projection_15m\?\.values/);
   assert.match(app, /expected_net_remaining_kwh_6h/);
   assert.match(app, /solar_available_after_load_to_day_end_kwh/);
-  assert.match(app, /Saldo solar previsto até ao fim do dia/);
+  assert.match(app, /FV restante até ao fim do dia/);
   assert.match(css, /\.solar-chart-legend\{[^}]*flex-wrap:nowrap/);
   assert.match(app, /for\(let stamp=quarterStart;stamp<=quarterEnd;stamp\+=quarterHour\)/);
   assert.match(app, /minute:'2-digit'\}\)\}\"><title>Ver valores das/);
