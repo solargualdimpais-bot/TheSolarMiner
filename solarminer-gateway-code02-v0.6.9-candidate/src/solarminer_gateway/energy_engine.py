@@ -288,8 +288,6 @@ def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, 
                     or dependency["control_type"] not in {"tuya_smart", "tuya_breaker"}
                     or not dependency["enabled"] or not dependency["automatic"]):
                 raise ValueError("invalid_flexible_load_dependency")
-        if load["control_type"] == "antminer_braiins" and load["automatic"] and load["enabled"] and load["requires_load_id"] is None:
-            raise ValueError("automatic_antminer_requires_tuya_relay_load")
     automation = merged.get("automation", DEFAULT_CONFIG["automation"])
     if not isinstance(automation, dict) or set(automation) - set(DEFAULT_CONFIG["automation"]):
         raise ValueError("invalid_energy_automation_config")

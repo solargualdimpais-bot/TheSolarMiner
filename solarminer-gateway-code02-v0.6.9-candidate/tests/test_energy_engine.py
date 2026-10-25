@@ -747,14 +747,15 @@ def test_pv_string_rejects_invalid_panel_metadata():
         }]})
 
 
-def test_automatic_miner_requires_a_preceding_tuya_relay():
+def test_automatic_miner_can_be_controlled_directly_without_a_tuya_relay():
     conn = database()
-    with pytest.raises(ValueError, match="automatic_antminer_requires_tuya_relay_load"):
-        energy_engine.save_config(conn, {"loads": [{
-            "id": "miner", "name": "S19K Pro", "kind": "miner", "control_type": "antminer_braiins",
-            "rated_power_w": 2500, "minimum_power_w": 800, "maximum_power_w": 2500,
-            "automatic": True,
-        }]})
+    config = energy_engine.save_config(conn, {"loads": [{
+        "id": "miner", "name": "S19K Pro", "kind": "miner", "control_type": "antminer_braiins",
+        "rated_power_w": 2500, "minimum_power_w": 800, "maximum_power_w": 2500,
+        "automatic": True,
+    }]})
+    assert config["loads"][0]["automatic"] is True
+    assert config["loads"][0]["requires_load_id"] is None
 
 
 def test_dispatch_plan_starts_relay_before_miner_and_allocates_heaters_after_max():

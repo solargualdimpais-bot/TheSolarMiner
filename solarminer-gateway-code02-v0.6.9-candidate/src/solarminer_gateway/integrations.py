@@ -994,7 +994,9 @@ _ANTMINER_MANAGEMENT_READS = {
     "network_details": ("GET", "/api/v1/network/"),
     "tuner": ("GET", "/api/v1/performance/tuner-state"),
     "performance_mode": ("GET", "/api/v1/performance/mode"),
-    "power_target": ("GET", "/api/v1/performance/power-target"),
+    # Braiins documents this endpoint for PUT, not GET. Read the current
+    # target from tuner-state, which includes mode_state.*.current_target.
+    "power_target": ("GET", "/api/v1/performance/tuner-state"),
     "target_profiles": ("GET", "/api/v1/performance/target-profiles"),
     "efficiency_profile": ("GET", "/api/v1/performance/efficiency-profile"),
     "pools": ("GET", "/api/v1/pools/"),

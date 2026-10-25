@@ -440,6 +440,23 @@ def test_antminer_control_authenticates_with_fixed_root_and_password_only(monkey
     assert result["control_command_sent"] is True
 
 
+def test_antminer_power_target_read_uses_tuner_state_instead_of_unsupported_get(monkeypatch):
+    calls = []
+
+    def request(_host, _port, path, **kwargs):
+        calls.append((path, kwargs))
+        if path.endswith("/auth/login"):
+            return {"token": "temporary-token"}
+        return {"mode_state": {"powertargetmodestate": {"current_target": {"watt": 2500}}}}
+
+    monkeypatch.setattr(integrations, "_bos_rest_request", request)
+    result = integrations.antminer_management({"host": "192.168.8.69", "password": "secret"}, "power_target")
+    assert result["state"] == "read"
+    assert calls[-1][0] == "/api/v1/performance/tuner-state"
+    assert calls[-1][1]["method"] == "GET"
+    assert result["data"]["mode_state"]["powertargetmodestate"]["current_target"]["watt"] == 2500
+
+
 def test_antminer_management_reads_documented_sections_and_redacts_pool_secrets(monkeypatch):
     calls = []
     def request(host, port, path, **kwargs):
