@@ -48,13 +48,18 @@ test("Forecast chart uses quarter-hour values and a dismissible tooltip away fro
   assert.match(app, /const quarterHour=15\*60\*1000/);
   assert.match(app, /forecast\.solar_projection_15m\?\.values/);
   assert.match(app, /expected_net_remaining_kwh_6h/);
+  assert.match(app, /solar_available_after_load_to_day_end_kwh/);
+  assert.match(app, /Saldo solar previsto até ao fim do dia/);
+  assert.match(css, /\.solar-chart-legend\{[^}]*flex-wrap:nowrap/);
   assert.match(app, /for\(let stamp=quarterStart;stamp<=quarterEnd;stamp\+=quarterHour\)/);
   assert.match(app, /minute:'2-digit'\}\)\}\"><title>Ver valores das/);
   assert.match(app, /tooltip\.style\.left=`\$\{left\}px`/);
   assert.match(app, /tooltip\.style\.top=`\$\{top\}px`/);
   assert.match(app, /const openChartTooltip=\$\("\.solar-chart-tooltip:not\(\[hidden\]\)"\);if\(openChartTooltip\)openChartTooltip\.hidden=true/);
   assert.match(css, /\.solar-chart-tooltip\{position:absolute;top:0;left:0;transform:none;z-index:2/);
-  assert.match(app, /rgba\(188,169,190,\.34\)/);
+  assert.match(app, /rgba\(188,169,190,\.30\)/);
+  assert.match(app, /quarterly\(loadActual\)/);
+  assert.match(app, /solar-chart-selection/);
 });
 
 test("Home favorite controls use a centered plus-only add button and the open-ring power symbol", () => {

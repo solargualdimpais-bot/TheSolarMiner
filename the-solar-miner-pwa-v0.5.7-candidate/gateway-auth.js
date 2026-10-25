@@ -96,7 +96,8 @@ async function gatewayRequest(baseUrl, path, { method = "GET", body, authenticat
       deye_cloud_rate_limited: "A Deye Cloud limitou os pedidos. Aguarda antes de tentar importar novamente.",
       deye_cloud_upstream_timeout: "A Deye Cloud demorou demasiado a responder ao pedido de histórico.",
       deye_cloud_connection_failed: "O Gateway não conseguiu estabelecer ligação à Deye Cloud.",
-      deye_cloud_invalid_response: "A Deye Cloud devolveu uma resposta que o Gateway não conseguiu interpretar."
+      deye_cloud_invalid_response: "A Deye Cloud devolveu uma resposta que o Gateway não conseguiu interpretar.",
+      antminer_control_credentials_required: "O teste de ligação é independente do controlo. Para enviar comandos Braiins OS, configura e guarda o utilizador e a palavra-passe próprios do minerador."
     })[detail] || detail;
     const error = new Error(message);
     error.status = response.status;
@@ -275,9 +276,19 @@ export async function readGatewayConsole() {
 export async function readGatewayTerminalDiagnostics() {
   return gatewayApi("/api/v1/system/terminal/diagnostics");
 }
-export function openGatewayTerminalSocket() {
+export async function openGatewayTerminalSocket() {
   if (!currentGateway || !bearerToken || currentUser?.role !== "owner") throw new Error("Inicia sessão como Owner para abrir o terminal.");
-  const socketUrl = new URL("/api/v1/system/terminal/ws", currentGateway);
+  // The saved Tailscale HTTPS endpoint is an explicit route choice for the
+  // terminal too; otherwise an Owner session authenticated on another Gateway
+  // origin keeps opening its WebSocket against that old origin.
+  let socketBase = currentGateway;
+  try {
+    const access = await readGatewayTailscale();
+    if (access?.https_ready === true && typeof access.endpoint === "string") {
+      socketBase = validateGatewayUrl(access.endpoint).origin;
+    }
+  } catch { /* Keep the authenticated session endpoint if route lookup fails. */ }
+  const socketUrl = new URL("/api/v1/system/terminal/ws", socketBase);
   socketUrl.protocol = socketUrl.protocol === "https:" ? "wss:" : "ws:";
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(socketUrl.toString());

@@ -176,7 +176,7 @@ test('live history chart uses consumption bars and solid or dotted production/po
   assert.match(app,/Produção/);
   assert.match(app,/Produção potencial/);
   assert.match(app,/data-load=/);
-  assert.match(app,/Produção efetiva:/);
+  assert.match(app,/isFuture\?"Produção prevista":"Produção efetiva"/);
   assert.match(app,/kW/);
   assert.doesNotMatch(app,/FV medida \/ prevista|Consumo medido \/ previsto|Potencial FV pela meteorologia/);
 });

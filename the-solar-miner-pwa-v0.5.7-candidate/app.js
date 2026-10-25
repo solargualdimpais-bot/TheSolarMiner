@@ -449,7 +449,13 @@ function liveMinerHomeMetric() {
   const extra = sub ? `<span class="metric-sub miner-power-details">${esc(sub)}</span>` : "";
   return liveHomeMetric("Mineradora", hashThs, hashUnit, "▦", detail, extra, "mineradoras");
 }
-function chart() {
+function renderSolarDayBalance(projection) {
+  const point=projection.find(item=>Number.isFinite(item.item?.solar_expected_remaining_to_day_end_kwh)&&Number.isFinite(item.item?.load_remaining_to_day_end_kwh)&&Number.isFinite(item.item?.solar_available_after_load_to_day_end_kwh));
+  const fmt=value=>Number(value).toLocaleString("pt-PT",{minimumFractionDigits:2,maximumFractionDigits:2});
+  const when=point?new Date(point.stamp).toLocaleTimeString("pt-PT",{hour:"2-digit",minute:"2-digit"}):"—";
+  const pv=point?fmt(point.item.solar_expected_remaining_to_day_end_kwh):"—",load=point?fmt(point.item.load_remaining_to_day_end_kwh):"—",net=point?fmt(point.item.solar_available_after_load_to_day_end_kwh):"—";
+  return `<section class="solar-day-balance" data-solar-day-balance aria-label="Energia solar disponível até ao fim do dia"><div class="solar-day-balance-title"><strong>Saldo solar previsto até ao fim do dia</strong><span data-balance-time>${point?`a partir das ${when}`:"sem dados suficientes"}</span></div><div class="solar-day-balance-values"><span>FV restante <b data-balance-pv>${pv} kWh</b></span><span>Consumo previsto <b data-balance-load>${load} kWh</b></span><span>Saldo disponível <b data-balance-net>${net} kWh</b></span></div></section>`;
+}function chart() {
   if (state.mode !== "SIMULATED") {
     const engine=state.energyEngine||{},history=engine.history||{},forecast=engine.forecast||{},now=Date.now(),start=now-3*3600000,end=now+6*3600000;
     const point=(item,forcedUnit)=>{const stamp=Date.parse(item.observed_at||item.forecast_at||"");let value=Number(item.value);if(!Number.isFinite(stamp)||!Number.isFinite(value))return null;if((item.unit||forcedUnit)==="W")value/=1000;return {stamp,value};};
@@ -466,17 +472,17 @@ function chart() {
     if(!all.length)return `<div class="empty-state">Ainda não há leituras ou previsão. Configura a localização e a potência FV na área Owner.</div>`;
     const max=Math.max(1,...all.map(p=>p.value)),x=stamp=>45+Math.max(0,Math.min(1,(stamp-start)/(end-start)))*555,y=value=>235-Math.max(0,value)/max*190;
     const path=items=>items.map((p,i)=>`${i?"L":"M"}${x(p.stamp).toFixed(1)} ${y(p.value).toFixed(1)}`).join(" ");
-    const hourly=items=>{const bins=new Map();for(const p of items){const hour=Math.floor(p.stamp/3600000)*3600000;const bin=bins.get(hour)||{stamp:hour,total:0,count:0};bin.total+=p.value;bin.count++;bins.set(hour,bin);}return [...bins.values()].map(b=>({stamp:b.stamp,value:b.total/b.count})).sort((a,b)=>a.stamp-b.stamp);};
-    const loadHistoryBars=hourly(loadActual).map(p=>({...p,future:false})),loadForecastBars=hourly(loadForecast).map(p=>({...p,future:true}));
-    const bars=items=>items.map(p=>`<rect x="${(x(p.stamp)-26).toFixed(1)}" y="${y(p.value).toFixed(1)}" width="52" height="${Math.max(0,235-y(p.value)).toFixed(1)}" rx="2" fill="${p.future?'rgba(188,169,190,.07)':'rgba(188,169,190,.34)'}" stroke="rgba(188,169,190,.64)" stroke-width="1.25" ${p.future?'stroke-dasharray="2 2"':''}><title>${new Date(p.stamp).toLocaleTimeString("pt-PT",{hour:"2-digit"})} · ${p.future?'consumo previsto':'consumo medido'} ${p.value.toFixed(2)} kW</title></rect>`).join("");
+    const quarterHour=15*60*1000,quarterly=items=>{const bins=new Map();for(const p of items){const bucket=Math.floor(p.stamp/quarterHour)*quarterHour,bin=bins.get(bucket)||{stamp:bucket,total:0,count:0};bin.total+=p.value;bin.count++;bins.set(bucket,bin);}return [...bins.values()].map(b=>({stamp:b.stamp,value:b.total/b.count})).sort((a,b)=>a.stamp-b.stamp);};
+    const loadHistoryBars=quarterly(loadActual).map(p=>({...p,future:false})),loadForecastBars=quarterly(loadForecast).map(p=>({...p,future:true}));
+    const bars=items=>items.map(p=>{const width=555*(quarterHour/(end-start));return `<rect x="${(x(p.stamp)-width/2).toFixed(1)}" y="${y(p.value).toFixed(1)}" width="${width.toFixed(1)}" height="${Math.max(0,235-y(p.value)).toFixed(1)}" rx="2" fill="${p.future?'rgba(188,169,190,.08)':'rgba(188,169,190,.30)'}" stroke="rgba(188,169,190,.48)" stroke-width=".65" ${p.future?'stroke-dasharray="2 2"':''}><title>${new Date(p.stamp).toLocaleTimeString("pt-PT",{hour:"2-digit",minute:"2-digit"})} · ${p.future?'consumo previsto':'consumo medido'} ${p.value.toFixed(2)} kW</title></rect>`;}).join("");
     const actualLine=path(pvActual),forecastLine=path(pvForecast.length&&pvActual.length?[pvActual.at(-1),...pvForecast]:pvForecast),futurePotential=potential.filter(p=>p.stamp>=now);
-    const quarterHour=15*60*1000,quarterStart=Math.ceil(start/quarterHour)*quarterHour,quarterEnd=Math.floor(end/quarterHour)*quarterHour;
+    const quarterStart=Math.ceil(start/quarterHour)*quarterHour,quarterEnd=Math.floor(end/quarterHour)*quarterHour;
     const valueAt=(items,stamp)=>{const ordered=items.filter(p=>Number.isFinite(p.value)).sort((a,b)=>a.stamp-b.stamp);if(!ordered.length)return undefined;let before=null,after=null;for(const p of ordered){if(p.stamp===stamp)return p.value;if(p.stamp<stamp)before=p;else{after=p;break;}}if(before&&after){const ratio=(stamp-before.stamp)/(after.stamp-before.stamp);return before.value+(after.value-before.value)*ratio;}return before?.value??after?.value;};
     const loadSeries=[...loadActual,...loadForecast],pvSeries=[...pvActual,...pvForecast];
     const projectionByStamp=new Map(projection.map(item=>[item.stamp,item.item]));
-    const hitTargets=[];for(let stamp=quarterStart;stamp<=quarterEnd;stamp+=quarterHour){const loadValue=valueAt(loadSeries,stamp),pvValue=valueAt(pvSeries,stamp),potentialValue=valueAt(potential,stamp),point=projectionByStamp.get(stamp);if(loadValue===undefined&&pvValue===undefined&&potentialValue===undefined)continue;hitTargets.push(`<rect class="solar-chart-hit" x="${Math.max(45,x(stamp)-7).toFixed(1)}" y="34" width="14" height="203" tabindex="0" role="button" data-hour="${stamp}" data-load="${loadValue??''}" data-pv="${pvValue??''}" data-potential="${potentialValue??''}" data-net="${point?.expected_net_remaining_kwh_6h??''}" data-daily="${point?.estimated_daily_pv_kwh??''}" data-future="${stamp>now}" aria-label="Ver valores das ${new Date(stamp).toLocaleTimeString('pt-PT',{hour:'2-digit',minute:'2-digit'})}"><title>Ver valores das ${new Date(stamp).toLocaleTimeString('pt-PT',{hour:'2-digit',minute:'2-digit'})}</title></rect>`);}
+    const hitTargets=[];for(let stamp=quarterStart;stamp<=quarterEnd;stamp+=quarterHour){const loadValue=valueAt(loadSeries,stamp),pvValue=valueAt(pvSeries,stamp),potentialValue=valueAt(potential,stamp),point=projectionByStamp.get(stamp);if(loadValue===undefined&&pvValue===undefined&&potentialValue===undefined)continue;hitTargets.push(`<rect class="solar-chart-hit" x="${Math.max(45,x(stamp)-7).toFixed(1)}" y="34" width="14" height="203" tabindex="0" role="button" data-hour="${stamp}" data-load="${loadValue??''}" data-pv="${pvValue??''}" data-potential="${potentialValue??''}" data-net="${point?.expected_net_remaining_kwh_6h??''}" data-daily="${point?.estimated_daily_pv_kwh??''}" data-pv-day="${point?.solar_expected_remaining_to_day_end_kwh??''}" data-load-day="${point?.load_remaining_to_day_end_kwh??''}" data-net-day="${point?.solar_available_after_load_to_day_end_kwh??''}" data-future="${stamp>now}" aria-label="Ver valores das ${new Date(stamp).toLocaleTimeString('pt-PT',{hour:'2-digit',minute:'2-digit'})}"><title>Ver valores das ${new Date(stamp).toLocaleTimeString('pt-PT',{hour:'2-digit',minute:'2-digit'})}</title></rect>`);}
     const yTicks=[0,.25,.5,.75,1].map(f=>`<text x="4" y="${(235-f*190+4).toFixed(0)}">${(max*f).toFixed(1)} kW</text>`).join("");
-    return `<div class="solar-chart-wrap"><svg class="chart solar-window-chart" viewBox="0 0 620 310" preserveAspectRatio="none" role="group" aria-label="Consumo em barras; Produção efetiva: linha azul contínua; produção prevista: linha azul tracejada; produção potencial: linha dourada. Previsão do Engine em intervalos de quinze minutos."><path class="chart-grid" d="M45 45H600 M45 92H600 M45 140H600 M45 187H600 M45 235H600"/><g class="chart-label solar-y-axis">${yTicks}</g><g>${bars(loadHistoryBars)}${bars(loadForecastBars)}</g>${actualLine?`<path d="${actualLine}" fill="none" stroke="#79bce8" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`:''}${forecastLine?`<path d="${forecastLine}" fill="none" stroke="#79bce8" stroke-width="3" stroke-dasharray="3 6" stroke-linecap="round" stroke-linejoin="round"/>`:''}${historicalPotential.length?`<path d="${path(historicalPotential)}" fill="none" stroke="#dcc99c" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`:''}${futurePotential.length?`<path d="${path(futurePotential.length&&historicalPotential.length?[historicalPotential.at(-1),...futurePotential]:futurePotential)}" fill="none" stroke="#dcc99c" stroke-width="3" stroke-dasharray="3 6" stroke-linecap="round" stroke-linejoin="round"/>`:''}<path d="M230 34V240" stroke="#8f897a" stroke-dasharray="3 4"/><g class="chart-label solar-x-axis"><text x="45" y="275">−3 h</text><text x="218" y="275">agora</text><text x="414" y="275">+3 h</text><text x="570" y="275">+6 h</text></g><g>${hitTargets.join('')}</g></svg><div class="solar-chart-tooltip" role="status" aria-live="polite" hidden></div></div><div class="solar-chart-legend"><span><i class="solar-legend-load"></i>Consumo</span><span><i class="solar-legend-pv"></i>Produção</span><span><i class="solar-legend-potential"></i>Produção potencial</span></div>`;
+    return `<div class="solar-chart-wrap"><svg class="chart solar-window-chart" viewBox="0 0 620 310" preserveAspectRatio="none" role="group" aria-label="Consumo em barras de quinze minutos; produção efetiva, prevista e potencial em linhas. Previsão do Engine em intervalos de quinze minutos."><path class="chart-grid" d="M45 45H600 M45 92H600 M45 140H600 M45 187H600 M45 235H600"/><g class="chart-label solar-y-axis">${yTicks}</g><g>${bars(loadHistoryBars)}${bars(loadForecastBars)}</g>${actualLine?`<path d="${actualLine}" fill="none" stroke="#79bce8" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`:''}${forecastLine?`<path d="${forecastLine}" fill="none" stroke="#79bce8" stroke-width="3" stroke-dasharray="3 6" stroke-linecap="round" stroke-linejoin="round"/>`:''}${historicalPotential.length?`<path d="${path(historicalPotential)}" fill="none" stroke="#dcc99c" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`:''}${futurePotential.length?`<path d="${path(futurePotential.length&&historicalPotential.length?[historicalPotential.at(-1),...futurePotential]:futurePotential)}" fill="none" stroke="#dcc99c" stroke-width="3" stroke-dasharray="3 6" stroke-linecap="round" stroke-linejoin="round"/>`:''}<line class="solar-chart-selection" x1="0" x2="0" y1="34" y2="240" visibility="hidden"/><g class="chart-label solar-x-axis"><text x="45" y="275">−3 h</text><text x="218" y="275">agora</text><text x="414" y="275">+3 h</text><text x="570" y="275">+6 h</text></g><g>${hitTargets.join('')}</g></svg><div class="solar-chart-tooltip" role="status" aria-live="polite" hidden></div></div><div class="solar-chart-legend"><span><i class="solar-legend-load"></i>Consumo</span><span><i class="solar-legend-pv"></i>Produção</span><span><i class="solar-legend-potential"></i>Produção potencial</span></div>${renderSolarDayBalance(projection)}`;
   }
   return `<svg class="chart" viewBox="0 0 620 190" role="img" aria-label="Gráfico ilustrativo de produção solar simulada"><defs><linearGradient id="areaFill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#dcc99c" stop-opacity=".30"/><stop offset="100%" stop-color="#dcc99c" stop-opacity="0"/></linearGradient></defs><path class="chart-grid" d="M42 25H605 M42 65H605 M42 105H605 M42 145H605"/><path class="chart-area" d="M42 128 C75 125 90 111 122 118 S168 92 198 97 S245 70 276 82 S320 42 350 58 S399 72 430 47 S475 35 505 49 S565 28 605 37 L605 146 L42 146Z"/><path class="chart-line" d="M42 128 C75 125 90 111 122 118 S168 92 198 97 S245 70 276 82 S320 42 350 58 S399 72 430 47 S475 35 505 49 S565 28 605 37"/><g class="chart-label"><text x="42" y="166">08:00</text><text x="176" y="166">10:00</text><text x="309" y="166">12:00</text><text x="443" y="166">14:00</text><text x="575" y="166">16:00</text><text x="42" y="15">kW · CURVA ILUSTRATIVA</text></g></svg>`;
 }
@@ -947,12 +953,13 @@ $("#page-content").addEventListener("submit", e => {
 });
 async function savePvStringForm(form){
   const status=$("#pv-string-status"),button=form.querySelector('[type="submit"]');
-  if(!sessionInfo().authenticated||sessionInfo().user?.role!=="owner"){status.textContent="Só o Owner pode alterar as strings.";return;}
+  if(!sessionInfo().authenticated||sessionInfo().user?.role!=="owner"){const message="Só o Owner pode alterar as strings.";status.textContent=message;window.alert(message);return;}
   const name=form.elements.name.value.trim(),manufacturer=form.elements.manufacturer.value.trim(),panelCount=Number(form.elements.panel_count.value),panelPower=Number(form.elements.panel_power_w.value),mppt=Number(form.elements.mppt.value),nominal=panelCount*panelPower/1000,id=form.elements.id.value||`pv-string-${Date.now().toString(36)}`;
-  if(!name||name.length>120||!manufacturer||manufacturer.length>120||![1,2].includes(mppt)||!Number.isInteger(panelCount)||panelCount<1||panelCount>2000||!Number.isFinite(panelPower)||panelPower<1||panelPower>2500||!Number.isFinite(nominal)||nominal>1000){status.textContent="Confirma o nome, fabricante, número de painéis, potência por painel e entrada MPPT.";return;}
+  if(!name||name.length>120||!manufacturer||manufacturer.length>120||![1,2].includes(mppt)||!Number.isInteger(panelCount)||panelCount<1||panelCount>2000||!Number.isFinite(panelPower)||panelPower<1||panelPower>2500||!Number.isFinite(nominal)||nominal>1000){const message="Confirma o nome, fabricante, número de painéis, potência por painel e entrada MPPT.";status.textContent=message;window.alert(message);return;}
   const strings=[...(state.energyEngine?.configuration?.pv_strings||[])],index=strings.findIndex(item=>item.id===id);
-  if(form.closest("dialog").dataset.mode==="edit"&&index<0){status.textContent="A string já não consta na configuração. Atualiza e tenta novamente.";return;}
+  if(form.closest("dialog").dataset.mode==="edit"&&index<0){const message="A string já não consta na configuração. Atualiza e tenta novamente.";status.textContent=message;window.alert(message);return;}
   const value={id,name,manufacturer,panel_count:panelCount,panel_power_w:panelPower,mppt,nominal_power_kw:nominal,active:form.elements.active.checked};if(index>=0)strings[index]=value;else strings.push(value);
+  const pageBeforeSave=state.page,scrollBeforeSave=window.scrollY;
   button.disabled=true;status.textContent="A guardar no Gateway…";
   try{
     const saved=await saveGatewayEnergyEngineConfig({pv_strings:strings});
@@ -962,12 +969,14 @@ async function savePvStringForm(form){
       throw new Error("O Gateway não confirmou a gravação desta string. Mantive o formulário aberto.");
     }
     state.energyEngine={...(state.energyEngine||{}),configuration:saved};
-    form.closest("dialog").close();render();
-    const refreshed=await refreshGatewayReadings();
-    if(!refreshed)showFeatureNotice("String guardada no Gateway. A leitura atual falhou; os dados guardados continuam visíveis.");
-    else if(!(state.energyEngine?.configuration?.pv_strings||[]).some(item=>item.id===id))showFeatureNotice("O Gateway confirmou a gravação. A lista ainda não atualizou; volta a abrir Painéis para consultar.");
+    form.closest("dialog").close();
+    // Update the same page in place; never route to Home after this popup action.
+    state.page=pageBeforeSave;
+    render();window.scrollTo({top:scrollBeforeSave,behavior:"auto"});
+    window.alert(`String “${name}” guardada no Gateway.`);
+    await refreshGatewayReadings();
   }
-  catch(error){status.textContent=`Não foi possível guardar: ${error.message}`;}
+  catch(error){const message=`Não foi possível guardar a string “${name}”: ${error.message}`;status.textContent=message;window.alert(message);}
   finally{button.disabled=false;}
 }
 async function saveAqsForm(form){
@@ -1537,13 +1546,18 @@ async function connectGatewayTerminal() {
     let detail = error.message;
     if (error.code === "websocket_handshake_failed" || error.code?.startsWith("close_1006") || error.code === "timeout") {
       try {
-        const diagnostic = await readGatewayTerminalDiagnostics();
+        const [diagnostic, tailscale] = await Promise.all([
+          readGatewayTerminalDiagnostics(), readGatewayTailscale()
+        ]);
         if (!diagnostic.available) {
           detail = !diagnostic.pty_available
             ? "A API do Gateway respondeu, mas este sistema não disponibiliza o terminal PTY."
             : "A API do Gateway respondeu, mas a shell do terminal não está instalada.";
+        } else if (!tailscale.https_ready) {
+          const failedChecks = Object.entries(tailscale.checks || {}).filter(([, ok]) => !ok).map(([name]) => name);
+          detail = `A API e o terminal estão disponíveis, mas o HTTPS do Tailscale não está pronto${failedChecks.length ? ` (verificação: ${failedChecks.join(", ")})` : ""}. O endereço guardado não consegue encaminhar o WebSocket até o Gateway.`;
         } else {
-          detail = "A API do Gateway responde e o terminal está disponível, mas a ligação WebSocket falhou. O bloqueio está no encaminhamento HTTPS/Tailscale ou na configuração do proxy; esta verificação não executou comandos.";
+          detail = `A API, o terminal e o HTTPS do Tailscale estão prontos em ${tailscale.endpoint}, mas o handshake WebSocket falhou. O problema está no encaminhamento WebSocket do proxy, não na shell; esta verificação não executou comandos.`;
         }
       } catch (diagnosticError) {
         detail = `${error.message} A verificação autenticada da API também falhou: ${diagnosticError.message}`;
@@ -1741,7 +1755,15 @@ function setProviderResult(provider, result) {
     const stateText = payload?.connection_state || (provider === "tuya" && payload?.length ? "api_responded" : "failed");
     const reason = payload?.reason ? ` · ${payload.reason}` : "";
     const metricText = provider === "deye" && payload?.metrics ? ` · ${payload.metrics.length} leituras recebidas; não validadas pelo fabricante` : "";
-    const minerText = provider === "antminer" && payload?.responses ? " · API respondeu; comandos não enviados" : "";
+    let minerText = provider === "antminer" && payload?.responses ? " · API respondeu; comandos não enviados" : "";
+    if(provider==="antminer"&&payload?.connection_state==="api_responded"){
+      const data=payload.data||{},summaryRows=data.summary?.SUMMARY,tunerRows=data.tunerstatus?.TUNERSTATUS;
+      const summary=Array.isArray(summaryRows)?summaryRows.find(row=>row&&typeof row==="object")||{}:{};
+      const tuner=Array.isArray(tunerRows)?tunerRows.find(row=>row&&typeof row==="object")||{}:{};
+      const hash=Number(summary["GHS av"]),hashRate=Number.isFinite(hash)&&hash>0?new Intl.NumberFormat("pt-PT",{maximumFractionDigits:1}).format(hash/1000)+" TH/s":"hashrate não reportado";
+      const watts=Number(tuner.ApproximateMinerPowerConsumption),power=Number.isFinite(watts)&&watts>=0?" · potência reportada "+new Intl.NumberFormat("pt-PT",{maximumFractionDigits:0}).format(watts)+" W":"";
+      minerText=" · ligação confirmada ao IP "+payload.host+":"+payload.port+"; respostas válidas: "+(payload.commands||[]).join(", ")+"; "+hashRate+power+". Confirma leitura, não garante mineração normal.";
+    }
     status.textContent = `${provider === "deye" ? "Deye" : provider === "antminer" ? "Antminer" : "Tuya"}: ${stateText}${reason}${metricText}${minerText}`;
   }
 }
@@ -2012,10 +2034,14 @@ $("#page-content").addEventListener("click", async event => {
   const chartPoint=event.target.closest(".solar-chart-hit");
   if(chartPoint){
     const tooltip=chartPoint.closest(".solar-chart-wrap")?.querySelector(".solar-chart-tooltip");
-    if(tooltip){const stamp=Number(chartPoint.dataset.hour),when=new Date(stamp).toLocaleTimeString("pt-PT",{hour:"2-digit",minute:"2-digit"}),isFuture=chartPoint.dataset.future==="true",kind=isFuture?"previsto":"medido",fmt=value=>value===""?"—":`${Number(value).toLocaleString("pt-PT",{maximumFractionDigits:2})} kW`,fmtEnergy=value=>value===""?"—":`${Number(value).toLocaleString("pt-PT",{maximumFractionDigits:2})} kWh`;tooltip.innerHTML=`<strong>${esc(when)} · ${kind}</strong><span>Consumo: ${fmt(chartPoint.dataset.load)}</span><span>${isFuture?"Produção prevista":"Produção efetiva"}: ${fmt(chartPoint.dataset.pv)}</span><span>Produção potencial: ${fmt(chartPoint.dataset.potential)}</span>${isFuture&&chartPoint.dataset.net!==""?`<span>Saldo nas próximas 6 h: ${fmtEnergy(chartPoint.dataset.net)}</span><span>Produção estimada hoje: ${fmtEnergy(chartPoint.dataset.daily)}</span>`:""}`;tooltip.hidden=false;const wrap=chartPoint.closest(".solar-chart-wrap"),bounds=wrap?.getBoundingClientRect(),point=chartPoint.getBoundingClientRect();if(bounds){const width=tooltip.offsetWidth,height=tooltip.offsetHeight,pad=10,pointX=point.left+point.width/2-bounds.left,pointY=point.top+point.height/2-bounds.top;let left=pointX<bounds.width/2?pointX+18:pointX-width-18,top=pointY<bounds.height/2?pointY+18:pointY-height-18;left=Math.max(pad,Math.min(left,bounds.width-width-pad));top=Math.max(pad,Math.min(top,bounds.height-height-pad));if(Math.abs(left+width/2-pointX)<width/2+16)left=pointX<bounds.width/2?Math.min(bounds.width-width-pad,pointX+26):Math.max(pad,pointX-width-26);if(Math.abs(top+height/2-pointY)<height/2+16)top=pointY<bounds.height/2?Math.min(bounds.height-height-pad,pointY+26):Math.max(pad,pointY-height-26);tooltip.style.left=`${left}px`;tooltip.style.top=`${top}px`;}}
+    const selection=chartPoint.closest("svg")?.querySelector(".solar-chart-selection");
+    if(selection){const x=Number(chartPoint.getAttribute("x"))+Number(chartPoint.getAttribute("width"))/2;selection.setAttribute("x1",x);selection.setAttribute("x2",x);selection.setAttribute("visibility","visible");}
+    const balance=chartPoint.closest(".solar-chart-wrap")?.parentElement?.querySelector("[data-solar-day-balance]");if(balance){const fmtBalance=value=>value===""?"—":`${Number(value).toLocaleString("pt-PT",{minimumFractionDigits:2,maximumFractionDigits:2})} kWh`,whenBalance=new Date(Number(chartPoint.dataset.hour)).toLocaleTimeString("pt-PT",{hour:"2-digit",minute:"2-digit"});balance.querySelector("[data-balance-time]").textContent=chartPoint.dataset.netDay===""?"sem previsão neste horário":`a partir das ${whenBalance}`;balance.querySelector("[data-balance-pv]").textContent=fmtBalance(chartPoint.dataset.pvDay);balance.querySelector("[data-balance-load]").textContent=fmtBalance(chartPoint.dataset.loadDay);balance.querySelector("[data-balance-net]").textContent=fmtBalance(chartPoint.dataset.netDay);balance.classList.toggle("is-unavailable",chartPoint.dataset.netDay==="");}
+    if(tooltip){const stamp=Number(chartPoint.dataset.hour),when=new Date(stamp).toLocaleTimeString("pt-PT",{hour:"2-digit",minute:"2-digit"}),isFuture=chartPoint.dataset.future==="true",kind=isFuture?"previsto":"medido",fmt=value=>value===""?"—":`${Number(value).toLocaleString("pt-PT",{maximumFractionDigits:2})} kW`,fmtEnergy=value=>value===""?"—":`${Number(value).toLocaleString("pt-PT",{maximumFractionDigits:2})} kWh`;tooltip.innerHTML=`<strong>${esc(when)} · ${kind}</strong><span>Consumo: ${fmt(chartPoint.dataset.load)}</span><span>${isFuture?"Produção prevista":"Produção efetiva"}: ${fmt(chartPoint.dataset.pv)}</span><span>Produção potencial: ${fmt(chartPoint.dataset.potential)}</span>${isFuture&&chartPoint.dataset.net!==""?`<span>Saldo restante no horizonte 6 h: ${fmtEnergy(chartPoint.dataset.net)}</span><span>Produção total estimada hoje: ${fmtEnergy(chartPoint.dataset.daily)}</span>`:""}`;tooltip.hidden=false;const wrap=chartPoint.closest(".solar-chart-wrap"),bounds=wrap?.getBoundingClientRect(),point=chartPoint.getBoundingClientRect();if(bounds){const width=tooltip.offsetWidth,height=tooltip.offsetHeight,pad=10,pointX=point.left+point.width/2-bounds.left,pointY=point.top+point.height/2-bounds.top;let left=pointX<bounds.width/2?pointX+18:pointX-width-18,top=pointY<bounds.height/2?pointY+18:pointY-height-18;left=Math.max(pad,Math.min(left,bounds.width-width-pad));top=Math.max(pad,Math.min(top,bounds.height-height-pad));if(Math.abs(left+width/2-pointX)<width/2+16)left=pointX<bounds.width/2?Math.min(bounds.width-width-pad,pointX+26):Math.max(pad,pointX-width-26);if(Math.abs(top+height/2-pointY)<height/2+16)top=pointY<bounds.height/2?Math.min(bounds.height-height-pad,pointY+26):Math.max(pad,pointY-height-26);tooltip.style.left=`${left}px`;tooltip.style.top=`${top}px`;}}
     return;
   }
   const openChartTooltip=$(".solar-chart-tooltip:not([hidden])");if(openChartTooltip)openChartTooltip.hidden=true;
+  document.querySelectorAll(".solar-chart-selection[visibility='visible']").forEach(line=>line.setAttribute("visibility","hidden"));
   const save = event.target.closest("#ev-tesla-save");
   const read = event.target.closest("#ev-tesla-read");
   if (!save && !read) return;

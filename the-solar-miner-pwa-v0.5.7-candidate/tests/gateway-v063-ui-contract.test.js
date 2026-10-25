@@ -30,6 +30,9 @@ test("PV string editor captures module details and derives total nominal power",
   assert.match(app, /MPPT 2/);
   assert.match(app, /panelCount\*panelPower\/1000/);
   assert.match(app, /name="active" type="checkbox" checked> String online/);
+  assert.match(app, /String “\$\{name\}” guardada no Gateway\./);
+  assert.match(app, /Não foi possível guardar a string “\$\{name\}”: \$\{error\.message\}/);
+  assert.match(app, /state\.page=pageBeforeSave;\s*render\(\);window\.scrollTo\(\{top:scrollBeforeSave,behavior:"auto"\}\)/);
   assert.match(energyEngine, /"panel_count"/);
   assert.match(energyEngine, /"panel_power_w"/);
 });

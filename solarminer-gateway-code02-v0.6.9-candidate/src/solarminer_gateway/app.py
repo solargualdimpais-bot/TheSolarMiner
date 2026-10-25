@@ -49,7 +49,7 @@ from . import updates as update_manager
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.79"
+PACKAGE_VERSION = "0.6.80"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -417,6 +417,57 @@ def _energy_sample_interval_seconds() -> int:
         return 30
 
 
+def _prune_historical_records(now_utc: datetime | None = None) -> dict[str, int]:
+    """Prune time-series and structured event history older than 90 days."""
+    now = now_utc.astimezone(timezone.utc) if now_utc else datetime.now(timezone.utc)
+    cutoff = (now - timedelta(days=90)).isoformat(timespec="seconds")
+    cutoff_epoch = int((now - timedelta(days=90)).timestamp())
+    cutoff_day = (now - timedelta(days=90)).date().isoformat()
+    removed: dict[str, int] = {}
+    with db() as conn:
+        connector_manager.ensure_schema(conn)
+        energy_registry.ensure_schema(conn)
+        energy_engine._ensure_solar_forecast_history(conn)
+        for table, column in (
+            ("energy_readings", "observed_at"),
+            ("audit", "occurred_at"),
+            ("device_events", "occurred_at"),
+            ("connector_operations", "updated_at"),
+            ("energy_test_evidence", "observed_at"),
+        ):
+            cursor = conn.execute(f"DELETE FROM {table} WHERE {column}<?", (cutoff,))
+            removed[table] = max(0, cursor.rowcount)
+        cursor = conn.execute("DELETE FROM energy_solar_day_forecasts WHERE local_date<?", (cutoff_day,))
+        removed["energy_solar_day_forecasts"] = max(0, cursor.rowcount)
+        cursor = conn.execute("DELETE FROM update_operations WHERE updated_at<?", (cutoff_epoch,))
+        removed["update_operations"] = max(0, cursor.rowcount)
+        for table in ("bootstrap_attempts", "password_device_attempts", "invite_attempts"):
+            cursor = conn.execute(f"DELETE FROM {table} WHERE attempted_at<?", (cutoff_epoch,))
+            removed[table] = max(0, cursor.rowcount)
+        cursor = conn.execute("DELETE FROM invite_nonces WHERE timestamp<?", (cutoff_epoch,))
+        removed["invite_nonces"] = max(0, cursor.rowcount)
+        conn.commit()
+    return removed
+
+
+async def _history_retention_loop() -> None:
+    """Catch up on startup, then prune daily at the Gateway's local midnight."""
+    while True:
+        try:
+            removed = await asyncio.to_thread(_prune_historical_records)
+            total = sum(removed.values())
+            if total:
+                LOG.info("Pruned %s historical rows older than 90 days", total)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            LOG.warning("Daily history retention failed (%s)", type(exc).__name__)
+        local_now = datetime.now().astimezone()
+        next_midnight = datetime.combine(local_now.date() + timedelta(days=1), datetime.min.time(),
+                                          tzinfo=local_now.tzinfo)
+        await asyncio.sleep(max(1.0, (next_midnight - local_now).total_seconds()))
+
+
 async def _energy_sampling_loop() -> None:
     """Read Deye telemetry every 30s; persist a representative sample each minute."""
     global _latest_deye_sample
@@ -438,8 +489,6 @@ async def _energy_sampling_loop() -> None:
                         with db() as conn:
                             conn.execute("BEGIN")
                             count = _persist_deye_telemetry(conn, snapshot)
-                            conn.execute("DELETE FROM energy_readings WHERE source='DEYE_MODBUS_FC03_CANDIDATE_MAP' AND observed_at < ?",
-                                         ((datetime.now(timezone.utc) - timedelta(days=90)).isoformat(timespec="seconds"),))
                             conn.commit()
                         last_persisted_minute = minute_bucket
                         if not count:
@@ -658,12 +707,14 @@ async def lifespan(_: FastAPI):
     sampler = asyncio.create_task(_energy_sampling_loop(), name="solarminer-energy-sampler")
     dispatcher = asyncio.create_task(_energy_dispatch_loop(), name="solarminer-energy-dispatcher")
     tuya_observer = asyncio.create_task(_tuya_device_event_loop(), name="solarminer-tuya-event-observer")
+    history_retention = asyncio.create_task(_history_retention_loop(), name="solarminer-history-retention")
     try:
         yield
     finally:
         sampler.cancel()
         dispatcher.cancel()
         tuya_observer.cancel()
+        history_retention.cancel()
         try:
             await sampler
         except asyncio.CancelledError:
@@ -674,6 +725,10 @@ async def lifespan(_: FastAPI):
             pass
         try:
             await tuya_observer
+        except asyncio.CancelledError:
+            pass
+        try:
+            await history_retention
         except asyncio.CancelledError:
             pass
 
@@ -2988,7 +3043,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.79"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.80"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

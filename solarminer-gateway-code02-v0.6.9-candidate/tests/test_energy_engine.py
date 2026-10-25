@@ -112,6 +112,138 @@ def test_load_forecast_bounds_a_persistent_rising_trend():
     assert result["six_hour_value"] <= 1.5
 
 
+def test_cloud_backfill_is_not_used_as_a_live_load_or_solar_trend():
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    cloud = [{"observed_at": (now-timedelta(minutes=5*index)).isoformat(),
+              "value": 2200, "unit": "W", "source": "DEYE_CLOUD_HISTORY"}
+             for index in reversed(range(36))]
+    assert energy_engine._bounded_load_forecast(cloud, 140, as_of=now)["confidence"] == "INSUFFICIENT_HISTORY"
+    assert energy_engine._linear_forecast(cloud, 1350)["confidence"] == "INSUFFICIENT_HISTORY"
+
+
+def test_adaptive_potential_uses_engine_adjustment_and_never_dips_below_measured_pv():
+    now = datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc)
+    points = [
+        {"observed_at": now.isoformat(), "value": 0.63, "unit": "kW", "segment": "historical"},
+        {"observed_at": (now+timedelta(hours=1)).isoformat(), "value": 2.0, "unit": "kW", "segment": "forecast"},
+    ]
+    measured = [{"observed_at": (now+timedelta(minutes=5)).isoformat(),
+                 "value": 1350, "unit": "W", "source": "DEYE_MODBUS_FC03_CANDIDATE_MAP"}]
+    result = energy_engine._apply_observed_potential_floor(points, measured, 0.8)
+    assert result[0]["value"] == 1.35
+    assert result[1]["value"] == 1.6
+
+
+def test_cloud_backfill_does_not_replace_live_latest_reading():
+    conn = database()
+    conn.execute("INSERT INTO energy_equipment(id,category,name,connection_state,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                 ("deye-inverter-test", "inversores", "Inversor", "CONNECTED", "2026-10-25", "2026-10-25"))
+    energy_registry.add_reading(conn, "deye-inverter-test", {
+        "field": "load_total_power", "value": 140, "unit": "W",
+        "observed_at": "2026-10-25T12:00:00+00:00",
+        "source": "DEYE_MODBUS_FC03_CANDIDATE_MAP", "trust": "LIVE_UNVERIFIED"})
+    energy_registry.add_reading(conn, "deye-inverter-test", {
+        "field": "load_total_power", "value": 2350, "unit": "W",
+        "observed_at": "2026-10-25T12:01:00+00:00",
+        "source": "DEYE_CLOUD_HISTORY", "trust": "LIVE_UNVERIFIED"})
+    readings = energy_registry.latest_readings(conn, "deye-inverter-test")
+    assert len(readings) == 1
+    assert readings[0]["value"] == 140
+
+
+def test_cloud_only_recent_readings_can_fill_live_fields_but_stale_backfill_cannot():
+    conn = database()
+    conn.execute("INSERT INTO energy_equipment(id,category,name,protocol,connection_state,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                 ("deye-inverter-cloud", "inversores", "Deye", "Deye Cloud OpenAPI", "CONNECTED", "2026-10-25", "2026-10-25"))
+    fresh = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    energy_registry.add_reading(conn, "deye-inverter-cloud", {
+        "field": "load_total_power", "value": 140, "unit": "W", "observed_at": fresh,
+        "source": "DEYE_CLOUD_HISTORY", "trust": "LIVE_UNVERIFIED"})
+    assert energy_registry.latest_readings(conn, "deye-inverter-cloud")[0]["value"] == 140
+
+    conn.execute("DELETE FROM energy_readings")
+    old = (datetime.now(timezone.utc)-timedelta(hours=1)).isoformat(timespec="seconds")
+    energy_registry.add_reading(conn, "deye-inverter-cloud", {
+        "field": "load_total_power", "value": 2350, "unit": "W", "observed_at": old,
+        "source": "DEYE_CLOUD_HISTORY", "trust": "LIVE_UNVERIFIED"})
+    assert energy_registry.latest_readings(conn, "deye-inverter-cloud") == []
+
+
+def test_single_cloud_station_history_is_merged_into_the_only_modbus_device():
+    conn = database()
+    energy_registry.upsert_equipment(conn, {"category": "inversores", "name": "Inversor",
+        "protocol": "Modbus TCP FC03", "connection_state": "CONNECTED"}, equipment_id="deye-inverter-local")
+    energy_registry.upsert_equipment(conn, {"category": "inversores", "name": "Cloud history",
+        "protocol": "Deye Cloud OpenAPI", "connection_state": "CONNECTED"}, equipment_id="deye-inverter-cloud")
+    energy_registry.add_reading(conn, "deye-inverter-cloud", {
+        "field": "load_total_power", "value": 3000, "unit": "W",
+        "observed_at": "2026-10-24T12:00:00+00:00",
+        "source": "DEYE_CLOUD_HISTORY", "trust": "LIVE_UNVERIFIED"})
+
+    energy_engine._merge_single_cloud_device_history(conn)
+    row = conn.execute("SELECT equipment_id,source FROM energy_readings").fetchone()
+    assert tuple(row) == ("deye-inverter-local", "DEYE_CLOUD_HISTORY")
+
+
+def test_cloud_power_and_load_train_solar_reference_when_mppt_samples_are_absent():
+    conn = database()
+    energy_registry.upsert_equipment(conn, {"category": "inversores", "name": "Inversor",
+        "protocol": "Modbus TCP FC03", "connection_state": "CONNECTED"}, equipment_id="deye-inverter-local")
+    now = datetime.now(timezone.utc)
+    completed_hour = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+    for field, value in (("pv_total_power", 2200), ("load_total_power", 3000)):
+        energy_registry.add_reading(conn, "deye-inverter-local", {
+            "field": field, "value": value, "unit": "W",
+            "observed_at": (completed_hour-timedelta(minutes=30)).isoformat(),
+            "source": "DEYE_CLOUD_HISTORY", "trust": "LIVE_UNVERIFIED"})
+    result = energy_engine._learn_solar_performance(
+        conn, {"hourly": [{"observed_at": completed_hour.isoformat(),
+                           "shortwave_radiation_w_m2": 500}]},
+        {"id": "deye-inverter-local"}, None, 8.0, 0.85, 100.0)
+    assert result["sample_count"] == 1
+    assert result["demand_supported_samples"] == 1
+    assert result["recent_performance_observations"][-1]["classification"] == "DEMAND_SUPPORTED_NORMAL_REFERENCE"
+
+
+def test_daily_history_pruning_removes_records_past_90_days_from_cloud_and_logs(tmp_path, monkeypatch):
+    from solarminer_gateway import app as gateway, connectors
+
+    monkeypatch.setattr(gateway, "DB_PATH", tmp_path / "gateway.db")
+    now = datetime(2026, 10, 25, 0, 0, tzinfo=timezone.utc)
+    old = (now-timedelta(days=91)).isoformat(timespec="seconds")
+    recent = (now-timedelta(days=89)).isoformat(timespec="seconds")
+    with gateway.db() as conn:
+        conn.executescript(gateway.SCHEMA)
+        energy_registry.ensure_schema(conn)
+        energy_engine._ensure_solar_forecast_history(conn)
+        connectors.ensure_schema(conn)
+        energy_registry.upsert_equipment(conn, {"category": "inversores", "name": "Deye",
+            "protocol": "Deye Cloud OpenAPI", "connection_state": "CONNECTED"}, equipment_id="deye-inverter-cloud")
+        for stamp, value in ((old, 1000), (recent, 500)):
+            energy_registry.add_reading(conn, "deye-inverter-cloud", {
+                "field": "pv_total_power", "value": value, "unit": "W", "observed_at": stamp,
+                "source": "DEYE_CLOUD_HISTORY", "trust": "LIVE_UNVERIFIED"})
+        conn.executemany("INSERT INTO audit(occurred_at,action,outcome,details_json) VALUES(?,?,?,?)",
+                         [(old, "old", "success", "{}"), (recent, "recent", "success", "{}")])
+        conn.execute("INSERT INTO energy_solar_day_forecasts(local_date,calculated_at,estimated_total_kwh,actual_today_kwh,remaining_estimate_kwh,confidence) VALUES(?,?,?,?,?,?)",
+                     ((now-timedelta(days=91)).date().isoformat(), old, 10, 1, 9, "LOW"))
+        conn.execute("INSERT INTO energy_solar_day_forecasts(local_date,calculated_at,estimated_total_kwh,actual_today_kwh,remaining_estimate_kwh,confidence) VALUES(?,?,?,?,?,?)",
+                     ((now-timedelta(days=89)).date().isoformat(), recent, 10, 1, 9, "LOW"))
+        conn.execute("INSERT INTO update_operations(id,state,installed_version,created_at,updated_at,details_json) VALUES(?,?,?,?,?,?)",
+                     ("old-op", "FAILED", "0.6.79", 1, int((now-timedelta(days=91)).timestamp()), "{}"))
+        conn.execute("INSERT INTO update_operations(id,state,installed_version,created_at,updated_at,details_json) VALUES(?,?,?,?,?,?)",
+                     ("recent-op", "FAILED", "0.6.79", 1, int((now-timedelta(days=89)).timestamp()), "{}"))
+
+    removed = gateway._prune_historical_records(now)
+    with gateway.db() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM energy_readings").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM audit").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM energy_solar_day_forecasts").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM update_operations").fetchone()[0] == 1
+    assert removed["energy_readings"] == 1
+    assert removed["audit"] == 1
+
+
 def test_engine_quarter_hour_projection_uses_daily_calibration_and_weighted_load_profile():
     now = datetime(2026, 10, 25, 10, 0, tzinfo=timezone.utc)
     expected = [{"observed_at": (now+timedelta(hours=hour)).isoformat(), "value": 2.0, "unit": "kW"}
@@ -123,6 +255,7 @@ def test_engine_quarter_hour_projection_uses_daily_calibration_and_weighted_load
         [{"load_power_w": 1000, "duration_hours": 6, "history_days": 3}],
         day_end=now+timedelta(hours=6), actual_today_kwh=5.0,
         expected_remaining_kwh=6.0, potential_remaining_kwh=9.0,
+        expected_load_remaining_kwh=6.0,
         confidence="MEDIUM_INDICATIVE")
 
     assert result["state"] == "ESTIMATED"
@@ -136,8 +269,36 @@ def test_engine_quarter_hour_projection_uses_daily_calibration_and_weighted_load
     assert result["values"][0]["load_power_kw"] == 1.0
     assert result["values"][0]["expected_net_cumulative_kwh"] == 0.0
     assert result["values"][0]["potential_net_cumulative_kwh"] == 0.125
-    assert result["values"][0]["estimated_daily_pv_kwh"] == 5.25
+    assert result["values"][0]["estimated_daily_pv_kwh"] == 11.0
     assert result["values"][0]["expected_net_remaining_kwh_6h"] == 0.0
+    assert result["values"][0]["solar_expected_remaining_to_day_end_kwh"] == 5.75
+    assert result["values"][0]["load_remaining_to_day_end_kwh"] == 5.75
+    assert result["values"][0]["solar_available_after_load_to_day_end_kwh"] == 0.0
+
+
+def test_day_end_load_forecast_selects_similar_low_load_days_from_today_so_far():
+    now = datetime(2026, 10, 25, 12, 15, tzinfo=timezone.utc)
+    history = []
+    for day in range(1, 7):
+        quiet = day <= 3
+        for hour in range(8, 14):
+            value = (100 if quiet else 3200) if hour <= 12 else (220 if quiet else 3800)
+            history.append({"observed_at": (now-timedelta(days=day)).replace(hour=hour, minute=0).isoformat(),
+                            "value": value, "unit": "W", "source": "DEYE_CLOUD_HISTORY"})
+    for hour in range(8, 13):
+        history.append({"observed_at": now.replace(hour=hour, minute=0).isoformat(),
+                        "value": 110, "unit": "W", "source": "DEYE_CLOUD_HISTORY"})
+    history.extend({"observed_at": (now-timedelta(minutes=minutes)).isoformat(), "value": 130,
+                    "unit": "W", "source": "DEYE_MODBUS_FC03_CANDIDATE_MAP"}
+                   for minutes in (2, 6, 12))
+
+    result = energy_engine._estimate_remaining_load_to_day_end(history, 130, "UTC", as_of=now)
+    hour_13 = next(item for item in result["profile"] if item["hour"] == 13)
+
+    assert result["pattern_days_used"] == 3
+    assert result["method"] == "similar_observed_day_pattern_plus_weighted_hourly_history_and_live_15m"
+    assert hour_13["source"] == "SIMILAR_DAILY_PATTERN"
+    assert hour_13["load_power_w"] < 300
 
 
 def test_battery_autonomy_blends_current_load_with_weighted_same_hour_history():

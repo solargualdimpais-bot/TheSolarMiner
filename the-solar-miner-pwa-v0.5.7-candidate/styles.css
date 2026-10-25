@@ -390,14 +390,15 @@ html[data-font="small"]{--font-ui-scale:.9;}html[data-font="normal"]{--font-ui-s
 .solar-window-chart .chart-label{font-size:13px;fill:#d0ccbf}
 .solar-window-chart .solar-y-axis{font-size:11px;fill:#aaa69a}
 .solar-chart-hit{fill:transparent;stroke:transparent;pointer-events:all;cursor:pointer}
-.solar-chart-hit:focus{outline:none;fill:rgba(220,201,156,.08);stroke:rgba(220,201,156,.32);stroke-width:1}
+.solar-chart-hit:focus{outline:none;fill:transparent;stroke:transparent}
+.solar-chart-selection{stroke:rgba(220,201,156,.72);stroke-width:1.25;stroke-dasharray:3 4;pointer-events:none;transition:x1 .12s ease,x2 .12s ease}
 .solar-chart-wrap{position:relative;width:100%}
 .solar-chart-tooltip{position:absolute;top:0;left:0;transform:none;z-index:2;display:grid;gap:5px;width:max-content;max-width:calc(100% - 20px);min-width:175px;padding:10px 13px;border:1px solid rgba(220,201,156,.34);background:rgba(18,18,17,.9);backdrop-filter:blur(8px);border-radius:9px;color:var(--text);font-size:11px;line-height:1.35;pointer-events:none;box-shadow:0 8px 28px rgba(0,0,0,.24);transition:left .12s ease,top .12s ease}
 .solar-chart-tooltip[hidden]{display:none}
 .solar-chart-tooltip strong{color:var(--gold);font-size:12px;font-weight:550}
-.solar-chart-legend{display:flex;justify-content:center;gap:24px;flex-wrap:wrap;padding:2px 0 7px;color:#d0ccbf;font-size:12px}
-.solar-chart-legend span{display:flex;align-items:center;gap:8px}
-.solar-chart-legend i{display:inline-block;width:18px;height:7px;border-radius:3px;background:rgba(188,169,190,.34);border:1px solid rgba(188,169,190,.64)}
+.solar-chart-legend{display:flex;justify-content:space-between;align-items:center;gap:clamp(6px,2vw,18px);flex-wrap:nowrap;padding:2px 0 8px;color:#d0ccbf;font-size:clamp(9px,2.8vw,12px);white-space:nowrap}
+.solar-chart-legend span{display:flex;align-items:center;gap:clamp(4px,1.3vw,8px);min-width:0}
+.solar-chart-legend i{display:inline-block;flex:0 0 16px;width:16px;height:7px;border-radius:3px;background:rgba(188,169,190,.34);border:1px solid rgba(188,169,190,.64)}
 .solar-chart-legend .solar-legend-pv{background:#79bce8}
 .solar-chart-legend .solar-legend-potential{background:#dcc99c}
 .gateway-console-section-title{margin:22px 0 9px;font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted,#aaa)}
@@ -521,3 +522,6 @@ html[data-font="small"]{--font-ui-scale:.9;}html[data-font="normal"]{--font-ui-s
 .gateway-update-banner{margin:10px 0 0;border:1px solid #d7c8a544;border-radius:14px;background:linear-gradient(110deg,#282419,#171613);box-shadow:0 5px 16px #0003}.gateway-update-banner[hidden]{display:none}.gateway-update-banner button{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 15px;border:0;background:transparent;color:var(--text,#f4f1e9);text-align:left;font:inherit;cursor:pointer}.gateway-update-banner button span{font-size:13px}.gateway-update-banner button strong{flex:none;color:var(--gold-2,#e2d0a4);font-size:12px;font-weight:600}.pv-string-summary{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:12px 0}.pv-string-summary .detail-item{padding:13px;border:1px solid var(--line);border-radius:12px;background:var(--panel-2,#141413)}.pv-string-summary .detail-item strong{display:block;margin:4px 0;font-size:18px;color:var(--gold-2)}
 @media(max-width:850px){.energy-outlook-grid.engine-solar-outlook{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:580px){.energy-outlook-grid.engine-solar-outlook{grid-template-columns:1fr}}
+
+.solar-day-balance{display:grid;gap:8px;margin:2px 0 10px;padding:11px 13px;border:1px solid rgba(220,201,156,.2);border-radius:10px;background:rgba(220,201,156,.045);color:#e7e2d6;font-size:12px}
+.solar-day-balance-title{display:flex;justify-content:space-between;gap:12px;align-items:baseline}.solar-day-balance-title strong{color:#dcc99c;font-weight:600}.solar-day-balance-title span{color:#aaa69b;font-size:11px}.solar-day-balance-values{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}.solar-day-balance-values span{display:grid;gap:3px;color:#aaa69b}.solar-day-balance-values b{color:#eee9dc;font-size:13px;font-weight:600}.solar-day-balance.is-unavailable .solar-day-balance-values b{color:#aaa69b}

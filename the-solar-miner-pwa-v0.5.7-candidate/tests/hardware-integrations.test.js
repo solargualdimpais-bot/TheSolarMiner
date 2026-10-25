@@ -16,6 +16,10 @@ test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV 
   assert.match(app, /info\.user\.role !== "owner"/);
   assert.match(app, /saveGatewayHardwareIntegrationConfig/);
   assert.match(app, /readGatewayHardwareProvider/);
+  assert.match(app, /ligação confirmada ao IP /i);
+  assert.match(app, /respostas válidas:/);
+  assert.match(auth, /antminer_control_credentials_required/);
+  assert.match(auth, /O teste de ligação é independente do controlo/);
   assert.match(app, /saveGatewayHardwareIntegrationConfig\(\{ \[provider\]: payload \}\)/);
   assert.match(app, /hardware-tuya-client-secret"\)\.value = ""/);
   assert.match(auth, /\/api\/v1\/integrations\/hardware\/\$\{provider\}\/read/);
@@ -63,7 +67,8 @@ test("Gateway terminal waits for server authentication and explains WebSocket fa
   assert.match(auth, /\/api\/v1\/system\/terminal\/diagnostics/);
   assert.match(auth, /message\?\.type === "ready"/);
   assert.match(auth, /websocket_handshake_failed/);
-  assert.match(app, /A API do Gateway responde e o terminal está disponível, mas a ligação WebSocket falhou/);
+  assert.match(app, /HTTPS do Tailscale não está pronto/);
+  assert.match(app, /handshake WebSocket falhou/);
   assert.match(app, /appendGatewayTerminalOutput\(`\\r\\n\[Diagnóstico\]/);
 });
 

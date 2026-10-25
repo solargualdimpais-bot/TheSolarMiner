@@ -1,11 +1,11 @@
-SolarMiner Gateway 0.6.79 — reparar Gateway instalado através de USB
+SolarMiner Gateway 0.6.80 — reparar Gateway instalado através de USB
 
 Usa este procedimento num Gateway Debian 13 amd64 que já tenha SolarMiner instalado e cuja chave pública de release esteja em /etc/solarminer/release-pubkey.pem.
 
 1. Extrai todos os ficheiros deste ZIP para a raiz da pen.
 2. No Gateway, inicia sessão como root e monta a pen em /mnt/solarminer-usb.
 3. Executa: sh /mnt/solarminer-usb/repair-existing-from-usb.sh
-4. O script só prossegue se a assinatura Ed25519, a chave já confiada, o hash, o tamanho, a versão e a arquitetura forem válidos. Instala/verifica o cliente Tailscale oficial, cria um backup SQLite, instala o pacote e ativa a nova release. O bundle v0.6.79 inclui o pacote e manifesto assinado da versão anterior 0.6.76, para rollback. A versão instalada tem de corresponder exatamente a um desses pares.
+4. O script só prossegue se a assinatura Ed25519, a chave já confiada, o hash, o tamanho, a versão e a arquitetura forem válidos. Instala/verifica o cliente Tailscale oficial, cria um backup SQLite, instala o pacote e ativa a nova release. O bundle v0.6.80 inclui o pacote e manifesto assinado da versão anterior 0.6.79, para rollback. A versão instalada tem de corresponder exatamente a um desses pares.
 5. Se a instalação ou o health check falhar, o script tenta reinstalar a versão anterior assinada, reativar a release anterior e restaurar a base de dados. Consulta o log antes de repetir.
 6. Depois de o script confirmar sucesso, executa como root, um comando de cada vez: `systemctl stop solarminer-gateway.service`; `solarminer-gateway bootstrap-token`; `systemctl start solarminer-gateway.service`.
 7. Confirma a emissão escrevendo ISSUE-OWNER-BOOTSTRAP-TOKEN. Usa o token e a fingerprint na PWA em até 15 minutos.

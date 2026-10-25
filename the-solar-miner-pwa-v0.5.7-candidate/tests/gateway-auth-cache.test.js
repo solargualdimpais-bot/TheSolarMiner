@@ -48,8 +48,15 @@ test("new browser sign-in sends password only to the HTTPS Gateway and stores de
   assert.match(sw, /password-device-login/);
 });
 
+test("terminal WebSocket honors the confirmed Tailscale HTTPS route", () => {
+  assert.match(auth, /const access = await readGatewayTailscale\(\)/);
+  assert.match(auth, /access\?\.https_ready === true/);
+  assert.match(auth, /socketBase = validateGatewayUrl\(access\.endpoint\)\.origin/);
+  assert.match(auth, /new URL\("\/api\/v1\/system\/terminal\/ws", socketBase\)/);
+});
+
 test("service worker only caches allowlisted static resources and versions cache explicitly", () => {
-  assert.match(sw, /the-solar-miner-static-v0\.5\.45-console-errors/);
+  assert.match(sw, /the-solar-miner-static-v0\.5\.46-engine-pv-strings/);
   assert.match(sw, /url\.pathname\.includes\("\/api\/v1\/"\)/);
   assert.match(sw, /request\.headers\.has\("Authorization"\)/);
   assert.match(sw, /request\.headers\.has\("Cookie"\)/);
