@@ -632,8 +632,9 @@ def _learn_solar_performance(conn: sqlite3.Connection, weather: dict[str, Any], 
                 }
             else:
                 # Deye Cloud history contains total PV and household load but
-                # not per-MPPT voltage/current. Use it as a lower-resolution
-                # calibration source, never as evidence of curtailment.
+                # not per-MPPT voltage/current. It can support a lower-confidence
+                # curtailment candidate when battery evidence independently
+                # confirms a full, nearly idle battery.
                 cloud_values: dict[str, list[float]] = {"pv_total_power": [], "load_total_power": []}
                 for cloud_field in cloud_values:
                     rows = conn.execute("SELECT value_json FROM energy_readings WHERE equipment_id=? AND field=? AND observed_at>? AND observed_at<=? AND source='DEYE_CLOUD_HISTORY'",
@@ -647,6 +648,8 @@ def _learn_solar_performance(conn: sqlite3.Connection, weather: dict[str, Any], 
                             continue
                 if not cloud_values["pv_total_power"]:
                     continue
+                cloud_evidence_sufficient = min(len(cloud_values["pv_total_power"]),
+                                                len(cloud_values["load_total_power"])) >= 2
                 actual_kw = sum(cloud_values["pv_total_power"]) / len(cloud_values["pv_total_power"]) / 1000
                 mppt1_kw, mppt2_kw = actual_kw, 0.0
                 mppt_sample = {"mppt1_power_kw": round(actual_kw, 3), "mppt2_power_kw": None,
@@ -687,7 +690,25 @@ def _learn_solar_performance(conn: sqlite3.Connection, weather: dict[str, Any], 
                 historical_soc, _ = _estimate_battery_soc(historical_voltage, historical_power,
                                                           battery_capacity_kwh, 0.0, maximum_soc_percent,
                                                           as_of=stamp)
-            historical_charge_w = hourly_average(battery, "battery_charge_power", 1 if cloud_fallback else 10)
+            # A Cloud SOC value is a fallback for event classification only;
+            # it never seeds the integrated operating SOC. Require repeated
+            # samples in this hour to avoid treating a single bad point as full.
+            if historical_soc is None and battery:
+                reported_soc_values: list[float] = []
+                for soc_field in ("battery_soc", "battery_soc_percent"):
+                    rows = conn.execute("SELECT value_json FROM energy_readings WHERE equipment_id=? AND field=? AND observed_at>? AND observed_at<=?",
+                                        (battery["id"], soc_field, start, finish)).fetchall()
+                    for value_row in rows:
+                        try:
+                            value = json.loads(value_row[0])
+                            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and 0 <= value <= 100:
+                                reported_soc_values.append(float(value))
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            continue
+                if len(reported_soc_values) >= 2:
+                    reported_soc_values.sort()
+                    historical_soc = reported_soc_values[len(reported_soc_values) // 2]
+            historical_charge_w = hourly_average(battery, "battery_charge_power", 2 if cloud_fallback else 10)
             historical_load_w = (sum(cloud_values["load_total_power"]) / len(cloud_values["load_total_power"])
                                  if cloud_fallback and cloud_values["load_total_power"] else
                                  hourly_average(inverter, "load_total_power", 1 if cloud_fallback else 10))
@@ -712,17 +733,24 @@ def _learn_solar_performance(conn: sqlite3.Connection, weather: dict[str, Any], 
             # output while the battery is full and household demand is low is
             # evidence of possible inverter curtailment. Keep it as a separate
             # label and do not train panel performance downward from it.
-            demand_supported = (historical_load_w is not None and historical_load_w >= actual_kw * 1000)
-            curtailed = (not cloud_fallback and not demand_supported and observed_ratio < 0.70 and historical_soc is not None
+            # Load greater than measured PV alone is ambiguous: in an off-grid
+            # system it can be the only available sink while a full battery
+            # prevents surplus storage. Suppress curtailment only when demand
+            # could plausibly absorb nearly the entire weather potential.
+            demand_supported = (historical_load_w is not None and historical_load_w >= potential_kw * 1000 * 0.90)
+            curtailed = ((not cloud_fallback or cloud_evidence_sufficient)
+                         and not demand_supported and observed_ratio < 0.70 and historical_soc is not None
                          and historical_soc >= maximum_soc_percent - 2
-                         and historical_charge_w is not None and historical_charge_w <= 150
-                         and historical_load_w is not None and historical_load_w < max(500, (potential_kw - actual_kw) * 1000))
+                         and historical_charge_w is not None and historical_charge_w <= 20
+                         and historical_load_w is not None)
             if curtailed:
                 event = {
                     "hour": hour_key, "observed_performance_ratio": round(observed_ratio, 4),
                     "weather_potential_kw": round(potential_kw, 3), "measured_mppt_power_kw": round(actual_kw, 3),
                     "battery_soc_percent": round(historical_soc, 2), "battery_charge_power_w": round(historical_charge_w, 1),
                     "house_load_power_w": round(historical_load_w, 1), **mppt_sample,
+                    "evidence_source": "WEATHER_AND_DEYE_CLOUD_WITH_BATTERY_HISTORY" if cloud_fallback else "WEATHER_AND_LOCAL_MPPT_AND_BATTERY",
+                    "confidence": "LOW_CONTEXT_ONLY" if cloud_fallback and not voltage_support else "MEDIUM_VOLTAGE_SUPPORTED" if voltage_support else "MEDIUM_CONTEXT",
                     "mppt_voltage_support": voltage_support if voltage_profile_available else None,
                     "state": "POSSIBLE_CURTAILMENT_VOLTAGE_SUPPORTED" if voltage_support else "POSSIBLE_CURTAILMENT_CONTEXT_ONLY",
                 }
@@ -2029,6 +2057,73 @@ def _estimate_battery_soc_persistent(conn: sqlite3.Connection,
     }
 
 
+def _battery_full_voltage_plateau(voltage_history: list[dict[str, Any]],
+                                  power_history: list[dict[str, Any]],
+                                  current_voltage: float | None,
+                                  current_charge_power: float | None,
+                                  as_of: datetime | None = None) -> dict[str, Any] | None:
+    """Infer a full-charge event only from a sustained local voltage ceiling and taper.
+
+    This is display/diagnostic evidence, not a replacement for SOC integration:
+    imported Cloud samples are filtered by the caller, and we require an earlier
+    charging interval plus ten minutes at the learned voltage ceiling.
+    """
+    if (current_voltage is None or current_charge_power is None
+            or abs(current_charge_power) > 10):
+        return None
+    now = as_of.astimezone(timezone.utc) if as_of is not None else datetime.now(timezone.utc)
+    parsed_voltage: list[tuple[datetime, float]] = []
+    for point in voltage_history:
+        try:
+            stamp = datetime.fromisoformat(str(point["observed_at"]).replace("Z", "+00:00"))
+            stamp = stamp.replace(tzinfo=stamp.tzinfo or timezone.utc).astimezone(timezone.utc)
+            value = float(point["value"])
+            if math.isfinite(value) and value > 0:
+                parsed_voltage.append((stamp, value))
+        except (KeyError, TypeError, ValueError):
+            continue
+    parsed_power: list[tuple[datetime, float]] = []
+    for point in power_history:
+        try:
+            stamp = datetime.fromisoformat(str(point["observed_at"]).replace("Z", "+00:00"))
+            stamp = stamp.replace(tzinfo=stamp.tzinfo or timezone.utc).astimezone(timezone.utc)
+            value = float(point["value"])
+            if math.isfinite(value):
+                parsed_power.append((stamp, value))
+        except (KeyError, TypeError, ValueError):
+            continue
+    parsed_voltage.sort()
+    parsed_power.sort()
+    latest_voltage = parsed_voltage[-1] if parsed_voltage else None
+    if (latest_voltage is None or (now-latest_voltage[0]).total_seconds() > 120
+            or abs(latest_voltage[1]-current_voltage) > 0.2):
+        return None
+    local_peak = max(value for _, value in parsed_voltage)
+    if current_voltage < local_peak-0.15:
+        return None
+    recent: list[tuple[datetime, float]] = []
+    for stamp, voltage in parsed_voltage:
+        if stamp < now-timedelta(minutes=20) or voltage < local_peak-0.15:
+            continue
+        nearest = min(parsed_power, key=lambda item: abs((item[0]-stamp).total_seconds()), default=None)
+        if nearest and abs((nearest[0]-stamp).total_seconds()) <= 120 and abs(nearest[1]) <= 10:
+            if recent and (stamp-recent[-1][0]).total_seconds() > 150:
+                recent = []
+            recent.append((stamp, voltage))
+    if (len(recent) < 6 or (recent[-1][0]-recent[0][0]).total_seconds() < 600
+            or (now-recent[-1][0]).total_seconds() > 120):
+        return None
+    charging_before = any(recent[0][0]-timedelta(minutes=30) <= stamp < recent[0][0] and power <= -20
+                          for stamp, power in parsed_power)
+    if not charging_before:
+        return None
+    return {"state": "INFERRED_FULL_FROM_VOLTAGE_PLATEAU", "confidence": "MEDIUM",
+            "voltage_ceiling_v": round(local_peak, 3), "current_voltage_v": round(current_voltage, 3),
+            "charge_power_w": round(current_charge_power, 1),
+            "stable_minutes": round((recent[-1][0]-recent[0][0]).total_seconds()/60, 1),
+            "sample_count": len(recent), "reason": "LOCAL_CHARGE_TAPER_AND_SUSTAINED_VOLTAGE_CEILING"}
+
+
 def _linear_forecast(series: list[dict[str, Any]], current: float | None, max_value: float = 15.0) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     points: list[tuple[float, float]] = []
@@ -2142,7 +2237,9 @@ def build_dispatch_plan(current: dict[str, Any], config: dict[str, Any], *, samp
         return {**common, "state": "BLOCKED_STALE_TELEMETRY", "reason": "A fresh Deye sample is required."}
     if telemetry_trust not in {"PHYSICALLY_CORROBORATED", "OWNER_COMMISSIONED"}:
         return {**common, "state": "BLOCKED_UNTRUSTED_TELEMETRY", "reason": "Control readings are not physically commissioned."}
-    if current.get("battery_soc_percent") is None or current.get("pv_power_w") is None or current.get("load_power_w") is None:
+    if (current.get("battery_soc_percent") is None
+            or current.get("battery_soc_source") not in (None, "gateway_energy_integrated")
+            or current.get("pv_power_w") is None or current.get("load_power_w") is None):
         return {**common, "state": "BLOCKED_MISSING_TELEMETRY", "reason": "SOC, PV and load power are all required."}
     if current.get("battery_charge_headroom_kwh_to_maximum") is None:
         return {**common, "state": "BLOCKED_BATTERY_CONFIGURATION", "reason": "Configure battery bank capacity and SOC limits first."}
@@ -2287,6 +2384,12 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
     battery_cutoff = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat(timespec="microseconds")
     battery_voltage_history = _series(conn, [battery["id"]] if battery else [], "battery_voltage", battery_cutoff, limit=150000)
     battery_power_history = _series(conn, [battery["id"]] if battery else [], "battery_output_power", battery_cutoff, limit=150000)
+    # Cloud history is valuable for solar/load learning, but it is not a live
+    # coulomb-counting stream and must not anchor or advance the current SOC.
+    battery_voltage_history = [point for point in battery_voltage_history
+                               if point.get("source") != "DEYE_CLOUD_HISTORY"]
+    battery_power_history = [point for point in battery_power_history
+                             if point.get("source") != "DEYE_CLOUD_HISTORY"]
     if isinstance(latest_sample, dict) and isinstance(latest_sample.get("metrics"), list):
         sample_time = latest_sample.get("sampled_at")
         for metric in latest_sample["metrics"]:
@@ -2300,7 +2403,14 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
     battery_power_history = _dedupe_time_series(battery_power_history)
     pv = _number(inverter_readings, "pv_total_power")
     load = _number(inverter_readings, "load_total_power")
-    deye_soc = _number(battery_readings, "battery_soc")
+    deye_soc = (_number(battery_readings, "battery_soc")
+                if _number(battery_readings, "battery_soc") is not None
+                else _number(battery_readings, "battery_soc_percent"))
+    deye_soc_item = battery_readings.get("battery_soc") or battery_readings.get("battery_soc_percent")
+    deye_soc_fresh = False
+    if deye_soc_item and deye_soc is not None and deye_soc_item.get("source") != "DEYE_CLOUD_HISTORY":
+        observed_soc_at = _parse_utc(deye_soc_item.get("observed_at"))
+        deye_soc_fresh = observed_soc_at is not None and 0 <= (datetime.now(timezone.utc) - observed_soc_at).total_seconds() <= 1200
     all_banks = config.get("battery_banks", [])
     banks = [bank for bank in all_banks if bank.get("active", True)]
     capacity = (sum(float(bank["capacity_kwh"]) for bank in banks) if banks
@@ -2317,6 +2427,42 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
     # Gateway estimates SOC from a recent voltage ceiling and integrated power.
     soc, soc_estimate = _estimate_battery_soc_persistent(
         conn, battery_voltage_history, battery_power_history, capacity, 0.0, max_soc)
+    # A Deye-reported 100% is accepted for display only when fresh SOC agrees
+    # with the learned pack-voltage ceiling and near-zero charge. This recovers
+    # a full-battery state when the coulomb estimator lacks a continuous anchor,
+    # while preventing an old/imported SOC value from masquerading as live.
+    battery_voltage = _number(battery_readings, "battery_voltage")
+    battery_charge_power = _number(battery_readings, "battery_charge_power")
+    reported_voltage_peak = max((float(point["value"]) for point in battery_voltage_history
+                                 if isinstance(point.get("value"), (int, float))
+                                 and not isinstance(point.get("value"), bool)), default=None)
+    reported_full_charge = (deye_soc_fresh and deye_soc is not None and deye_soc >= 99.5
+                            and battery_voltage is not None and reported_voltage_peak is not None
+                            and battery_voltage >= reported_voltage_peak - 0.15
+                            and battery_charge_power is not None and abs(battery_charge_power) <= 20)
+    voltage_item = battery_readings.get("battery_voltage")
+    charge_item = battery_readings.get("battery_charge_power")
+    def fresh_local(item: dict[str, Any] | None) -> bool:
+        if not isinstance(item, dict) or item.get("source") == "DEYE_CLOUD_HISTORY":
+            return False
+        stamp = _parse_utc(item.get("observed_at"))
+        return stamp is not None and 0 <= (datetime.now(timezone.utc)-stamp).total_seconds() <= 120
+    voltage_plateau = (_battery_full_voltage_plateau(
+        battery_voltage_history, battery_power_history, battery_voltage, battery_charge_power)
+        if fresh_local(voltage_item) and fresh_local(charge_item) else None)
+    inferred_voltage_full = soc is None and voltage_plateau is not None
+    displayed_soc = (soc if soc is not None else max_soc if inferred_voltage_full
+                     else 100.0 if reported_full_charge else None)
+    displayed_soc_source = ("gateway_energy_integrated" if soc is not None else
+                            "gateway_voltage_plateau_inferred" if inferred_voltage_full else
+                            "deye_full_charge_confirmed" if reported_full_charge else "unavailable")
+    if inferred_voltage_full:
+        soc_estimate = {**soc_estimate, **voltage_plateau,
+                        "reason": "VOLTAGE_PLATEAU_CONFIRMED_WITH_LOCAL_CHARGE_TAPER"}
+    elif soc is None and reported_full_charge:
+        soc_estimate = {**soc_estimate, "state": "DEYE_SOC_REPORTED_ONLY",
+                        "reported_source": displayed_soc_source,
+                        "reason": "FRESH_FULL_SOC_CONFIRMED_BY_BATTERY_VOLTAGE_CEILING_AND_LOW_CHARGE"}
     if soc is not None and banks:
         capacity = sum(float(bank["capacity_kwh"]) for bank in banks)
         bank_summary = [{**bank, "estimated_soc_percent": soc if bank.get("active", True) else None,
@@ -2494,13 +2640,55 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
                               "net_energy_balance_kwh": None,
                               "load_forecast_confidence": remaining_load_forecast.get("confidence", "LOW"),
                               "load_forecast_reason": remaining_load_forecast.get("reason", "SOLAR_FORECAST_UNAVAILABLE")}
-    battery_voltage = _number(battery_readings, "battery_voltage")
     max_charge_current = _number(battery_readings, "battery_max_charge_current")
     max_discharge_current = _number(battery_readings, "battery_max_discharge_current")
-    battery_at_max = soc is not None and (all(soc >= float(b["maximum_soc_percent"]) for b in banks) if banks else soc >= max_soc)
+    battery_at_max = displayed_soc is not None and (all(displayed_soc >= float(b["maximum_soc_percent"]) for b in banks) if banks else displayed_soc >= max_soc)
+    projected_potential_kw = None
+    if solar_projection_15m.get("state") == "ESTIMATED" and solar_projection_15m.get("values"):
+        candidate_potential = solar_projection_15m["values"][0].get("solar_potential_power_kw")
+        if isinstance(candidate_potential, (int, float)) and not isinstance(candidate_potential, bool) and math.isfinite(candidate_potential):
+            projected_potential_kw = float(candidate_potential)
+    charge_stamp = _parse_utc((battery_readings.get("battery_charge_power") or {}).get("observed_at"))
+    charge_is_fresh = charge_stamp is not None and 0 <= (datetime.now(timezone.utc) - charge_stamp).total_seconds() <= 120
+    curtailment_assessment = {"state": "INSUFFICIENT_DATA", "confidence": "NONE",
+                              "reason": "Leituras recentes de FV, carga, bateria ou potencial não disponíveis.",
+                              "evidence": {"pv_load_fresh": current_pv_for_projection is not None and current_load_for_projection is not None,
+                                           "battery_at_configured_maximum": battery_at_max,
+                                           "battery_charge_fresh": charge_is_fresh,
+                                           "engine_potential_kw": round(projected_potential_kw, 3) if projected_potential_kw is not None else None}}
+    if (current_pv_for_projection is not None and current_load_for_projection is not None
+            and projected_potential_kw is not None and projected_potential_kw >= 0.2
+            and battery_at_max and charge_is_fresh and battery_charge_power is not None):
+        observed_ratio = current_pv_for_projection / projected_potential_kw
+        current_load_kw = current_load_for_projection / 1000.0
+        demand_can_use_potential = current_load_kw >= projected_potential_kw * 0.90
+        if abs(battery_charge_power) <= 20 and observed_ratio < 0.70 and not demand_can_use_potential:
+            curtailment_assessment = {"state": "POSSIBLE_CURTAILMENT", "confidence": "MEDIUM",
+                "reason": "Bateria no máximo confirmado, carga quase nula e FV medido abaixo do potencial do Engine.",
+                "evidence": {"pv_load_fresh": True, "pv_measured_kw": round(current_pv_for_projection, 3),
+                             "pv_potential_kw": round(projected_potential_kw, 3),
+                             "pv_to_potential_ratio": round(observed_ratio, 3),
+                             "house_load_kw": round(current_load_kw, 3),
+                             "battery_at_configured_maximum": True,
+                             "battery_charge_power_w": round(battery_charge_power, 1),
+                             "battery_charge_fresh": True}}
+        else:
+            reason = ("O consumo pode absorver quase toda a produção potencial; o padrão atual não sustenta curtailment."
+                      if demand_can_use_potential else
+                      "A produção atual está próxima do potencial ou a bateria ainda está a carregar.")
+            curtailment_assessment = {"state": "NO_CURRENT_EVIDENCE", "confidence": "MEDIUM",
+                "reason": reason,
+                "evidence": {"pv_load_fresh": True, "pv_measured_kw": round(current_pv_for_projection, 3),
+                             "pv_potential_kw": round(projected_potential_kw, 3),
+                             "pv_to_potential_ratio": round(observed_ratio, 3),
+                             "house_load_kw": round(current_load_kw, 3),
+                             "battery_at_configured_maximum": True,
+                             "battery_charge_power_w": round(battery_charge_power, 1),
+                             "battery_charge_fresh": True}}
     current = {"pv_power_w": pv, "load_power_w": load,
-                        "battery_soc_percent": soc,
-                        "battery_soc_source": "gateway_energy_integrated" if soc is not None else "unavailable",
+                        "battery_soc_percent": displayed_soc,
+                        "battery_soc_integrated_percent": soc,
+                        "battery_soc_source": displayed_soc_source,
                         "battery_soc_estimate": soc_estimate,
                         "battery_inverter_reported_soc_percent": deye_soc,
                         "battery_voltage_max_30d_v": soc_estimate.get("voltage_max_30d_v") if soc_estimate else None,
@@ -2508,7 +2696,7 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
                         "battery_voltage_v": battery_voltage,
                         "battery_current_a": _number(battery_readings, "battery_output_current"),
                         "battery_power_w": _number(battery_readings, "battery_output_power"),
-                        "battery_charge_power_w": _number(battery_readings, "battery_charge_power"),
+                        "battery_charge_power_w": battery_charge_power,
                         "battery_discharge_power_w": _number(battery_readings, "battery_discharge_power"),
                         "battery_temperature_c": _number(battery_readings, "battery_temperature"),
                         "battery_energy_available_kwh_above_minimum": available,
@@ -2520,7 +2708,9 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
                         "battery_configured_max_charge_power_kw": round(battery_voltage * max_charge_current / 1000, 3) if battery_voltage is not None and max_charge_current is not None else None,
                         "battery_configured_max_discharge_power_kw": round(battery_voltage * max_discharge_current / 1000, 3) if battery_voltage is not None and max_discharge_current is not None else None,
                         "battery_capacity_kwh": capacity, "minimum_soc_percent": min_soc,
-                        "maximum_soc_percent": max_soc, "battery_banks": bank_summary}
+                        "maximum_soc_percent": max_soc, "battery_banks": bank_summary,
+                        "pv_potential_next_15m_kw": round(projected_potential_kw, 3) if projected_potential_kw is not None else None,
+                        "curtailment_assessment": curtailment_assessment}
     sample_state = "UNKNOWN"
     if latest_sample is not None:
         try:

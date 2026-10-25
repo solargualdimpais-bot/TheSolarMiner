@@ -49,7 +49,7 @@ from . import updates as update_manager
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.88"
+PACKAGE_VERSION = "0.6.89"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -454,10 +454,14 @@ async def _history_retention_loop() -> None:
     """Catch up on startup, then prune daily at the Gateway's local midnight."""
     while True:
         try:
-            removed = await asyncio.to_thread(_prune_historical_records)
-            total = sum(removed.values())
-            if total:
-                LOG.info("Pruned %s historical rows older than 90 days", total)
+            # Do not let the retention worker create an empty SQLite file if
+            # an initialized Gateway has lost its database. initialize()
+            # deliberately fails closed in that situation.
+            if DB_PATH.is_file() and (not INSTANCE_MARKER.exists() or DB_PATH.stat().st_size > 0):
+                removed = await asyncio.to_thread(_prune_historical_records)
+                total = sum(removed.values())
+                if total:
+                    LOG.info("Pruned %s historical rows older than 90 days", total)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -1972,8 +1976,8 @@ def antminer_control(payload: dict[str, Any], session: dict[str, Any] = Depends(
         if action not in {"set_power_target", "pause", "stop", "start"}:
             raise HTTPException(422, "unsupported_antminer_control_action")
         if action == "set_power_target":
-            if isinstance(watt, bool) or not isinstance(watt, int) or not 1 <= watt <= 2900:
-                raise HTTPException(422, "power_target_out_of_range_1_2900_watts")
+            if isinstance(watt, bool) or not isinstance(watt, int) or not 1 <= watt <= 100000:
+                raise HTTPException(422, "power_target_out_of_range_1_100000_watts")
         elif watt is not None:
             raise HTTPException(422, "antminer_control_payload_invalid")
         try:
@@ -2027,6 +2031,42 @@ def antminer_test_control(session: dict[str, Any] = Depends(require_permission("
                 "reason": type(exc).__name__, "control_command_sent": False, "mining_state_changed": False,
             })
             raise HTTPException(502, "antminer_control_probe_failed") from exc
+
+
+@app.post("/api/v1/integrations/antminer/management")
+def antminer_management(payload: dict[str, Any], session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Owner-only bridge to the documented Braiins OS management operations."""
+    with db() as conn:
+        _require_owner(session, conn)
+        if not isinstance(payload, dict) or set(payload) - {"operation", "payload", "resource_id"}:
+            raise HTTPException(422, "antminer_management_payload_invalid")
+        operation = payload.get("operation")
+        body = payload.get("payload")
+        resource_id = payload.get("resource_id")
+        if not isinstance(operation, str) or (resource_id is not None and not isinstance(resource_id, str)):
+            raise HTTPException(422, "antminer_management_payload_invalid")
+        try:
+            config = hardware_integrations.load_config().get("antminer", {})
+            result = hardware_integrations.antminer_management(config, operation, payload=body,
+                                                                resource_id=resource_id)
+            audit(conn, session["user_id"], f"hardware.antminer.{operation}", "antminer",
+                  "success", {"operation": operation, "command_sent": result.get("command_sent", False)})
+            return result
+        except ValueError as exc:
+            audit(conn, session["user_id"], f"hardware.antminer.{operation}", "antminer", "rejected",
+                  {"reason": str(exc)[:120]})
+            raise HTTPException(422, str(exc)) from exc
+        except RuntimeError as exc:
+            reason = str(exc)[:120]
+            LOG.error("Antminer management operation failed operation=%s reason=%s", operation, reason)
+            audit(conn, session["user_id"], f"hardware.antminer.{operation}", "antminer", "failed",
+                  {"reason": reason, "command_sent": False})
+            raise HTTPException(502, reason) from exc
+        except (OSError, json.JSONDecodeError) as exc:
+            LOG.error("Antminer management operation failed operation=%s (%s)", operation, type(exc).__name__)
+            audit(conn, session["user_id"], f"hardware.antminer.{operation}", "antminer", "failed",
+                  {"reason": type(exc).__name__, "command_sent": False})
+            raise HTTPException(502, "antminer_management_failed") from exc
 
 
 @app.post("/api/v1/integrations/tuya/switch")
@@ -3074,7 +3114,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.88"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.89"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

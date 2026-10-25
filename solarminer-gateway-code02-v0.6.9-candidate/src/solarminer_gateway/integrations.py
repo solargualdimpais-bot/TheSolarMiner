@@ -862,8 +862,9 @@ _BOS_CONTROL_ACTIONS = {
 
 
 def _bos_rest_request(host: str, port: int, path: str, *, method: str = "GET",
-                      token: str | None = None, payload: dict[str, Any] | None = None,
-                      timeout: float = 8.0) -> dict[str, Any] | bool:
+                      token: str | None = None, payload: Any = None,
+                      query: dict[str, str] | None = None,
+                      timeout: float = 8.0) -> Any:
     """Call a fixed Braiins OS REST API path on a private miner address."""
     address = _private_ip(host)
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
@@ -876,7 +877,8 @@ def _bos_rest_request(host: str, port: int, path: str, *, method: str = "GET",
         headers["Content-Type"] = "application/json"
     if token:
         headers["Authorization"] = token
-    request = urllib.request.Request(f"http://{address}:{port}{path}", data=body, headers=headers, method=method)
+    query_string = "?" + urllib.parse.urlencode(query) if query else ""
+    request = urllib.request.Request(f"http://{address}:{port}{path}{query_string}", data=body, headers=headers, method=method)
     opener = urllib.request.build_opener(_NoRedirect())
     try:
         with opener.open(request, timeout=timeout) as response:
@@ -899,7 +901,7 @@ def _bos_rest_request(host: str, port: int, path: str, *, method: str = "GET",
         raise RuntimeError("antminer_api_invalid_json") from exc
     # Braiins action endpoints (start, pause, stop) return a JSON boolean,
     # while login and power-target endpoints return JSON objects.
-    if not isinstance(data, (dict, bool)):
+    if not isinstance(data, (dict, list, bool, str, int, float)) and data is not None:
         raise RuntimeError("antminer_api_invalid_response")
     return data
 
@@ -924,8 +926,8 @@ def control_antminer(config: dict[str, Any], action: str, watt: int | None = Non
         raise RuntimeError("antminer_not_configured")
     if action not in {*_BOS_CONTROL_ACTIONS, "set_power_target"}:
         raise ValueError("unsupported_antminer_control_action")
-    if action == "set_power_target" and (isinstance(watt, bool) or not isinstance(watt, int) or not 1 <= watt <= 2900):
-        raise ValueError("power_target_out_of_range_1_2900_watts")
+    if action == "set_power_target" and (isinstance(watt, bool) or not isinstance(watt, int) or not 1 <= watt <= 100000):
+        raise ValueError("power_target_out_of_range_1_100000_watts")
     host = _private_ip(config["host"])
     rest_port = config.get("rest_port", 80)
     token = _bos_rest_login(config)
@@ -963,7 +965,7 @@ def test_antminer_control(config: dict[str, Any]) -> dict[str, Any]:
     current_watt = current_target.get("watt") if isinstance(current_target, dict) else None
     if isinstance(current_watt, str) and re.fullmatch(r"[0-9]{1,5}", current_watt):
         current_watt = int(current_watt)
-    if isinstance(current_watt, bool) or not isinstance(current_watt, int) or not 1 <= current_watt <= 2900:
+    if isinstance(current_watt, bool) or not isinstance(current_watt, int) or not 1 <= current_watt <= 100000:
         raise RuntimeError("antminer_control_probe_target_unavailable")
     response = _bos_rest_request(host, rest_port, "/api/v1/performance/power-target", method="PUT",
                                 token=token, payload={"watt": current_watt})
@@ -972,11 +974,190 @@ def test_antminer_control(config: dict[str, Any]) -> dict[str, Any]:
     applied_watt = response.get("watt")
     if isinstance(applied_watt, str) and re.fullmatch(r"[0-9]{1,5}", applied_watt):
         applied_watt = int(applied_watt)
-    if isinstance(applied_watt, bool) or not isinstance(applied_watt, int):
+    if isinstance(applied_watt, bool) or not isinstance(applied_watt, int) or not 1 <= applied_watt <= 100000:
         raise RuntimeError("antminer_control_probe_response_invalid")
     return {"action": "test_control", "previous_target_watt": current_watt,
             "applied_watt": applied_watt, "connection_state": "control_verified" if applied_watt == current_watt else "control_mismatch",
             "control_command_sent": True, "mining_state_changed": False}
+
+
+_ANTMINER_MANAGEMENT_READS = {
+    "api_schema": ("GET", "/api/v1/docs/openapi.json"),
+    "api_version": ("GET", "/api/v1/version/"),
+    "details": ("GET", "/api/v1/miner/details"),
+    "errors": ("GET", "/api/v1/miner/errors"),
+    "hashboards": ("GET", "/api/v1/miner/hw/hashboards"),
+    "stats": ("GET", "/api/v1/miner/stats"),
+    "configuration": ("GET", "/api/v1/configuration/miner"),
+    "constraints": ("GET", "/api/v1/configuration/constraints"),
+    "cooling": ("GET", "/api/v1/cooling/state"),
+    "network_details": ("GET", "/api/v1/network/"),
+    "tuner": ("GET", "/api/v1/performance/tuner-state"),
+    "performance_mode": ("GET", "/api/v1/performance/mode"),
+    "power_target": ("GET", "/api/v1/performance/power-target"),
+    "target_profiles": ("GET", "/api/v1/performance/target-profiles"),
+    "efficiency_profile": ("GET", "/api/v1/performance/efficiency-profile"),
+    "pools": ("GET", "/api/v1/pools/"),
+    "advanced_settings": ("GET", "/api/v1/advanced-settings/"),
+    "advanced_schema": ("GET", "/api/v1/advanced-settings/schema"),
+    "network": ("GET", "/api/v1/network/configuration"),
+    "auto_upgrade": ("GET", "/api/v1/upgrade/auto-upgrade"),
+    "license": ("GET", "/api/v1/license/license"),
+    "locate_state": ("GET", "/api/v1/actions/locate"),
+}
+
+_ANTMINER_MANAGEMENT_WRITES = {
+    "start": ("PUT", "/api/v1/actions/start"),
+    "resume": ("PUT", "/api/v1/actions/resume"),
+    "restart": ("PUT", "/api/v1/actions/restart"),
+    "pause": ("PUT", "/api/v1/actions/pause"),
+    "stop": ("PUT", "/api/v1/actions/stop"),
+    "reboot": ("PUT", "/api/v1/actions/reboot"),
+    "locate": ("PUT", "/api/v1/actions/locate"),
+    "set_power_target": ("PUT", "/api/v1/performance/power-target"),
+    "power_target_default": ("PUT", "/api/v1/performance/power-target/default"),
+    "power_target_increment": ("PATCH", "/api/v1/performance/power-target/increment"),
+    "power_target_decrement": ("PATCH", "/api/v1/performance/power-target/decrement"),
+    "power_target_relative": ("PATCH", "/api/v1/performance/power-target/relative"),
+    "hashrate_target": ("PUT", "/api/v1/performance/hashrate-target"),
+    "hashrate_target_default": ("PUT", "/api/v1/performance/hashrate-target/default"),
+    "hashrate_target_increment": ("PATCH", "/api/v1/performance/hashrate-target/increment"),
+    "hashrate_target_decrement": ("PATCH", "/api/v1/performance/hashrate-target/decrement"),
+    "hashrate_target_relative": ("PATCH", "/api/v1/performance/hashrate-target/relative"),
+    "performance_mode": ("PUT", "/api/v1/performance/mode"),
+    "dps": ("PUT", "/api/v1/performance/dps"),
+    "quick_ramping": ("PUT", "/api/v1/performance/quick-ramping"),
+    "quick_ramping_default": ("PUT", "/api/v1/performance/quick-ramping/default"),
+    "reset_tuned_profiles": ("DELETE", "/api/v1/performance/tuned-profiles"),
+    "cooling_mode": ("PUT", "/api/v1/cooling/mode"),
+    "advanced_settings": ("PATCH", "/api/v1/advanced-settings/"),
+    "network": ("PATCH", "/api/v1/network/configuration"),
+    "hashboards": ("PATCH", "/api/v1/miner/hw/hashboards"),
+    "auto_upgrade": ("PATCH", "/api/v1/upgrade/auto-upgrade"),
+    "pools_batch": ("PUT", "/api/v1/pools/batch"),
+    "create_pool_group": ("POST", "/api/v1/pools/"),
+}
+
+
+def _redact_antminer_secrets(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: ("[guardado no minerador]" if re.search(r"password|secret|token|contract.?key|private.?key", str(key), re.I)
+                      and item not in (None, "") else _redact_antminer_secrets(item))
+                for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_antminer_secrets(item) for item in value]
+    return value
+
+
+def _antminer_documented_operation(spec: Any, method: Any, path: Any) -> dict[str, Any]:
+    """Resolve an API operation against the miner's own OpenAPI schema, never an arbitrary URL."""
+    if not isinstance(spec, dict) or not isinstance(spec.get("paths"), dict):
+        raise RuntimeError("antminer_openapi_schema_invalid")
+    if not isinstance(method, str) or method.upper() not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
+        raise ValueError("antminer_api_method_unsupported")
+    if not isinstance(path, str) or not path.startswith("/api/v1/") or ".." in path or "?" in path or "#" in path or "\\" in path:
+        raise ValueError("antminer_api_path_invalid")
+    method = method.upper()
+    for template, operations in spec["paths"].items():
+        if not isinstance(template, str) or not isinstance(operations, dict):
+            continue
+        pattern = re.escape(template)
+        pattern = re.sub(r"\\\{[A-Za-z0-9_-]+\\\}", r"[^/]+", pattern)
+        if re.fullmatch(pattern, path) and isinstance(operations.get(method.lower()), dict):
+            return operations[method.lower()]
+    raise ValueError("antminer_api_operation_not_documented")
+
+
+def antminer_management(config: dict[str, Any], operation: str, *, payload: Any = None,
+                        resource_id: str | None = None) -> dict[str, Any]:
+    """Owner-authorized, documented Braiins API operations with fixed device target."""
+    if not isinstance(config, dict) or not config.get("host"):
+        raise RuntimeError("antminer_not_configured")
+    if not isinstance(operation, str) or len(operation) > 64:
+        raise ValueError("antminer_management_operation_invalid")
+    host = _private_ip(config["host"])
+    port = config.get("rest_port", 80)
+    if operation in _ANTMINER_MANAGEMENT_READS:
+        token = _bos_rest_login(config)
+        method, path = _ANTMINER_MANAGEMENT_READS[operation]
+        query = {"include_default": "true"} if operation == "advanced_settings" else None
+        response = _bos_rest_request(host, port, path, method=method, token=token, query=query)
+        return {"operation": operation, "state": "read", "data": _redact_antminer_secrets(response)}
+
+    if operation == "api_call":
+        if not isinstance(payload, dict):
+            raise ValueError("antminer_api_call_payload_invalid")
+        method, path = payload.get("method"), payload.get("path")
+        token = _bos_rest_login(config)
+        spec = _bos_rest_request(host, port, "/api/v1/docs/openapi.json", token=token)
+        definition = _antminer_documented_operation(spec, method, path)
+        request_body = payload.get("body")
+        request_spec = definition.get("requestBody") if isinstance(definition, dict) else None
+        content = request_spec.get("content", {}) if isinstance(request_spec, dict) else {}
+        if request_body is not None and not isinstance(request_spec, dict):
+            raise ValueError("antminer_api_request_body_not_documented")
+        if content and "application/json" not in content:
+            raise ValueError("antminer_api_content_type_not_supported")
+        if isinstance(request_spec, dict) and request_spec.get("required") and request_body is None:
+            raise ValueError("antminer_api_request_body_required")
+        if "body" in payload and request_body is None:
+            raise ValueError("antminer_api_request_body_invalid")
+        query = payload.get("query")
+        if query is not None:
+            if not isinstance(query, dict):
+                raise ValueError("antminer_api_query_invalid")
+            allowed_query = {item.get("name") for item in definition.get("parameters", [])
+                             if isinstance(item, dict) and item.get("in") == "query"}
+            if any(key not in allowed_query or not isinstance(value, (str, int, float, bool))
+                   for key, value in query.items()):
+                raise ValueError("antminer_api_query_not_documented")
+            query = {str(key): str(value).lower() if isinstance(value, bool) else str(value)
+                     for key, value in query.items()}
+        encoded = json.dumps(request_body, separators=(",", ":")).encode("utf-8") if request_body is not None else None
+        if encoded is not None and len(encoded) > 65536:
+            raise ValueError("antminer_management_payload_too_large")
+        response = _bos_rest_request(host, port, path, method=method.upper(), token=token,
+                                    payload=request_body, query=query)
+        return {"operation": "api_call", "method": method.upper(), "path": path,
+                "state": "read" if method.upper() == "GET" else "command_accepted",
+                "data": _redact_antminer_secrets(response),
+                "command_sent": method.upper() != "GET"}
+
+    if operation in {"update_pool_group", "delete_pool_group"}:
+        if not isinstance(resource_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", resource_id):
+            raise ValueError("antminer_pool_group_id_invalid")
+        method = "PUT" if operation == "update_pool_group" else "DELETE"
+        path = f"/api/v1/pools/{resource_id}"
+    else:
+        definition = _ANTMINER_MANAGEMENT_WRITES.get(operation)
+        if definition is None:
+            raise ValueError("antminer_management_operation_unsupported")
+        method, path = definition
+
+    if operation in {"start", "resume", "restart", "pause", "stop", "reboot", "delete_pool_group",
+                     "power_target_default", "hashrate_target_default", "quick_ramping_default",
+                     "reset_tuned_profiles"}:
+        if payload not in (None, {}):
+            raise ValueError("antminer_management_payload_invalid")
+    elif operation == "locate":
+        if not isinstance(payload, bool):
+            raise ValueError("antminer_management_payload_invalid")
+    elif operation in {"pools_batch"}:
+        if not isinstance(payload, list):
+            raise ValueError("antminer_management_payload_invalid")
+    elif not isinstance(payload, dict):
+        raise ValueError("antminer_management_payload_invalid")
+    if operation == "set_power_target":
+        watt = payload.get("watt") if isinstance(payload, dict) else None
+        if isinstance(watt, bool) or not isinstance(watt, int) or not 1 <= watt <= 10000:
+            raise ValueError("power_target_out_of_range_1_10000_watts")
+    encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8") if payload is not None else None
+    if encoded is not None and len(encoded) > 65536:
+        raise ValueError("antminer_management_payload_too_large")
+    token = _bos_rest_login(config)
+    response = _bos_rest_request(host, port, path, method=method, token=token, payload=payload)
+    return {"operation": operation, "state": "command_accepted", "data": _redact_antminer_secrets(response),
+            "command_sent": True}
 
 
 def probe_tcp(host: str, port: int, timeout: float = 2.0) -> dict[str, Any]:

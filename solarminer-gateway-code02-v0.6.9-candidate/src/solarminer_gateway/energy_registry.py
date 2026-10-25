@@ -126,14 +126,10 @@ def add_reading(conn: sqlite3.Connection, equipment_id: str, payload: dict[str, 
 
 
 def latest_readings(conn: sqlite3.Connection, equipment_id: str) -> list[dict[str, Any]]:
-    # Prefer LAN telemetry. Cloud backfill may fill a missing current field only
-    # when its own observation timestamp is genuinely recent; old archive rows
-    # must never masquerade as live measurements.
+    # Current-state views must use device telemetry only. A Cloud history import
+    # is a backfill, even when its newest timestamp happens to be recent; it is
+    # usable for historical learning but must not masquerade as a live reading.
     rows = conn.execute("SELECT r.* FROM energy_readings r JOIN (SELECT field,MAX(observed_at) observed_at FROM energy_readings WHERE equipment_id=? AND source!='DEYE_CLOUD_HISTORY' GROUP BY field) x ON x.field=r.field AND x.observed_at=r.observed_at WHERE r.equipment_id=? AND r.source!='DEYE_CLOUD_HISTORY' ORDER BY r.field", (equipment_id,equipment_id)).fetchall()
-    local_fields = {row["field"] for row in rows}
-    recent_cutoff = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat(timespec="seconds")
-    cloud_rows = conn.execute("SELECT r.* FROM energy_readings r JOIN (SELECT field,MAX(observed_at) observed_at FROM energy_readings WHERE equipment_id=? AND source='DEYE_CLOUD_HISTORY' AND observed_at>=? GROUP BY field) x ON x.field=r.field AND x.observed_at=r.observed_at WHERE r.equipment_id=? AND r.source='DEYE_CLOUD_HISTORY' ORDER BY r.field", (equipment_id,recent_cutoff,equipment_id)).fetchall()
-    rows = [*rows, *(row for row in cloud_rows if row["field"] not in local_fields)]
     result=[]
     for row in rows:
         item=dict(row); item["value"] = json.loads(item.pop("value_json")); item["evidence"] = json.loads(item.pop("evidence_json")); result.append(item)

@@ -151,7 +151,7 @@ def test_cloud_backfill_does_not_replace_live_latest_reading():
     assert readings[0]["value"] == 140
 
 
-def test_cloud_only_recent_readings_can_fill_live_fields_but_stale_backfill_cannot():
+def test_cloud_backfill_never_masquerades_as_live_reading_even_when_recent():
     conn = database()
     conn.execute("INSERT INTO energy_equipment(id,category,name,protocol,connection_state,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
                  ("deye-inverter-cloud", "inversores", "Deye", "Deye Cloud OpenAPI", "CONNECTED", "2026-10-25", "2026-10-25"))
@@ -159,7 +159,7 @@ def test_cloud_only_recent_readings_can_fill_live_fields_but_stale_backfill_cann
     energy_registry.add_reading(conn, "deye-inverter-cloud", {
         "field": "load_total_power", "value": 140, "unit": "W", "observed_at": fresh,
         "source": "DEYE_CLOUD_HISTORY", "trust": "LIVE_UNVERIFIED"})
-    assert energy_registry.latest_readings(conn, "deye-inverter-cloud")[0]["value"] == 140
+    assert energy_registry.latest_readings(conn, "deye-inverter-cloud") == []
 
     conn.execute("DELETE FROM energy_readings")
     old = (datetime.now(timezone.utc)-timedelta(hours=1)).isoformat(timespec="seconds")
@@ -191,7 +191,7 @@ def test_cloud_power_and_load_train_solar_reference_when_mppt_samples_are_absent
         "protocol": "Modbus TCP FC03", "connection_state": "CONNECTED"}, equipment_id="deye-inverter-local")
     now = datetime.now(timezone.utc)
     completed_hour = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
-    for field, value in (("pv_total_power", 2200), ("load_total_power", 3000)):
+    for field, value in (("pv_total_power", 2200), ("load_total_power", 4000)):
         energy_registry.add_reading(conn, "deye-inverter-local", {
             "field": field, "value": value, "unit": "W",
             "observed_at": (completed_hour-timedelta(minutes=30)).isoformat(),
@@ -203,6 +203,88 @@ def test_cloud_power_and_load_train_solar_reference_when_mppt_samples_are_absent
     assert result["sample_count"] == 1
     assert result["demand_supported_samples"] == 1
     assert result["recent_performance_observations"][-1]["classification"] == "DEMAND_SUPPORTED_NORMAL_REFERENCE"
+
+
+def test_cloud_history_can_flag_low_confidence_curtailment_with_full_battery_context():
+    conn = database()
+    inverter = energy_registry.upsert_equipment(conn, {"category": "inversores", "name": "Deye",
+        "protocol": "Modbus TCP FC03", "connection_state": "CONNECTED"}, equipment_id="deye-inverter-local")
+    battery = energy_registry.upsert_equipment(conn, {"category": "baterias", "name": "Bateria",
+        "protocol": "Modbus TCP FC03", "connection_state": "CONNECTED"}, equipment_id="deye-battery-local")
+    now = datetime.now(timezone.utc)
+    completed_hour = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+    for index in range(6):
+        observed = (completed_hour-timedelta(minutes=50-index*8)).isoformat()
+        for field, value, unit, equipment in (
+            ("pv_total_power", 1800, "W", inverter), ("load_total_power", 1700, "W", inverter),
+            ("battery_soc_percent", 100, "%", battery), ("battery_charge_power", 5, "W", battery),
+        ):
+            energy_registry.add_reading(conn, equipment["id"], {
+                "field": field, "value": value, "unit": unit, "observed_at": observed,
+                "source": "DEYE_CLOUD_HISTORY", "trust": "LIVE_UNVERIFIED"})
+    result = energy_engine._learn_solar_performance(
+        conn, {"hourly": [{"observed_at": completed_hour.isoformat(), "shortwave_radiation_w_m2": 900}]},
+        inverter, battery, 8.0, 0.85, 100.0, 20.0)
+    assert result["new_curtailment_candidates"] == 1
+    candidate = result["last_curtailment_candidate"]
+    assert candidate["battery_soc_percent"] == 100
+    assert candidate["battery_charge_power_w"] == 5
+    assert candidate["evidence_source"] == "WEATHER_AND_DEYE_CLOUD_WITH_BATTERY_HISTORY"
+    assert candidate["confidence"] == "LOW_CONTEXT_ONLY"
+
+
+def test_fresh_deye_soc_and_pack_ceiling_confirm_full_battery_without_dispatch_estimate():
+    conn = database()
+    inverter = energy_registry.upsert_equipment(conn, {"category": "inversores", "name": "Deye",
+        "protocol": "Deye Cloud OpenAPI", "connection_state": "CONNECTED"}, equipment_id="deye-inverter-cloud")
+    battery = energy_registry.upsert_equipment(conn, {"category": "baterias", "name": "Bateria",
+        "protocol": "Deye Cloud OpenAPI", "connection_state": "CONNECTED"}, equipment_id="deye-battery-cloud")
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    for equipment, field, value, unit in ((inverter, "pv_total_power", 1800, "W"),
+                                          (inverter, "load_total_power", 1700, "W"),
+                                          (battery, "battery_soc_percent", 100, "%"),
+                                          (battery, "battery_voltage", 55, "V"),
+                                          (battery, "battery_charge_power", 5, "W")):
+        energy_registry.add_reading(conn, equipment["id"], {"field": field, "value": value, "unit": unit,
+            "observed_at": stamp, "source": "DEYE_MODBUS_FC03_CANDIDATE_MAP", "trust": "LIVE_UNVERIFIED"})
+    energy_engine.save_config(conn, {"battery_capacity_kwh": 20})
+    result = energy_engine.build_summary(conn)
+    assert result["current"]["battery_soc_percent"] == 100
+    assert result["current"]["battery_soc_integrated_percent"] is None
+    assert result["current"]["battery_soc_source"] == "deye_full_charge_confirmed"
+    assert energy_engine.build_dispatch_plan(
+        {**result["current"], "pv_power_w": 1800, "load_power_w": 1700},
+        {"automation": {"enabled": True, "commissioned": True, "deye_map_verified": True}},
+        sample_state="LIVE", telemetry_trust="OWNER_COMMISSIONED")["state"] == "BLOCKED_MISSING_TELEMETRY"
+
+
+def test_live_engine_assessment_flags_full_battery_low_charge_and_pv_below_engine_potential(monkeypatch):
+    conn = database()
+    inverter = energy_registry.upsert_equipment(conn, {"category": "inversores", "name": "Deye",
+        "protocol": "Deye Cloud OpenAPI", "connection_state": "CONNECTED"}, equipment_id="deye-inverter-cloud")
+    battery = energy_registry.upsert_equipment(conn, {"category": "baterias", "name": "Bateria",
+        "protocol": "Deye Cloud OpenAPI", "connection_state": "CONNECTED"}, equipment_id="deye-battery-cloud")
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    for equipment, field, value, unit in ((inverter, "pv_total_power", 1800, "W"),
+                                          (inverter, "load_total_power", 1700, "W"),
+                                          (battery, "battery_soc_percent", 100, "%"),
+                                          (battery, "battery_voltage", 55, "V"),
+                                          (battery, "battery_charge_power", 5, "W")):
+        energy_registry.add_reading(conn, equipment["id"], {"field": field, "value": value, "unit": unit,
+            "observed_at": now.isoformat(), "source": "DEYE_MODBUS_FC03_CANDIDATE_MAP", "trust": "LIVE_UNVERIFIED"})
+    energy_engine.save_config(conn, {"battery_capacity_kwh": 20, "pv_capacity_kw": 8,
+                                     "site_latitude": 38.7, "site_longitude": -9.1})
+    hourly = [{"observed_at": (now.replace(minute=0)+timedelta(hours=hour)).isoformat(),
+               "shortwave_radiation_w_m2": 900, "direct_normal_irradiance_w_m2": 700,
+               "diffuse_radiation_w_m2": 120, "temperature_c": 22, "weather_code": 1}
+              for hour in range(-1, 7)]
+    monkeypatch.setattr(energy_engine, "_solar_weather", lambda *_args: {
+        "state": "available", "provider": "test", "timezone": "UTC", "hourly": hourly})
+    result = energy_engine.build_summary(conn)
+    assessment = result["current"]["curtailment_assessment"]
+    assert assessment["state"] == "POSSIBLE_CURTAILMENT", assessment
+    assert assessment["evidence"]["battery_charge_power_w"] == 5
+    assert assessment["evidence"]["battery_at_configured_maximum"] is True
 
 
 def test_daily_history_pruning_removes_records_past_90_days_from_cloud_and_logs(tmp_path, monkeypatch):
@@ -359,6 +441,23 @@ def test_gateway_battery_soc_integrates_signed_power_from_rolling_voltage_peak()
     assert details["voltage_max_30d_v"] == 55.0
     assert details["bank_voltage_scope"] == "SHARED_PARALLEL_BUS"
     assert charged == 100.0
+
+
+def test_battery_full_voltage_plateau_infers_top_only_after_charge_taper():
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    anchor = now-timedelta(minutes=10)
+    voltage = [{"observed_at": (anchor-timedelta(minutes=3)).isoformat(), "value": 54.7}]
+    power = [{"observed_at": (anchor-timedelta(minutes=3)).isoformat(), "value": -600.0}]
+    for minute in range(11):
+        stamp = anchor+timedelta(minutes=minute)
+        voltage.append({"observed_at": stamp.isoformat(), "value": 55.0})
+        power.append({"observed_at": stamp.isoformat(), "value": 5.0})
+    inferred = energy_engine._battery_full_voltage_plateau(voltage, power, 55.0, 5.0, as_of=now)
+    assert inferred is not None
+    assert inferred["state"] == "INFERRED_FULL_FROM_VOLTAGE_PLATEAU"
+    assert inferred["voltage_ceiling_v"] == 55.0
+    assert energy_engine._battery_full_voltage_plateau(voltage, power, 54.5, 5.0, as_of=now) is None
+    assert energy_engine._battery_full_voltage_plateau(voltage, power, 55.0, 15.0, as_of=now) is None
 
 
 def test_persisted_battery_voltage_anchor_survives_rolling_history_window():

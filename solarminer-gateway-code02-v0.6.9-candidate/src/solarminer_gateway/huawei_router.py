@@ -17,6 +17,7 @@ import xml.etree.ElementTree as ET
 from typing import Any
 
 MAC_RE = re.compile(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
+SESSION_RE = re.compile(r"^SessionID=([A-Za-z0-9+/=_-]{1,512})$")
 MAX_RESPONSE_BYTES = 256_000
 
 
@@ -47,9 +48,13 @@ class HuaweiHiLinkClient:
         self.cookies = http.cookiejar.CookieJar()
         self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.cookies), _NoRedirect())
         self.token = ""
+        self.session_id = ""
 
     def _request(self, path: str, *, body: bytes | None = None, token: bool = False) -> tuple[bytes, Any]:
-        headers = {"Accept": "application/xml,text/xml", "User-Agent": "SolarMiner-Gateway/0.6.88"}
+        headers = {"Accept": "application/xml,text/xml", "User-Agent": "SolarMiner-Gateway/0.6.89"}
+        headers["X-Requested-With"] = "XMLHttpRequest"
+        if self.session_id:
+            headers["Cookie"] = f"SessionID={self.session_id}"
         if body is not None:
             headers["Content-Type"] = "application/xml; charset=UTF-8"
         if token and self.token:
@@ -79,13 +84,17 @@ class HuaweiHiLinkClient:
     def _text(root: ET.Element, name: str, default: str = "") -> str:
         if root.tag.rsplit("}", 1)[-1] == name:
             return (root.text or "").strip() or default
-        item = root.find(f".//{name}")
+        wanted = name.lower()
+        item = next((node for node in root.iter() if node.tag.rsplit("}", 1)[-1].lower() == wanted), None)
         return (item.text or "").strip() if item is not None else default
 
     def _load_token(self) -> None:
         raw, headers = self._request("api/webserver/SesTokInfo")
         root = self._xml(raw)
         self.token = self._text(root, "TokInfo") or headers.get("__RequestVerificationToken", "")
+        session_info = self._text(root, "SesInfo")
+        match = SESSION_RE.fullmatch(session_info)
+        self.session_id = match.group(1) if match else ""
         if not self.token:
             raise HuaweiRouterError("huawei_router_session_token_missing")
 
@@ -102,18 +111,25 @@ class HuaweiHiLinkClient:
         password_hash = base64.b64encode(hashlib.sha256(self.password.encode("utf-8")).hexdigest().encode("ascii"))
         challenge = self.username.encode("utf-8") + password_hash + self.token.encode("utf-8")
         response_hash = base64.b64encode(hashlib.sha256(challenge).hexdigest().encode("ascii")).decode("ascii")
-        request_root = ET.Element("request")
-        # The 4G CPE 5 web UI asks only for a password. Keep the fixed admin
-        # identity in the challenge hash, but omit Username from the XML body
-        # to support the password-only login flow discussed for this firmware.
-        ET.SubElement(request_root, "Password").text = response_hash
-        ET.SubElement(request_root, "password_type").text = "4"
-        payload = ET.tostring(request_root, encoding="utf-8", xml_declaration=True)
-        raw, headers = self._request("api/user/login", body=payload, token=True)
-        result = self._xml(raw)
-        if self._text(result, "response") != "OK":
-            raise HuaweiRouterError("huawei_router_login_rejected")
-        self.token = headers.get("__RequestVerificationTokenone", "") or headers.get("__RequestVerificationToken", "") or self.token
+        # Password-only CPE firmware still uses the fixed admin identity in
+        # the challenge hash. Try its browser-shaped body first, then the
+        # compatible legacy body with Username if the modem rejects that XML.
+        # Both attempts use the same challenge and never send the password in
+        # clear text.
+        for include_username in (False, True):
+            request_root = ET.Element("request")
+            if include_username:
+                ET.SubElement(request_root, "Username").text = self.username
+            ET.SubElement(request_root, "Password").text = response_hash
+            ET.SubElement(request_root, "password_type").text = "4"
+            payload = ET.tostring(request_root, encoding="utf-8", xml_declaration=True)
+            raw, headers = self._request("api/user/login", body=payload, token=True)
+            result = self._xml(raw)
+            if self._text(result, "response").upper() == "OK":
+                self.token = (headers.get("__RequestVerificationTokenone", "")
+                              or headers.get("__RequestVerificationToken", "") or self.token)
+                return
+        raise HuaweiRouterError("huawei_router_login_rejected")
 
     def clients(self) -> list[dict[str, str]]:
         self._login()

@@ -468,13 +468,22 @@ export async function controlGatewayAntminer(action, watt) {
   if (!["set_power_target", "pause", "stop", "start"].includes(action)) throw new Error("Ação Antminer inválida.");
   const body = { action };
   if (action === "set_power_target") {
-    if (!Number.isInteger(watt) || watt < 1 || watt > 2900) throw new Error("O alvo tem de estar entre 1 e 2900 W.");
+    if (!Number.isInteger(watt) || watt < 1 || watt > 100000) throw new Error("O alvo tem de estar entre 1 e 100000 W.");
     body.watt = watt;
   }
   return gatewayApi("/api/v1/integrations/antminer/control", { method: "POST", body });
 }
 export async function testGatewayAntminerControl() {
   return gatewayApi("/api/v1/integrations/antminer/test-control", { method: "POST", body: {} });
+}
+export async function readGatewayAntminerManagement(operation) {
+  if (typeof operation !== "string" || !/^[a-z_]{1,64}$/.test(operation)) throw new Error("Consulta da Mineradora inválida.");
+  return gatewayApi("/api/v1/integrations/antminer/management", { method: "POST", body: { operation } });
+}
+export async function writeGatewayAntminerManagement(operation, payload = undefined, resourceId = undefined) {
+  if (typeof operation !== "string" || !/^[a-z_]{1,64}$/.test(operation)) throw new Error("Operação da Mineradora inválida.");
+  if (resourceId !== undefined && (typeof resourceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(resourceId))) throw new Error("Identificador da configuração inválido.");
+  return gatewayApi("/api/v1/integrations/antminer/management", { method: "POST", body: { operation, ...(payload !== undefined ? { payload } : {}), ...(resourceId ? { resource_id: resourceId } : {}) } });
 }
 export async function controlGatewayTuyaSwitch(deviceId, on, code = undefined) {
   if (typeof deviceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(deviceId) || typeof on !== "boolean") throw new Error("Comando Tuya inválido.");

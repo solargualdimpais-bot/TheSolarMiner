@@ -39,6 +39,39 @@ def test_huawei_password_only_login_uses_admin_hash_without_username_xml():
     assert client.token == "next-token"
 
 
+def test_huawei_login_falls_back_to_admin_username_xml_when_password_only_body_is_rejected():
+    client = huawei_router.HuaweiHiLinkClient({"host": "192.168.8.1", "password": "router-password"})
+    client.token = "tok-info-value"
+    client._load_token = lambda: None
+    bodies = []
+
+    def request(path, *, body=None, token=False):
+        if path == "api/user/state-login":
+            return b"<response><State>1</State><password_type>4</password_type></response>", {}
+        if path == "api/user/login":
+            bodies.append(huawei_router.ET.fromstring(body))
+            if len(bodies) == 1:
+                return b"<response><code>108006</code></response>", {}
+            return b"<response>OK</response>", {"__RequestVerificationTokenone": "rotated"}
+        raise AssertionError(path)
+
+    client._request = request
+    client._login()
+    assert bodies[0].find("Username") is None
+    assert bodies[1].findtext("Username") == "admin"
+    assert bodies[0].findtext("Password") == bodies[1].findtext("Password")
+    assert client.token == "rotated"
+
+
+def test_huawei_session_token_info_parses_cookie_and_token_from_xml():
+    client = huawei_router.HuaweiHiLinkClient({"host": "192.168.8.1", "password": "router-password"})
+    client._request = lambda *_args, **_kwargs: (
+        b"<SesTokInfo><SesInfo>SessionID=Abc123+_==</SesInfo><TokInfo>tok-123</TokInfo></SesTokInfo>", {})
+    client._load_token()
+    assert client.session_id == "Abc123+_=="
+    assert client.token == "tok-123"
+
+
 def test_deye_cloud_config_keeps_credentials_private_and_supports_centers():
     config = integrations.validate_config({"deye_cloud": {
         "data_center": "india", "app_id": "app-123", "app_secret": "app-secret-123",
@@ -301,6 +334,23 @@ def test_antminer_control_probe_sends_no_write_without_a_current_positive_target
     assert calls == ["/api/v1/auth/login", "/api/v1/performance/tuner-state"]
 
 
+def test_antminer_control_probe_accepts_documented_power_targets_above_2900_watts(monkeypatch):
+    calls = []
+
+    def request(_host, _port, path, **kwargs):
+        calls.append((path, kwargs))
+        if path == "/api/v1/auth/login": return {"token": "session-token"}
+        if path == "/api/v1/performance/tuner-state":
+            return {"mode_state": {"powertargetmodestate": {"current_target": {"watt": 3730}}}}
+        assert kwargs["method"] == "PUT" and kwargs["payload"] == {"watt": 3730}
+        return {"watt": 3730}
+
+    monkeypatch.setattr(integrations, "_bos_rest_request", request)
+    result = integrations.test_antminer_control({"host": "192.168.8.69", "password": "secret"})
+    assert result["connection_state"] == "control_verified"
+    assert result["previous_target_watt"] == result["applied_watt"] == 3730
+
+
 def test_antminer_control_probe_accepts_snake_case_tuner_state_and_string_watts(monkeypatch):
     calls = []
 
@@ -388,6 +438,93 @@ def test_antminer_control_authenticates_with_fixed_root_and_password_only(monkey
     result = integrations.control_antminer({"host": "192.168.8.69", "password": "secret"}, "start")
     assert calls[0][3]["payload"] == {"username": "root", "password": "secret"}
     assert result["control_command_sent"] is True
+
+
+def test_antminer_management_reads_documented_sections_and_redacts_pool_secrets(monkeypatch):
+    calls = []
+    def request(host, port, path, **kwargs):
+        calls.append((host, port, path, kwargs))
+        if path.endswith("/auth/login"):
+            return {"token": "temporary-token"}
+        return [{"uid": "pool-a", "pools": [{"url": "stratum+tcp://example:3333",
+                "user": "worker", "password": "private"}]}]
+    monkeypatch.setattr(integrations, "_bos_rest_request", request)
+    result = integrations.antminer_management({"host": "192.168.8.69", "password": "secret"}, "pools")
+    assert result["state"] == "read"
+    assert result["data"][0]["pools"][0]["password"] == "[guardado no minerador]"
+    assert calls[-1][2] == "/api/v1/pools/"
+    assert calls[-1][3]["method"] == "GET"
+
+
+def test_antminer_management_reads_default_advanced_settings_and_deletes_pool_without_body(monkeypatch):
+    calls = []
+    def request(_host, _port, path, **kwargs):
+        calls.append((path, kwargs))
+        if path.endswith("/auth/login"):
+            return {"token": "temporary-token"}
+        return {"state": "ok"}
+    monkeypatch.setattr(integrations, "_bos_rest_request", request)
+    integrations.antminer_management({"host": "192.168.8.69", "password": "secret"}, "advanced_settings")
+    assert calls[-1][1]["query"] == {"include_default": "true"}
+    integrations.antminer_management({"host": "192.168.8.69", "password": "secret"},
+                                      "delete_pool_group", resource_id="pool-group-1")
+    assert calls[-1][0] == "/api/v1/pools/pool-group-1"
+    assert calls[-1][1]["method"] == "DELETE"
+    assert calls[-1][1]["payload"] is None
+
+
+def test_antminer_api_explorer_only_allows_paths_and_methods_from_device_openapi(monkeypatch):
+    calls = []
+    specification = {"paths": {"/api/v1/actions/start": {"put": {}},
+                                "/api/v1/pools/{pool_id}": {"get": {}, "put": {"requestBody": {
+                                    "required": True, "content": {"application/json": {}}}}}}}
+    def request(_host, _port, path, **kwargs):
+        calls.append((path, kwargs))
+        if path.endswith("/auth/login"):
+            return {"token": "temporary-token"}
+        if path == "/api/v1/docs/openapi.json":
+            return specification
+        return {"password": "should-be-redacted"}
+    monkeypatch.setattr(integrations, "_bos_rest_request", request)
+    result = integrations.antminer_management({"host": "192.168.8.69", "password": "secret"}, "api_call",
+                                               payload={"method": "PUT", "path": "/api/v1/pools/group-1",
+                                                        "body": {"enabled": True}, "query": {}})
+    assert result["state"] == "command_accepted"
+    assert result["data"]["password"] == "[guardado no minerador]"
+    assert calls[-1][0] == "/api/v1/pools/group-1"
+    assert calls[-1][1]["method"] == "PUT"
+    with pytest.raises(ValueError, match="antminer_api_operation_not_documented"):
+        integrations.antminer_management({"host": "192.168.8.69", "password": "secret"}, "api_call",
+                                          payload={"method": "GET", "path": "/api/v1/shell"})
+
+
+def test_antminer_management_writes_only_catalogued_operations_and_reports_acceptance(monkeypatch):
+    calls = []
+    def request(host, port, path, **kwargs):
+        calls.append((path, kwargs))
+        if path.endswith("/auth/login"):
+            return {"token": "temporary-token"}
+        return {"mode": "manual", "password": "should-not-leak"}
+    monkeypatch.setattr(integrations, "_bos_rest_request", request)
+    result = integrations.antminer_management({"host": "192.168.8.69", "password": "secret"},
+                                               "cooling_mode", payload={"manual": {"fan_speed": 70}})
+    assert result["state"] == "command_accepted"
+    assert result["command_sent"] is True
+    assert result["data"]["password"] == "[guardado no minerador]"
+    assert calls[-1][0] == "/api/v1/cooling/mode"
+    assert calls[-1][1]["method"] == "PUT"
+    with pytest.raises(ValueError, match="antminer_management_operation_unsupported"):
+        integrations.antminer_management({"host": "192.168.8.69", "password": "secret"}, "shell")
+
+
+def test_antminer_management_rejects_invalid_payloads_before_contact(monkeypatch):
+    monkeypatch.setattr(integrations, "_bos_rest_request", lambda *_args, **_kwargs: pytest.fail("must not contact miner"))
+    with pytest.raises(ValueError, match="power_target_out_of_range"):
+        integrations.antminer_management({"host": "192.168.8.69", "password": "secret"},
+                                          "set_power_target", payload={"watt": 50000})
+    with pytest.raises(ValueError, match="antminer_management_payload_invalid"):
+        integrations.antminer_management({"host": "192.168.8.69", "password": "secret"},
+                                          "pools_batch", payload={"not": "a list"})
 
 
 def test_deye_sg05lp3_reads_full_candidate_telemetry_without_fc43(monkeypatch):
