@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.57: previsões, histórico e acompanhamento dos comandos Antminer.",
+  "description": "The Solar Miner PWA v0.5.58: previsões, histórico e acompanhamento dos comandos Antminer.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",

@@ -445,7 +445,8 @@ def test_hardware_provider_read_is_independent_and_owner_only(client, monkeypatc
     # The normal miner card must also receive the authenticated Braiins tuner
     # readings, even when the CGMiner endpoint does not report live values.
     monkeypatch.setattr(gateway.hardware_integrations, "antminer_management", lambda config, operation, **kwargs: {
-        "operation": operation, "state": "read_data", "command_sent": False,
+        # This is the state value actually returned by integrations.antminer_management.
+        "operation": operation, "state": "read", "command_sent": False,
         "data": {"mode_state": {"powertargetmodestate": {
             "current_target": {"watt": 1000},
             "profile": {"target": {"watt": 1800},

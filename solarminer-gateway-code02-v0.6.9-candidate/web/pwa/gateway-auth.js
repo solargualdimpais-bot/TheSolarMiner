@@ -425,6 +425,9 @@ export async function saveGatewayEnergyEngineConfig(config) {
   if (!config || typeof config !== "object") throw new Error("Configuração energética inválida.");
   return gatewayApi("/api/v1/energy/engine/config", { method: "PUT", body: config });
 }
+export async function readGatewayEnergyEngineConfig() {
+  return gatewayApi("/api/v1/energy/engine/config");
+}
 export async function readGatewayHardwareIntegrationConfig() {
   return gatewayApi("/api/v1/integrations/hardware");
 }

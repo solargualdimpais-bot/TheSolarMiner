@@ -39,7 +39,7 @@ test('v0.5.4 shows AUTOMATISMOS directly in mobile navigation and migrates old s
   assert.match(ui, /automations:'automatismos'/);
   assert.match(ui, /Migrate older per-user preference records/);
   assert.ok(app.includes('else if(action==="automations"){navigate("automatismos");}'));
-  assert.match(read('styles.css'), /grid-template-columns:repeat\(6,minmax\(0,1fr\)\)/);
+  assert.match(read('styles.css'), /grid-template-columns:repeat\(7,minmax\(0,1fr\)\)/);
 });
 
 test('v0.5.4 keeps image data out of localStorage and restores photos from IndexedDB', () => {
@@ -105,7 +105,9 @@ test('Meta reference visual elements and basic interactions are present', () => 
   for (const id of ['open-weather','open-production']) assert.ok(app.includes(id), id);
   for (const token of ['favoriteDeviceCards','data-fav-toggle','data-fav-range','function setSky','function miniChart']) assert.ok(app.includes(token), token);
   for (const token of ['#060608','#dcc99c','.reference-home-grid','.weather-options','.favorite-device-grid']) assert.ok(css.includes(token), token);
-  assert.match(html, /Home<\/button>[\s\S]*Profile<\/button>[\s\S]*Energy<\/button>[\s\S]*Casa<\/button>[\s\S]*Devices<\/button>/);
+  assert.match(html, /data-action="home"[\s\S]*data-action="house"[\s\S]*data-action="energy"[\s\S]*data-action="devices"[\s\S]*data-action="automations"[\s\S]*data-action="profile"[\s\S]*data-action="owner"/);
+  assert.match(css, /\.nav-icon\{font-size:21px/);
+  assert.match(css, /\.mobile-nav button span\{font-size:20px/);
 });
 
 test('live Home uses Gateway weather, solar history and owner-controlled Tuya favorites', () => {

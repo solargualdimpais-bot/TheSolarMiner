@@ -3,7 +3,7 @@ import { DEMO_CONTROL_CONFIG, createDemoControlState, updateDemoControl, toggleD
 import { renderWorkspacePage, renderHomePreferenceLinks, renderHouseSearch, handleWorkspaceAction, handleWorkspaceChange, applyPreferences, getWorkspacePageLabel, workspace, getEditableEntity, saveEditableEntity, saveDemoWorkspace, hydrateWorkspacePhotos } from "./workspace-ui.js";
 import { renderAutomationsPage, renderSolarProductionPage, renderDemoAdminPanel, handleFeatureAction, saveAutomationForm, addDemoUser, saveDemoUserEdit, saveSolarWeather, demoFeatures } from "./features-v053.js";
 import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classifyEndpoint, inferHostedGatewayEndpoint, PRESENCE_API_STATUS } from "./gateway-connection.js";
-import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, controlGatewayAntminer, testGatewayAntminerControl, readGatewayAntminerManagement, writeGatewayAntminerManagement, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, discoverGatewayTuyaLanDevices, readGatewayHuaweiClients, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, readGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, controlGatewayAntminer, testGatewayAntminerControl, readGatewayAntminerManagement, writeGatewayAntminerManagement, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, discoverGatewayTuyaLanDevices, readGatewayHuaweiClients, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging } from "./gateway-auth.js";
 
 let automationEditingId = "";
 const state = { page: "inicio", mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], energyEngine: null, siteProfile: null, tuyaDevices: [], tuyaReadings: [], lastUpdated: null, lastMeasurementAt: null, refreshing: false, pendingLiveRender: false, demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [], engineHistoryChart: { open: false, dateKey: "", loading: false, error: null } };
@@ -1084,7 +1084,7 @@ $("#mobile-nav").addEventListener("click", e => {
 });
 $("#page-content").addEventListener("submit", e => {
   if(e.target.id === "area-battery-bank-form") { e.preventDefault(); $("#area-battery-bank-save")?.click(); return; }
-  if(e.target.id === "pv-string-form") { e.preventDefault(); savePvStringForm(e.target); return; }
+  if(e.target.id === "pv-string-form") { e.preventDefault(); e.stopPropagation(); void savePvStringForm(e.target); return; }
   if(e.target.id === "aqs-form") { e.preventDefault(); saveAqsForm(e.target); return; }
   if(e.target.id === "auto-form") { e.preventDefault(); if(saveAutomationForm(e.target,workspace)){automationEditingId="";render();showFeatureNotice("Automatismo guardado na demonstração local. Nenhum comando foi enviado.");} return; }
   if(e.target.id === "demo-user-form") { e.preventDefault(); if(addDemoUser(e.target)){render();showFeatureNotice("Utilizador fictício adicionado. Não foi criada uma conta real.");} return; }
@@ -1101,7 +1101,8 @@ async function savePvStringForm(form){
   const pageBeforeSave=state.page,scrollBeforeSave=window.scrollY;
   button.disabled=true;status.textContent="A guardar no Gateway…";
   try{
-    const saved=await saveGatewayEnergyEngineConfig({pv_strings:strings});
+    await saveGatewayEnergyEngineConfig({pv_strings:strings});
+    const saved=await readGatewayEnergyEngineConfig();
     const savedStrings=Array.isArray(saved?.pv_strings)?saved.pv_strings:null;
     const persisted=savedStrings?.find(item=>item.id===id);
     if(!persisted||persisted.name!==name||persisted.mppt!==mppt||persisted.panel_count!==panelCount||Number(persisted.panel_power_w)!==panelPower){
