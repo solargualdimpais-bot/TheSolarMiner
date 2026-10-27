@@ -62,7 +62,7 @@ def test_flush_posts_sanitized_batch_and_retains_newer_records(tmp_path, monkeyp
             return _Response()
 
     monkeypatch.setattr(error_reporting.urllib.request, "build_opener", lambda *_: _Opener())
-    result = error_reporting.flush_reports(queue, token)
+    result = error_reporting.flush_reports(queue, token, tmp_path / "system-fingerprint")
 
     assert result["status"] == "sent"
     assert result["sent"] == 50
