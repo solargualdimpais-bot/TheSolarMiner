@@ -8,6 +8,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -17,6 +18,9 @@ GATEWAY_HEALTH_URL = "https://127.0.0.1:8443/api/v1/health"
 PROXY_HEALTH_URL = "https://127.0.0.1/api/v1/health"
 FAILURE_THRESHOLD = 3
 RESTART_COOLDOWN_SECONDS = 600
+ROLLBACK_FAILURE_THRESHOLD = 6
+ROLLBACK_PROBATION_SECONDS = 24 * 60 * 60
+UPDATE_STATE_PATH = Path("/opt/solarminer/update-state.json")
 
 
 def _request_health(url: str, context: ssl.SSLContext, *, timeout: float = 4.0,
@@ -41,6 +45,18 @@ def _run(command: list[str], *, runner: Callable[..., Any] = subprocess.run,
     return runner(command, capture_output=True, text=True, timeout=timeout, check=False)
 
 
+def _github_reachable(*, opener: Callable[..., Any] = urllib.request.urlopen) -> bool:
+    request = urllib.request.Request(
+        "https://api.github.com/repos/solargualdimpais-bot/TheSolarMiner/releases/latest",
+        headers={"Accept": "application/vnd.github+json", "User-Agent": "SolarMiner-Gateway-Health"},
+    )
+    try:
+        with opener(request, timeout=4) as response:
+            return response.status == 200
+    except (OSError, urllib.error.URLError, TimeoutError):
+        return False
+
+
 def _update_is_running(*, runner: Callable[..., Any] = subprocess.run) -> bool:
     result = _run(["/usr/bin/systemctl", "list-units", "--all", "--type=service", "--no-legend",
                    "solarminer-update-apply@*.service", "solarminer-recovery.service"], runner=runner)
@@ -49,6 +65,68 @@ def _update_is_running(*, runner: Callable[..., Any] = subprocess.run) -> bool:
         return True
     return any(len(parts := line.split()) > 2 and parts[2] in {"active", "activating", "deactivating"}
                for line in result.stdout.splitlines())
+
+
+def _recent_committed_update(path: Path | None = None, *, timestamp: float) -> bool:
+    """Only consider rolling back the active release during its probation window."""
+    try:
+        path = path or UPDATE_STATE_PATH
+        if path.is_symlink():
+            return False
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(record, dict) or record.get("state") != "COMMITTED":
+            return False
+        if not all(isinstance(record.get(key), str) and record[key]
+                   for key in ("previous_target", "new_target", "backup_path")):
+            return False
+        finished = record.get("finished_at_utc")
+        if not isinstance(finished, str):
+            return False
+        finished_epoch = datetime.fromisoformat(finished.replace("Z", "+00:00")).timestamp()
+        age = timestamp - finished_epoch
+        return 0 <= age <= ROLLBACK_PROBATION_SECONDS
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+
+
+def _tailscale_state(*, runner: Callable[..., Any] = subprocess.run) -> str:
+    """Report the independent remote-network signal; never use it alone to trigger rollback."""
+    result = _run(["/usr/bin/tailscale", "status", "--json"], runner=runner, timeout=5)
+    if result.returncode != 0:
+        return "unavailable"
+    try:
+        payload = json.loads(result.stdout)
+        self_node = payload.get("Self", {}) if isinstance(payload, dict) else {}
+        return "online" if isinstance(self_node, dict) and self_node.get("Online") is True else "offline"
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return "unknown"
+
+
+def _rollback_recent_release(state: dict[str, Any], *, timestamp: float,
+                             runner: Callable[..., Any], network_available: bool,
+                             logger: Callable[[str], None]) -> bool:
+    if (int(state.get("failures_since_healthy", 0)) < ROLLBACK_FAILURE_THRESHOLD
+            or not _recent_committed_update(timestamp=timestamp)):
+        return False
+    if not network_available:
+        logger("watchdog: external network unavailable; automatic rollback deferred")
+        return False
+    if _update_is_running(runner=runner):
+        logger("watchdog: update/recovery operation active; automatic rollback skipped")
+        return False
+    result = _run(["/usr/bin/python3", "-m", "solarminer_gateway.system_update_pipeline",
+                   "--rollback-committed"], runner=runner, timeout=180)
+    try:
+        outcome = json.loads(result.stdout) if result.stdout else {}
+    except (ValueError, json.JSONDecodeError):
+        outcome = {}
+    if result.returncode == 0 and outcome.get("status") == "recovered" and outcome.get("state") == "ROLLED_BACK":
+        logger("watchdog: automatic rollback completed after persistent local health failures")
+        state["failures_since_healthy"] = 0
+        state["automatic_rollback_completed"] = timestamp
+        return True
+    logger("watchdog: automatic rollback failed; independent recovery remains available")
+    return False
 
 
 def _load_state(path: Path = STATE_FILE) -> dict[str, Any]:
@@ -100,12 +178,17 @@ def check_once(*, runner: Callable[..., Any] = subprocess.run,
     proxy_state, proxy_reason = _request_health(PROXY_HEALTH_URL, proxy_context, opener=opener)
     state = _load_state(state_path)
     timestamp = now()
+    tailscale = _tailscale_state(runner=runner)
+    github_reachable = _github_reachable(opener=opener)
+    network_available = tailscale == "online" or github_reachable
+    logger(f"watchdog: Tailscale={tailscale}, GitHub={'reachable' if github_reachable else 'unreachable'}; local Gateway={gateway_state}, proxy={proxy_state}")
 
     if gateway_state == "healthy":
         state["gateway_failures"] = 0
     else:
         state["gateway_failures"] = int(state.get("gateway_failures", 0)) + 1
-        logger(f"watchdog: Gateway health {gateway_state} ({gateway_reason or 'unknown'})")
+        state["failures_since_healthy"] = int(state.get("failures_since_healthy", 0)) + 1
+        logger(f"watchdog: ERROR Gateway health {gateway_state} ({gateway_reason or 'unknown'})")
 
     if gateway_state != "healthy":
         last_restart = float(state.get("gateway_last_restart", 0) or 0)
@@ -121,16 +204,20 @@ def check_once(*, runner: Callable[..., Any] = subprocess.run,
             else:
                 logger("watchdog: Gateway restart failed")
         state["proxy_failures"] = 0
+        _rollback_recent_release(state, timestamp=timestamp, runner=runner,
+                                 network_available=network_available, logger=logger)
         _save_state(state, state_path)
         return {"status": "gateway_unhealthy", "gateway": gateway_state, "proxy": proxy_state}
 
     if proxy_state == "healthy":
         state["proxy_failures"] = 0
+        state["failures_since_healthy"] = 0
         _save_state(state, state_path)
         return {"status": "healthy", "gateway": gateway_state, "proxy": proxy_state}
 
     state["proxy_failures"] = int(state.get("proxy_failures", 0)) + 1
-    logger(f"watchdog: Nginx proxy health {proxy_state} ({proxy_reason or 'unknown'})")
+    state["failures_since_healthy"] = int(state.get("failures_since_healthy", 0)) + 1
+    logger(f"watchdog: ERROR Nginx proxy health {proxy_state} ({proxy_reason or 'unknown'})")
     if state["proxy_failures"] >= FAILURE_THRESHOLD:
         if _update_is_running(runner=runner):
             logger("watchdog: update/recovery operation became active; Nginx reload skipped")
@@ -150,6 +237,8 @@ def check_once(*, runner: Callable[..., Any] = subprocess.run,
             logger(f"watchdog: Nginx {action} requested after three failed proxy checks")
         else:
             logger(f"watchdog: Nginx {action} failed")
+    _rollback_recent_release(state, timestamp=timestamp, runner=runner,
+                             network_available=network_available, logger=logger)
     _save_state(state, state_path)
     return {"status": "proxy_unhealthy", "gateway": "healthy", "proxy": proxy_state}
 

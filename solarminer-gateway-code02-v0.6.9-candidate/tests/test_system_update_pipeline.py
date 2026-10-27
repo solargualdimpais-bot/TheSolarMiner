@@ -198,6 +198,71 @@ def test_apply_rolls_back_pointer_when_new_release_fails_health(tmp_path: Path, 
         assert conn.execute("SELECT state FROM update_operations WHERE id=?", (op_id,)).fetchone()[0] == "ROLLED_BACK"
 
 
+def test_watchdog_rollback_restores_only_the_previous_active_release_and_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from solarminer_gateway.database_backup import create_database_backup
+    pipeline, root, previous, db, op_id = _pipeline_fixture(tmp_path, monkeypatch, version="0.6.96")
+    prior_deb = _make_package(tmp_path / "prior", "0.6.8")
+    verified_dir = pipeline.data_dir / "releases/verified"
+    prior_package = verified_dir / (prior_deb.name + ".verified")
+    shutil.copyfile(prior_deb, prior_package)
+    prior_key = Ed25519PrivateKey.generate()
+    pipeline.public_key.write_bytes(prior_key.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo))
+    prior_manifest = {
+        "schema_version": 1, "release_id": "gateway-v0.6.8", "version": "0.6.8",
+        "min_compatible_version": "0.6.7", "changelog": ["known good"],
+        "package_name": prior_deb.name, "package_url": "https://releases.example.test/" + prior_deb.name,
+        "package_size": prior_package.stat().st_size, "sha256": hashlib.sha256(prior_package.read_bytes()).hexdigest(),
+        "signature_algorithm": "Ed25519", "compatibility": {}, "migration_requirements": [],
+    }
+    prior_manifest["signature"] = prior_key.sign(canonical_manifest(prior_manifest)).hex()
+    prior_sidecar = prior_package.with_suffix(prior_package.suffix + ".manifest.json")
+    prior_sidecar.write_text(json.dumps(prior_manifest))
+    prior_op = "12345678-1234-4234-8234-123456789abc"
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO update_operations VALUES(?,?,?,?,?,?,?)", (
+            prior_op, "COMMITTED", "0.6.7", "0.6.8", int(time.time()), int(time.time()),
+            json.dumps({"package_path": str(prior_package), "pipeline": {"health_check": "passed"}}),
+        ))
+    current = root / "releases/0.6.96"
+    (current / "usr/lib/solarminer-gateway/solarminer_gateway").mkdir(parents=True)
+    (current / "usr/lib/solarminer-gateway/solarminer_gateway/app.py").write_text("new release")
+    (current / "usr/share/solarminer/pwa").mkdir(parents=True)
+    (current / "usr/share/solarminer/pwa/index.html").write_text("new")
+    backup = create_database_backup(db, root / "backups")
+    pipeline._switch(current)
+    pipeline._record("COMMITTED", operation_id=op_id, target_version="0.6.96",
+                     previous_target="releases/0.6.8", new_target="releases/0.6.96",
+                     backup_path=backup["backup_path"], finished_at_utc="2026-10-27T00:00:00Z")
+
+    result = pipeline.rollback_committed()
+
+    assert result["state"] == "ROLLED_BACK"
+    assert os.readlink(root / "current") == "releases/0.6.8"
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+
+def test_watchdog_rollback_fails_closed_without_signed_health_attestation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from solarminer_gateway.database_backup import create_database_backup
+    pipeline, root, _previous, db, op_id = _pipeline_fixture(tmp_path, monkeypatch, version="0.6.96")
+    current = root / "releases/0.6.96"
+    (current / "usr/lib/solarminer-gateway/solarminer_gateway").mkdir(parents=True)
+    (current / "usr/lib/solarminer-gateway/solarminer_gateway/app.py").write_text("new release")
+    (current / "usr/share/solarminer/pwa").mkdir(parents=True)
+    (current / "usr/share/solarminer/pwa/index.html").write_text("new")
+    backup = create_database_backup(db, root / "backups")
+    pipeline._switch(current)
+    pipeline._record("COMMITTED", operation_id=op_id, target_version="0.6.96",
+                     previous_target="releases/0.6.8", new_target="releases/0.6.96",
+                     backup_path=backup["backup_path"], finished_at_utc="2026-10-27T00:00:00Z")
+
+    result = pipeline.rollback_committed()
+
+    assert result == {"status": "skipped", "reason": "previous_release_has_no_verified_success_record"}
+    assert os.readlink(root / "current") == "releases/0.6.96"
+
+
 def test_recovery_reconciles_interrupted_switch_and_restores_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from solarminer_gateway.database_backup import create_database_backup
     pipeline, root, previous, db, op_id = _pipeline_fixture(tmp_path, monkeypatch)

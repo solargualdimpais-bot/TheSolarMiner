@@ -491,6 +491,49 @@ class SystemUpdatePipeline:
         with self._locked():
             return self._recover_locked()
 
+    def rollback_committed(self) -> dict[str, Any]:
+        """Revert only the active release to the previously active, signature-validated release."""
+        if os.geteuid() != 0:
+            raise PipelineError("root_privileges_required")
+        with self._locked():
+            record = self._read_state()
+            if not record or record.get("state") != "COMMITTED":
+                return {"status": "skipped", "reason": "no_committed_release_to_rollback"}
+            current_target = record.get("new_target")
+            previous_target = record.get("previous_target")
+            backup_raw = record.get("backup_path")
+            if not all(isinstance(value, str) and value for value in (current_target, previous_target, backup_raw)):
+                raise PipelineError("committed_rollback_metadata_missing")
+            if not self.current.is_symlink() or os.readlink(self.current) != current_target:
+                return {"status": "skipped", "reason": "active_release_does_not_match_update"}
+            previous = (self.root / previous_target).resolve()
+            if self.releases.resolve() not in previous.parents or not previous.is_dir():
+                raise PipelineError("recovery_previous_release_invalid")
+            previous_version = previous.name
+            with sqlite3.connect(f"file:{self.db_path.resolve().as_posix()}?mode=ro", uri=True, timeout=5) as conn:
+                conn.row_factory = sqlite3.Row
+                prior = conn.execute(
+                    "SELECT * FROM update_operations WHERE target_version=? AND state='COMMITTED' "
+                    "ORDER BY updated_at DESC LIMIT 1", (previous_version,)
+                ).fetchone()
+            if not prior:
+                return {"status": "skipped", "reason": "previous_release_has_no_verified_success_record"}
+            prior_row = dict(prior)
+            prior_details = json.loads(prior_row.get("details_json") or "{}")
+            prior_pipeline = prior_details.get("pipeline") if isinstance(prior_details, dict) else None
+            if not isinstance(prior_pipeline, dict) or prior_pipeline.get("health_check") != "passed":
+                return {"status": "skipped", "reason": "previous_release_health_was_not_attested"}
+            _package, prior_manifest, _digest = self._verified_artifact(prior_row["id"], prior_row, prior_details)
+            if prior_manifest.get("version") != previous_version:
+                raise PipelineError("previous_release_signature_version_mismatch")
+            backup = Path(backup_raw)
+            if backup.is_symlink() or self.backups.resolve() not in backup.resolve().parents or not backup.is_file():
+                raise PipelineError("recovery_backup_path_invalid")
+            self._record("ROLLING_BACK", operation_id=record.get("operation_id"),
+                         recovery="watchdog_persistent_local_health_failure",
+                         rollback_reason="persistent_local_health_failure")
+            return self._recover_locked()
+
     def _recover_locked(self) -> dict[str, Any]:
         if os.geteuid() != 0: raise PipelineError("root_privileges_required")
         # Preserve recovery of the pre-existing connector release journal as well.
@@ -558,12 +601,14 @@ def main() -> int:
     group.add_argument("--enqueue", metavar="OPERATION_ID")
     group.add_argument("--operation", metavar="OPERATION_ID")
     group.add_argument("--recover", action="store_true")
+    group.add_argument("--rollback-committed", action="store_true")
     args = parser.parse_args()
     try:
         pipeline = SystemUpdatePipeline()
         if args.preflight: result = pipeline.preflight()
         elif args.enqueue: result = pipeline.enqueue(args.enqueue)
         elif args.operation: result = pipeline.apply(args.operation)
+        elif args.rollback_committed: result = pipeline.rollback_committed()
         else: result = pipeline.recover()
         print(json.dumps(result, sort_keys=True))
         return 0
