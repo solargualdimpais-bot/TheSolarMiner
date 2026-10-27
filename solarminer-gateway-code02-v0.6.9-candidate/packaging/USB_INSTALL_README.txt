@@ -1,6 +1,6 @@
 SolarMiner Gateway CODE02 0.6.94 — instalador inicial USB
 
-O envio automático de erros para issues GitHub requer um token Fine-grained com Issues: Read and write, limitado a este repositório. Depois da instalação, como root, executa `solarminer-gateway github-error-token` no Gateway. Sem token, os relatórios ficam apenas na fila local.
+O envio automático de diagnósticos para o repositório privado exige um token Fine-grained limitado ao repositório de diagnósticos e à permissão Issues: Read and write. Configura-o depois em Owner → Gateway → Relatórios automáticos; sem token, os relatórios permanecem na fila local.
 ==========================================================
 
 Requisitos: Gateway Lenovo AMD64, Debian 13 (Trixie), Python 3.13 ou posterior e acesso à Internet para os repositórios oficiais Debian e Tailscale.

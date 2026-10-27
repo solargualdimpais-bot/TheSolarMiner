@@ -3,7 +3,7 @@ import { DEMO_CONTROL_CONFIG, createDemoControlState, updateDemoControl, toggleD
 import { renderWorkspacePage, renderHomePreferenceLinks, renderHouseSearch, handleWorkspaceAction, handleWorkspaceChange, applyPreferences, getWorkspacePageLabel, workspace, getEditableEntity, saveEditableEntity, saveDemoWorkspace, hydrateWorkspacePhotos } from "./workspace-ui.js";
 import { renderAutomationsPage, renderSolarProductionPage, renderDemoAdminPanel, handleFeatureAction, saveAutomationForm, addDemoUser, saveDemoUserEdit, saveSolarWeather, demoFeatures } from "./features-v053.js";
 import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classifyEndpoint, inferHostedGatewayEndpoint, PRESENCE_API_STATUS } from "./gateway-connection.js";
-import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, readGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, controlGatewayAntminer, testGatewayAntminerControl, readGatewayAntminerManagement, writeGatewayAntminerManagement, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, discoverGatewayTuyaLanDevices, readGatewayHuaweiClients, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, readGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayDiagnosticsUpload, saveGatewayDiagnosticsUploadToken, disableGatewayDiagnosticsUpload, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, controlGatewayAntminer, testGatewayAntminerControl, readGatewayAntminerManagement, writeGatewayAntminerManagement, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, discoverGatewayTuyaLanDevices, readGatewayHuaweiClients, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging } from "./gateway-auth.js";
 
 let automationEditingId = "";
 const state = { page: "inicio", mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], energyEngine: null, siteProfile: null, tuyaDevices: [], tuyaReadings: [], lastUpdated: null, lastMeasurementAt: null, refreshing: false, pendingLiveRender: false, demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [], engineHistoryChart: { open: false, dateKey: "", loading: false, error: null } };
@@ -1481,7 +1481,7 @@ document.querySelector(".owner-tabs")?.addEventListener("click", event => {
   const tab = event.target.closest("[data-owner-tab]");
   if (tab) {
     selectOwnerTab(tab.dataset.ownerTab);
-    if (tab.dataset.ownerTab === "gateway") refreshGatewayConsole();
+    if (tab.dataset.ownerTab === "gateway") { refreshGatewayConsole(); refreshDiagnosticsUploadStatus(); }
   }
 });
 document.querySelector(".owner-device-tabs")?.addEventListener("click", event => {
@@ -1644,6 +1644,42 @@ function renderGatewayConsoleLogs({ preserveScroll = false } = {}) {
 $("#gateway-console-service-filter")?.addEventListener("change", () => renderGatewayConsoleLogs());
 $("#gateway-console-level-filter")?.addEventListener("change", () => renderGatewayConsoleLogs());
 $("#gateway-console-refresh")?.addEventListener("click", refreshGatewayConsole);
+async function refreshDiagnosticsUploadStatus() {
+  const status = $("#gateway-diagnostics-upload-status");
+  if (!status || !sessionInfo().authenticated || sessionInfo().user?.role !== "owner") return;
+  status.textContent = "A consultar configuração…";
+  try {
+    const result = await readGatewayDiagnosticsUpload();
+    status.textContent = result.configured
+      ? `Envio ativo para o repositório privado ${result.destination}. O token não é devolvido à PWA.`
+      : `Envio desativado. Os erros ficam na fila local até configurares um token para ${result.destination}.`;
+  } catch (error) { status.textContent = `Não foi possível consultar a configuração: ${error.message}`; }
+}
+$("#gateway-diagnostics-upload-form")?.addEventListener("submit", async event => {
+  event.preventDefault();
+  const input = $("#gateway-diagnostics-upload-token"), status = $("#gateway-diagnostics-upload-status"), button = event.currentTarget.querySelector('button[type="submit"]');
+  const token = input?.value || "";
+  if (!token) return;
+  button.disabled = true;
+  status.textContent = "A guardar o token apenas no Gateway…";
+  try {
+    const result = await saveGatewayDiagnosticsUploadToken(token);
+    input.value = "";
+    status.textContent = result.configured ? `Token guardado. Envio ativo para ${result.destination}; a credencial não é mostrada nem incluída nos relatórios.` : "O Gateway não confirmou a configuração.";
+  } catch (error) {
+    input.value = "";
+    status.textContent = `Não foi possível guardar o token: ${error.message}`;
+  } finally { button.disabled = false; }
+});
+$("#gateway-diagnostics-upload-disable")?.addEventListener("click", async event => {
+  const button = event.currentTarget, status = $("#gateway-diagnostics-upload-status");
+  button.disabled = true;
+  try {
+    const result = await disableGatewayDiagnosticsUpload();
+    status.textContent = result.configured ? "O envio continua configurado." : "Envio desativado. Os novos relatórios permanecem apenas no Gateway.";
+  } catch (error) { status.textContent = `Não foi possível desativar o envio: ${error.message}`; }
+  finally { button.disabled = false; }
+});
 let gatewayTerminalSocket = null;
 function appendGatewayTerminalOutput(value) {
   const output = $("#gateway-terminal-output");

@@ -69,6 +69,16 @@
             </div>
             <pre id="gateway-console-output" class="integration-result gateway-console-output" aria-label="Saída operacional recente do Gateway">A aguardar ligação autenticada ao Gateway.</pre>
           </section>
+          <section class="panel gateway-auth-panel" id="gateway-diagnostics-upload">
+            <div class="panel-header"><div><p class="eyebrow">DIAGNÓSTICO PRIVADO</p><h3>Relatórios automáticos</h3></div><span class="source-tag">OWNER</span></div>
+            <p class="field-note">O Gateway envia erros técnicos sanitizados para o repositório privado de diagnósticos. Usa um Fine-grained token limitado a esse repositório, com permissão Issues: Read and write. O token fica só no Gateway, nunca é mostrado depois de guardado e não é incluído em relatórios.</p>
+            <div id="gateway-diagnostics-upload-status" class="connection-result" role="status" aria-live="polite">A consultar configuração…</div>
+            <form id="gateway-diagnostics-upload-form" class="gateway-form-grid">
+              <label for="gateway-diagnostics-upload-token">Token privado do GitHub<input id="gateway-diagnostics-upload-token" type="password" autocomplete="new-password" spellcheck="false" maxlength="512" placeholder="github_pat_…" required></label>
+              <button class="button primary" type="submit">Guardar token no Gateway</button>
+              <button class="button secondary" id="gateway-diagnostics-upload-disable" type="button">Desativar envio</button>
+            </form>
+          </section>
           <section class="panel gateway-auth-panel gateway-terminal-panel" id="gateway-terminal-management">
             <div class="panel-header"><div><p class="eyebrow">OPERAÇÃO DO GATEWAY</p><h3>Terminal do Gateway</h3></div><span class="source-tag">OWNER · LIVE</span></div>
             <p class="field-note">Sem novo login: usa a sessão Owner ativa para executar comandos no Gateway e receber a saída em tempo real. A sessão corre com as permissões do serviço solarminer; comandos que exigem root não ficam disponíveis.</p>
@@ -124,7 +134,7 @@
       </section>
       </section>
 
-      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.5.59</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
+      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.5.60</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
     </main>
   </div>
 

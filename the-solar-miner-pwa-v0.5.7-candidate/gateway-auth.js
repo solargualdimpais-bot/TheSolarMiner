@@ -273,6 +273,15 @@ export async function readGatewayTailscale() {
 export async function readGatewayConsole() {
   return gatewayApi("/api/v1/system/console");
 }
+export async function readGatewayDiagnosticsUpload() {
+  return gatewayApi("/api/v1/system/diagnostics-upload");
+}
+export async function saveGatewayDiagnosticsUploadToken(token) {
+  return gatewayApi("/api/v1/system/diagnostics-upload", { method: "PUT", body: { token } });
+}
+export async function disableGatewayDiagnosticsUpload() {
+  return gatewayApi("/api/v1/system/diagnostics-upload", { method: "DELETE" });
+}
 export async function readGatewayTerminalDiagnostics() {
   return gatewayApi("/api/v1/system/terminal/diagnostics");
 }

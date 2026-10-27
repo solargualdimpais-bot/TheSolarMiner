@@ -731,6 +731,27 @@ def test_owner_can_read_redacted_gateway_console_logs(client, monkeypatch):
     assert response.json()["resources"]["memory"]["used_percent"] == 40.0
 
 
+def test_owner_can_configure_private_diagnostics_token_without_readback(client, tmp_path, monkeypatch):
+    owner, private, _ = create_owner(client)
+    headers, _ = _owner_headers(client, owner, private, nonce="owner-diagnostics-token-01")
+    token_path = tmp_path / "github-diagnostics-token"
+    monkeypatch.setattr(gateway.error_reporting, "TOKEN_PATH", token_path)
+    token = "github_pat_" + "x" * 40
+    status = client.get("/api/v1/system/diagnostics-upload", headers=headers)
+    assert status.status_code == 200
+    assert status.json() == {"configured": False, "destination": "solargualdimpais-bot/TheSolarMiner-Diagnostics"}
+    saved = client.put("/api/v1/system/diagnostics-upload", headers=headers, json={"token": token})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["configured"] is True
+    assert token not in saved.text
+    assert token_path.read_text() == token
+    assert "github-diagnostics-token" not in saved.text
+    removed = client.delete("/api/v1/system/diagnostics-upload", headers=headers)
+    assert removed.status_code == 200
+    assert removed.json()["configured"] is False
+    assert not token_path.exists()
+
+
 def test_non_owner_cannot_read_gateway_console(client, monkeypatch):
     owner, private, _ = create_owner(client)
     member, _ = _create_member(client, owner, private, role="viewer", username="console-viewer",

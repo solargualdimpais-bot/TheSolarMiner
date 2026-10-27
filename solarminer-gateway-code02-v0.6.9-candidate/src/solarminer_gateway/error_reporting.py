@@ -1,9 +1,4 @@
-"""Queue sanitized Gateway errors and report them to the fixed SolarMiner GitHub repo.
-
-Reports are public GitHub issues. This module intentionally sends structured,
-sanitized diagnostics only; raw tracebacks, request data and log files are never
-uploaded.
-"""
+"""Queue and privately report sanitized SolarMiner Gateway diagnostics."""
 from __future__ import annotations
 
 import hashlib
@@ -19,13 +14,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-REPOSITORY = "solargualdimpais-bot/TheSolarMiner"
+REPOSITORY = "solargualdimpais-bot/TheSolarMiner-Diagnostics"
 ISSUES_URL = f"https://api.github.com/repos/{REPOSITORY}/issues"
-TOKEN_PATH = Path(os.environ.get("SOLARMINER_GITHUB_TOKEN_FILE", "/etc/solarminer/github-issues-token"))
+TOKEN_PATH = Path(os.environ.get("SOLARMINER_GITHUB_TOKEN_FILE", "/var/lib/solarminer/github-diagnostics-token"))
 QUEUE_PATH = Path(os.environ.get("SOLARMINER_ERROR_QUEUE", "/var/lib/solarminer/error-reports.ndjson"))
+SYSTEM_FINGERPRINT_PATH = Path(os.environ.get("SOLARMINER_SYSTEM_DIAGNOSTICS_FINGERPRINT", "/var/lib/solarminer/error-report-system-fingerprint"))
 MAX_QUEUE_BYTES = 2 * 1024 * 1024
-MAX_REPORTS_PER_ISSUE = 100
+MAX_REPORTS_PER_ISSUE = 50
 _LOCK = threading.Lock()
+_MAX_TOKEN_LENGTH = 512
 
 _SECRET_RE = re.compile(
     r"(?i)(authorization\s*[:=]\s*(?:bearer\s+)?|(?:access[_ -]?token|refresh[_ -]?token|token|password|passwd|secret|private[_ -]?key|api[_ -]?key)\s*[:=]\s*)[^\s,;]+"
@@ -106,6 +103,52 @@ def install_error_queue_handler() -> None:
         root.addHandler(ErrorQueueHandler(level=logging.ERROR))
 
 
+def diagnostics_upload_status(token_path: Path | None = None) -> dict[str, Any]:
+    """Return configuration state without exposing the credential."""
+    token_path = token_path or TOKEN_PATH
+    try:
+        configured = token_path.is_file() and bool(token_path.read_text(encoding="utf-8").strip())
+    except OSError:
+        configured = False
+    return {"configured": configured, "destination": REPOSITORY}
+
+
+def configure_diagnostics_upload(token: str, token_path: Path | None = None) -> None:
+    """Atomically store a GitHub fine-grained credential for the service account."""
+    token_path = token_path or TOKEN_PATH
+    if not isinstance(token, str) or not token or len(token) > _MAX_TOKEN_LENGTH or any(c.isspace() for c in token):
+        raise ValueError("github_token_invalid")
+    if not re.fullmatch(r"github_pat_[A-Za-z0-9_]{20,}", token):
+        raise ValueError("github_fine_grained_token_required")
+    token_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if token_path.parent.is_symlink() or token_path.is_symlink():
+        raise ValueError("github_token_path_unsafe")
+    temporary = token_path.with_name(f".{token_path.name}.{uuid.uuid4().hex}.tmp")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(token)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, token_path)
+        os.chmod(token_path, 0o600)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def remove_diagnostics_upload(token_path: Path | None = None) -> None:
+    token_path = token_path or TOKEN_PATH
+    if token_path.is_symlink():
+        raise ValueError("github_token_path_unsafe")
+    try:
+        token_path.unlink()
+    except FileNotFoundError:
+        pass
+
+
 def _load_batch(path: Path) -> tuple[list[dict[str, Any]], bytes]:
     raw = path.read_bytes()
     lines = raw.splitlines(keepends=True)
@@ -124,14 +167,52 @@ def _load_batch(path: Path) -> tuple[list[dict[str, Any]], bytes]:
     return batch, bytes(consumed)
 
 
-def _create_issue(batch: list[dict[str, Any]], token: str) -> str:
+def _collect_system_diagnostics() -> str:
+    """Collect a bounded, redacted snapshot from the privileged allowlisted broker."""
+    try:
+        from . import update_helper_client
+        snapshot = update_helper_client.request("diagnostics")
+    except Exception as exc:
+        return f"System snapshot unavailable ({type(exc).__name__})."
+    lines: list[str] = []
+    services = snapshot.get("services")
+    if isinstance(services, dict):
+        lines.extend(f"service {sanitize_message(key)}: {sanitize_message(value)}"
+                     for key, value in services.items())
+    resources = snapshot.get("resources")
+    if isinstance(resources, dict):
+        # Only include numeric resource metrics; omit paths and arbitrary host metadata.
+        for key in ("cpu_percent", "cpu_count"):
+            value = resources.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                lines.append(f"resource {key}: {value}")
+        for group in ("memory", "disk"):
+            metrics = resources.get(group)
+            if isinstance(metrics, dict):
+                for key in ("used_percent", "used_bytes", "total_bytes", "free_bytes"):
+                    value = metrics.get(key)
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        lines.append(f"resource {group}.{key}: {value}")
+    logs = snapshot.get("logs")
+    if isinstance(logs, str):
+        lines.append("Recent allowlisted service logs (redacted):")
+        lines.extend(sanitize_message(line) for line in logs.splitlines()[-80:])
+    return "\n".join(lines)[:10_000] or "No system diagnostics were returned."
+
+
+def _create_issue(batch: list[dict[str, Any]], token: str, system_diagnostics: str) -> str:
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    digest = hashlib.sha256("".join(item["id"] for item in batch).encode()).hexdigest()[:12]
-    title = f"Automated Gateway diagnostics {day} ({len(batch)} errors, {digest})"
+    digest = hashlib.sha256(("".join(item["id"] for item in batch) + system_diagnostics).encode()).hexdigest()[:12]
+    title = (f"Automated Gateway diagnostics {day} ({len(batch)} errors, {digest})" if batch
+             else f"Automated Gateway system failure {day} ({digest})")
     body = [
         "Automated sanitized error report from a SolarMiner Gateway.",
-        "\nPrivacy: this report contains no raw log files, tracebacks, HTTP request data, credentials, IP/MAC addresses or user/device IDs.",
+        "\nPrivacy: this report contains sanitized error records and a bounded snapshot of allowlisted Gateway, updater, recovery, Nginx and Tailscale service diagnostics. Credentials, URLs, IP/MAC addresses, paths and user/device identifiers are redacted. No raw request bodies or database contents are uploaded.",
         f"\nGateway package version: {sanitize_message(os.environ.get('SOLARMINER_PACKAGE_VERSION', 'unknown'))}.",
+        "\nSystem diagnostics:",
+        "```text",
+        system_diagnostics,
+        "```",
         "\nPlease triage and link any fix to this issue. This issue was created by the Gateway error reporter.",
         "\n```json",
         json.dumps(batch, ensure_ascii=True, indent=2),
@@ -166,32 +247,65 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         raise urllib.error.HTTPError(req.full_url, code, "redirect_rejected", headers, fp)
 
 
-def flush_reports(path: Path = QUEUE_PATH, token_path: Path = TOKEN_PATH) -> dict[str, Any]:
-    """Send one batch to GitHub; retain queued reports on every failure."""
-    if not path.exists() or path.stat().st_size == 0:
-        return {"status": "empty", "sent": 0}
+def _system_snapshot_is_actionable(snapshot: str) -> bool:
+    return bool(re.search(r"(?i)\b(error|failed|failure|fatal|emerg|critical|exception|traceback)\b", snapshot))
+
+
+def _system_failure_fingerprint(snapshot: str) -> str:
+    markers = re.compile(r"(?i)\b(error|failed|failure|fatal|emerg|critical|exception|traceback)\b")
+    evidence = "\n".join(line for line in snapshot.splitlines() if markers.search(line))
+    return hashlib.sha256(evidence.encode()).hexdigest()
+
+
+def _save_system_fingerprint(path: Path, fingerprint: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="ascii") as handle:
+            handle.write(fingerprint)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+    finally:
+        try:
+            temp.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def flush_reports(path: Path = QUEUE_PATH, token_path: Path = TOKEN_PATH,
+                  fingerprint_path: Path = SYSTEM_FINGERPRINT_PATH) -> dict[str, Any]:
+    """Send queued errors or new system failures; retain queued reports on failure."""
     if not token_path.exists():
         return {"status": "not_configured", "sent": 0}
     token = token_path.read_text(encoding="utf-8").strip()
     if not token or len(token) > 512 or any(char.isspace() for char in token):
         raise ValueError("github_token_invalid")
-    batch, consumed = _load_batch(path)
-    if not batch:
+    batch, consumed = _load_batch(path) if path.exists() and path.stat().st_size else ([], b"")
+    snapshot = _collect_system_diagnostics()
+    system_fingerprint = _system_failure_fingerprint(snapshot)
+    system_changed = fingerprint_path.exists() and fingerprint_path.read_text(encoding="ascii", errors="ignore").strip() != system_fingerprint
+    has_system_failure = _system_snapshot_is_actionable(snapshot) and (not fingerprint_path.exists() or system_changed)
+    if not batch and not has_system_failure:
         return {"status": "empty", "sent": 0}
-    url = _create_issue(batch, token)
-    with _LOCK:
-        current = path.read_bytes()
-        # Remove only the exact prefix that was sent; preserve concurrent errors.
-        if current.startswith(consumed):
-            remainder = current[len(consumed):]
-            temp = path.with_suffix(path.suffix + ".tmp")
-            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0), 0o600)
-            try:
-                os.write(fd, remainder)
-            finally:
-                os.close(fd)
-            os.replace(temp, path)
-    return {"status": "sent", "sent": len(batch), "issue_url": url}
+    url = _create_issue(batch, token, snapshot)
+    if batch:
+        with _LOCK:
+            current = path.read_bytes()
+            # Remove only the exact prefix that was sent; preserve concurrent errors.
+            if current.startswith(consumed):
+                remainder = current[len(consumed):]
+                temp = path.with_suffix(path.suffix + ".tmp")
+                fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0), 0o600)
+                try:
+                    os.write(fd, remainder)
+                finally:
+                    os.close(fd)
+                os.replace(temp, path)
+    _save_system_fingerprint(fingerprint_path, system_fingerprint)
+    return {"status": "sent", "sent": len(batch), "system_diagnostics": has_system_failure,
+            "issue_url": url}
 
 
 def main() -> int:
@@ -201,7 +315,8 @@ def main() -> int:
         # Never print the token, request headers, or remote response body.
         print(f"SolarMiner error report not sent: {type(exc).__name__}")
         return 1
-    print(f"SolarMiner error reports: {result['status']} ({result['sent']})")
+    snapshot = ", system snapshot" if result.get("system_diagnostics") else ""
+    print(f"SolarMiner diagnostics: {result['status']} ({result['sent']} queued errors{snapshot})")
     return 0
 
 

@@ -245,39 +245,26 @@ def run_identity_fingerprint() -> None:
 
 
 def run_github_error_token() -> None:
-    """Store a narrowly scoped GitHub issue token without echoing it to the terminal."""
+    """Legacy local setup for a narrowly scoped private diagnostics token."""
     _require_root()
     _require_tty()
-    import tempfile
     from .error_reporting import TOKEN_PATH
 
     first = getpass.getpass("Fine-grained GitHub token (input hidden): ")
     second = getpass.getpass("Repeat GitHub token: ")
     if first != second:
         raise recovery.RecoveryError("github_tokens_do_not_match")
-    if not 20 <= len(first) <= 512 or any(char.isspace() for char in first):
+    if not first.startswith("github_pat_") or not 20 <= len(first) <= 512 or any(char.isspace() for char in first):
         raise recovery.RecoveryError("github_token_format_invalid")
-    if TOKEN_PATH.parent != Path("/etc/solarminer"):
-        raise recovery.RecoveryError("github_token_path_not_supported")
-    if TOKEN_PATH.parent.is_symlink():
-        raise recovery.RecoveryError("github_token_directory_must_not_be_symlink")
-    TOKEN_PATH.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=".github-issues-token.", dir=TOKEN_PATH.parent)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            stream.write(first + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.chown(temporary, 0, __import__("grp").getgrnam("solarminer").gr_gid)
-        os.chmod(temporary, 0o640)
-        os.replace(temporary, TOKEN_PATH)
-    finally:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
+        from .error_reporting import configure_diagnostics_upload
+        configure_diagnostics_upload(first)
+        os.chown(TOKEN_PATH, 0, __import__("grp").getgrnam("solarminer").gr_gid)
+        os.chmod(TOKEN_PATH, 0o640)
+    except (OSError, ValueError) as exc:
+        raise recovery.RecoveryError("github_token_store_failed") from exc
     first = second = ""
-    print("Token guardado com permissões root:solarminer 0640. O envio automático começa no próximo ciclo horário.")
+    print("Token de diagnósticos privados guardado com permissões root:solarminer 0640.")
 
 
 def main() -> None:
@@ -291,7 +278,7 @@ def main() -> None:
     subparsers.add_parser("bootstrap-token", help="rotate and display a one-time token for initial Owner setup")
     subparsers.add_parser("owner-password", help="set the visible, one-time first-owner password from the local console")
     subparsers.add_parser("identity-fingerprint", help="display the provisioned Gateway Ed25519 identity fingerprint")
-    subparsers.add_parser("github-error-token", help="store the GitHub Issues token for sanitized automatic error reports")
+    subparsers.add_parser("github-error-token", help="store the narrowly scoped private diagnostics token")
     args = parser.parse_args()
     handlers = {
         "recovery": run_recovery,
