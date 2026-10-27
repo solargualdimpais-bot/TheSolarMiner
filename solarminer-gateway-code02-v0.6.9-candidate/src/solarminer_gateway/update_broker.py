@@ -19,6 +19,7 @@ TAILSCALE_DNS_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[
 TAILSCALE_AUTH_PATTERN = re.compile(r"^https://login\.tailscale\.com/a/[A-Za-z0-9_-]{6,128}$")
 DIAGNOSTIC_UNITS = (
     "solarminer-gateway.service", "solarminer-update-check-daily.service",
+    "solarminer-gateway-watchdog.service", "solarminer-gateway-watchdog.timer",
     "solarminer-update-apply@*.service", "solarminer-recovery.service",
     "solarminer-recovery.timer", "solarminer-tailscale-cert.service", "nginx.service",
 )
@@ -34,6 +35,7 @@ NGINX_ERROR_LOG = "/var/log/nginx/error.log"
 NGINX_ERROR_LOG_MAX_BYTES = 8_000
 CONSOLE_SERVICES = {
     "solarminer-gateway.service": "gateway",
+    "solarminer-gateway-watchdog.timer": "gateway_watchdog",
     "solarminer-recovery.service": "offline_recovery",
     "solarminer-recovery.timer": "offline_recovery_timer",
     "nginx.service": "nginx",

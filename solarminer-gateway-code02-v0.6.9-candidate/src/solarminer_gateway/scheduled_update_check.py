@@ -51,7 +51,7 @@ def main() -> int:
                 return 0
             if result.get("activation_available") is not True:
                 print(json.dumps({"status": "verified_staged", "activation": "blocked",
-                                  "reason": "update_pipeline_preflight_failed",
+                                  "reason": result.get("preflight_reason") or "update_pipeline_preflight_failed",
                                   "target_version": result.get("available_version")}, separators=(",", ":")))
                 return 1
             operation_id = result.get("operation_id")

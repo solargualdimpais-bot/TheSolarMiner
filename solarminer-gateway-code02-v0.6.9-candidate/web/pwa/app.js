@@ -2362,6 +2362,7 @@ function setGatewayUpdateDetails(result) {
       result.available_version ? `Versão disponível: ${result.available_version}` : `Versão no GitHub: ${result.latest_version}`,
       `Assinatura: ${result.signature_valid ? "válida" : "não validada"}`,
       `Hash SHA-256: ${result.sha256 || "não disponível"}`,
+      result.preflight_reason ? `Bloqueio da recuperação: ${result.preflight_reason}` : "",
       result.repository_url ? `Repositório: ${result.repository_url}` : ""
     ].filter(Boolean);
     details.textContent = rows.join("\\n");
@@ -2385,6 +2386,7 @@ async function refreshGatewayUpdateStatus() {
     result.target_version ? `Versão de destino: ${result.target_version}` : "",
     failure ? `Falha da atualização: ${failure}` : "",
     rollbackFailure ? `Falha ao recuperar a versão anterior: ${rollbackFailure}` : "",
+    result.details?.preflight_reason ? `Preflight de recuperação: ${result.details.preflight_reason}` : "",
     pipeline.recovery ? `Recuperação: ${pipeline.recovery}` : "",
     pipeline.finished_at_utc ? `Terminado em: ${pipeline.finished_at_utc}` : ""
   ].filter(Boolean);
@@ -2393,6 +2395,7 @@ async function refreshGatewayUpdateStatus() {
       status: "verified_staged", installed_version: result.installed_version,
       available_version: result.target_version, signature_valid: true, compatible: true,
       activation_available: result.activation_available,
+      preflight_reason: result.details?.preflight_reason,
       repository_url: result.details?.repository_url, sha256: result.details?.package_sha256
     });
   } else if (result.status === "CURRENT" && result.target_version) {
@@ -2438,7 +2441,7 @@ async function runGatewayUpdateCheck({automatic=false}={}) {
         if(choice==="apply"){gatewayUpdateNotice=null;try{localStorage.removeItem("solarminer-gateway-update-notice-v1");}catch{}renderGatewayUpdateBanner();await applyVerifiedGatewayUpdate(result);}
         else {gatewayUpdateNotice=result;renderGatewayUpdateBanner();}
       } else {
-        renderOperationDialog({title:"Atualização bloqueada",message:"O pacote foi verificado, mas a verificação de recuperação bloqueou a instalação.",actions:[{label:"OK",value:"ok",primary:true}]});
+        renderOperationDialog({title:"Atualização bloqueada",message:`O pacote foi verificado, mas a verificação de recuperação bloqueou a instalação.${result.preflight_reason?` Motivo: ${result.preflight_reason}.`:" O Gateway não devolveu o motivo detalhado."}`,actions:[{label:"OK",value:"ok",primary:true}]});
         gatewayUpdateNotice=result;gatewayAutoUpdateSuppressed=true;renderGatewayUpdateBanner();if(!automatic)await checking;else await new Promise(resolve=>{$("#operation-dialog").addEventListener("close",resolve,{once:true});});
       }
     } else if (result.status === "current") {

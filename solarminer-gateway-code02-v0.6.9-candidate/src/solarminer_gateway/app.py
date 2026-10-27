@@ -49,7 +49,7 @@ from . import updates as update_manager
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.93"
+PACKAGE_VERSION = "0.6.94"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -3203,7 +3203,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.93"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.94"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(
@@ -3259,11 +3259,16 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         try:
             preflight = update_helper_client.request("preflight")
             activation_available = preflight.get("status") == "ready"
-        except (OSError, RuntimeError, TimeoutError, ValueError):
+            preflight_reason = None if activation_available else "update_preflight_not_ready"
+        except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
             activation_available = False
+            candidate_reason = str(exc)
+            preflight_reason = (candidate_reason if re.fullmatch(r"[A-Za-z0-9_.:-]{1,180}", candidate_reason)
+                                else "update_preflight_unavailable")
         details = {"manifest_signature": "valid", "package_sha256": checked["sha256"],
                    "package_path": str(package_path), "manifest_path": str(manifest_path),
-                   "space_required": needed, "activation_available": activation_available}
+                   "space_required": needed, "activation_available": activation_available,
+                   "preflight_reason": preflight_reason}
         if repository_url:
             details["repository_url"] = repository_url
         with db() as conn:
@@ -3279,6 +3284,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
                   "signature_valid": True, "compatible": True, "space_required": needed,
                   "migration_requirements": manifest["migration_requirements"],
                   "activation_available": activation_available,
+                  "preflight_reason": preflight_reason,
                   "message": "signed_package_ready_for_apply" if activation_available else "package_verified_but_independent_recovery_preflight_failed"}
         if repository_url:
             result["repository_url"] = repository_url

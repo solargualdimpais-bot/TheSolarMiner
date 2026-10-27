@@ -7,6 +7,8 @@ case "${1:-}" in
       systemctl disable solarminer-gateway.service || true
       systemctl stop solarminer-update-check-daily.timer || true
       systemctl disable solarminer-update-check-daily.timer || true
+      systemctl stop solarminer-gateway-watchdog.timer || true
+      systemctl disable solarminer-gateway-watchdog.timer || true
       systemctl stop solarminer-update-broker.socket || true
       systemctl disable solarminer-update-broker.socket || true
       systemctl stop solarminer-public-tls-renew.timer || true

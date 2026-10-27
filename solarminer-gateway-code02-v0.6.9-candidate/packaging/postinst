@@ -111,6 +111,7 @@ case "${1:-}" in
       systemctl enable --now solarminer-recovery.timer
       systemctl enable --now solarminer-update-broker.socket
       systemctl enable --now solarminer-update-check-daily.timer
+      systemctl enable --now solarminer-gateway-watchdog.timer
       systemctl enable --now solarminer-error-report.timer
       systemctl enable --now solarminer-tailscale-cert.timer
       if command -v tailscale >/dev/null 2>&1; then
