@@ -201,6 +201,9 @@ def test_apply_rolls_back_pointer_when_new_release_fails_health(tmp_path: Path, 
 def test_watchdog_rollback_restores_only_the_previous_active_release_and_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from solarminer_gateway.database_backup import create_database_backup
     pipeline, root, previous, db, op_id = _pipeline_fixture(tmp_path, monkeypatch, version="0.6.96")
+    monkeypatch.setattr(pipeline, "_uid", lambda _name: 0)
+    monkeypatch.setattr(pipeline, "_gid", lambda _name: 0)
+    monkeypatch.setattr("solarminer_gateway.system_update_pipeline.os.chown", lambda *_args: None)
     prior_deb = _make_package(tmp_path / "prior", "0.6.8")
     verified_dir = pipeline.data_dir / "releases/verified"
     prior_package = verified_dir / (prior_deb.name + ".verified")
