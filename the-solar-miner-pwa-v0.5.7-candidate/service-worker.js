@@ -1,6 +1,6 @@
-const CACHE_NAME = "the-solar-miner-static-v0.5.60-private-diagnostics";
+const CACHE_NAME = "the-solar-miner-static-v0.5.63-surplus-manager";
 const STATIC_ASSETS = [
-  "./", "./index.html", "./styles.css", "./app.js", "./gateway-connection.js",
+  "./", "./index.html", "./styles.css", "./app.js", "./gateway-connection.js", "./qrcode-generator.js",
   "./gateway-auth.js", "./app-core.js", "./workspace-ui.js", "./demo-mode.js",
   "./features-v053.js", "./manifest.webmanifest", "./assets/icon.svg",
   "./assets/icon-192.png", "./assets/icon-512.png", "./assets/heic2any-0.0.4.min.js"

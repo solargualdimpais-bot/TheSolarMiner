@@ -27,7 +27,6 @@ def client(tmp_path, monkeypatch):
     pubpath.write_text(gwpub)
     monkeypatch.setenv("SOLARMINER_GATEWAY_IDENTITY_PRIVATE_KEY", str(privpath))
     monkeypatch.setenv("SOLARMINER_GATEWAY_IDENTITY_PUBLIC_KEY", str(pubpath))
-    monkeypatch.setenv("SOLARMINER_PUBLIC_URL", "https://gateway.example.test")
     with TestClient(gateway.app) as c:
         yield c
 
@@ -47,15 +46,22 @@ def test_owner_invite_create_list_and_revoke(client):
     token=owner_session(client); h={"Authorization":f"Bearer {token}"}
     created=client.post("/api/v1/invites",headers=h,json={"role":"viewer","label":"phone test"})
     assert created.status_code == 201, created.text
-    body=created.json(); assert len(body["qr_payload"]["fp"]) == 64
-    assert body["qr_svg"].startswith("<svg") and "<path" in body["qr_svg"]
-    assert body["token"] not in body["qr_svg"]
+    body=created.json(); assert len(body["invite_code"]["fp"]) == 64
+    assert body["invite_code"]["exp"] == body["expires_at"]
+    assert "qr_svg" not in body and "qr_payload" not in body
     listed=client.get("/api/v1/invites",headers=h).json()["invites"]
     assert listed[0]["state"] == "pending"
     assert "token" not in listed[0] and "token_hash" not in listed[0]
     revoked=client.post(f"/api/v1/invites/{body['invite_id']}/revoke",headers=h)
     assert revoked.status_code == 200
     assert client.post(f"/api/v1/invites/{body['invite_id']}/revoke",headers=h).status_code == 409
+
+def test_invite_code_does_not_depend_on_a_gateway_public_url(client, monkeypatch):
+    monkeypatch.delenv("SOLARMINER_PUBLIC_URL", raising=False)
+    token=owner_session(client); h={"Authorization":f"Bearer {token}"}
+    response=client.post("/api/v1/invites",headers=h,json={"role":"viewer","label":"lan-or-tailnet"})
+    assert response.status_code == 201, response.text
+    assert response.json()["invite_code"]["token"]
 
 def test_owner_energy_engine_configuration_round_trip(client):
     token = owner_session(client)
@@ -77,11 +83,11 @@ def test_invite_redeem_atomic_and_single_use(client):
     invite=client.post("/api/v1/invites",headers=h,json={"role":"operator","label":"new operator"}).json()
     priv,pub=keypair(); ts=int(time.time()); nonce="invite-redeem-nonce-0001"; username="operator-v067"
     mac="AA:BB:CC:DD:EE:44"; password="operator-password-v067-long"
-    token_hash=hashlib.sha256(invite["token"].encode()).hexdigest()
+    token_hash=hashlib.sha256(invite["invite_code"]["token"].encode()).hexdigest()
     pub_der=serialization.load_pem_public_key(pub.encode()).public_bytes(serialization.Encoding.DER,serialization.PublicFormat.SubjectPublicKeyInfo)
     pub_hash=hashlib.sha256(pub_der).hexdigest()
     canonical="\n".join(["POST","/api/v1/invites/redeem",str(ts),nonce,token_hash,username,hashlib.sha256(password.encode()).hexdigest(),mac,pub_hash])
-    body={"invite_token":invite["token"],"username":username,"password":password,"mac":mac,"client_pubkey_pem":pub,"signature":sig(priv,canonical),"timestamp":ts,"nonce":nonce}
+    body={"invite_token":invite["invite_code"]["token"],"username":username,"password":password,"mac":mac,"client_pubkey_pem":pub,"signature":sig(priv,canonical),"timestamp":ts,"nonce":nonce}
     response=client.post("/api/v1/invites/redeem",json=body)
     assert response.status_code == 201, response.text
     assert response.json()["user"]["role"] == "operator"
@@ -176,11 +182,11 @@ def test_two_concurrent_invite_redemptions_only_create_one_account(client):
     invite=client.post("/api/v1/invites",headers=h,json={"role":"viewer","label":"race"}).json()
     priv,pub=keypair(); username="race-v067"; mac="AA:BB:CC:DD:EE:55"; password="race-password-v067-long"
     pub_der=serialization.load_pem_public_key(pub.encode()).public_bytes(serialization.Encoding.DER,serialization.PublicFormat.SubjectPublicKeyInfo)
-    pub_hash=hashlib.sha256(pub_der).hexdigest(); token_digest=hashlib.sha256(invite["token"].encode()).hexdigest()
+    pub_hash=hashlib.sha256(pub_der).hexdigest(); token_digest=hashlib.sha256(invite["invite_code"]["token"].encode()).hexdigest()
     def redeem(nonce):
         ts=int(time.time())
         canonical="\n".join(["POST","/api/v1/invites/redeem",str(ts),nonce,token_digest,username,hashlib.sha256(password.encode()).hexdigest(),mac,pub_hash])
-        body={"invite_token":invite["token"],"username":username,"password":password,"mac":mac,"client_pubkey_pem":pub,"signature":sig(priv,canonical),"timestamp":ts,"nonce":nonce}
+        body={"invite_token":invite["invite_code"]["token"],"username":username,"password":password,"mac":mac,"client_pubkey_pem":pub,"signature":sig(priv,canonical),"timestamp":ts,"nonce":nonce}
         return client.post("/api/v1/invites/redeem",json=body).status_code
     with ThreadPoolExecutor(max_workers=2) as pool:
         statuses=list(pool.map(redeem,["race-invite-nonce-0001","race-invite-nonce-0002"]))

@@ -3,7 +3,7 @@
 ## CODE02
 
 - `PACKAGE_VERSION` passa a `0.6.8`; o contrato público da API permanece `0.6.0`.
-- Convites Owner incluem QR SVG gerado localmente, criado antes de confirmar a transação para evitar convites ativos sem segredo entregue.
+- O Gateway emite um código de convite de utilização única; a PWA gera o QR e apresenta uma página de ativação.
 - `/api/v1/energy/categories` identifica corretamente a PWA incorporada v0.5.7.
 - Novo `database_backup.py`: backup SQLite consistente, sidecar de metadados, validação SHA-256/tamanho/schema e restauro offline fail-closed.
 - Novo `deployment_recovery.py`: journal durável, lock, troca atómica de symlink e recuperação após `SIGKILL`.

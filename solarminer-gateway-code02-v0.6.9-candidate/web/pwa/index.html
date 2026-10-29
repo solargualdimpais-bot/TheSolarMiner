@@ -95,7 +95,7 @@
           <button class="button primary" type="submit">Criar convite assinado pelo Gateway</button>
           <button class="button secondary" type="button" id="gateway-refresh-invites">Atualizar lista</button>
         </form>
-        <div id="gateway-invite-created" hidden class="invite-created"><p class="field-note">QR de convite. Mostra-o apenas à pessoa autorizada; contém um segredo de utilização única.</p><img id="gateway-invite-qr" alt="QR Code do convite SolarMiner" width="240" height="240"><p id="gateway-invite-expiry" class="field-note"></p><textarea id="gateway-invite-payload" rows="4" readonly aria-label="Conteúdo de reserva do QR"></textarea><button class="button secondary" type="button" id="gateway-copy-invite">Copiar conteúdo do convite</button></div>
+        <div id="gateway-invite-created" hidden class="invite-created"><p class="field-note">QR de ativação criado nesta PWA. A pessoa autorizada abre o link e escolhe o nome de utilizador e a palavra-passe.</p><img id="gateway-invite-qr" alt="QR Code de ativação SolarMiner" width="240" height="240"><p id="gateway-invite-expiry" class="field-note"></p><textarea id="gateway-invite-payload" rows="4" readonly aria-label="Link de ativação"></textarea><button class="button secondary" type="button" id="gateway-copy-invite">Copiar link de ativação</button></div>
         <div id="gateway-invite-list" class="invite-list" aria-live="polite">A lista só é carregada numa sessão Owner autenticada.</div>
       </section>
       <section class="panel gateway-auth-panel owner-tab-panel" data-owner-panel="access" id="gateway-user-management" hidden>
@@ -134,7 +134,7 @@
       </section>
       </section>
 
-      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.5.60</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
+      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.5.63</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
     </main>
   </div>
 
@@ -190,6 +190,19 @@
       <div class="dialog-actions"><button class="button primary" type="button" id="close-gateway-dialog">Fechar</button></div>
     </div>
   </dialog>
+  <dialog id="gateway-invite-activation-dialog" class="settings-dialog compact-dialog" aria-labelledby="gateway-invite-activation-title">
+    <form method="dialog" class="dialog-header"><div><p class="eyebrow">CONVITE DO GATEWAY</p><h2 id="gateway-invite-activation-title">Ativar novo acesso</h2></div></form>
+    <div class="dialog-body">
+      <p id="gateway-invite-activation-note" class="field-note">Cria a conta deste dispositivo. O convite é de utilização única.</p>
+      <form id="gateway-invite-activation-form" class="gateway-form-grid">
+        <label>Nome de utilizador<input id="gateway-invite-username" autocomplete="username" minlength="3" maxlength="128" pattern="[A-Za-z0-9_.-]+" required></label>
+        <label>Nova palavra-passe<input id="gateway-invite-password" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required></label>
+        <label>Repete a palavra-passe<input id="gateway-invite-password-repeat" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required></label>
+        <button id="gateway-invite-activate" class="button primary" type="submit">Criar acesso</button>
+      </form>
+      <div id="gateway-invite-activation-status" class="connection-result" role="status" aria-live="polite"></div>
+    </div>
+  </dialog>
   <dialog id="gateway-bootstrap-dialog" class="settings-dialog compact-dialog">
     <form method="dialog" class="dialog-header"><div><p class="eyebrow">PRIMEIRA CONFIGURAÇÃO</p><h2>Registar este telemóvel como Owner</h2></div></form>
     <div class="dialog-body">
@@ -240,6 +253,7 @@
       <div class="dialog-actions"><button class="button secondary" id="context-editor-cancel" type="button">Cancelar</button><button class="button primary" type="submit">Guardar localmente</button></div>
     </form>
   </dialog>
+  <script src="qrcode-generator.js"></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>

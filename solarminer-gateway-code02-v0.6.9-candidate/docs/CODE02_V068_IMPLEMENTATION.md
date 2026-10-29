@@ -27,7 +27,7 @@ Esta entrega é uma implementação incremental sobre o código-fonte CODE02 v0.
 - Antes de enviar credenciais no login, a PWA verifica o desafio de identidade do Gateway e compara a fingerprint completa fixada durante o bootstrap/convite.
 - O primeiro Owner pode ser criado apenas a partir de um browser local no próprio Gateway; o endpoint CODE02 já rejeita bootstrap remoto. O token local de bootstrap é introduzido manualmente e não é persistido pela PWA. Nesse primeiro bootstrap, a fingerprint é fixada a partir do desafio assinado obtido localmente (TOFU sob controlo local + token de bootstrap); logins e convites posteriores comparam a fingerprint fixada.
 - A chave de recuperação do Owner é mostrada uma única vez para cópia/arquivo offline; não é gravada no browser.
-- O Owner pode criar, listar e revogar convites de utilização única. A API devolve QR SVG gerado localmente, sem serviço QR externo, e o QR contém o segredo de convite. A dependência `python3-qrcode` foi adicionada ao pacote.
+- O Owner pode criar, listar e revogar convites de utilização única. O Gateway devolve o código de convite e a fingerprint; a PWA gera localmente o QR/link de ativação, sem dependência QR no Gateway.
 - O resgate verifica a assinatura Ed25519 do desafio e a fingerprint completa antes de consumir o convite.
 - O MAC continua a ser apenas declarado; não é apresentado como prova física.
 - A presença usa o endpoint autenticado existente e é descrita como atividade recente da sessão, nunca como presença física nem como prova de ligação LAN/REMOTO.

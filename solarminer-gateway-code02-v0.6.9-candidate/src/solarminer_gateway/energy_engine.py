@@ -26,6 +26,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "battery_banks": [], "pv_strings": [], "loads": [],
     "automation": {"enabled": False, "commissioned": False, "surplus_margin_w": 250,
                    "decision_interval_seconds": 300, "deye_map_verified": False},
+    "surplus_manager": {"enabled": False, "manual_override": False, "minimum_potential_surplus_w": 800,
+                        "battery_reserve_soc_percent": 70, "priority_profile": "tesla_home"},
 }
 _WEATHER_CACHE: dict[str, Any] = {"key": None, "expires_at": 0.0, "value": None}
 _WEATHER_LOCK = threading.Lock()
@@ -89,12 +91,13 @@ def get_config(conn: sqlite3.Connection) -> dict[str, Any]:
         return json.loads(json.dumps(DEFAULT_CONFIG))
     result = {**DEFAULT_CONFIG, **saved}
     result["automation"] = {**DEFAULT_CONFIG["automation"], **(saved.get("automation") or {})}
+    result["surplus_manager"] = {**DEFAULT_CONFIG["surplus_manager"], **(saved.get("surplus_manager") or {})}
     return result
 
 
 def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, Any]:
     allowed = {"site_location_name", "site_latitude", "site_longitude", "pv_capacity_kw", "pv_system_efficiency",
-               "battery_capacity_kwh", "minimum_soc_percent", "maximum_soc_percent", "battery_banks", "pv_strings", "loads", "automation"}
+               "battery_capacity_kwh", "minimum_soc_percent", "maximum_soc_percent", "battery_banks", "pv_strings", "loads", "automation", "surplus_manager"}
     if not isinstance(payload, dict) or set(payload) - allowed:
         raise ValueError("unknown_energy_engine_setting")
     existing = get_config(conn)
@@ -301,6 +304,20 @@ def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, 
     if isinstance(interval, bool) or not isinstance(interval, int) or not 300 <= interval <= 3600:
         raise ValueError("invalid_decision_interval_seconds")
     normalized_automation["enabled"] = bool(normalized_automation["enabled"] and normalized_automation["commissioned"] and normalized_automation["deye_map_verified"])
+    surplus_manager = merged.get("surplus_manager", DEFAULT_CONFIG["surplus_manager"])
+    if not isinstance(surplus_manager, dict) or set(surplus_manager) - set(DEFAULT_CONFIG["surplus_manager"]):
+        raise ValueError("invalid_surplus_manager_config")
+    normalized_surplus_manager = {**DEFAULT_CONFIG["surplus_manager"], **surplus_manager}
+    if any(not isinstance(normalized_surplus_manager[key], bool) for key in ("enabled", "manual_override")):
+        raise ValueError("invalid_surplus_manager_enabled")
+    potential_threshold = normalized_surplus_manager["minimum_potential_surplus_w"]
+    reserve_soc = normalized_surplus_manager["battery_reserve_soc_percent"]
+    if isinstance(potential_threshold, bool) or not isinstance(potential_threshold, int) or not 0 <= potential_threshold <= 100000:
+        raise ValueError("invalid_minimum_potential_surplus_w")
+    if isinstance(reserve_soc, bool) or not isinstance(reserve_soc, (int, float)) or not math.isfinite(reserve_soc) or not 0 <= reserve_soc <= 100:
+        raise ValueError("invalid_battery_reserve_soc_percent")
+    if normalized_surplus_manager["priority_profile"] not in {"tesla_home", "tesla_away"}:
+        raise ValueError("invalid_surplus_priority_profile")
     result = {"site_location_name": location_name.strip() if isinstance(location_name, str) else None,
               "site_latitude": float(latitude) if latitude is not None else None,
               "site_longitude": float(longitude) if longitude is not None else None,
@@ -309,7 +326,8 @@ def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, 
               "battery_capacity_kwh": float(capacity) if capacity is not None else None,
               "minimum_soc_percent": float(minimum), "maximum_soc_percent": float(maximum),
               "battery_banks": normalized_banks, "pv_strings": normalized_pv_strings,
-              "loads": normalized_loads, "automation": normalized_automation}
+              "loads": normalized_loads, "automation": normalized_automation,
+              "surplus_manager": normalized_surplus_manager}
     # Keep the shared parallel-bank SOC stable when the Owner changes the
     # online capacity. The integrated discharge is stored in kWh, so scale it
     # with capacity; otherwise taking one bank offline would distort the
@@ -2223,24 +2241,47 @@ def _bounded_load_forecast(series: list[dict[str, Any]], current_w: float | None
 
 
 def build_dispatch_plan(current: dict[str, Any], config: dict[str, Any], *, sample_state: str = "UNKNOWN",
-                        telemetry_trust: str = "LIVE_UNVERIFIED") -> dict[str, Any]:
+                        telemetry_trust: str = "LIVE_UNVERIFIED", forecast_surplus_w: int | None = None) -> dict[str, Any]:
     """Compute conservative load allocations; this function never sends commands."""
     automation = config.get("automation", {})
-    common = {"decision_interval_seconds": automation.get("decision_interval_seconds", 300), "actions": []}
+    manager = config.get("surplus_manager", {})
+    common = {"decision_interval_seconds": automation.get("decision_interval_seconds", 300), "actions": [],
+              "mode": "FORECAST_GUIDED" if manager.get("enabled") else "MEASURED_SURPLUS"}
     if not automation.get("enabled"):
         return {**common, "state": "DISABLED", "reason": "Owner has not enabled automatic dispatch."}
+    if manager.get("manual_override"):
+        return {**common, "state": "MANUAL_OVERRIDE", "reason": "Ação manual do Owner: o despacho automático está suspenso até retomar Automático."}
     if not automation.get("commissioned") or not automation.get("deye_map_verified"):
         return {**common, "state": "BLOCKED_NOT_COMMISSIONED", "reason": "Owner commissioning and physical Deye map confirmation are required."}
     if sample_state != "LIVE":
         return {**common, "state": "BLOCKED_STALE_TELEMETRY", "reason": "A fresh Deye sample is required."}
     if telemetry_trust not in {"PHYSICALLY_CORROBORATED", "OWNER_COMMISSIONED"}:
         return {**common, "state": "BLOCKED_UNTRUSTED_TELEMETRY", "reason": "Control readings are not physically commissioned."}
+    allowed_soc_sources = {None, "gateway_energy_integrated"}
+    if manager.get("enabled"):
+        allowed_soc_sources.update({"deye_live_reported", "gateway_voltage_plateau_inferred"})
     if (current.get("battery_soc_percent") is None
-            or current.get("battery_soc_source") not in (None, "gateway_energy_integrated")
+            or current.get("battery_soc_source") not in allowed_soc_sources
             or current.get("pv_power_w") is None or current.get("load_power_w") is None):
         return {**common, "state": "BLOCKED_MISSING_TELEMETRY", "reason": "SOC, PV and load power are all required."}
     if current.get("battery_charge_headroom_kwh_to_maximum") is None:
         return {**common, "state": "BLOCKED_BATTERY_CONFIGURATION", "reason": "Configure battery bank capacity and SOC limits first."}
+    if manager.get("enabled"):
+        reserve = float(manager.get("battery_reserve_soc_percent", 70))
+        soc = current.get("battery_soc_percent")
+        if isinstance(soc, bool) or not isinstance(soc, (int, float)) or soc < reserve:
+            shed = [{"load_id": load["id"], "name": load["name"],
+                     "state": "STOP_FOR_BATTERY" if load["control_type"] == "antminer_braiins" else "OFF_FOR_BATTERY",
+                     "target_power_w": 0, "control_type": load["control_type"],
+                     "requires_load_id": load.get("requires_load_id")}
+                    for load in config.get("loads", []) if load.get("enabled") and load.get("automatic")
+                    and load.get("control_type") in {"tuya_smart", "tuya_breaker", "antminer_braiins"}]
+            return {**common, "state": "WAITING_FOR_BATTERY_RESERVE",
+                    "reason": f"A bateria tem de estar acima da reserva configurada ({reserve:g}%).",
+                    "actions": shed}
+        if forecast_surplus_w is None:
+            return {**common, "state": "BLOCKED_FORECAST_UNAVAILABLE",
+                    "reason": "O Engine ainda não tem uma previsão fiável de produção e consumo para orientar o plano."}
     if (current["battery_charge_headroom_kwh_to_maximum"] > 0.02
             or (current.get("battery_charge_power_w") or 0) > 100
             or (current.get("battery_discharge_power_w") or 0) > 100):
@@ -2259,19 +2300,70 @@ def build_dispatch_plan(current: dict[str, Any], config: dict[str, Any], *, samp
     surplus = max(0, round(current["pv_power_w"] - current["load_power_w"] + battery_power))
     margin = int(automation.get("surplus_margin_w", 250))
     available = max(0, surplus - margin)
+    if manager.get("enabled"):
+        potential_minimum = int(manager.get("minimum_potential_surplus_w", 800))
+        if forecast_surplus_w < potential_minimum:
+            available = 0
+        else:
+            # Forecasts can guide the planned load, but never authorize more
+            # demand than the live inverter measurements currently corroborate.
+            available = min(available, max(0, forecast_surplus_w - margin))
     actions = []
     actions_by_id: dict[str, dict[str, Any]] = {}
-    for load in sorted(config.get("loads", []), key=lambda item: (item.get("priority", 100), item.get("id", ""))):
+    profile = manager.get("priority_profile", "tesla_home") if manager.get("enabled") else None
+    priority_orders = {
+        "tesla_home": {"ev_charger": 0, "water_heater": 1, "underfloor_heating": 2, "generic": 3, "miner": 4},
+        "tesla_away": {"miner": 0, "water_heater": 1, "underfloor_heating": 2, "generic": 3, "ev_charger": 4},
+    }
+    profile_order = priority_orders.get(profile, {})
+    loads = config.get("loads", [])
+    disabled_ids: set[str] = set()
+    if profile == "tesla_home":
+        disabled_ids.update(item.get("requires_load_id") for item in loads
+                            if item.get("kind") == "miner" and item.get("requires_load_id"))
+    if profile == "tesla_away":
+        disabled_ids.update(item.get("requires_load_id") for item in loads
+                            if item.get("kind") == "ev_charger" and item.get("requires_load_id"))
+    dependent_ids = {item.get("requires_load_id") for item in loads if item.get("requires_load_id")}
+    dependency_rank: dict[str, int] = {}
+    for item in loads:
+        dependency_id = item.get("requires_load_id")
+        if dependency_id:
+            dependency_rank[dependency_id] = min(dependency_rank.get(dependency_id, 100),
+                                                 profile_order.get(item.get("kind"), 3))
+    ordered_loads = sorted(loads, key=lambda item: (
+        dependency_rank.get(item.get("id"), profile_order.get(item.get("kind"), 3)),
+        0 if item.get("id") in dependent_ids else 1,
+        item.get("priority", 100), item.get("id", "")))
+    for load in ordered_loads:
         if not load.get("enabled") or not load.get("automatic"):
             continue
         control = load.get("control_type")
         dependency_id = load.get("requires_load_id")
+        if manager.get("enabled") and load.get("id") in disabled_ids:
+            action = {"load_id": load["id"], "name": load["name"],
+                      "state": "OFF_FOR_TESLA_HOME" if profile == "tesla_home" else "OFF_TESLA_AWAY",
+                      "target_power_w": 0, "control_type": control}
+            actions.append(action); actions_by_id[load["id"]] = action
+            continue
+        if manager.get("enabled") and profile == "tesla_home" and load.get("kind") == "miner":
+            action = {"load_id": load["id"], "name": load["name"], "state": "STOP_FOR_TESLA_HOME",
+                      "target_power_w": 0, "control_type": control}
+            actions.append(action); actions_by_id[load["id"]] = action
+            continue
+        if manager.get("enabled") and profile == "tesla_away" and load.get("kind") == "ev_charger":
+            action = {"load_id": load["id"], "name": load["name"], "state": "OFF_TESLA_AWAY",
+                      "target_power_w": 0, "control_type": control}
+            actions.append(action); actions_by_id[load["id"]] = action
+            continue
         if control == "manual":
             action = {"load_id": load["id"], "name": load["name"], "state": "SKIPPED_MANUAL", "target_power_w": 0}
             actions.append(action); actions_by_id[load["id"]] = action
             continue
-        if control == "tesla_fleet":
-            action = {"load_id": load["id"], "name": load["name"], "state": "BLOCKED_CONTROL_UNAVAILABLE", "target_power_w": 0}
+        if control == "tesla_fleet" or load.get("kind") == "ev_charger":
+            action = {"load_id": load["id"], "name": load["name"], "state": "BLOCKED_CONTROL_UNAVAILABLE",
+                      "reason": "A API Tesla disponível está em modo de leitura; controlo da corrente de carga não está configurado.",
+                      "target_power_w": 0}
             actions.append(action); actions_by_id[load["id"]] = action
             continue
         if control == "antminer_braiins":
@@ -2297,8 +2389,9 @@ def build_dispatch_plan(current: dict[str, Any], config: dict[str, Any], *, samp
                   "state": "ON" if turn_on else "WAITING_FOR_SURPLUS",
                   "target_power_w": rated if turn_on else 0, "control_type": control}
         actions.append(action); actions_by_id[load["id"]] = action
-    return {**common, "state": "PLAN_READY", "reason": "Plan only; device commands are managed by the dispatcher.",
-            "estimated_surplus_w": surplus, "safety_margin_w": margin,
+    return {**common, "state": "PLAN_READY", "reason": "A previsão orienta o plano; a telemetria real limita a potência e confirma as condições de segurança.",
+            "estimated_surplus_w": surplus, "potential_surplus_w": forecast_surplus_w if manager.get("enabled") else None,
+            "safety_margin_w": margin,
             "unallocated_surplus_w": available, "actions": actions}
 
 
@@ -2715,8 +2808,16 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
             sample_state = "LIVE" if 0 <= sample_age <= 90 else "STALE"
         except (TypeError, ValueError):
             sample_state = "UNKNOWN"
+    forecast_load = load_forecast.get("one_hour_value")
+    forecast_load_unit = load_forecast.get("unit")
+    forecast_load_w = (float(forecast_load) * (1000 if forecast_load_unit == "kW" else 1)
+                       if isinstance(forecast_load, (int, float)) and not isinstance(forecast_load, bool)
+                       and math.isfinite(forecast_load) else None)
+    forecast_surplus_w = (max(0, round(projected_potential_kw * 1000 - forecast_load_w))
+                          if projected_potential_kw is not None and forecast_load_w is not None else None)
     dispatch = build_dispatch_plan(current, config, sample_state=sample_state,
-                                   telemetry_trust=("OWNER_COMMISSIONED" if config.get("automation", {}).get("deye_map_verified") else "LIVE_UNVERIFIED"))
+                                   telemetry_trust=("OWNER_COMMISSIONED" if config.get("automation", {}).get("deye_map_verified") else "LIVE_UNVERIFIED"),
+                                   forecast_surplus_w=forecast_surplus_w)
     execution_row = conn.execute("SELECT value FROM system_state WHERE key='energy_dispatch_last'").fetchone()
     try:
         dispatch_execution = json.loads(execution_row[0]) if execution_row else None
@@ -2749,6 +2850,13 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
                          "notice": "O Gateway compara, uma vez por hora, a produção Deye medida com a radiação prevista para essa hora e guarda um fator de desempenho suavizado no SQLite. Esse fator ajusta previsões futuras; a linha de potencial meteorológico permanece separada. Consumo é extrapolação indicativa do histórico. Não controla equipamentos."},
             "history": history,
             "dispatch": dispatch,
+            "surplus_manager": {"enabled": bool(config.get("surplus_manager", {}).get("enabled")),
+                                "manual_override": bool(config.get("surplus_manager", {}).get("manual_override")),
+                                "forecast_surplus_w": forecast_surplus_w,
+                                "minimum_potential_surplus_w": config.get("surplus_manager", {}).get("minimum_potential_surplus_w", 800),
+                                "priority_profile": config.get("surplus_manager", {}).get("priority_profile", "tesla_home"),
+                                "battery_reserve_soc_percent": config.get("surplus_manager", {}).get("battery_reserve_soc_percent", 70),
+                                "notice": "A previsão orienta o plano, mas a potência em tempo real limita sempre qualquer aumento."},
             "dispatch_execution": dispatch_execution,
             "limits": {"controls_enabled": bool(config.get("automation", {}).get("enabled") and dispatch["state"] == "PLAN_READY"),
                        "notice": dispatch.get("reason")}}

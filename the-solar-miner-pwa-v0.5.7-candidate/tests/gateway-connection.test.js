@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CONNECTION_STATES, GatewayConnectionManager, PRESENCE_API_STATUS, classifyEndpoint, inferHostedGatewayEndpoint, parsePairingQr, probeGateway, validateGatewayUrl } from '../gateway-connection.js';
+import { CONNECTION_STATES, GatewayConnectionManager, PRESENCE_API_STATUS, buildInviteLandingUrl, classifyEndpoint, inferHostedGatewayEndpoint, parseInviteQr, parsePairingQr, probeGateway, readInviteLandingHash, validateGatewayUrl } from '../gateway-connection.js';
 
 const makeQr = (code = `pair-${cryptoRandom()}` , expiresAt = Math.floor(Date.now()/1000)+300) => JSON.stringify({type:'solarminer-pairing',version:1,gateway_url:'https://solarminer-gw.example',pairing_code:code.padEnd(40,'x'),expires_at:expiresAt,single_use:true});
 let seed=0; function cryptoRandom(){ seed++; return `unique-${seed}-${Date.now()}`; }
@@ -50,6 +50,31 @@ test("v0.6.7 invite QR requires full fingerprint and HTTPS", async () => {
   assert.equal(parsed.identityValidated, false);
   assert.throws(() => parseInviteQr(JSON.stringify({...JSON.parse(payload), fp:"aabbccdd"})), /Fingerprint/);
   assert.throws(() => parseInviteQr(JSON.stringify({...JSON.parse(payload), url:"http://gateway.example.test"})), /HTTPS/);
+});
+
+test("PWA invitation link embeds one-time code only in the fragment and supports LAN plus Tailscale", () => {
+  const expiresAt = Math.floor(Date.now() / 1000) + 3600;
+  const url = buildInviteLandingUrl({ pwaUrl: "https://solarminer.example/app/"
+    gatewayUrls: ["https://192.168.8.168:8443", "https://solarminer.tailnet.ts.net"],
+    token: "t".repeat(43), fingerprint: "a".repeat(64), expiresAt });
+  assert.equal(new URL(url).search, "");
+  assert.match(new URL(url).hash, /^#invite=/);
+  const raw = readInviteLandingHash(new URL(url).hash);
+  const parsed = parseInviteQr(raw);
+  assert.deepEqual(parsed.gatewayUrls, ["https://192.168.8.168:8443", "https://solarminer.tailnet.ts.net"]);
+  assert.equal(parsed.token, "t".repeat(43));
+  assert.equal(parsed.fingerprint, "a".repeat(64));
+});
+
+test("PWA invitation QR uses the bundled local encoder", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { runInNewContext } = await import("node:vm");
+  const source = readFileSync(new URL("../qrcode-generator.js", import.meta.url), "utf8");
+  const sandbox = {};
+  runInNewContext(source, sandbox);
+  assert.equal(typeof sandbox.qrcode, "function");
+  const qr = sandbox.qrcode(0, "M"); qr.addData("https://solarminer.example/#invite=sample"); qr.make();
+  assert.match(qr.createSvgTag(8, 4), /^<svg[\s>]/);
 });
 
 test("v0.6.7 Gateway identity challenge verifies fingerprint and Ed25519 proof", async () => {

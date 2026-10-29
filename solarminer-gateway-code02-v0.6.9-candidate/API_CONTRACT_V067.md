@@ -14,7 +14,7 @@ The established `/api/v1/health` and `/api/v1/info` API version remains `0.6.0` 
 
 ## Invites
 
-- `POST /api/v1/invites` — owner only. JSON `{ "role": "viewer|operator|guest", "label": "..." }`. `guest` is normalized server-side to `viewer`. Returns the raw token only in this initial response and a QR payload `{v,url,token,fp,exp}`. Creation fails closed unless `SOLARMINER_PUBLIC_URL` is HTTPS and a matching Gateway Ed25519 identity is provisioned.
+- `POST /api/v1/invites` — owner only. JSON `{ "role": "viewer|operator|guest", "label": "..." }`. `guest` is normalized server-side to `viewer`. Returns the one-time `invite_code` `{token,fp,exp}` and matching Gateway Ed25519 identity fingerprint. The PWA builds the activation URL/QR using available LAN and Tailscale endpoints.
 - `GET /api/v1/invites` — owner only. Lists status without raw token or token hash.
 - `POST /api/v1/invites/{id}/revoke` — owner only, pending invitations only.
 - `POST /api/v1/invites/redeem` — public, rate limited. Additional required fields for complete account activation: `username`, `password`, `mac`; plus `invite_token`, `client_pubkey_pem`, `signature`, `timestamp`, `nonce`. The Ed25519 signature covers newline-separated `POST`, path, timestamp, nonce, SHA-256(token), username, SHA-256(password), normalized MAC, and SHA-256(DER public key). The nonce and invite consumption, user/device/association/session creation, and audit are committed in one SQLite transaction.
@@ -23,7 +23,6 @@ The established `/api/v1/health` and `/api/v1/info` API version remains `0.6.0` 
 Provisioning variables:
 - `SOLARMINER_GATEWAY_IDENTITY_PRIVATE_KEY` (default `/var/lib/solarminer/gateway-identity.key`, POSIX permissions must not expose group/other access)
 - `SOLARMINER_GATEWAY_IDENTITY_PUBLIC_KEY` (default `/etc/solarminer/gateway-identity.pub.pem`)
-- `SOLARMINER_PUBLIC_URL` (must be HTTPS)
 - `SOLARMINER_INVITE_TTL_SECONDS` (300–604800, default 43200)
 
 The public/private key pair must be provisioned out-of-band and its fingerprint delivered to the Owner through a trusted channel. This source increment does not generate or silently rotate identity keys.

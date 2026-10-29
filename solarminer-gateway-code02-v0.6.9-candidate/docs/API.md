@@ -214,7 +214,7 @@ The browser client uses Web Crypto Ed25519 with a non-exportable private `Crypto
 ## v0.6.8 — integração PWA e convites QR
 
 - `GET /api/v1/status`, `GET /api/v1/energy/categories` e `GET /api/v1/energy/equipment` são usados pela PWA depois de autenticação; não existem novos endpoints de telemetria ou histórico nesta versão.
-- `POST /api/v1/invites` continua Owner-only. A resposta inclui `qr_payload` e `qr_svg`; o SVG é gerado localmente e não usa serviço externo. O token de convite é segredo de utilização única.
+- `POST /api/v1/invites` continua Owner-only. A resposta devolve um código de utilização única e a fingerprint Ed25519 do Gateway. A PWA combina-os com os endereços LAN/Tailscale e gera localmente o QR/link de ativação; o segredo fica no fragmento do URL e não é enviado ao alojamento estático.
 - `GET /api/v1/invites` não devolve o token nem o hash do token.
 - `POST /api/v1/invites/{invite_id}/revoke` revoga apenas convites pendentes.
 - `POST /api/v1/presence/heartbeat` e `GET /api/v1/presence/me` exigem sessão autenticada. O estado indica atividade recente da sessão, não presença física nem caminho LAN/REMOTO.

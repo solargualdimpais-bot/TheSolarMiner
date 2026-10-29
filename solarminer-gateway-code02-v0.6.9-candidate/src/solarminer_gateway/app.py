@@ -50,7 +50,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.96"
+PACKAGE_VERSION = "0.6.99"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -532,7 +532,7 @@ def _run_automatic_dispatch() -> dict[str, Any]:
         summary = energy_engine.build_summary(conn, latest_sample=sample)
         plan = summary["dispatch"]
         config = summary["configuration"]
-        if plan.get("state") not in {"PLAN_READY", "WAITING_FOR_BATTERY"}:
+        if plan.get("state") not in {"PLAN_READY", "WAITING_FOR_BATTERY", "WAITING_FOR_BATTERY_RESERVE"}:
             outcome = {"state": plan.get("state", "BLOCKED"), "reason": plan.get("reason"), "actions": []}
             _persist_dispatch_outcome(conn, outcome)
             return outcome
@@ -553,10 +553,11 @@ def _run_automatic_dispatch() -> dict[str, Any]:
         plan_actions = plan.get("actions", [])
         loads_by_id = {item.get("id"): item for item in config.get("loads", [])}
         # On falling surplus, stop the miner before opening its Tuya supply relay.
+        action_order = {action.get("load_id"): index for index, action in enumerate(plan_actions)}
         plan_actions = sorted(plan_actions, key=lambda action: (
             0 if loads_by_id.get(action.get("load_id"), {}).get("control_type") == "antminer_braiins"
             and int(action.get("target_power_w", 0)) == 0 else 1,
-            int(loads_by_id.get(action.get("load_id"), {}).get("priority", 100)),
+            action_order.get(action.get("load_id"), 1000),
         ))
         for action in plan_actions:
             load = next((item for item in config.get("loads", []) if item.get("id") == action.get("load_id")), None)
@@ -569,7 +570,7 @@ def _run_automatic_dispatch() -> dict[str, Any]:
                 continue
             control = load.get("control_type")
             desired = "ON" if action.get("state") == "ON" or (action.get("state") == "TARGET" and action.get("target_power_w", 0) > 0) else "OFF"
-            if action.get("state") not in {"ON", "TARGET", "WAITING_FOR_SURPLUS", "BELOW_MINIMUM_SURPLUS", "BLOCKED_RELAY_NOT_READY", "OFF_FOR_BATTERY", "STOP_FOR_BATTERY"}:
+            if action.get("state") not in {"ON", "TARGET", "WAITING_FOR_SURPLUS", "BELOW_MINIMUM_SURPLUS", "BLOCKED_RELAY_NOT_READY", "OFF_FOR_BATTERY", "STOP_FOR_BATTERY", "STOP_FOR_TESLA_HOME", "OFF_FOR_TESLA_HOME", "OFF_TESLA_AWAY"}:
                 continue
             if control in {"tuya_smart", "tuya_breaker"}:
                 device_id, code = load.get("tuya_device_id"), load.get("tuya_switch_code")
@@ -654,6 +655,16 @@ def _persist_dispatch_outcome(conn: sqlite3.Connection, outcome: dict[str, Any])
     value = {**outcome, "occurred_at": utcnow()}
     conn.execute("INSERT INTO system_state(key,value) VALUES('energy_dispatch_last',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                  (json.dumps(value, separators=(",", ":")),))
+
+
+def _activate_energy_manual_override(conn: sqlite3.Connection, actor_id: str, source: str) -> None:
+    """Pause automatic dispatch after any successful explicit Owner command."""
+    config = energy_engine.get_config(conn)
+    manager = {**config.get("surplus_manager", {}), "manual_override": True}
+    config["surplus_manager"] = manager
+    conn.execute("INSERT INTO system_state(key,value) VALUES('energy_engine_config',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                 (json.dumps(config, separators=(",", ":")),))
+    audit(conn, actor_id, "energy.dispatch.manual_override", source, "paused", {"automatic_dispatch_paused": True})
 
 
 async def _energy_dispatch_loop() -> None:
@@ -2070,6 +2081,7 @@ def antminer_control(payload: dict[str, Any], session: dict[str, Any] = Depends(
         try:
             config = hardware_integrations.load_config().get("antminer", {})
             result = hardware_integrations.control_antminer(config, action, watt)
+            _activate_energy_manual_override(conn, session["user_id"], f"antminer:{action}")
             audit(conn, session["user_id"], "hardware.antminer.control", "antminer", "success", {
                 "action": action, "requested_watt": watt if action == "set_power_target" else None,
                 "applied_watt": result.get("applied_watt"), "control_command_sent": True,
@@ -2138,6 +2150,8 @@ def antminer_management(payload: dict[str, Any], session: dict[str, Any] = Depen
                                                                 resource_id=resource_id)
             if operation == "tuner":
                 result["energy_readings_persisted"] = _persist_antminer_braiins_tuner(conn, config, result)
+            if result.get("command_sent"):
+                _activate_energy_manual_override(conn, session["user_id"], f"antminer-management:{operation}")
             audit(conn, session["user_id"], f"hardware.antminer.{operation}", "antminer",
                   "success", {"operation": operation, "command_sent": result.get("command_sent", False)})
             conn.commit()
@@ -2172,6 +2186,7 @@ def tuya_switch_control(payload: dict[str, Any], session: dict[str, Any] = Depen
         try:
             config = hardware_integrations.load_config().get("tuya", {})
             result = hardware_integrations.control_tuya_switch(config, device_id, requested_on, code=code)
+            _activate_energy_manual_override(conn, session["user_id"], f"tuya:{device_id}")
             _append_tuya_command_event(conn, device_id, code or result.get("switch_code", ""), requested_on,
                                        confirmed=bool(result.get("state_confirmed")))
             outcome = "success" if result.get("state_confirmed") else "unconfirmed"
@@ -2206,6 +2221,7 @@ def tuya_level_control(payload: dict[str, Any], session: dict[str, Any] = Depend
         try:
             config = hardware_integrations.load_config().get("tuya", {})
             result = hardware_integrations.control_tuya_level(config, device_id, percent)
+            _activate_energy_manual_override(conn, session["user_id"], f"tuya-level:{device_id}")
             audit(conn, session["user_id"], "hardware.tuya.level", device_id, "accepted", {
                 "requested_percent": percent, "control_command_sent": True, "state_confirmed": False,
             })
@@ -3019,31 +3035,15 @@ def gateway_identity_challenge(timestamp: int, nonce: str) -> dict[str, Any]:
             "nonce": nonce, "signature": private.sign(canonical).hex(), "signature_algorithm": "Ed25519"}
 
 
-def _invite_qr_svg(payload: dict[str, Any]) -> str:
-    """Render a self-contained SVG QR locally; no third-party network service is used."""
-    try:
-        import qrcode
-        from qrcode.image.svg import SvgPathImage
-    except ImportError as exc:
-        raise HTTPException(503, "qr_generation_dependency_unavailable") from exc
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=5, border=4, image_factory=SvgPathImage)
-    qr.add_data(encoded)
-    qr.make(fit=True)
-    return qr.make_image().to_string().decode("utf-8")
-
-
 @app.post("/api/v1/invites", status_code=201)
 def create_invite(payload: CreateInvite, request: Request,
                   session: dict[str, Any] = Depends(current_session)) -> dict[str, Any]:
     if payload.role not in {"viewer", "operator", "guest"}:
         raise HTTPException(422, "invite_role_not_allowed")
     role = "viewer" if payload.role == "guest" else payload.role
-    # Fail closed if the deployment has not configured a separately trusted Gateway identity.
+    # The PWA renders the QR locally. The Gateway returns only the short-lived
+    # invitation secret and its stable identity fingerprint.
     fp = _gateway_qr_fingerprint()
-    public_url = os.environ.get("SOLARMINER_PUBLIC_URL", "").strip()
-    if not public_url.startswith("https://") or len(public_url) > 2048:
-        raise HTTPException(503, "gateway_https_url_not_configured; invite_creation_disabled")
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         actor = _revalidate_actor(conn, session, "manage_gateway")
@@ -3060,13 +3060,11 @@ def create_invite(payload: CreateInvite, request: Request,
         expires = now + ttl
         conn.execute("INSERT INTO invites(id,token_hash,owner_id,role,label,created_at,expires_at) VALUES(?,?,?,?,?,?,?)",
                      (invite_id, token_hash(token), actor["user_id"], role, payload.label.strip(), now, expires))
-        qr = {"v": 1, "url": public_url.rstrip("/"), "token": token, "fp": fp, "exp": expires}
-        # Render before commit so a missing QR dependency cannot strand an active invite
-        # whose one-time secret was never delivered to the Owner.
-        qr_svg = _invite_qr_svg(qr)
+        invite_code = {"token": token, "fp": fp, "exp": expires}
         audit(conn, actor["user_id"], "invite.created", invite_id, "success", {"role": role, "expires_at": expires})
         conn.commit()
-    return {"invite_id": invite_id, "token": token, "qr_payload": qr, "qr_svg": qr_svg, "expires_at": expires, "role": role, "label": payload.label.strip()}
+    return {"invite_id": invite_id, "invite_code": invite_code,
+            "expires_at": expires, "role": role, "label": payload.label.strip()}
 
 
 @app.get("/api/v1/invites")
@@ -3204,7 +3202,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.96"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.99"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

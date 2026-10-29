@@ -7,7 +7,7 @@
 | Estado LIVE/STALE/UNKNOWN/UNAVAILABLE | PASS em lógica e testes estáticos | LIVE exige leitura recente com trust de telemetria; não foi feita validação Safari/iPhone |
 | Login Ed25519, chave não exportável e token só em memória | PASS em testes de código | Persistência CryptoKey via IndexedDB depende de suporte do browser real |
 | Bootstrap inicial do Owner | Implementado com restrição local | Requer browser no próprio Gateway, token local e identidade Gateway provisionada |
-| Criar/listar/revogar convites | PASS backend + UI | Só Owner; API devolve QR SVG gerado localmente; depende de `python3-qrcode` |
+| Criar/listar/revogar convites | PASS backend + UI | Só Owner; Gateway emite código; PWA gera QR e formulário de ativação. |
 | Fingerprint e assinatura Ed25519 do Gateway | PASS em testes de API/código | A instalação física da chave de identidade não foi realizada/validada |
 | Presença | PASS em integração de sessão | Indica atividade de sessão, não presença física nem método LAN/REMOTO |
 | PROFILE/favoritos persistidos | PASS local | Persistência browser-local; não é sincronização multi-dispositivo no backend |

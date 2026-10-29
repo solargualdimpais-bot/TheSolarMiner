@@ -184,21 +184,32 @@ export async function recoverGatewayOwner({ gatewayUrl, username, recoveryKey, n
 
 export async function redeemGatewayInvite({ qrText, username, password, mac }) {
   const invite = parseInviteQr(qrText, { allowLocalHttp: ["localhost", "127.0.0.1", "::1"].includes(location.hostname.replace(/^\[|\]$/g, "")) });
-  const timestamp = Math.floor(Date.now() / 1000), challengeNonce = nonce();
-  const challenge = await gatewayRequest(invite.gatewayUrl, `/api/v1/gateway/identity?timestamp=${timestamp}&nonce=${challengeNonce}`);
-  await verifyGatewayIdentityChallenge(invite, challenge);
-  const identity = await createDeviceIdentity(invite.gatewayUrl, invite.fingerprint);
+  let gatewayUrl = null, lastError = null;
+  for (const endpoint of invite.gatewayUrls || [invite.gatewayUrl]) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 7000);
+    try {
+      const timestamp = Math.floor(Date.now() / 1000), challengeNonce = nonce();
+      const challenge = await gatewayRequest(endpoint, `/api/v1/gateway/identity?timestamp=${timestamp}&nonce=${challengeNonce}`, { signal: controller.signal });
+      await verifyGatewayIdentityChallenge(invite, challenge);
+      gatewayUrl = endpoint;
+      break;
+    } catch (error) { lastError = error; }
+    finally { clearTimeout(timeout); }
+  }
+  if (!gatewayUrl) throw new Error(`Não foi possível ligar ao Gateway pela LAN nem pelo Tailscale. ${lastError?.message || "Confirma a ligação à rede."}`);
+  const identity = await createDeviceIdentity(gatewayUrl, invite.fingerprint);
   const payload = await signInviteRedemption({ privateKey: identity.privateKey, token: invite.token,
     username, password, mac, publicKeyPem: identity.publicKeyPem, timestamp: Math.floor(Date.now() / 1000), nonce: nonce() });
-  const result = await gatewayRequest(invite.gatewayUrl, "/api/v1/invites/redeem", { method: "POST", body: payload, authenticated: false });
+  const result = await gatewayRequest(gatewayUrl, "/api/v1/invites/redeem", { method: "POST", body: payload, authenticated: false });
   identity.deviceId = result.device_id;
   identity.userId = result.user?.id;
   await identityDbRequest("readwrite", store => store.put(identity));
   bearerToken = result.access_token;
   currentUser = result.user;
-  currentGateway = invite.gatewayUrl;
+  currentGateway = gatewayUrl;
   await startPresenceHeartbeat();
-  return { ...result, gatewayUrl: invite.gatewayUrl, identityValidated: true, presence: presenceInfo() };
+  return { ...result, gatewayUrl, identityValidated: true, presence: presenceInfo() };
 }
 export async function loginGateway({ gatewayUrl }) {
   const base = validateGatewayUrl(gatewayUrl, { allowLocalHttp: ["localhost", "127.0.0.1", "::1"].includes(location.hostname.replace(/^\[|\]$/g, "")) }).origin;

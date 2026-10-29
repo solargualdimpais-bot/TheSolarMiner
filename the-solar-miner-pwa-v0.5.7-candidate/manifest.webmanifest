@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.60: previsões, histórico e diagnóstico privado do Gateway.",
+  "description": "The Solar Miner PWA v0.5.63: previsões, histórico e ativação de convites no Gateway.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",

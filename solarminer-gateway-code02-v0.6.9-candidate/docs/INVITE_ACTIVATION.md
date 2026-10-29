@@ -1,0 +1,8 @@
+# Ativação de utilizadores por QR
+
+1. O Owner cria o convite no Gateway. O Gateway guarda apenas o hash do código de utilização única e devolve o código, a fingerprint Ed25519 e a validade.
+2. A PWA verifica que o Gateway tem um endpoint MagicDNS Tailscale com certificado HTTPS válido e gera o QR localmente. O QR usa apenas esse endpoint, evitando certificados LAN autoassinados. O código fica no fragmento `#invite=...`, que não é enviado ao alojamento estático.
+3. O utilizador autorizado liga manualmente o telemóvel ao Tailnet e lê o QR. O link abre a PWA, que pede nome de utilizador e palavra-passe nova, confirma criptograficamente a identidade do Gateway, cria a conta, associa a chave deste dispositivo e inicia a sessão.
+4. Se o endereço HTTPS/certificado Tailscale ainda não estiver pronto, a PWA não cria um QR que falhe: explica que o Gateway/Tailnet precisa de estar preparado. A PWA não instala certificados no telemóvel e não contorna validação TLS.
+
+A associação do telemóvel ao Tailscale é o único passo manual de rede para o novo utilizador. O Gateway tem de estar previamente autorizado no Tailnet, com MagicDNS e HTTPS Certificates ativos; o certificado do nome `*.ts.net` é provisionado/renovado pelo serviço do Gateway. A adesão do telemóvel ao Tailnet não é feita pelo código QR de convite do SolarMiner. O Owner continua a escolher o papel da conta e pode revogar convites pendentes.

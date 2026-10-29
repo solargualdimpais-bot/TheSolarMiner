@@ -809,6 +809,61 @@ def test_dispatch_sheds_automatic_loads_when_battery_needs_charge():
     assert result["state"] == "WAITING_FOR_BATTERY"
 
 
+def test_forecast_guided_dispatch_respects_profile_actual_surplus_and_manual_override():
+    config = {
+        "automation": {"enabled": True, "commissioned": True, "deye_map_verified": True,
+                       "surplus_margin_w": 100, "decision_interval_seconds": 300},
+        "surplus_manager": {"enabled": True, "manual_override": False,
+                            "minimum_potential_surplus_w": 800,
+                            "battery_reserve_soc_percent": 70, "priority_profile": "tesla_home"},
+        "loads": [
+            {"id": "miner", "name": "Mineradora", "kind": "miner", "control_type": "antminer_braiins",
+             "rated_power_w": 2500, "minimum_power_w": 800, "maximum_power_w": 2500,
+             "priority": 1, "enabled": True, "automatic": True},
+            {"id": "aqs", "name": "AQS", "kind": "water_heater", "control_type": "tuya_breaker",
+             "rated_power_w": 1000, "priority": 2, "enabled": True, "automatic": True},
+        ],
+    }
+    current = {"pv_power_w": 2200, "load_power_w": 1000, "battery_soc_percent": 85,
+               "battery_soc_source": "deye_live_reported", "battery_charge_headroom_kwh_to_maximum": 0,
+               "battery_charge_power_w": 0, "battery_discharge_power_w": 0, "battery_power_w": 0}
+    home = energy_engine.build_dispatch_plan(current, config, sample_state="LIVE",
+        telemetry_trust="OWNER_COMMISSIONED", forecast_surplus_w=5000)
+    assert home["mode"] == "FORECAST_GUIDED"
+    assert [action["state"] for action in home["actions"]] == ["ON", "STOP_FOR_TESLA_HOME"]
+    assert home["potential_surplus_w"] == 5000
+    assert home["actions"][0]["load_id"] == "aqs"
+
+    away_config = {**config, "surplus_manager": {**config["surplus_manager"], "priority_profile": "tesla_away"}}
+    away = energy_engine.build_dispatch_plan(current, away_config, sample_state="LIVE",
+        telemetry_trust="OWNER_COMMISSIONED", forecast_surplus_w=5000)
+    assert away["actions"][0]["load_id"] == "miner"
+    assert away["actions"][0]["target_power_w"] <= current["pv_power_w"] - current["load_power_w"] - 100
+
+    low_battery = energy_engine.build_dispatch_plan({**current, "battery_soc_percent": 60}, config,
+        sample_state="LIVE", telemetry_trust="OWNER_COMMISSIONED", forecast_surplus_w=5000)
+    assert low_battery["state"] == "WAITING_FOR_BATTERY_RESERVE"
+    assert [action["state"] for action in low_battery["actions"]] == ["STOP_FOR_BATTERY", "OFF_FOR_BATTERY"]
+
+    manual = energy_engine.build_dispatch_plan(current,
+        {**config, "surplus_manager": {**config["surplus_manager"], "manual_override": True}},
+        sample_state="LIVE", telemetry_trust="OWNER_COMMISSIONED", forecast_surplus_w=5000)
+    assert manual["state"] == "MANUAL_OVERRIDE"
+    assert manual["actions"] == []
+
+
+def test_forecast_guided_dispatch_fails_closed_without_forecast():
+    config = {"automation": {"enabled": True, "commissioned": True, "deye_map_verified": True},
+              "surplus_manager": {"enabled": True}}
+    result = energy_engine.build_dispatch_plan(
+        {"pv_power_w": 2000, "load_power_w": 500, "battery_soc_percent": 90,
+         "battery_soc_source": "gateway_energy_integrated", "battery_charge_headroom_kwh_to_maximum": 0,
+         "battery_charge_power_w": 0, "battery_power_w": 0},
+        config, sample_state="LIVE", telemetry_trust="OWNER_COMMISSIONED")
+    assert result["state"] == "BLOCKED_FORECAST_UNAVAILABLE"
+    assert result["actions"] == []
+
+
 def test_energy_sampler_interval_defaults_to_30_seconds_and_never_goes_below_30(monkeypatch):
     from solarminer_gateway import app as gateway
 

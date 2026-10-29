@@ -133,19 +133,58 @@ export class GatewayConnectionManager {
 
 export const PRESENCE_API_STATUS = Object.freeze({ available: true, endpoint: "/api/v1/presence/heartbeat", readEndpoint: "/api/v1/presence/me", reason: "A API de presença exige sessão autenticada e só declara atividade recente desta sessão; não prova presença física nem método LAN/REMOTO.", physicalPresenceSupported: false, connectionMethod: "unknown" });
 
-/** Parse the v0.6.7 invite format. Parsing alone does not establish trust. */
+function encodeInviteFragment(value) {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/g, "");
+}
+
+/** Build a PWA deep link. The one-time code is in the URL fragment, never sent to the static host. */
+export function buildInviteLandingUrl({ pwaUrl, gatewayUrls, token, fingerprint, expiresAt }) {
+  const page = new URL(pwaUrl);
+  if (page.protocol !== "https:") throw new Error("A página de ativação tem de usar HTTPS.");
+  const urls = [...new Set((gatewayUrls || []).map(value => validateGatewayUrl(value).origin))];
+  if (!urls.length) throw new Error("Não há um endereço HTTPS válido para o Gateway.");
+  const fp = String(fingerprint || "").toLowerCase().replaceAll(":", "");
+  if (!/^[0-9a-f]{64}$/.test(fp)) throw new Error("Fingerprint completa SHA-256 inválida.");
+  if (typeof token !== "string" || token.length < 32 || token.length > 256) throw new Error("Código de acesso inválido.");
+  if (!Number.isSafeInteger(expiresAt) || expiresAt <= Math.floor(Date.now() / 1000)) throw new Error("O convite expirou.");
+  page.hash = `invite=${encodeInviteFragment({ v: 2, urls, token, fp, exp: expiresAt })}`;
+  return page.href;
+}
+
+export function readInviteLandingHash(hash) {
+  const raw = String(hash || "").replace(/^#/, "");
+  const params = new URLSearchParams(raw);
+  const encoded = params.get("invite");
+  if (!encoded) return null;
+  if (encoded.length > 4096 || !/^[A-Za-z0-9_-]+$/.test(encoded)) throw new Error("Link de convite inválido.");
+  const base64 = encoded.replaceAll("-", "+").replaceAll("_", "/").padEnd(Math.ceil(encoded.length / 4) * 4, "=");
+  let data;
+  try {
+    const binary = atob(base64);
+    const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
+    data = JSON.parse(new TextDecoder().decode(bytes));
+  } catch { throw new Error("Não foi possível ler o convite deste link."); }
+  return JSON.stringify(data);
+}
+
+/** Parse the invite payload used by PWA activation links. Parsing alone does not establish trust. */
 export function parseInviteQr(raw, options = {}) {
   if (typeof raw !== "string" || raw.length > MAX_QR_CHARS) throw new Error("Convite QR inválido ou demasiado grande.");
   let data;
   try { data = JSON.parse(raw); } catch { throw new Error("O QR não contém JSON válido."); }
-  if (!data || data.v !== 1 || typeof data.url !== "string" || typeof data.token !== "string" ||
+  if (!data || ![1, 2].includes(data.v) || typeof data.token !== "string" ||
       typeof data.fp !== "string" || typeof data.exp !== "number") throw new Error("Formato de convite v0.6.7 inválido.");
-  const endpoint = validateGatewayUrl(data.url, options);
+  const urls = data.v === 2 ? data.urls : [data.url];
+  if (!Array.isArray(urls) || urls.length < 1 || urls.length > 4 || urls.some(url => typeof url !== "string")) throw new Error("O convite não contém endereços do Gateway válidos.");
+  const endpoints = [...new Set(urls.map(url => validateGatewayUrl(url, options).origin))];
   const fp = data.fp.toLowerCase().replaceAll(":", "");
   if (!/^[0-9a-f]{64}$/.test(fp)) throw new Error("Fingerprint completa SHA-256 inválida.");
   if (data.token.length < 32 || data.token.length > 256) throw new Error("Token do convite inválido.");
   if (!Number.isSafeInteger(data.exp) || data.exp <= Math.floor(Date.now() / 1000)) throw new Error("O convite expirou.");
-  return { version: 1, gatewayUrl: endpoint.origin, token: data.token, fingerprint: fp, expiresAt: data.exp, identityValidated: false };
+  return { version: data.v, gatewayUrl: endpoints[0], gatewayUrls: endpoints, token: data.token, fingerprint: fp, expiresAt: data.exp, identityValidated: false };
 }
 
 /** Verify possession of the Gateway identity private key and match its full QR fingerprint. */

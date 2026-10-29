@@ -48,6 +48,21 @@ test("new browser sign-in sends password only to the HTTPS Gateway and stores de
   assert.match(sw, /password-device-login/);
 });
 
+test("invite QR is generated in the PWA and opens its one-time account activation form", () => {
+  assert.match(app, /buildInviteLandingUrl\(/);
+  assert.match(app, /tailscale\?\.https_ready !== true/);
+  assert.match(app, /const gateways = \[tailscale\.endpoint\]/);
+  const inviteHandler = app.split('$("#gateway-create-invite-form")')[1].split('$("#gateway-invite-list")')[0];
+  assert.doesNotMatch(inviteHandler, /localStorage|gateway-lan-endpoint/);
+  assert.match(app, /globalThis\.qrcode\(0, "M"\)/);
+  assert.match(app, /redeemGatewayInvite\(/);
+  assert.match(app, /readInviteLandingHash\(location\.hash\)/);
+  assert.match(html, /id="gateway-invite-activation-form"/);
+  assert.match(html, /id="gateway-invite-password"/);
+  assert.match(sw, /qrcode-generator\.js/);
+  assert.match(auth, /invite\.gatewayUrls/);
+});
+
 test("terminal WebSocket honors the confirmed Tailscale HTTPS route", () => {
   assert.match(auth, /const access = await readGatewayTailscale\(\)/);
   assert.match(auth, /access\?\.https_ready === true/);
@@ -56,7 +71,7 @@ test("terminal WebSocket honors the confirmed Tailscale HTTPS route", () => {
 });
 
 test("service worker only caches allowlisted static resources and versions cache explicitly", () => {
-  assert.match(sw, /the-solar-miner-static-v0\.5\.60-private-diagnostics/);
+  assert.match(sw, /the-solar-miner-static-v0\.5\.63-surplus-manager/);
   assert.match(sw, /url\.pathname\.includes\("\/api\/v1\/"\)/);
   assert.match(sw, /request\.headers\.has\("Authorization"\)/);
   assert.match(sw, /request\.headers\.has\("Cookie"\)/);
