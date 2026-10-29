@@ -54,7 +54,7 @@ test("v0.6.7 invite QR requires full fingerprint and HTTPS", async () => {
 
 test("PWA invitation link embeds one-time code only in the fragment and supports LAN plus Tailscale", () => {
   const expiresAt = Math.floor(Date.now() / 1000) + 3600;
-  const url = buildInviteLandingUrl({ pwaUrl: "https://solarminer.example/app/"
+  const url = buildInviteLandingUrl({ pwaUrl: "https://solarminer.example/app/",
     gatewayUrls: ["https://192.168.8.168:8443", "https://solarminer.tailnet.ts.net"],
     token: "t".repeat(43), fingerprint: "a".repeat(64), expiresAt });
   assert.equal(new URL(url).search, "");
