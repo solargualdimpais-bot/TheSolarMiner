@@ -121,6 +121,14 @@ def test_partition_listing_uses_compatible_lsblk_pairs_options(monkeypatch):
     assert "--list" not in calls[0]
 
 
+def test_partition_uuid_uses_portable_blkid_value_options(monkeypatch):
+    calls = []
+    monkeypatch.setattr(provision, "run", lambda args: calls.append(args) or "data-uuid\n")
+    assert provision.partition_uuid("/dev/sda6") == "data-uuid"
+    assert calls == [["blkid", "--output", "value", "--match-tag", "UUID", "/dev/sda6"]]
+    assert "--no-encode" not in calls[0]
+
+
 def test_fstab_entry_is_idempotent(tmp_path, monkeypatch):
     fstab = tmp_path / "fstab"
     fstab.write_text("UUID=root / ext4 defaults 0 1\n", encoding="utf-8")

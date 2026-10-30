@@ -188,6 +188,11 @@ def partition_rows(disk: str) -> list[tuple[str, str, str, str]]:
     return rows
 
 
+def partition_uuid(partition: str) -> str:
+    """Read the filesystem UUID using blkid's portable value output mode."""
+    return run(["blkid", "--output", "value", "--match-tag", "UUID", partition]).strip()
+
+
 def write_fstab(uuid: str) -> None:
     existing = FSTAB.read_text(encoding="utf-8") if FSTAB.exists() else ""
     managed = []
@@ -283,7 +288,7 @@ def main() -> int:
             if probe.returncode == 0 and probe.stdout.strip():
                 raise RuntimeError("A nova partição contém uma assinatura existente; por segurança não foi formatada.")
             run(["mkfs.ext4", "-L", LABEL, partition])
-            uuid = run(["blkid", "--no-encode", "--output", "value", "--match-tag", "UUID", partition]).strip()
+            uuid = partition_uuid(partition)
             if not uuid:
                 raise RuntimeError("Não foi possível ler o UUID da partição criada.")
         write_fstab(uuid)
