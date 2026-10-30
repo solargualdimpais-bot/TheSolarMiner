@@ -1,6 +1,7 @@
 [Unit]
 Description=Independent SolarMiner Gateway and Nginx health recovery
 After=local-fs.target
+RequiresMountsFor=/var/lib/solarminer
 
 [Service]
 Type=oneshot
@@ -9,6 +10,7 @@ Group=root
 Environment=PYTHONPATH=/opt/solarminer/current/usr/lib/solarminer-gateway
 Environment=SOLARMINER_DATA_DIR=/var/lib/solarminer
 ExecStart=/usr/bin/python3 -m solarminer_gateway.health_watchdog
+ExecStartPre=/usr/bin/solarminer-data-volume-check
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true

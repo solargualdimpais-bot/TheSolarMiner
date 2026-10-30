@@ -2,6 +2,7 @@
 Description=SolarMiner restricted privileged helper broker request
 After=local-fs.target solarminer-recovery.service
 Requires=solarminer-recovery.service
+RequiresMountsFor=/var/lib/solarminer
 
 [Service]
 Type=exec
@@ -11,6 +12,7 @@ StandardInput=socket
 StandardOutput=socket
 StandardError=journal
 ExecStart=/usr/bin/solarminer-update-broker
+ExecStartPre=/usr/bin/solarminer-data-volume-check
 TimeoutStartSec=35
 UMask=0077
 NoNewPrivileges=true

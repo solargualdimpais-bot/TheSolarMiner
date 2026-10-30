@@ -64,11 +64,13 @@ jobs:
         working-directory: solarminer-gateway-code02-v0.6.9-candidate
         run: |
           sh -n packaging/install-from-usb.sh
+          sh -n packaging/solarminer-data-volume-check
           sh -n packaging/repair-existing-from-usb.sh
           sh -n packaging/postinst
           sh -n packaging/prerm
           sh -n packaging/solarminer-public-tls-renew
           sh -n packaging/install-tailscale.sh
+          python3 -m py_compile packaging/provision-data-volume.py
           sh -n packaging/solarminer-update-broker
           sh -n packaging/solarminer-tailscale-info
           sh -n packaging/solarminer-tailscale-connect
@@ -85,6 +87,7 @@ jobs:
           install -m 0644 packaging/solarminer-update-broker@.service "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-update-broker@.service"
           install -m 0644 packaging/solarminer-update-broker.socket "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-update-broker.socket"
           install -m 0755 packaging/solarminer-recovery "$VERIFY_ROOT/usr/bin/solarminer-recovery"
+          install -m 0755 packaging/solarminer-data-volume-check "$VERIFY_ROOT/usr/bin/solarminer-data-volume-check"
           install -m 0755 packaging/solarminer-update-broker "$VERIFY_ROOT/usr/bin/solarminer-update-broker"
           install -m 0755 /usr/bin/true "$VERIFY_ROOT/usr/bin/true"
           install -m 0755 /usr/bin/true "$VERIFY_ROOT/usr/bin/python3"
@@ -279,6 +282,7 @@ jobs:
             cp "$RUNNER_TEMP/solarminer-usb-rollback/$VERSION/solarminer-release.json" "$BUNDLE/solarminer-release-$VERSION.json"
           done
           cp solarminer-gateway-code02-v0.6.9-candidate/packaging/install-from-usb.sh "$BUNDLE/"
+          cp solarminer-gateway-code02-v0.6.9-candidate/packaging/provision-data-volume.py "$BUNDLE/"
           cp solarminer-gateway-code02-v0.6.9-candidate/packaging/install-tailscale.sh "$BUNDLE/"
           cp solarminer-gateway-code02-v0.6.9-candidate/packaging/repair-existing-from-usb.sh "$BUNDLE/"
           cp solarminer-gateway-code02-v0.6.9-candidate/packaging/USB_INSTALL_README.txt "$BUNDLE/README.txt"

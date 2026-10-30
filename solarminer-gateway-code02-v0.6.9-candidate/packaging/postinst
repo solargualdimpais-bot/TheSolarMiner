@@ -4,6 +4,12 @@ case "${1:-}" in
   configure)
     if ! getent group solarminer >/dev/null 2>&1; then addgroup --system solarminer; fi
     if ! getent passwd solarminer >/dev/null 2>&1; then adduser --system --ingroup solarminer --home /var/lib/solarminer --no-create-home --shell /usr/sbin/nologin solarminer; fi
+    if [ -f /etc/solarminer/data-volume.uuid ]; then
+      mountpoint -q /var/lib/solarminer || { echo "SolarMiner data volume is not mounted; refusing to initialize the database on the system partition" >&2; exit 1; }
+      expected_uuid=$(cat /etc/solarminer/data-volume.uuid)
+      actual_uuid=$(findmnt --noheadings --output UUID --target /var/lib/solarminer)
+      [ -n "$expected_uuid" ] && [ "$actual_uuid" = "$expected_uuid" ] || { echo "SolarMiner data volume UUID mismatch" >&2; exit 1; }
+    fi
     install -d -o solarminer -g solarminer -m 0700 /var/lib/solarminer
     [ ! -L /etc/solarminer ] || { echo "Refusing symlink identity configuration directory" >&2; exit 1; }
     install -d -o root -g root -m 0755 /etc/solarminer

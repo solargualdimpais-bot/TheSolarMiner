@@ -2,10 +2,12 @@
 Description=Issue or renew the SolarMiner Gateway Tailscale HTTPS certificate
 Wants=network-online.target tailscaled.service
 After=network-online.target tailscaled.service nginx.service
+RequiresMountsFor=/var/lib/solarminer
 
 [Service]
 Type=oneshot
 ExecStart=/usr/sbin/solarminer-tailscale-cert
+ExecStartPre=/usr/bin/solarminer-data-volume-check
 TimeoutStartSec=3min
 UMask=0077
 NoNewPrivileges=true

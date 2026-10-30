@@ -2,12 +2,14 @@
 Description=SolarMiner verified update operation %i
 After=local-fs.target solarminer-recovery.service
 ConditionPathExists=/opt/solarminer/current
+RequiresMountsFor=/var/lib/solarminer
 
 [Service]
 Type=oneshot
 User=root
 Group=root
 ExecStart=/usr/sbin/solarminer-update-apply --operation %i
+ExecStartPre=/usr/bin/solarminer-data-volume-check
 TimeoutStartSec=300
 UMask=0077
 NoNewPrivileges=true

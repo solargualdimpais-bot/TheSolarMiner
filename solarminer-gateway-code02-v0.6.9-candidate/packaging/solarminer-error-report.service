@@ -2,14 +2,16 @@
 Description=Send queued sanitized SolarMiner Gateway diagnostics to private GitHub repository
 After=network-online.target solarminer-gateway.service
 Wants=network-online.target
+RequiresMountsFor=/var/lib/solarminer
 
 [Service]
 Type=oneshot
 User=solarminer
 Group=solarminer
 Environment=PYTHONPATH=/opt/solarminer/current/usr/lib/solarminer-gateway
-Environment=SOLARMINER_PACKAGE_VERSION=0.6.99
+Environment=SOLARMINER_PACKAGE_VERSION=0.6.100
 ExecStart=/usr/bin/python3 -m solarminer_gateway.error_reporting
+ExecStartPre=/usr/bin/solarminer-data-volume-check
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true

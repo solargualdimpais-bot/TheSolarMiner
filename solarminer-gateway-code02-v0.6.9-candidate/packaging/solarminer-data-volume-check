@@ -1,0 +1,13 @@
+#!/bin/sh
+# Fail closed on fresh installs if the dedicated data filesystem is missing.
+set -eu
+MARKER=/etc/solarminer/data-volume.uuid
+DATA=/var/lib/solarminer
+[ -f "$MARKER" ] || exit 0
+[ ! -L "$MARKER" ] || { echo "SolarMiner data-volume marker is a symlink" >&2; exit 1; }
+[ -d "$DATA" ] && [ ! -L "$DATA" ] || { echo "SolarMiner data directory is unsafe" >&2; exit 1; }
+mountpoint -q "$DATA" || { echo "SolarMiner data filesystem is not mounted; refusing to use the system partition" >&2; exit 1; }
+expected=$(cat "$MARKER")
+actual=$(findmnt --noheadings --output UUID --target "$DATA")
+[ -n "$expected" ] && [ "$actual" = "$expected" ] || { echo "SolarMiner data filesystem UUID does not match the installation marker" >&2; exit 1; }
+exit 0

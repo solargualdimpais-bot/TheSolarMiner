@@ -5,11 +5,22 @@ set -eu
 
 [ "$(id -u)" -eq 0 ] || { echo "Inicia sessão como root e executa: sh install-from-usb.sh" >&2; exit 1; }
 LOG=/var/log/solarminer-first-install.log
+PERSISTENT_LOG=""
 mkdir -p /var/log
 touch "$LOG"
 chmod 0600 "$LOG"
-log() { printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" | tee -a "$LOG"; }
-fail() { log "ERROR: $*"; exit 1; }
+log() {
+  line=$(printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*")
+  if [ -n "$PERSISTENT_LOG" ]; then printf '%s\n' "$line" | tee -a "$LOG" "$PERSISTENT_LOG"; else printf '%s\n' "$line" | tee -a "$LOG"; fi
+}
+fail() {
+  log "ERROR: $*"
+  if [ -n "$PERSISTENT_LOG" ] && [ -s "$LOG" ]; then
+    tail -n 120 "$LOG" > "${PERSISTENT_LOG}.failure-context"
+    chmod 0600 "${PERSISTENT_LOG}.failure-context"
+  fi
+  exit 1
+}
 command -v dpkg >/dev/null 2>&1 || fail "Debian/dpkg não encontrado."
 command -v dpkg-deb >/dev/null 2>&1 || fail "dpkg-deb não encontrado."
 command -v apt-get >/dev/null 2>&1 || fail "apt-get não encontrado."
@@ -33,17 +44,18 @@ if dpkg-query -W -f='${db:Status-Status}' solarminer-gateway 2>/dev/null | grep 
 fi
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-PACKAGE_NAME=solarminer-gateway_0.6.99_amd64.deb
+PACKAGE_NAME=solarminer-gateway_0.6.100_amd64.deb
 PACKAGE="$HERE/$PACKAGE_NAME"
 MANIFEST="$HERE/solarminer-release.json"
 PUBLIC_KEY="$HERE/release-pubkey.pem"
-for file in "$PACKAGE" "$MANIFEST" "$PUBLIC_KEY"; do
+DATA_PROVISIONER="$HERE/provision-data-volume.py"
+for file in "$PACKAGE" "$MANIFEST" "$PUBLIC_KEY" "$DATA_PROVISIONER"; do
   [ -s "$file" ] || fail "Ficheiro necessário em falta na pen: $(basename "$file")"
   [ ! -L "$file" ] || fail "Não são aceites ficheiros simbólicos: $(basename "$file")"
 done
 [ "$(dpkg-deb -f "$PACKAGE" Architecture)" = amd64 ] || fail "Pacote não é amd64."
 [ "$(dpkg-deb -f "$PACKAGE" Package)" = solarminer-gateway ] || fail "Pacote inesperado."
-[ "$(dpkg-deb -f "$PACKAGE" Version)" = 0.6.99 ] || fail "Versão do pacote não corresponde ao instalador."
+[ "$(dpkg-deb -f "$PACKAGE" Version)" = 0.6.100 ] || fail "Versão do pacote não corresponde ao instalador."
 
 WORK=$(mktemp -d /tmp/solarminer-bootstrap.XXXXXX)
 CREATED_TRUST=0
@@ -82,7 +94,7 @@ try:
                 "signature_algorithm", "signature", "compatibility", "migration_requirements"}
     if not isinstance(m, dict) or not required.issubset(m):
         raise ValueError("campos obrigatórios do manifesto em falta")
-    version = "0.6.99"
+    version = "0.6.100"
     if m["schema_version"] != 1 or m["signature_algorithm"] != "Ed25519":
         raise ValueError("esquema ou algoritmo não suportado")
     if m["version"] != version or m["release_id"] != "gateway-v" + version:
@@ -124,6 +136,17 @@ if [ -e /etc/solarminer/release-pubkey.pem ] || [ -e /etc/solarminer/update-sour
 fi
 TAILSCALE_SETUP="$HERE/install-tailscale.sh"
 [ -s "$TAILSCALE_SETUP" ] && [ ! -L "$TAILSCALE_SETUP" ] || fail "Instalador oficial de Tailscale não encontrado na pen."
+log "A instalar ferramentas oficiais de particionamento e ext4, se necessário."
+apt-get update >>"$LOG" 2>&1 || fail "apt-get update falhou antes de preparar a partição de dados. Consulta $LOG"
+DEBIAN_FRONTEND=noninteractive apt-get install -y parted e2fsprogs util-linux >>"$LOG" 2>&1 || fail "Não foi possível instalar as ferramentas de partição. Consulta $LOG"
+log "A preparar automaticamente a partição de dados no espaço não atribuído do disco do Debian."
+python3 "$DATA_PROVISIONER" >>"$LOG" 2>&1 || fail "Não foi possível preparar em segurança a partição de dados. Consulta $LOG"
+PERSISTENT_LOG="/var/lib/solarminer/install/first-install-$(date -u '+%Y%m%dT%H%M%SZ').log"
+install -d -o root -g root -m 0700 /var/lib/solarminer/install
+touch "$PERSISTENT_LOG"
+chmod 0600 "$PERSISTENT_LOG"
+cat "$LOG" >> "$PERSISTENT_LOG"
+log "A partir daqui o registo também fica guardado na partição persistente de dados."
 log "A instalar o cliente Tailscale oficial para Debian 13 AMD64."
 sh "$TAILSCALE_SETUP" >>"$LOG" 2>&1 || fail "A instalação do Tailscale falhou. Consulta $LOG"
 
@@ -188,8 +211,18 @@ PY
   attempt=$((attempt + 1))
   sleep 1
 done
-[ "$attempt" -lt 30 ] || fail "Health check não passou dentro de 60 segundos."
-log "Instalação inicial SolarMiner Gateway 0.6.99 concluída."
+[ "$attempt" -lt 30 ] || {
+  {
+    echo "--- diagnóstico local de Gateway/Nginx ---"
+    echo "Gateway ativo: $(systemctl is-active solarminer-gateway.service 2>/dev/null || true)"
+    echo "Nginx ativo: $(systemctl is-active nginx.service 2>/dev/null || true)"
+    echo "Versão dpkg: $(dpkg-query -W -f='${Version}' solarminer-gateway 2>/dev/null || true)"
+    journalctl --unit solarminer-gateway.service --lines=60 --no-pager 2>/dev/null || true
+    nginx -t 2>&1 || true
+  } | tee -a "$LOG" "$PERSISTENT_LOG"
+  fail "Health check não passou dentro de 60 segundos. O detalhe da resposta e o estado local foram guardados nos registos persistentes."
+}
+log "Instalação inicial SolarMiner Gateway 0.6.100 concluída."
 log "O Gateway está configurado para verificar diariamente o repositório oficial; aplicar uma atualização continua a exigir ação Owner na PWA."
 trap - EXIT HUP INT TERM
 rm -rf "$WORK"

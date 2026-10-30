@@ -5,8 +5,10 @@ import json
 import os
 import shutil
 import sqlite3
+import ssl
 import subprocess
 import time
+import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -142,6 +144,57 @@ def test_health_check_has_a_hard_sixty_second_deadline(tmp_path: Path, monkeypat
     pipeline.sleep = lambda seconds: now.__setitem__(0, now[0] + seconds)
     assert pipeline._health("0.6.9", 60) is False
     assert now[0] >= 60.0
+    assert pipeline._last_health_diagnostic["outcome"] == "endpoint_error"
+    assert pipeline._last_health_diagnostic["attempts"] > 0
+
+
+def test_health_check_records_reported_version_mismatch_without_payload_secrets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    pipeline = SystemUpdatePipeline(root=tmp_path / "opt/solarminer", health_timeout=1)
+    monkeypatch.setattr("solarminer_gateway.system_update_pipeline.ssl.create_default_context", lambda **kwargs: object())
+
+    class Response:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def read(self, _limit): return b'{"status":"ok","package_version":"0.6.98","token":"hidden"}'
+
+    monkeypatch.setattr("solarminer_gateway.system_update_pipeline.urllib.request.urlopen", lambda *_args, **_kwargs: Response())
+    now = [0.0]
+    pipeline.clock = lambda: now[0]
+    pipeline.sleep = lambda seconds: now.__setitem__(0, now[0] + seconds)
+    assert pipeline._health("0.6.100", 1) is False
+    assert pipeline._last_health_diagnostic == {
+        "outcome": "package_version_mismatch", "http_status": 200,
+        "reported_package_version": "0.6.98", "attempts": 1,
+        "expected_package_version": "0.6.100",
+    }
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected_outcome"),
+    [
+        (ssl.SSLCertVerificationError("certificate verify failed"), "tls_error"),
+        (TimeoutError("timed out"), "timeout"),
+        (ConnectionRefusedError("connection refused"), "connection_error"),
+    ],
+)
+def test_health_check_classifies_url_errors_without_persisting_details(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reason: BaseException, expected_outcome: str
+):
+    pipeline = SystemUpdatePipeline(root=tmp_path / "opt/solarminer", health_timeout=1)
+    monkeypatch.setattr("solarminer_gateway.system_update_pipeline.ssl.create_default_context", lambda **kwargs: object())
+    monkeypatch.setattr(
+        "solarminer_gateway.system_update_pipeline.urllib.request.urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(urllib.error.URLError(reason)),
+    )
+    now = [0.0]
+    pipeline.clock = lambda: now[0]
+    pipeline.sleep = lambda seconds: now.__setitem__(0, now[0] + seconds)
+    assert pipeline._health("0.6.100", 1) is False
+    diagnostic = pipeline._last_health_diagnostic
+    assert diagnostic["outcome"] == expected_outcome
+    assert diagnostic["attempts"] == 1
+    assert "reason" not in diagnostic and "message" not in diagnostic
 
 
 def test_queued_update_is_not_activated_without_preflight(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -182,7 +235,11 @@ def test_recovery_defers_while_gateway_restart_update_worker_is_active(tmp_path:
 def test_apply_rolls_back_pointer_when_new_release_fails_health(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     pipeline, root, previous, _db, op_id = _pipeline_fixture(tmp_path, monkeypatch)
     answers = iter([False, True])
-    monkeypatch.setattr(pipeline, "_health", lambda expected, seconds: next(answers))
+    def health(expected, _seconds):
+        pipeline._last_health_diagnostic = {"outcome": "package_version_mismatch" if expected == "0.6.9" else "healthy",
+                                            "reported_package_version": "0.6.8" if expected == "0.6.9" else expected}
+        return next(answers)
+    monkeypatch.setattr(pipeline, "_health", health)
     monkeypatch.setattr(pipeline, "_uid", lambda _name: 0)
     monkeypatch.setattr(pipeline, "_gid", lambda _name: 0)
     # The hosted runner is unprivileged; ownership transfer is mocked in this rollback test.
@@ -193,6 +250,8 @@ def test_apply_rolls_back_pointer_when_new_release_fails_health(tmp_path: Path, 
     state = json.loads((root / "update-state.json").read_text())
     assert state["state"] == "ROLLED_BACK"
     assert state["failure"] == "new_release_health_check_failed_after_60s"
+    assert state["health_diagnostic"]["outcome"] == "package_version_mismatch"
+    assert state["rollback_health_diagnostic"]["outcome"] == "healthy"
     with sqlite3.connect(_db) as conn:
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert conn.execute("SELECT state FROM update_operations WHERE id=?", (op_id,)).fetchone()[0] == "ROLLED_BACK"

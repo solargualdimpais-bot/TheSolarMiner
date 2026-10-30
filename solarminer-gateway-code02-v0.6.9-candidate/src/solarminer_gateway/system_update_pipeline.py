@@ -79,6 +79,7 @@ class SystemUpdatePipeline:
         self.recovery_timer = recovery_timer
         self.health_url = health_url
         self.health_timeout = min(max(int(health_timeout), 1), 60)
+        self._last_health_diagnostic: dict[str, Any] = {"outcome": "not_run", "attempts": 0}
         self.runner = runner
         self.clock = clock
         self.sleep = sleep
@@ -305,20 +306,58 @@ class SystemUpdatePipeline:
 
     def _health(self, expected_package_version: str | None, seconds: int) -> bool:
         deadline = self.clock() + min(max(seconds, 1), 60)
+        attempts = 0
+        diagnostic: dict[str, Any] = {"outcome": "no_response", "attempts": 0,
+                                      "expected_package_version": expected_package_version}
         # Validate the loopback TLS endpoint against the Gateway's provisioned
         # certificate instead of silently disabling TLS verification.
         context = ssl.create_default_context(cafile=str(self.data_dir / "server.crt"))
         while self.clock() < deadline:
+            attempts += 1
             try:
                 req = urllib.request.Request(self.health_url, headers={"Cache-Control": "no-cache", "Connection": "close"})
                 with urllib.request.urlopen(req, timeout=3, context=context) as response:
-                    if response.status == 200:
+                    status_code = int(response.status)
+                    if status_code != 200:
+                        diagnostic = {"outcome": "http_status_not_ok", "http_status": status_code}
+                    else:
                         body = json.loads(response.read(65536))
-                        if body.get("status") == "ok" and (expected_package_version is None or body.get("package_version") == expected_package_version):
+                        reported_version = body.get("package_version") if isinstance(body, dict) else None
+                        if (isinstance(body, dict) and body.get("status") == "ok"
+                                and (expected_package_version is None or reported_version == expected_package_version)):
+                            self._last_health_diagnostic = {
+                                "outcome": "healthy", "attempts": attempts,
+                                "expected_package_version": expected_package_version,
+                                "reported_package_version": reported_version,
+                            }
                             return True
-            except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError):
-                pass
+                        if not isinstance(body, dict) or body.get("status") != "ok":
+                            diagnostic = {"outcome": "health_payload_not_ok", "http_status": status_code}
+                        else:
+                            diagnostic = {"outcome": "package_version_mismatch", "http_status": status_code,
+                                          "reported_package_version": reported_version}
+            except urllib.error.HTTPError as exc:
+                diagnostic = {"outcome": "http_error", "http_status": int(exc.code)}
+            except urllib.error.URLError as exc:
+                reason = getattr(exc, "reason", None)
+                if isinstance(reason, ssl.SSLError):
+                    diagnostic = {"outcome": "tls_error", "error_type": type(reason).__name__}
+                elif isinstance(reason, TimeoutError):
+                    diagnostic = {"outcome": "timeout", "error_type": type(reason).__name__}
+                else:
+                    diagnostic = {"outcome": "connection_error", "reason_type": type(reason).__name__}
+            except ssl.SSLError as exc:
+                diagnostic = {"outcome": "tls_error", "error_type": type(exc).__name__}
+            except TimeoutError as exc:
+                diagnostic = {"outcome": "timeout", "error_type": type(exc).__name__}
+            except (OSError, json.JSONDecodeError, ValueError) as exc:
+                outcome = "invalid_health_json" if isinstance(exc, json.JSONDecodeError) else "endpoint_error"
+                diagnostic = {"outcome": outcome, "error_type": type(exc).__name__}
             self.sleep(min(2, max(0, deadline - self.clock())))
+        self._last_health_diagnostic = {
+            **diagnostic, "attempts": attempts,
+            "expected_package_version": expected_package_version,
+        }
         return False
 
     def _switch(self, target: Path) -> None:
@@ -399,6 +438,7 @@ class SystemUpdatePipeline:
 
     def _apply_locked(self, op_id: str) -> dict[str, Any]:
         if os.geteuid() != 0: raise PipelineError("root_privileges_required")
+        self._last_health_diagnostic = {"outcome": "not_run", "attempts": 0}
         row, details = self._operation(op_id)
         if row["state"] not in {"VERIFIED", "APPLY_QUEUED"}: raise PipelineError("update_operation_not_verified")
         self.preflight()
@@ -447,29 +487,37 @@ class SystemUpdatePipeline:
             self._record("HEALTH_CHECKING", operation_id=op_id, target_version=release_name, previous_target=previous_target,
                          new_target=os.path.relpath(target, self.root), backup_path=str(backup_path), package_sha256=digest,
                          health_timeout_seconds=60)
-            if not self._health(release_name, 60): raise PipelineError("new_release_health_check_failed_after_60s")
+            if not self._health(release_name, 60):
+                raise PipelineError("new_release_health_check_failed_after_60s")
             self._record("COMMITTED", operation_id=op_id, target_version=release_name, previous_target=previous_target,
                          new_target=os.path.relpath(target, self.root), backup_path=str(backup_path), package_sha256=digest,
                          health_timeout_seconds=60, health_check="passed", finished_at_utc=_utc())
             return {"status": "COMMITTED", "operation_id": op_id, "version": release_name, "backup_path": str(backup_path)}
         except Exception as exc:
+            failed_health_diagnostic = dict(self._last_health_diagnostic)
             current_state = self._read_state() or {}
             self._record("ROLLING_BACK", operation_id=op_id, target_version=release_name, previous_target=previous_target,
                          new_target=os.path.relpath(target, self.root) if target.exists() else None,
-                         backup_path=str(backup_path), failure=_failure_code(exc), health_timeout_seconds=60)
+                         backup_path=str(backup_path), failure=_failure_code(exc), health_timeout_seconds=60,
+                         health_diagnostic=dict(self._last_health_diagnostic))
             try:
                 self._run(["/usr/bin/systemctl", "stop", self.service], timeout=15, check=True)
                 self._switch(previous_path)
                 self._restore_db(backup_path)
                 self._run(["/usr/bin/systemctl", "start", self.service], timeout=20, check=True)
-                if not self._health(str(row["installed_version"]), 60): raise PipelineError("previous_release_health_check_failed_after_60s")
+                if not self._health(str(row["installed_version"]), 60):
+                    raise PipelineError("previous_release_health_check_failed_after_60s")
                 self._record("ROLLED_BACK", operation_id=op_id, target_version=release_name, previous_target=previous_target,
-                             backup_path=str(backup_path), failure=_failure_code(exc), rollback_health_check="passed", finished_at_utc=_utc())
+                             backup_path=str(backup_path), failure=_failure_code(exc),
+                             health_diagnostic=failed_health_diagnostic,
+                             rollback_health_diagnostic=dict(self._last_health_diagnostic),
+                             rollback_health_check="passed", finished_at_utc=_utc())
                 return {"status": "ROLLED_BACK", "operation_id": op_id, "reason": type(exc).__name__}
             except Exception as rollback_exc:
                 self._record("RECOVERY_BLOCKED", operation_id=op_id, target_version=release_name, previous_target=previous_target,
                              backup_path=str(backup_path), failure=_failure_code(exc), rollback_failure=_failure_code(rollback_exc),
-                             finished_at_utc=_utc())
+                             health_diagnostic=failed_health_diagnostic,
+                             rollback_health_diagnostic=dict(self._last_health_diagnostic), finished_at_utc=_utc())
                 raise PipelineError("update_failed_and_rollback_requires_manual_recovery") from rollback_exc
 
     def recover(self) -> dict[str, Any]:
