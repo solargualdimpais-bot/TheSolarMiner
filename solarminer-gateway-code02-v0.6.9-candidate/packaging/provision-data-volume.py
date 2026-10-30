@@ -93,7 +93,7 @@ def partition_table_type(output: str) -> str:
 
 
 def partition_rows(disk: str) -> list[tuple[str, str, str, str]]:
-    output = run(["lsblk", "--list", "--paths", "--noheadings", "--pairs",
+    output = run(["lsblk", "--paths", "--noheadings", "--pairs",
                   "--output", "NAME,TYPE,PARTLABEL,FSTYPE,UUID", disk])
     rows = []
     for line in output.splitlines():

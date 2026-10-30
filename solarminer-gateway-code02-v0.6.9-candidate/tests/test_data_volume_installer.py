@@ -46,12 +46,23 @@ def test_refuses_multiple_large_free_areas():
         provision.choose_free_region(output)
 
 
+def test_partition_listing_uses_compatible_lsblk_pairs_options(monkeypatch):
+    calls = []
+    output = 'NAME="/dev/sda1" TYPE="part" PARTLABEL="SOLARMiner_DATA" FSTYPE="ext4" UUID="data-uuid"'
+    monkeypatch.setattr(provision, "run", lambda args: calls.append(args) or output)
+    assert provision.partition_rows("/dev/sda") == [
+        ("/dev/sda1", "SOLARMiner_DATA", "ext4", "data-uuid")
+    ]
+    assert "--pairs" in calls[0]
+    assert "--list" not in calls[0]
+
+
 def test_fstab_entry_is_idempotent(tmp_path, monkeypatch):
     fstab = tmp_path / "fstab"
     fstab.write_text("UUID=root / ext4 defaults 0 1\n", encoding="utf-8")
     monkeypatch.setattr(provision, "FSTAB", fstab)
     monkeypatch.setattr(provision, "MOUNTPOINT", Path("/var/lib/solarminer"))
-    monkeypatch.setattr(provision.os, "chown", lambda *_args: None)
+    monkeypatch.setattr(provision.os, "chown", lambda *_args: None, raising=False)
     provision.write_fstab("data-uuid")
     expected = fstab.read_text(encoding="utf-8")
     provision.write_fstab("data-uuid")
