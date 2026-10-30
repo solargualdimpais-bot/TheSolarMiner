@@ -193,6 +193,45 @@ def partition_uuid(partition: str) -> str:
     return run(["blkid", "--output", "value", "--match-tag", "UUID", partition]).strip()
 
 
+def mounted_targets(partition: str) -> list[str]:
+    result = subprocess.run(
+        ["findmnt", "--noheadings", "--output", "TARGET", "--source", partition],
+        check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if result.returncode == 1:
+        return []
+    if result.returncode != 0:
+        raise RuntimeError("Não foi possível confirmar se a partição de dados está montada.")
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def find_existing_data_partition(rows: list[tuple[str, str, str, str]]) -> tuple[str, str, str, str] | None:
+    labelled = [row for row in rows if row[1].casefold() == LABEL.casefold()]
+    if len(labelled) > 1:
+        raise RuntimeError("Há mais de uma partição com a etiqueta de dados SolarMiner.")
+    return labelled[0] if labelled else None
+
+
+def ensure_ext4_data_partition(partition: str, filesystem: str, uuid: str) -> str:
+    targets = mounted_targets(partition)
+    if any(target != MOUNTPOINT.as_posix() for target in targets):
+        raise RuntimeError("A partição com etiqueta SolarMiner já está montada noutro local; não foi alterada.")
+    if filesystem.lower() == "ext4":
+        if not uuid:
+            uuid = partition_uuid(partition)
+        if not uuid:
+            raise RuntimeError("A partição de dados ext4 não tem UUID legível; não foi alterada.")
+        return uuid
+    if targets:
+        raise RuntimeError("A partição de dados está montada; não foi formatada.")
+    print(f"A formatar a partição identificada pelo rótulo SolarMiner como ext4: {partition}.", flush=True)
+    run(["mkfs.ext4", "-F", "-L", LABEL, partition])
+    uuid = partition_uuid(partition)
+    if not uuid:
+        raise RuntimeError("A partição foi formatada, mas não foi possível ler o UUID.")
+    return uuid
+
+
 def write_fstab(uuid: str) -> None:
     existing = FSTAB.read_text(encoding="utf-8") if FSTAB.exists() else ""
     managed = []
@@ -252,20 +291,22 @@ def main() -> int:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         disk = root_disk()
         rows = partition_rows(disk)
-        labelled = [row for row in rows if row[1] == LABEL]
-        if len(labelled) > 1:
-            raise RuntimeError("Há mais de uma partição com a etiqueta de dados SolarMiner.")
+        labelled = find_existing_data_partition(rows)
+        if MOUNTPOINT.is_symlink():
+            raise RuntimeError("/var/lib/solarminer é uma ligação simbólica; instalação interrompida.")
+        mountpoint_status = subprocess.run(["mountpoint", "--quiet", str(MOUNTPOINT)], check=False)
+        if mountpoint_status.returncode not in (0, 1):
+            raise RuntimeError("Não foi possível verificar o ponto de montagem dos dados.")
+        if (mountpoint_status.returncode == 1 and MOUNTPOINT.exists()
+                and any(MOUNTPOINT.iterdir())):
+            raise RuntimeError("/var/lib/solarminer já contém dados; instalação interrompida para os preservar.")
         if labelled:
-            partition, _label, filesystem, uuid = labelled[0]
-            if filesystem != "ext4" or not uuid:
-                raise RuntimeError("A partição de dados existente não é ext4 ou não tem UUID; não foi formatada.")
+            partition, _label, filesystem, uuid = labelled
+            uuid = ensure_ext4_data_partition(partition, filesystem, uuid)
+            print(f"A reutilizar a partição SolarMiner {partition}; o tamanho não limita a utilização.", flush=True)
         else:
             if MARKER.exists():
                 raise RuntimeError("Existe registo de volume de dados, mas a partição marcada não foi encontrada.")
-            if MOUNTPOINT.is_symlink():
-                raise RuntimeError("/var/lib/solarminer é uma ligação simbólica; instalação interrompida.")
-            if MOUNTPOINT.exists() and any(MOUNTPOINT.iterdir()):
-                raise RuntimeError("/var/lib/solarminer já contém dados; instalação interrompida para os preservar.")
             table = run(["parted", "--machine", "--script", disk, "unit", "MiB", "print", "free"])
             if partition_table_type(table) != "gpt":
                 raise RuntimeError("O disco do Debian não usa GPT; nenhuma partição foi alterada.")

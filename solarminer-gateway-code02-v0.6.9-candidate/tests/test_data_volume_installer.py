@@ -129,6 +129,68 @@ def test_partition_uuid_uses_portable_blkid_value_options(monkeypatch):
     assert "--no-encode" not in calls[0]
 
 
+def test_existing_named_ext4_partition_is_reused_without_a_size_limit(monkeypatch):
+    calls = []
+    monkeypatch.setattr(provision, "mounted_targets", lambda _partition: [])
+    monkeypatch.setattr(provision, "run", lambda args: calls.append(args) or "")
+    rows = [("/dev/sda6", "solarminer_data", "ext4", "data-uuid")]
+    partition = provision.find_existing_data_partition(rows)
+    assert partition == rows[0]
+    assert provision.ensure_ext4_data_partition(partition[0], partition[2], partition[3]) == "data-uuid"
+    assert calls == []
+
+
+def test_existing_named_non_ext4_partition_is_formatted_as_ext4(monkeypatch):
+    calls = []
+    monkeypatch.setattr(provision, "mounted_targets", lambda _partition: [])
+
+    def fake_run(args, **_kwargs):
+        calls.append(args)
+        return "formatted-uuid" if args[0] == "blkid" else ""
+
+    monkeypatch.setattr(provision, "run", fake_run)
+    uuid = provision.ensure_ext4_data_partition("/dev/sda6", "vfat", "")
+    assert uuid == "formatted-uuid"
+    assert calls == [
+        ["mkfs.ext4", "-F", "-L", "SOLARMINER_DATA", "/dev/sda6"],
+        ["blkid", "--output", "value", "--match-tag", "UUID", "/dev/sda6"],
+    ]
+
+
+def test_named_non_ext4_partition_mounted_elsewhere_is_never_formatted(monkeypatch):
+    calls = []
+    monkeypatch.setattr(provision, "mounted_targets", lambda _partition: ["/"])
+    monkeypatch.setattr(provision, "run", lambda args: calls.append(args) or "")
+    with pytest.raises(RuntimeError, match="montada noutro local"):
+        provision.ensure_ext4_data_partition("/dev/sda5", "ntfs", "")
+    assert calls == []
+
+
+def test_named_partition_already_mounted_at_data_path_is_reused(monkeypatch):
+    monkeypatch.setattr(provision, "mounted_targets", lambda _partition: ["/var/lib/solarminer"])
+    assert provision.ensure_ext4_data_partition(
+        "/dev/sda6", "ext4", "data-uuid"
+    ) == "data-uuid"
+
+
+def test_ext4_partition_without_uuid_fails_without_formatting(monkeypatch):
+    calls = []
+    monkeypatch.setattr(provision, "mounted_targets", lambda _partition: [])
+    monkeypatch.setattr(provision, "run", lambda args: calls.append(args) or "")
+    with pytest.raises(RuntimeError, match="ext4 não tem UUID legível"):
+        provision.ensure_ext4_data_partition("/dev/sda6", "ext4", "")
+    assert calls == [["blkid", "--output", "value", "--match-tag", "UUID", "/dev/sda6"]]
+
+
+def test_duplicate_data_partition_labels_are_rejected():
+    rows = [
+        ("/dev/sda6", "SOLARMINER_DATA", "ext4", "uuid-a"),
+        ("/dev/sda7", "solarminer_data", "ext4", "uuid-b"),
+    ]
+    with pytest.raises(RuntimeError, match="mais de uma partição"):
+        provision.find_existing_data_partition(rows)
+
+
 def test_fstab_entry_is_idempotent(tmp_path, monkeypatch):
     fstab = tmp_path / "fstab"
     fstab.write_text("UUID=root / ext4 defaults 0 1\n", encoding="utf-8")
