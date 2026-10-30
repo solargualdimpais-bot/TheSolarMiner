@@ -51,6 +51,7 @@ def test_fstab_entry_is_idempotent(tmp_path, monkeypatch):
     fstab.write_text("UUID=root / ext4 defaults 0 1\n", encoding="utf-8")
     monkeypatch.setattr(provision, "FSTAB", fstab)
     monkeypatch.setattr(provision, "MOUNTPOINT", Path("/var/lib/solarminer"))
+    monkeypatch.setattr(provision.os, "chown", lambda *_args: None)
     provision.write_fstab("data-uuid")
     expected = fstab.read_text(encoding="utf-8")
     provision.write_fstab("data-uuid")
