@@ -27,12 +27,12 @@ test("Gateway administration is on an Owner-only page and live Home uses Gateway
   assert.match(home[1], /liveSolarHomeMetric\(\)/);
   assert.match(home[1], /liveBatteryHomeMetric\(\)/);
   assert.match(home[1], /liveMinerHomeMetric\(\)/);
-  assert.match(app, /liveHomeMetric\("PainÃ©is"/);
+  assert.match(app, /liveHomeMetric\("Painéis"/);
   assert.match(app, /battery_output_power/);
   assert.match(app, /miner_hashrate_5s_ghs/);
   assert.match(app, /miner_power_limit_w/);
   assert.match(app, /provider === "deye" \|\| provider === "antminer"/);
-  assert.doesNotMatch(home[1], /GestÃ£o do Gateway|gateway-update-management|gateway-tailscale-management/);
+  assert.doesNotMatch(home[1], /Gestão do Gateway|gateway-update-management|gateway-tailscale-management/);
   assert.match(html, /id="gateway-owner-page" class="owner-admin-page" hidden/);
   assert.match(html, /id="owner-nav-item" class="nav-item" data-page="owner" hidden/);
   assert.match(app, /if \(page === "owner" && \(!sessionInfo\(\)\.authenticated \|\| sessionInfo\(\)\.user\.role !== "owner"\)\) return/);
@@ -40,11 +40,11 @@ test("Gateway administration is on an Owner-only page and live Home uses Gateway
 
 test("Gateway console summarizes detected errors and filters logs to affected services", () => {
   assert.match(html, /id="gateway-console-errors"/);
-  assert.match(html, /option value="errors">SÃ³ serviÃ§os com erros</);
+  assert.match(html, /option value="errors">Só serviços com erros</);
   assert.match(app, /function renderGatewayConsoleErrors\(\)/);
   assert.match(app, /gatewayConsoleErrorPattern/);
   assert.match(app, /gatewayConsoleDetectedErrorServices/);
-  assert.match(app, /ServiÃ§os marcados como falhados/);
+  assert.match(app, /Serviços marcados como falhados/);
   assert.match(app, /gatewayConsoleServicePatterns\[service\]/);
 });
 
@@ -58,7 +58,7 @@ test("the recovery key can be downloaded only from the first-owner one-time disp
   assert.match(html, /gateway-download-recovery-key/);
   assert.match(html, /gateway-owner-recovery-form/);
   assert.match(html, /gateway-recovery-file/);
-  assert.match(html, /apresentada uma Ãºnica vez/);
+  assert.match(html, /apresentada uma única vez/);
   assert.match(app, /solarminer-owner-recovery-key\.txt/);
   assert.match(app, /recoverGatewayOwner\(/);
   assert.match(app, /Gateway Ed25519 fingerprint:/);
@@ -70,7 +70,7 @@ test("Owner recovery file parser accepts a generated key and rejects malformed/o
   const key = `SMR1-${Array(13).fill("ABCD").join("-")}`;
   const fingerprint = "ab".repeat(32);
   assert.deepEqual(parseOwnerRecoveryFile(`Gateway Ed25519 fingerprint: ${fingerprint}\n${key}\n`), { key, fingerprint });
-  assert.throws(() => parseOwnerRecoveryFile("ordinary text without a recovery key"), /nÃ£o contÃ©m/);
+  assert.throws(() => parseOwnerRecoveryFile("ordinary text without a recovery key"), /não contém/);
   assert.throws(() => parseOwnerRecoveryFile("x".repeat(4097)), /demasiado grande/);
 });
 
@@ -82,9 +82,9 @@ test("new PWA static cache version is changed and USB limitations are documented
   assert.doesNotMatch(app, /gateway-update-refresh/);
   const docs = read("OWNER_USB_AND_ACCESS.md");
   assert.match(docs, /texto simples/);
-  assert.match(docs, /nÃ£o valida certificados TLS/);
-  assert.match(docs, /chave privada de assinatura nunca deve ser incluÃ­da/);
-  assert.match(docs, /ediÃ§Ã£o manual do SQLite.*nÃ£o Ã© suportada/s);
+  assert.match(docs, /não valida certificados TLS/);
+  assert.match(docs, /chave privada de assinatura nunca deve ser incluída/);
+  assert.match(docs, /edição manual do SQLite.*não é suportada/s);
 });
 
 test("the Gateway-embedded PWA contains the Owner access controls and the package is version-aligned", () => {
@@ -110,7 +110,7 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   assert.match(embeddedAuth, /\/api\/v1\/system\/tailscale/);
   assert.match(embeddedAuth, /\/api\/v1\/system\/tailscale\/connect/);
   assert.match(embeddedApp, /startGatewayTailscale/);
-  assert.match(embeddedApp, /liveHomeMetric\("PainÃ©is"/);
+  assert.match(embeddedApp, /liveHomeMetric\("Painéis"/);
   assert.match(embeddedApp, /liveMinerHomeMetric\(\)/);
   assert.match(embeddedWorker, /static-v0\.5\.63-surplus-manager/);
   assert.match(embeddedHtml, /data-owner-tab="gateway"/);
