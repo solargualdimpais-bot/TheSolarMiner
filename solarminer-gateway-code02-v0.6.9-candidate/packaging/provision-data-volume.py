@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
 try:
     import fcntl
 except ImportError:  # Allows pure parsing tests to run on Windows.
@@ -21,9 +22,9 @@ LABEL = "SOLARMINER_DATA"
 MIN_FREE_MIB = 40 * 1024
 
 
-def run(args: list[str], *, check: bool = True) -> str:
+def run(args: list[str], *, check: bool = True, env: dict[str, str] | None = None) -> str:
     result = subprocess.run(args, check=False, text=True, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE)
+                            stderr=subprocess.PIPE, env=env)
     if check and result.returncode:
         detail = result.stderr.strip() or result.stdout.strip()
         raise RuntimeError(f"{pathlib.Path(args[0]).name} falhou: {detail}")
@@ -58,23 +59,86 @@ def root_disk() -> str:
 def parse_free_regions(output: str) -> list[tuple[int, int, int]]:
     regions = []
     for line in output.splitlines():
-        fields = line.rstrip(";").split(":")
-        if len(fields) < 5 or fields[0] or fields[4] != "free":
+        fields = [field.strip() for field in line.rstrip(";\r\n").split(":")]
+        # GNU Parted's machine format has an empty partition-number field for
+        # free-space rows.  Do not rely on a fixed field index: Parted versions
+        # can include additional empty metadata fields in these rows.
+        try:
+            free_index = fields.index("free")
+        except ValueError:
+            continue
+        numeric_fields = [field for field in fields[:free_index] if field]
+        if len(numeric_fields) < 3:
             continue
         try:
-            start = int(float(fields[1].removesuffix("MiB")) + 0.999999)
-            end = int(float(fields[2].removesuffix("MiB")))
-            size = int(float(fields[3].removesuffix("MiB")))
-        except (ValueError, TypeError):
+            start_value = _parted_mib(numeric_fields[-3])
+            end_value = _parted_mib(numeric_fields[-2])
+            size_value = _parted_mib(numeric_fields[-1])
+            start = int(start_value.to_integral_value(rounding=ROUND_CEILING))
+            end = int(end_value.to_integral_value(rounding=ROUND_FLOOR))
+            size = int(size_value.to_integral_value(rounding=ROUND_FLOOR))
+        except (ValueError, TypeError, InvalidOperation):
             continue
         if end > start and size > 0:
             regions.append((start, end, size))
     return regions
 
 
+def _parted_mib(value: str) -> Decimal:
+    match = re.fullmatch(
+        r"\s*([0-9]+(?:[.,][0-9]+)?)\s*(MiB|GiB|MB|GB|kB|B)?\s*", value,
+        re.IGNORECASE,
+    )
+    if not match:
+        raise ValueError("unrecognized Parted size")
+    amount = Decimal(match.group(1).replace(",", "."))
+    unit = (match.group(2) or "MiB").lower()
+    unit = {"b": "B", "kb": "kB", "mb": "MB", "gb": "GB",
+            "mib": "MiB", "gib": "GiB"}[unit]
+    factor = {
+        "B": Decimal(1) / Decimal(1024 * 1024),
+        "kB": Decimal(1000) / Decimal(1024 * 1024),
+        "MB": Decimal(1000 * 1000) / Decimal(1024 * 1024),
+        "GB": Decimal(1000 * 1000 * 1000) / Decimal(1024 * 1024),
+        "MiB": Decimal(1),
+        "GiB": Decimal(1024),
+    }[unit]
+    return amount * factor
+
+
 def choose_free_region(output: str) -> tuple[int, int, int]:
-    candidates = [region for region in parse_free_regions(output)
-                  if region[2] >= MIN_FREE_MIB]
+    return choose_free_region_rows(parse_free_regions(output))
+
+
+def parse_human_free_regions(output: str) -> list[tuple[int, int, int]]:
+    """Fallback for Parted builds whose machine output differs in formatting."""
+    regions = []
+    row = re.compile(
+        r"^\s*([0-9]+(?:[.,][0-9]+)?(?:MiB|GiB|MB|GB|kB|B)?)\s+"
+        r"([0-9]+(?:[.,][0-9]+)?(?:MiB|GiB|MB|GB|kB|B)?)\s+"
+        r"([0-9]+(?:[.,][0-9]+)?(?:MiB|GiB|MB|GB|kB|B)?)\s+Free Space\s*$",
+        re.IGNORECASE,
+    )
+    for line in output.splitlines():
+        match = row.match(line)
+        if not match:
+            continue
+        try:
+            start_value, end_value, size_value = (
+                _parted_mib(value) for value in match.groups()
+            )
+        except (ValueError, InvalidOperation):
+            continue
+        start = int(start_value.to_integral_value(rounding=ROUND_CEILING))
+        end = int(end_value.to_integral_value(rounding=ROUND_FLOOR))
+        size = int(size_value.to_integral_value(rounding=ROUND_FLOOR))
+        if end > start and size > 0:
+            regions.append((start, end, size))
+    return regions
+
+
+def choose_free_region_rows(regions: list[tuple[int, int, int]]) -> tuple[int, int, int]:
+    candidates = [region for region in regions if region[2] >= MIN_FREE_MIB]
     if len(candidates) != 1:
         raise RuntimeError(
             "Era esperada exatamente uma área livre de pelo menos 40 GiB "
@@ -82,6 +146,26 @@ def choose_free_region(output: str) -> tuple[int, int, int]:
             "Nenhuma partição foi alterada."
         )
     return candidates[0]
+
+
+def discover_free_region(disk: str, machine_table: str | None = None) -> tuple[int, int, int]:
+    if machine_table is None:
+        machine_table = run(
+            ["parted", "--machine", "--script", disk, "unit", "MiB", "print", "free"]
+        )
+    try:
+        return choose_free_region(machine_table)
+    except RuntimeError as machine_error:
+        human_table = run(
+            ["parted", "--script", disk, "unit", "MiB", "print", "free"],
+            env={**os.environ, "LC_ALL": "C"},
+        )
+        try:
+            return choose_free_region_rows(parse_human_free_regions(human_table))
+        except RuntimeError as human_error:
+            raise RuntimeError(
+                f"{machine_error} A confirmação independente do Parted também falhou: {human_error}"
+            ) from human_error
 
 
 def partition_table_type(output: str) -> str:
@@ -180,7 +264,7 @@ def main() -> int:
             table = run(["parted", "--machine", "--script", disk, "unit", "MiB", "print", "free"])
             if partition_table_type(table) != "gpt":
                 raise RuntimeError("O disco do Debian não usa GPT; nenhuma partição foi alterada.")
-            start, end, size = choose_free_region(table)
+            start, end, size = discover_free_region(disk, table)
             print(f"A criar SOLARMiner_DATA apenas no espaço livre de {size // 1024} GiB do disco {disk}.", flush=True)
             run(["parted", "--script", "--align", "optimal", disk, "mkpart", LABEL, "ext4", f"{start}MiB", f"{end}MiB"])
             run(["partprobe", disk])

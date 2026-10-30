@@ -24,6 +24,70 @@ def test_parser_finds_only_unallocated_region_and_rounds_to_mib():
     assert provision.partition_table_type(PARTED) == "gpt"
 
 
+def test_parser_accepts_free_row_with_extra_empty_metadata_and_metric_units():
+    output = """:\n:1000MB:140000MB:139000MB::free;\n:140000MB:140001MB:1MB:free;\n"""
+    regions = provision.parse_free_regions(output)
+    assert regions == [(954, 133514, 132560)]
+
+
+def test_parser_accepts_free_row_reported_in_gibibytes():
+    output = ":1.00GiB:130.00GiB:129.00GiB:free;"
+    assert provision.parse_free_regions(output) == [(1024, 133120, 132096)]
+
+
+def test_parser_accepts_locale_decimal_comma():
+    output = ":1,00mib:130,00gib:129,00gib:free;"
+    assert provision.parse_free_regions(output) == [(1, 133120, 132096)]
+
+
+def test_parser_selects_130_gib_free_extent_among_alignment_gaps():
+    output = """BYT;
+/dev/sda:243000MiB:scsi:512:512:gpt:disk;
+:0.00MiB:1.00MiB:1.00MiB:free;
+5:1000.00MiB:60000.00MiB:59000.00MiB:ext4:Gateway:;
+:60000.00MiB:193000.00MiB:133000.00MiB:free;
+:242999.00MiB:243000.00MiB:1.00MiB:free;
+"""
+    assert provision.choose_free_region(output) == (60000, 193000, 133000)
+
+
+def test_human_parted_fallback_finds_130_gib_free_extent():
+    output = """Model: disk (scsi)
+Disk /dev/sda: 243000MiB
+Partition Table: gpt
+Number  Start       End         Size        File system  Name    Flags
+        0.00MiB     1.00MiB     1.00MiB     Free Space
+5       1.00MiB     60000MiB   59999MiB    ext4         Gateway
+        60000MiB    193000MiB  133000MiB   Free Space
+        242999MiB   243000MiB  1.00MiB     Free Space
+"""
+    assert provision.choose_free_region_rows(
+        provision.parse_human_free_regions(output)
+    ) == (60000, 193000, 133000)
+
+
+def test_free_space_detection_uses_read_only_human_fallback(monkeypatch):
+    calls = []
+    machine_table = PARTED.replace("129999.00MiB:free", "129999.00Unknown:free")
+    human_table = """Model: disk (scsi)
+Disk /dev/sda: 243000MiB
+Partition Table: gpt
+        60000MiB 193000MiB 133000MiB Free Space
+"""
+
+    def fake_run(args, *, check=True, env=None):
+        calls.append((args, env))
+        return human_table
+
+    monkeypatch.setattr(provision, "run", fake_run)
+    assert provision.discover_free_region("/dev/sda", machine_table) == (
+        60000, 193000, 133000
+    )
+    assert len(calls) == 1
+    assert calls[0][0] == ["parted", "--script", "/dev/sda", "unit", "MiB", "print", "free"]
+    assert calls[0][1]["LC_ALL"] == "C"
+
+
 def test_refuses_non_gpt_partition_table():
     output = PARTED.replace(":gpt:NVMe;", ":msdos:NVMe;")
     assert provision.partition_table_type(output) == "msdos"
