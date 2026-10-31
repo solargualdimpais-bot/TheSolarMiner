@@ -796,7 +796,7 @@ def test_tuya_local_protocol_fallback_probes_33_then_34_then_35_and_remembers_ma
     assert attempted == ["3.3", "3.4"]
     assert device["local_protocol"] == "3.4"
     assert result["local_protocol"] == "3.4"
-    assert result["status"] == [{"code": "switch", "value": True}]
+    assert result["status"] == [{"code": "dps_1", "value": True}]
 
 
 def test_tuya_local_protocol_fallback_reports_all_attempts_without_cloud(monkeypatch):
