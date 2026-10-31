@@ -28,6 +28,7 @@ from typing import Any, Callable
 
 from . import deye_modbus
 from . import huawei_router
+from . import tuya_dps_registry
 
 # TinyTuya is bundled with the signed Gateway package so local control works
 # without an installer-time network dependency. It is used only for LAN I/O.
@@ -196,7 +197,7 @@ def public_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
         "deye_cloud": {"data_center": deye_cloud.get("data_center", "eu"), "app_id": deye_cloud.get("app_id"),
                        "email": deye_cloud.get("email"), "configured": bool(deye_cloud.get("app_id") and deye_cloud.get("app_secret") and deye_cloud.get("email") and deye_cloud.get("password")),
                        "secrets_returned": False},
-        "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "uid": tuya.get("uid"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": [{"device_id": x.get("device_id"), "name": x.get("name"), "room": x.get("room", ""), "floor": x.get("floor", ""), "name_source": x.get("name_source", "cloud"), "switch_code": x.get("switch_code"), "switch_channels": [item.get("code") for item in x.get("functions", []) if isinstance(item, dict) and str(item.get("type", "")).lower() in {"bool", "boolean"}], "channel_count": x.get("channel_count", 0), "device_kind": x.get("device_kind", "unknown"), "device_kind_label": x.get("device_kind_label", TUYA_DEVICE_KINDS["unknown"]), "device_kind_confidence": x.get("device_kind_confidence", "low"), "device_kind_override": x.get("device_kind_override"), "channel_labels": x.get("channel_labels", {}), "capability_labels": x.get("capability_labels", {}), "level_code": x.get("level_code"), "level_min": x.get("level_min", 0), "level_max": x.get("level_max", 100), "category": x.get("category"), "product_id": x.get("product_id"), "product_name": x.get("product_name"), "schema_source": x.get("schema_source", "TUYA_DEVICE"), "online": x.get("online"), "ip": x.get("local_ip", ""), "local_ip": x.get("local_ip", ""), "local_mac": x.get("local_mac", ""), "local_protocol": x.get("local_protocol", "3.3"), "local_dps_map": x.get("local_dps_map", {}), "local_control_state": x.get("local_control_state", "not_tested"), "local_verified": bool(x.get("local_verified", False)), "cloud_source": x.get("cloud_source"), "cloud_missing": x.get("cloud_missing", False), "local_key_available": bool(x.get("local_key")), "functions": x.get("functions", []), "status_spec": x.get("status_spec", []), "category_functions": x.get("category_functions", []), "category_status_spec": x.get("category_status_spec", []), "category_schema_source": x.get("category_schema_source"), "current_status": x.get("current_status", []), "last_status_at": x.get("last_status_at")} for x in tuya.get("devices", []) if isinstance(x, dict)], "product_schema_count": len(tuya.get("product_schemas", {})) if isinstance(tuya.get("product_schemas", {}), dict) else 0, "category_schema_count": len(tuya.get("category_schemas", {})) if isinstance(tuya.get("category_schemas", {}), dict) else 0, "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
+        "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "uid": tuya.get("uid"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": [{"device_id": x.get("device_id"), "name": x.get("name"), "room": x.get("room", ""), "floor": x.get("floor", ""), "name_source": x.get("name_source", "cloud"), "switch_code": x.get("switch_code"), "switch_channels": [item.get("code") for item in x.get("functions", []) if isinstance(item, dict) and str(item.get("type", "")).lower() in {"bool", "boolean"}], "channel_count": x.get("channel_count", 0), "device_kind": x.get("device_kind", "unknown"), "device_kind_label": x.get("device_kind_label", TUYA_DEVICE_KINDS["unknown"]), "device_kind_confidence": x.get("device_kind_confidence", "low"), "device_kind_override": x.get("device_kind_override"), "channel_labels": x.get("channel_labels", {}), "capability_labels": x.get("capability_labels", {}), "level_code": x.get("level_code"), "level_min": x.get("level_min", 0), "level_max": x.get("level_max", 100), "category": x.get("category"), "product_id": x.get("product_id"), "product_name": x.get("product_name"), "schema_source": x.get("schema_source", "TUYA_DEVICE"), "online": x.get("online"), "ip": x.get("local_ip", ""), "local_ip": x.get("local_ip", ""), "local_mac": x.get("local_mac", ""), "local_protocol": x.get("local_protocol", "3.3"), "local_dps_map": x.get("local_dps_map", {}), "dps_preset_id": x.get("dps_preset_id"), "dps_knowledge": tuya_dps_registry.analyze_device(x), "local_control_state": x.get("local_control_state", "not_tested"), "local_verified": bool(x.get("local_verified", False)), "cloud_source": x.get("cloud_source"), "cloud_missing": x.get("cloud_missing", False), "local_key_available": bool(x.get("local_key")), "functions": x.get("functions", []), "status_spec": x.get("status_spec", []), "category_functions": x.get("category_functions", []), "category_status_spec": x.get("category_status_spec", []), "category_schema_source": x.get("category_schema_source"), "current_status": x.get("current_status", []), "last_status_at": x.get("last_status_at")} for x in tuya.get("devices", []) if isinstance(x, dict)], "product_schema_count": len(tuya.get("product_schemas", {})) if isinstance(tuya.get("product_schemas", {}), dict) else 0, "category_schema_count": len(tuya.get("category_schemas", {})) if isinstance(tuya.get("category_schemas", {}), dict) else 0, "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
         "secrets_returned": False,
     }
 
@@ -340,6 +341,11 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
             for key in ("local_key", "local_ip", "local_mac", "local_protocol", "local_dps_map", "local_control_state", "local_verified", "product_id", "product_name", "category", "online", "ip", "functions", "status_spec", "category_functions", "category_status_spec", "category_schema_source", "schema_source", "current_status", "last_status_at", "cloud_source", "cloud_missing", "last_synced_at", "device_kind", "device_kind_label", "device_kind_confidence", "channel_count"):
                 if key in previous:
                     normalized_device[key] = previous[key]
+            preset_id = device.get("dps_preset_id", previous.get("dps_preset_id"))
+            valid_presets = {*tuya_dps_registry.PRESETS, ""}
+            if preset_id is not None and (not isinstance(preset_id, str) or preset_id not in valid_presets):
+                raise ValueError("invalid_tuya_dps_preset")
+            normalized_device["dps_preset_id"] = preset_id or None
             kind_override = device.get("device_kind_override", previous.get("device_kind_override"))
             if kind_override not in (None, "auto"):
                 if kind_override not in TUYA_DEVICE_KINDS:
@@ -394,6 +400,11 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
             if protocol not in {"3.1", "3.2", "3.3", "3.4", "3.5"}:
                 raise ValueError("invalid_tuya_local_protocol")
             normalized_device["local_protocol"] = protocol
+            preset_id = device.get("dps_preset_id", previous.get("dps_preset_id"))
+            valid_presets = {*tuya_dps_registry.PRESETS, ""}
+            if preset_id is not None and (not isinstance(preset_id, str) or preset_id not in valid_presets):
+                raise ValueError("invalid_tuya_dps_preset")
+            normalized_device["dps_preset_id"] = preset_id or None
             dps_map = device.get("local_dps_map", previous.get("local_dps_map", {}))
             if not isinstance(dps_map, dict) or len(dps_map) > 128:
                 raise ValueError("invalid_tuya_local_dps_map")
@@ -630,6 +641,27 @@ def _tuya_local_dps(device: dict[str, Any], code: str, *, status: bool = False) 
         return "1"
     match = re.fullmatch(r"switch_(\d+)", code)
     if match and 1 <= int(match.group(1)) <= 64:
+        switch_functions = [entry for entry in device.get("functions", [])
+                            if isinstance(entry, dict)
+                            and re.fullmatch(r"switch_\d+", str(entry.get("code", "")))
+                            and str(entry.get("type", "")).casefold() in {"bool", "boolean"}]
+        switch_channels = device.get("switch_channels", [])
+        is_multichannel = (len(switch_functions) > 1 or
+                           (isinstance(switch_channels, list) and len(switch_channels) > 1) or
+                           (isinstance(device.get("channel_count"), int) and device["channel_count"] > 1) or
+                           device.get("device_kind") == "multi_switch")
+        if is_multichannel:
+            # Tuya's documented standard smart-switch profile defines
+            # switch_1..switch_6 as DPS 1..6. Use that fallback only when the
+            # device is classified as the KG switch family and the complete
+            # standard channel set is present; never infer from a suffix alone.
+            standard_codes = {f"switch_{index}" for index in range(1, 7)}
+            declared_codes = {str(entry.get("code")) for entry in switch_functions}
+            if ("".join(char for char in str(device.get("category") or "").casefold() if char.isalnum()) == "kg"
+                    and standard_codes.issubset(declared_codes)
+                    and int(match.group(1)) <= 6):
+                return str(int(match.group(1)))
+            raise ValueError("tuya_local_datapoint_mapping_required")
         return str(int(match.group(1)))
     if code.isdigit() and 1 <= int(code) <= 65535:
         return str(int(code))
@@ -706,7 +738,7 @@ def _tuya_local_status(device: dict[str, Any]) -> dict[str, Any]:
     category_key = "".join(char for char in str(device.get("category") or "").casefold() if char.isalnum())
     if category_key == "qccdz":
         code_by_dps.setdefault("18", "switch")
-    status = [{"code": code_by_dps.get(str(dps), f"dps_{dps}"), "value": value}
+    status = [{"code": code_by_dps.get(str(dps), f"dps_{dps}"), "dps_id": int(dps) if str(dps).isdigit() else None, "value": value}
               for dps, value in result["dps"].items()]
     return {"device_id": device["device_id"], "name": device.get("name", "Tuya device"),
             "status": status, "connection_state": "local_responded", "source": "TUYA_LAN",
@@ -860,7 +892,7 @@ def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Eve
                 item["local_key"] = key
             elif isinstance(previous.get("local_key"), str):
                 item["local_key"] = previous["local_key"]
-            for retained in ("switch_code", "level_code", "level_min", "level_max", "favorite", "room", "floor", "name_source", "local_name", "channel_labels", "capability_labels", "local_ip", "local_mac", "local_protocol", "local_dps_map", "local_control_state", "local_verified", "device_kind_override"):
+            for retained in ("switch_code", "level_code", "level_min", "level_max", "favorite", "room", "floor", "name_source", "local_name", "channel_labels", "capability_labels", "local_ip", "local_mac", "local_protocol", "local_dps_map", "dps_preset_id", "local_control_state", "local_verified", "device_kind_override"):
                 if retained in previous:
                     item[retained] = previous[retained]
             discovered.append(item)

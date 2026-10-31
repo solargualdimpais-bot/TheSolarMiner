@@ -40,6 +40,41 @@ def full_charge_samples(anchor_at, post_anchor_power=3600.0):
     return voltage, power, anchor_at + timedelta(minutes=12)
 
 
+def test_soc_can_seed_full_charge_anchor_from_cloud_voltage_and_power_without_soc_percent():
+    conn = database()
+    anchor = datetime.now(timezone.utc)-timedelta(minutes=12)
+    voltage, power, last_at = full_charge_samples(anchor, post_anchor_power=0)
+    for point in voltage:
+        point["source"] = "DEYE_CLOUD_HISTORY"
+    for point in power:
+        point["source"] = "DEYE_CLOUD_HISTORY"
+    soc, details = energy_engine._estimate_battery_soc_persistent(
+        conn, voltage, power, 20.0, 0.0, 100.0, as_of=last_at+timedelta(seconds=1))
+    assert soc == 100.0
+    assert details["anchor_source"] == "DEYE_CLOUD_HISTORY_VOLTAGE_AND_SIGNED_POWER"
+    assert details["reason"] == "PERSISTED_SHARED_PARALLEL_BUS_ANCHOR"
+    assert "battery_soc_percent" not in details
+
+
+def test_tuya_confirmed_energy_preset_scales_dps_but_preserves_raw_values_and_trust():
+    conn = database()
+    observed = datetime.now(timezone.utc).isoformat()
+    status = [{"code": f"dps_{dp}", "dps_id": dp, "value": value}
+              for dp, value in ((1, True), (9, 0), (17, 62), (18, 6081), (19, 14008), (20, 2302))]
+    count = energy_engine.persist_tuya_telemetry(conn, [{"device_id": "meter-1", "name": "Bomba",
+        "connection_state": "local_responded", "observed_at": observed, "status": status}],
+        [{"device_id": "meter-1", "dps_preset_id": "energy_monitor_switch", "functions": [], "status_spec": []}])
+    telemetry = energy_engine.read_tuya_telemetry(conn)["meter-1"]
+    assert count == 3
+    assert telemetry["metrics"]["current"]["value"] == 6.081
+    assert telemetry["metrics"]["power"]["value"] == 1400.8
+    assert telemetry["metrics"]["voltage"]["value"] == 230.2
+    assert telemetry["metrics"]["current"]["trust"] == "LIVE_UNVERIFIED"
+    assert {row["dps_id"] for row in telemetry["status"]} == {1, 9, 17, 18, 19, 20}
+    assert next(row for row in telemetry["status"] if row["dps_id"] == 18)["value"] == 6081
+    assert "energy" not in telemetry["metrics"]
+
+
 def test_solar_day_forecast_reports_missing_pv_capacity_as_a_setup_action():
     conn = database()
     result = energy_engine._solar_day_forecast(

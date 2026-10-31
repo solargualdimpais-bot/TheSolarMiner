@@ -155,6 +155,14 @@ test("Tuya save and manual re-test use only basic LAN reachability, and closed T
   assert.doesNotMatch(app, /tuyaReadingConfirmed\(reading\)\{return Boolean\(reading&&\["local_responded","lan_reachable","lan_host_responded"\]/);
 });
 
+test("Tuya LAN reachability stays distinct from DPS reads and unknown switches remain actionable", () => {
+  assert.match(app, /status_read:false,dps_read:false,cloud_requested:false/);
+  assert.match(app, /data-tuya-detail-read-status>Ler estado DPS local/);
+  assert.match(app, /sem leitura; tocar para consultar e controlar/);
+  assert.match(app, /data-tuya-quick-toggle=.*?sessionInfo\(\)\.user\?\.role!=="owner"\?"disabled":""/);
+  assert.match(app, /if\(typeof current!=="boolean"\)throw new Error\(device&&!tuyaSwitchCodeHasLocalMapping\(device,code\)\?"Falta o mapeamento DPS local exato deste canal\. Não foi enviado comando\."/);
+});
+
 test("Tuya cards mirror the Home layout and expose schema-driven quick controls", () => {
   assert.match(app, /data-favorite-expand=/);
   assert.match(app, /data-inventory-expand=/);
@@ -165,10 +173,18 @@ test("Tuya cards mirror the Home layout and expose schema-driven quick controls"
 });
 
 test("Devices inventory tolerates missing optional Tuya arrays", () => {
-  assert.match(app, /devices=Array\.isArray\(state\.tuyaDevices\)/);
-  assert.match(app, /readings=Array\.isArray\(state\.tuyaReadings\)/);
+  assert.match(app, /function normalizeTuyaInventoryDevice\(device\)/);
+  assert.match(app, /function normalizeTuyaInventory\(devices\)/);
+  assert.match(app, /function normalizeTuyaReading\(reading\)/);
+  assert.match(app, /devices=normalizeTuyaInventory\(state\.tuyaDevices\)/);
+  assert.match(app, /map\(normalizeTuyaReading\)\.filter\(Boolean\)/);
+  assert.match(app, /normalizeTuyaInventory\(hardware\.tuya\?\.devices\)/);
+  assert.match(app, /functions:objectRows\(device\.functions\),status_spec:objectRows\(device\.status_spec\),current_status:objectRows\(device\.current_status\)/);
+  assert.match(app, /Array\.isArray\(state\.tuyaReadings\)\?state\.tuyaReadings:\[\]/);
   assert.match(app, /Array\.isArray\(device\?\.functions\)/);
   assert.match(app, /Array\.isArray\(reading\?\.status\)/);
+  assert.match(app, /status\.filter\(item=>item&&typeof item==="object"\)/);
+  assert.match(app, /\.filter\(item=>item&&\["bool","boolean"\]/);
 });
 
 test("Tuya device switch uses the Gateway-confirmed state immediately and verifies group channels", () => {
@@ -187,6 +203,6 @@ test("LAN discovery tries the local neighbor cache after broadcast errors", () =
 test("USB release rollback verification includes the installed Gateway release", () => {
   const rollbackLoops = workflow.match(/for VERSION in[^\n]+/g) || [];
   assert.equal(rollbackLoops.length, 2);
-  for (const loop of rollbackLoops) assert.match(loop, /0\.6\.112 0\.6\.113 0\.6\.114 0\.6\.115 0\.6\.116 0\.6\.117 0\.6\.118; do/);
+  for (const loop of rollbackLoops) assert.match(loop, /0\.6\.112 0\.6\.113 0\.6\.114 0\.6\.115 0\.6\.116 0\.6\.117 0\.6\.118 0\.6\.119 0\.6\.120 0\.6\.121; do/);
 });
 

@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Any
 
-from . import energy_registry
+from . import energy_registry, tuya_dps_registry
 
 ENGINE_CONFIG_KEY = "energy_engine_config"
 BATTERY_ESTIMATOR_STATE_KEY = "energy_engine_battery_estimator"
@@ -125,8 +125,13 @@ def persist_tuya_telemetry(conn: sqlite3.Connection, readings: list[dict[str, An
             device = by_id.get(device_id, {})
             specs = [item for item in [*(device.get("functions") or []), *(device.get("status_spec") or [])] if isinstance(item, dict)]
             labels = device.get("capability_labels") if isinstance(device.get("capability_labels"), dict) else {}
+            dps_knowledge = tuya_dps_registry.analyze_device(device, reading["status"])
+            confirmed_semantics = {item["dps_id"]: item for item in dps_knowledge.get("dps", [])
+                                   if item.get("confidence") == "CONFIRMED"}
             metrics: dict[str, dict[str, Any]] = {}
             raw_status = []
+            registry_metric_fields = {"current": "current", "active_power": "power",
+                                      "voltage": "voltage", "daily_accumulated_energy": "energy"}
             patterns = {
                 "voltage": (r"(^|_)(cur_)?voltage($|_)", r"voltage|tension|tensao"),
                 "current": (r"(^|_)(cur_)?current($|_)", r"current|corrente"),
@@ -137,7 +142,11 @@ def persist_tuya_telemetry(conn: sqlite3.Connection, readings: list[dict[str, An
                 if not isinstance(item, dict) or not isinstance(item.get("code"), str):
                     continue
                 code, value = item["code"], item.get("value")
-                raw_status.append({"code": code, "value": value})
+                raw_entry = {"code": code, "value": value}
+                dp_id = item.get("dps_id", item.get("dp_id", item.get("dpId")))
+                if isinstance(dp_id, int) and not isinstance(dp_id, bool) and dp_id > 0:
+                    raw_entry["dps_id"] = dp_id
+                raw_status.append(raw_entry)
                 if isinstance(value, bool) or not isinstance(value, (int, float, str)):
                     continue
                 try:
@@ -145,6 +154,23 @@ def persist_tuya_telemetry(conn: sqlite3.Connection, readings: list[dict[str, An
                 except (TypeError, ValueError):
                     continue
                 if not math.isfinite(numeric):
+                    continue
+                dp_id = item.get("dps_id", item.get("dp_id", item.get("dpId")))
+                if dp_id is None and code.startswith("dps_"):
+                    try:
+                        dp_id = int(code[4:])
+                    except ValueError:
+                        dp_id = None
+                definition = confirmed_semantics.get(dp_id) if isinstance(dp_id, int) else None
+                field = registry_metric_fields.get(definition.get("semantic_code")) if definition else None
+                if field and definition.get("unit") and isinstance(definition.get("scale"), (int, float)) and definition["scale"] > 0:
+                    numeric /= float(definition["scale"])
+                    canonical_unit = {"voltage": "V", "current": "A", "power": "W", "energy": "kWh"}[field]
+                    metrics[field] = {"code": code, "dps_id": dp_id, "value": round(numeric, 6),
+                                      "unit": canonical_unit, "observed_at": observed_at,
+                                      "trust": "LIVE_UNVERIFIED", "mapping_confidence": "CONFIRMED",
+                                      "mapping_source": definition.get("source")}
+                    count += 1
                     continue
                 spec = next((candidate for candidate in specs if candidate.get("code") == code), {})
                 meta = spec.get("values", {})
@@ -2041,6 +2067,17 @@ def _estimate_battery_soc(voltage_history: list[dict[str, Any]], power_history: 
                       "voltage_max_90d_v": round(peak_voltage, 3),
                       "charge_power_tolerance_w": 20, "stabilization_minutes": 10}
     peak_at, peak_voltage = confirmed_anchor
+    cloud_voltage_at_anchor = any(_is_cloud_history(point) and
+                                  (stamp := _parse_utc(point.get("observed_at"))) is not None and
+                                  abs((stamp - peak_at).total_seconds()) <= 120
+                                  for point in voltage_history)
+    cloud_power_at_anchor = any(_is_cloud_history(point) and
+                                (stamp := _parse_utc(point.get("observed_at"))) is not None and
+                                abs((stamp - peak_at).total_seconds()) <= 120
+                                for point in power_history)
+    anchor_source = ("DEYE_CLOUD_HISTORY_VOLTAGE_AND_SIGNED_POWER"
+                     if cloud_voltage_at_anchor and cloud_power_at_anchor
+                     else "GATEWAY_LOCAL_VOLTAGE_AND_SIGNED_POWER")
     if len(powers) < 2 or powers[-1][0] < peak_at or (now - powers[-1][0]).total_seconds() > 120:
         return None, {**unavailable, "reason": "FRESH_CHARGE_DISCHARGE_HISTORY_REQUIRED",
                       "voltage_max_30d_v": round(peak_voltage, 3), "anchor_at": peak_at.isoformat()}
@@ -2062,6 +2099,7 @@ def _estimate_battery_soc(voltage_history: list[dict[str, Any]], power_history: 
         "state": "ESTIMATED_FROM_30D_VOLTAGE_PEAK_AND_POWER_INTEGRATION",
         "reason": "ROLLING_VOLTAGE_PEAK_IS_AN_ESTIMATED_FULL_CHARGE_ANCHOR",
         "voltage_max_30d_v": round(peak_voltage, 3), "anchor_at": peak_at.isoformat(),
+        "anchor_source": anchor_source,
         "integrated_net_discharge_kwh": round(net_discharge_kwh, 4),
         "sample_count": len(after_anchor), "bank_voltage_scope": "SHARED_PARALLEL_BUS",
     }
@@ -2137,6 +2175,7 @@ def _estimate_battery_soc_persistent(conn: sqlite3.Connection,
         integrated = max(0.0, (maximum_soc - initial_soc) * capacity_kwh / 100.0)
         state = {"estimator_version": 2, "anchor_at": anchor_at.isoformat(),
                  "voltage_max_v": float(details["voltage_max_30d_v"]),
+                 "anchor_source": details.get("anchor_source", "GATEWAY_LOCAL_VOLTAGE_AND_SIGNED_POWER"),
                  "integrated_net_discharge_kwh": integrated,
                  "last_power_at": latest_power[0].isoformat(), "last_power_w": latest_power[1],
                  "last_sample_count": len(powers), "needs_reanchor": False}
@@ -2162,6 +2201,7 @@ def _estimate_battery_soc_persistent(conn: sqlite3.Connection,
                                                 minimum_soc, maximum_soc, now)
     original_state = dict(state)
 
+    anchor_source = state.get("anchor_source", "GATEWAY_LOCAL_VOLTAGE_AND_SIGNED_POWER")
     # A higher voltage alone is not a new full-charge event. Re-anchor only when
     # the full-charge stabilization detector confirms a later event.
     new_anchor: tuple[datetime, float] | None = None
@@ -2176,6 +2216,7 @@ def _estimate_battery_soc_persistent(conn: sqlite3.Connection,
 
     if new_anchor:
         anchor_at, voltage_max = new_anchor
+        anchor_source = anchor_details.get("anchor_source", "GATEWAY_LOCAL_VOLTAGE_AND_SIGNED_POWER")
         integrated = 0.0
         state["needs_reanchor"] = False
         # Start integrating from the first power sample at/after the voltage
@@ -2227,6 +2268,7 @@ def _estimate_battery_soc_persistent(conn: sqlite3.Connection,
     if latest_power[0] > last_at:
         last_at, last_power = latest_power
     state.update({"estimator_version": 2, "anchor_at": anchor_at.isoformat(), "voltage_max_v": voltage_max,
+                  "anchor_source": anchor_source,
                   "integrated_net_discharge_kwh": integrated,
                   "last_power_at": last_at.isoformat(), "last_power_w": last_power,
                   "last_sample_count": len(powers)})
@@ -2240,6 +2282,7 @@ def _estimate_battery_soc_persistent(conn: sqlite3.Connection,
     return round(estimated_soc, 2), {
         "state": "ESTIMATED_FROM_PERSISTED_VOLTAGE_ANCHOR_AND_POWER_INTEGRATION",
         "reason": "PERSISTED_SHARED_PARALLEL_BUS_ANCHOR",
+        "anchor_source": state.get("anchor_source", "GATEWAY_LOCAL_VOLTAGE_AND_SIGNED_POWER"),
         "voltage_max_30d_v": round(voltage_max, 3), "anchor_at": anchor_at.isoformat(),
         "integrated_net_discharge_kwh": round(integrated, 4),
         "sample_count": len(powers), "bank_voltage_scope": "SHARED_PARALLEL_BUS",
@@ -2677,12 +2720,9 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
     battery_cutoff = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat(timespec="microseconds")
     battery_voltage_history = _series(conn, [battery["id"]] if battery else [], "battery_voltage", battery_cutoff, limit=150000)
     battery_power_history = _series(conn, [battery["id"]] if battery else [], "battery_output_power", battery_cutoff, limit=150000)
-    # Cloud history is valuable for solar/load learning, but it is not a live
-    # coulomb-counting stream and must not anchor or advance the current SOC.
-    battery_voltage_history = [point for point in battery_voltage_history
-                               if point.get("source") != "DEYE_CLOUD_HISTORY"]
-    battery_power_history = [point for point in battery_power_history
-                             if point.get("source") != "DEYE_CLOUD_HISTORY"]
+    # Timestamped Cloud voltage and signed power may seed the full-charge event
+    # and integration when the Deye SOC percentage itself is not used. Their
+    # trust remains LIVE_UNVERIFIED and gaps still fail closed.
     if isinstance(latest_sample, dict) and isinstance(latest_sample.get("metrics"), list):
         sample_time = latest_sample.get("sampled_at")
         for metric in latest_sample["metrics"]:
@@ -2726,7 +2766,9 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
         if fresh_local(voltage_item) and fresh_local(charge_item) else None)
     inferred_voltage_full = soc is None and voltage_plateau is not None
     displayed_soc = soc if soc is not None else max_soc if inferred_voltage_full else None
-    displayed_soc_source = ("gateway_energy_integrated" if soc is not None else
+    displayed_soc_source = ("gateway_energy_integrated_cloud_history_anchor"
+                            if soc is not None and soc_estimate.get("anchor_source") == "DEYE_CLOUD_HISTORY_VOLTAGE_AND_SIGNED_POWER" else
+                            "gateway_energy_integrated" if soc is not None else
                             "gateway_voltage_plateau_inferred" if inferred_voltage_full else
                             "unavailable")
     if inferred_voltage_full:

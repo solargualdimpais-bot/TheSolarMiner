@@ -3,7 +3,7 @@ import hashlib
 
 import pytest
 
-from solarminer_gateway import integrations, huawei_router
+from solarminer_gateway import integrations, huawei_router, tuya_dps_registry
 
 
 def test_tuya_local_dps_prefers_tuya_dp_id_to_channel_suffix():
@@ -16,6 +16,73 @@ def test_tuya_local_dps_prefers_tuya_dp_id_to_channel_suffix():
     assert integrations._tuya_local_dps(device, "switch_1") == "7"
     assert integrations._tuya_local_dps(device, "switch_2") == "9"
     assert integrations._tuya_local_dps({"functions": []}, "switch_2") == "2"
+
+
+def test_tuya_multichannel_switch_requires_real_dp_mapping():
+    device = {"functions": [
+        {"code": f"switch_{index}", "type": "Boolean"}
+        for index in range(1, 7)
+    ]}
+    with pytest.raises(ValueError, match="tuya_local_datapoint_mapping_required"):
+        integrations._tuya_local_dps(device, "switch_1")
+    device["local_dps_map"] = {"switch_1": "7"}
+    assert integrations._tuya_local_dps(device, "switch_1") == "7"
+    with pytest.raises(ValueError, match="tuya_local_datapoint_mapping_required"):
+        integrations._tuya_local_dps({"channel_count": 6}, "switch_1")
+
+
+def test_tuya_kg_standard_six_switch_profile_maps_only_full_declared_channels():
+    device = {"category": "kg", "functions": [
+        {"code": f"switch_{index}", "type": "Boolean"} for index in range(1, 7)
+    ]}
+    assert [integrations._tuya_local_dps(device, f"switch_{i}") for i in range(1, 7)] == ["1", "2", "3", "4", "5", "6"]
+    incomplete = {"category": "kg", "functions": device["functions"][:-1]}
+    with pytest.raises(ValueError, match="tuya_local_datapoint_mapping_required"):
+        integrations._tuya_local_dps(incomplete, "switch_1")
+
+
+def test_tuya_dps_registry_keeps_dp18_scoped_and_unknown_read_only():
+    observed_energy = {"current_status": [
+        {"dps_id": dp, "code": f"dps_{dp}", "value": value}
+        for dp, value in ((1, True), (9, 0), (17, 62), (18, 6081), (19, 14008), (20, 2302))
+    ]}
+    suggestion = tuya_dps_registry.analyze_device(observed_energy)
+    assert suggestion["preset_id"] is None
+    assert suggestion["confidence"] == "SUGGESTED"
+    energy = tuya_dps_registry.analyze_device({**observed_energy, "dps_preset_id": "energy_monitor_switch"})
+    assert energy["preset_id"] == "energy_monitor_switch"
+    assert next(row for row in energy["dps"] if row["dps_id"] == 18)["semantic_code"] == "current"
+    assert energy["write_authorized"] is False
+    assert energy["raw_dps"]["18"] == 6081
+    qccdz = tuya_dps_registry.analyze_device({"category": "qccdz", "current_status": [
+        {"dps_id": 18, "code": "dps_18", "value": True}
+    ]})
+    assert qccdz["preset_id"] == "qccdz_ev_charger"
+    assert next(row for row in qccdz["dps"] if row["dps_id"] == 18)["semantic_code"] == "switch"
+    unknown = tuya_dps_registry.analyze_device({"current_status": [{"dps_id": 250, "value": {"x": 1}}]})
+    unknown_row = next(row for row in unknown["dps"] if row["dps_id"] == 250)
+    assert unknown_row["semantic_code"] == "unknown"
+    assert unknown_row["write_supported"] is False
+    assert unknown["raw_dps"]["250"] == {"x": 1}
+
+
+def test_tuya_dps_registry_suggests_hybrid_entities_without_writes():
+    status = [{"dps_id": dp, "code": f"dps_{dp}", "value": value}
+              for dp, value in [(1, False), (2, False), (3, False), (4, False), (5, False), (6, False),
+                                (107, "rturn"), (113, "switch"), (114, "curtain"), (115, "curtain")]]
+    suggestion = tuya_dps_registry.analyze_device({"category": "kg", "current_status": status})
+    assert suggestion["preset_id"] is None
+    result = tuya_dps_registry.analyze_device({"category": "kg", "dps_preset_id": "six_channel_hybrid", "current_status": status})
+    assert result["preset_id"] == "six_channel_hybrid"
+    assert result["write_authorized"] is False
+    assert result["dynamic_entities"] == [
+        {"entity_type": "switch", "channel": 1, "source_dps": [1]},
+        {"entity_type": "switch", "channel": 2, "source_dps": [2]},
+        {"entity_type": "cover", "pair": 2, "source_dps": [3, 4], "supported_controls": [],
+         "note": "Cortina detetada; posição e comandos não inferidos."},
+        {"entity_type": "cover", "pair": 3, "source_dps": [5, 6], "supported_controls": [],
+         "note": "Cortina detetada; posição e comandos não inferidos."},
+    ]
 
 
 def test_qccdz_ev_charger_uses_its_dps_18_switch_profile():
@@ -268,6 +335,7 @@ def test_tuya_local_names_and_capability_aliases_are_bound_to_synced_schema():
     existing["tuya"]["devices"][0]["status_spec"] = synced["tuya"]["devices"][0]["status_spec"]
     edited_payload = {"tuya": {"region": "eu_central", "client_id": "client-id", "client_secret": "secret-value-123", "devices": [{
         "device_id": "device_123", "name": "Luzes da frente", "name_source": "local", "room": "Jardim", "floor": "Exterior",
+        "dps_preset_id": "six_channel_hybrid",
         "channel_labels": {"switch_1": "Canteiro esquerdo", "switch_6": "Portão"},
         "capability_labels": {"switch_1": "Canteiro esquerdo", "relay_status": "Estado do relé"},
     }]}}
@@ -278,6 +346,11 @@ def test_tuya_local_names_and_capability_aliases_are_bound_to_synced_schema():
     assert public_device["switch_channels"] == [f"switch_{index}" for index in range(1, 7)]
     assert public_device["channel_labels"]["switch_6"] == "Portão"
     assert public_device["capability_labels"]["relay_status"] == "Estado do relé"
+    assert public_device["dps_preset_id"] == "six_channel_hybrid"
+    assert public_device["dps_knowledge"]["preset_id"] == "six_channel_hybrid"
+    invalid_preset = {"tuya": {**edited_payload["tuya"], "devices": [{**edited_payload["tuya"]["devices"][0], "dps_preset_id": "invented"}]}}
+    with pytest.raises(ValueError, match="invalid_tuya_dps_preset"):
+        integrations.validate_config(invalid_preset, existing=existing)
     invalid = {"tuya": {**edited_payload["tuya"], "devices": [{**edited_payload["tuya"]["devices"][0], "capability_labels": {"not_synced": "Inventado"}}]}}
     with pytest.raises(ValueError, match="invalid_tuya_capability_label"):
         integrations.validate_config(invalid, existing=existing)
