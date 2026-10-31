@@ -605,10 +605,61 @@ function tuyaSwitchCodes(device){
   const explicit=typeof device?.switch_code==="string"&&device.switch_code? [device.switch_code]:[];
   return [...new Set([...configured,...fromSchema,...explicit])];
 }
+function tuyaSwitchChannelCodes(device,codes=tuyaSwitchCodes(device)){
+  return codes.filter(code=>/^switch_[1-9]\d*$/i.test(code)).sort((a,b)=>Number(a.match(/\d+/)?.[0])-Number(b.match(/\d+/)?.[0]));
+}
 function tuyaPrimarySwitchCode(device,codes=tuyaSwitchCodes(device)){
+  if(tuyaSwitchChannelCodes(device,codes).length>1)return "switch_all";
   if(codes.includes("switch_all"))return "switch_all";
   if(codes.includes("switch")&&codes.some(code=>/^switch_\d+$/i.test(code)))return "switch";
   return device?.switch_code&&codes.includes(device.switch_code)?device.switch_code:codes.find(code=>/^switch(?:_\d+|_led|_usb\d+)?$/i.test(code))||codes[0]||"";
+}
+function tuyaSwitchState(device,reading,code){
+  const status=Array.isArray(reading?.status)?reading.status:[];
+  const direct=status.find(item=>item?.code===code)?.value;
+  if(typeof direct==="boolean")return direct;
+  if(code==="switch_all"){
+    const values=tuyaSwitchChannelCodes(device).map(channel=>status.find(item=>item?.code===channel)?.value).filter(value=>typeof value==="boolean");
+    return values.length?values.some(Boolean):undefined;
+  }
+  return undefined;
+}
+function tuyaSwitchCodeHasLocalMapping(device,code){
+  if(device?.local_dps_map&&Object.prototype.hasOwnProperty.call(device.local_dps_map,code))return true;
+  return code==="switch"||/^switch_[1-9]\d*$/i.test(code);
+}
+async function setTuyaSwitchGroup(device,reading,desired){
+  const channels=tuyaSwitchChannelCodes(device),masterMapped=tuyaSwitchCodeHasLocalMapping(device,"switch_all");
+  if(masterMapped){
+    const result=await controlGatewayTuyaSwitch(device.device_id,desired,"switch_all");
+    return {results:[result],codes:["switch_all"]};
+  }
+  if(channels.length<2)throw new Error("O comando geral não tem mapeamento local confirmado.");
+  const missing=channels.filter(code=>!tuyaSwitchCodeHasLocalMapping(device,code));
+  if(missing.length)throw new Error(`Falta mapear os DPS locais de ${missing.join(", ")}.`);
+  const results=[];
+  for(const code of channels)results.push(await controlGatewayTuyaSwitch(device.device_id,desired,code));
+  return {results,codes:channels};
+}
+function applyTuyaCommandReading(device,before,results,codes,desired){
+  const old=Array.isArray(before?.status)?before.status:[],updates=new Map();
+  for(const result of results||[]){const code=result?.switch_code;if(typeof code==="string"&&typeof result.observed_on==="boolean")updates.set(code,result.observed_on);}
+  if(codes.includes("switch_all")&&updates.has("switch_all"))updates.set("switch_all",updates.get("switch_all"));
+  const status=old.map(row=>updates.has(row.code)?{...row,value:updates.get(row.code)}:row);
+  for(const [code,value] of updates)if(!status.some(row=>row.code===code))status.push({code,value});
+  if(codes.includes("switch_all")&&!updates.has("switch_all")){
+    for(const code of tuyaSwitchChannelCodes(device)){
+      const index=status.findIndex(row=>row.code===code);if(index>=0)status[index]={...status[index],value:desired};else status.push({code,value:desired});
+    }
+  }
+  return {...before,device_id:device.device_id,status,connection_state:"local_responded",source:"TUYA_LAN",trust:"LIVE_UNVERIFIED",lan_probe:true,checked_at:new Date().toISOString()};
+}
+async function commandAndVerifyTuyaSwitch(device,before,code,desired){
+  let results,codes=[code];
+  if(code==="switch_all")({results,codes}=await setTuyaSwitchGroup(device,before,desired));
+  else results=[await controlGatewayTuyaSwitch(device.device_id,desired,code)];
+  const after=applyTuyaCommandReading(device,before,results,codes,desired);
+  return {results,after,codes,confirmed:results.length>0&&results.every(result=>result.state_confirmed===true)&&codes.every(item=>tuyaSwitchState(device,after,item)===desired)};
 }
 function favoriteDeviceCards() {
   const canUsePwa=sessionInfo().authenticated,canControl=canUsePwa&&sessionInfo().user?.role==="owner";
@@ -627,6 +678,7 @@ function favoriteDeviceCards() {
     let codes=tuyaSwitchCodes(device);
     if((device.device_kind_override||device.device_kind)==="breaker")codes=[device.switch_code||codes.find(code=>code==="switch"||code==="switch_1")||codes[0]].filter(Boolean);
     const channels=codes.map(code=>({code,value:values.find(item=>item.code===code)?.value,label:device.channel_labels?.[code]||device.capability_labels?.[code]||code}));
+    if(tuyaSwitchChannelCodes(device,codes).length>1&&!channels.some(channel=>channel.code==="switch_all"))channels.push({code:"switch_all",value:tuyaSwitchState(device,status,"switch_all"),label:"Todos"});
     const level=values.find(entry=>entry.code===device.level_code)?.value,isLevel=Boolean(device.level_code);
     const percent=isLevel&&Number.isFinite(Number(level))?Math.max(0,Math.min(100,Math.round((Number(level)-Number(device.level_min??0))/(Number(device.level_max??100)-Number(device.level_min??0))*100))):null;
     return {id,kind,device,details,status,codes,channels,isLevel,percent};
@@ -698,17 +750,18 @@ function openTuyaDeviceSettings(device){
 }
 function openTuyaQuickControls(device){
   const live=state.tuyaReadings.find(item=>item.device_id===device.device_id),status=Array.isArray(live?.status)?live.status:[],codes=tuyaSwitchCodes(device),editable=tuyaEditableSettings(device);
-  const master=codes.includes("switch_all")?"switch_all":(codes.includes("switch")&&codes.some(code=>/^switch_\d+$/i.test(code))?"switch":""),masterValue=master?status.find(item=>item?.code===master)?.value:undefined;
-  const channels=codes.filter(code=>code!=="switch_all"&&code!==master).map(code=>{const spec=(device.functions||[]).find(item=>item?.code===code);return {code,label:device.channel_labels?.[code]||device.capability_labels?.[code]||spec?.name||code,value:status.find(item=>item?.code===code)?.value};});
+  const channelCodes=tuyaSwitchChannelCodes(device,codes),multi=channelCodes.length>=2;
+  const master=multi?"":(codes.includes("switch_all")?"switch_all":(codes.includes("switch")&&codes.some(code=>/^switch_\d+$/i.test(code))?"switch":"")),masterValue=master?tuyaSwitchState(device,live,master):undefined;
+  const channels=(multi?channelCodes:codes.filter(code=>code!=="switch_all"&&code!==master)).map(code=>{const spec=(device.functions||[]).find(item=>item?.code===code);return {code,label:device.channel_labels?.[code]||device.capability_labels?.[code]||spec?.name||code,value:tuyaSwitchState(device,live,code)};});
   const toggle=(code,label,value)=>`<div class="tuya-quick-channel"><button type="button" class="favorite-state-symbol ${value===true?"on":value===false?"off":"unknown"}" data-tuya-quick-toggle="${esc(code)}" aria-pressed="${value===true}" ${typeof value!=="boolean"||sessionInfo().user?.role!=="owner"?"disabled":""}>${value===true?"ON":value===false?"OFF":"—"}</button><span data-tuya-channel-label="${esc(code)}" title="Duplo clique para alterar o nome"><strong>${esc(label)}</strong></span></div>`;
   const settingControl=item=>item.kind==="boolean"?`<select data-tuya-setting="${esc(item.code)}"><option value="true" ${item.current===true?"selected":""}>Ativo</option><option value="false" ${item.current===false?"selected":""}>Inativo</option></select>`:item.kind==="integer"?`<label class="tuya-countdown-picker"><button type="button" data-step="-1" aria-label="Diminuir">−</button><input type="number" data-tuya-setting="${esc(item.code)}" min="${Number(item.values.min)}" max="${Number(item.values.max)}" step="${Number(item.values.step)||1}" value="${Number.isInteger(Number(item.current))?Number(item.current):Number(item.values.min)}"><button type="button" data-step="1" aria-label="Aumentar">＋</button></label>`:`<select data-tuya-setting="${esc(item.code)}">${item.values.range.map(value=>`<option value="${esc(value)}" ${value===item.current?"selected":""}>${esc(value)}</option>`).join("")}</select>`;
   const settingRows=editable.map(item=>`<label class="tuya-setting-row"><span><strong>${esc(item.name||item.code)}</strong><small>${esc(item.code)}</small></span>${settingControl(item)}</label>`).join("");
   const dialog=document.createElement("dialog");dialog.className="settings-dialog tuya-quick-controls";
-  dialog.innerHTML=`<form method="dialog" class="dialog-body"><div class="dialog-header"><div><p class="eyebrow">CONTROLOS COMPATÍVEIS</p><h2>${esc(device.name)}</h2></div><button class="icon-button" value="close" aria-label="Fechar">×</button></div>${master?`<section><h3>Controlo geral</h3>${toggle(master,"Switch All",masterValue)}</section>`:""}${channels.length?`<section><h3>Canais</h3><div class="tuya-quick-channel-list">${channels.map(item=>toggle(item.code,item.label,item.value)).join("")}</div></section>`:""}${editable.length?`<section><h3>Temporizador e definições declaradas</h3>${settingRows}<button type="button" class="button primary" data-tuya-quick-save>Guardar definições</button></section>`:""}<p class="connection-result" data-tuya-quick-status role="status" aria-live="polite">${live?.connection_state==="lan_reachable"?`Resposta LAN · ${Number(live.latency_ms)||0} ms`:"Estado físico por confirmar"}</p><div class="dialog-actions"><button type="button" class="button secondary" data-tuya-quick-settings>Mais definições</button><button class="button secondary" value="close">Fechar</button></div></form>`;
+  dialog.innerHTML=`<form method="dialog" class="dialog-body"><div class="dialog-header"><div><p class="eyebrow">CANAIS</p><h2>${esc(device.name)}</h2></div><button class="icon-button" value="close" aria-label="Fechar">×</button></div>${channels.length?`<div class="tuya-quick-channel-list">${channels.map(item=>toggle(item.code,item.label,item.value)).join("")}</div>`:`<p class="field-note">Não foram encontrados canais ON/OFF neste dispositivo.</p>`}${multi?"":editable.length?`<section><h3>Temporizador e definições declaradas</h3>${settingRows}<button type="button" class="button primary" data-tuya-quick-save>Guardar definições</button></section>`:""}<p class="connection-result" data-tuya-quick-status role="status" aria-live="polite"></p>${multi?`<div class="dialog-actions"><button class="button secondary" value="close">Fechar</button></div>`:`<div class="dialog-actions"><button type="button" class="button secondary" data-tuya-quick-settings>Mais definições</button><button class="button secondary" value="close">Fechar</button></div>`}</form>`;
   document.body.append(dialog);dialog.addEventListener("close",()=>dialog.remove(),{once:true});
   dialog.querySelectorAll("[data-tuya-quick-toggle]").forEach(button=>button.addEventListener("click",async()=>{
     const code=button.dataset.tuyaQuickToggle;button.disabled=true;const output=dialog.querySelector("[data-tuya-quick-status]");output.textContent="A ler e controlar apenas este dispositivo na LAN…";
-    try{const before=(await testTuyaLanDevice(device.device_id)).reading;if(!tuyaReadingConfirmed(before))throw new Error("O dispositivo não respondeu à leitura LAN.");const current=before.status?.find(row=>row.code===code)?.value;if(typeof current!=="boolean")throw new Error("A função não devolveu um estado ON/OFF.");const result=await controlGatewayTuyaSwitch(device.device_id,!current,code);if(!result.state_confirmed)throw new Error("O comando foi enviado, mas o estado não ficou confirmado.");const after=(await testTuyaLanDevice(device.device_id)).reading;state.tuyaReadings=[...(state.tuyaReadings||[]).filter(item=>item.device_id!==device.device_id),after];output.textContent=after.status?.find(row=>row.code===code)?.value===!current?`${code}: ${!current?"ligado":"desligado"} · confirmado pela LAN.`:"Comando enviado; a leitura seguinte ainda não confirmou o estado.";render();}catch(error){output.textContent=`Sem confirmação: ${error.message}`;}finally{button.disabled=false;}
+    try{const before=(await testTuyaLanDevice(device.device_id)).reading;if(!tuyaReadingConfirmed(before))throw new Error("O dispositivo não respondeu à leitura LAN.");const current=tuyaSwitchState(device,before,code);if(typeof current!=="boolean")throw new Error("A LAN respondeu, mas não foi possível associar o estado a este canal. Confirma o mapeamento DPS local.");const desired=!current,{after,confirmed}=await commandAndVerifyTuyaSwitch(device,before,code,desired);state.tuyaReadings=[...(state.tuyaReadings||[]).filter(item=>item.device_id!==device.device_id),after];output.textContent=confirmed?`${code}: ${desired?"ligado":"desligado"} · confirmado pela LAN.`:"O Gateway enviou o comando, mas não confirmou o novo estado.";render();}catch(error){output.textContent=`Sem confirmação: ${error.message}`;}finally{button.disabled=false;}
   }));
   dialog.querySelectorAll("[data-tuya-channel-label]").forEach(label=>label.addEventListener("dblclick",async()=>{if(sessionInfo().user?.role!=="owner")return;const code=label.dataset.tuyaChannelLabel,current=device.channel_labels?.[code]||label.textContent.trim(),next=window.prompt("Nome deste canal",current);if(next===null||!next.trim())return;try{const config=await readGatewayHardwareIntegrationConfig(),devices=(config.tuya?.devices||[]).map(item=>item.device_id===device.device_id?{...item,channel_labels:{...(item.channel_labels||{}),[code]:next.trim()}}:item);await saveGatewayHardwareIntegrationConfig({tuya:{devices}});device.channel_labels={...(device.channel_labels||{}),[code]:next.trim()};label.querySelector("strong").textContent=next.trim();render();}catch(error){dialog.querySelector("[data-tuya-quick-status]").textContent=`O nome do canal não foi guardado: ${error.message}`;}}));
   dialog.querySelectorAll("[data-step]").forEach(button=>button.addEventListener("click",()=>{const input=button.parentElement.querySelector("input"),step=Number(input.step)||1;input.value=String(Math.min(Number(input.max),Math.max(Number(input.min),Number(input.value)+Number(button.dataset.step)*step)));}));
@@ -1219,7 +1272,7 @@ function renderDeviceInventoryPage(){
     const statusText=fault?fault.label:offline?"Offline":tuyaDeviceState(device,reading);
     const metrics=tuyaSimpleReadings(device,reading),power=metrics.find(metric=>metric.label==="Potência"),voltage=metrics.find(metric=>metric.label==="Tensão"),switchCode=tuyaPrimarySwitchCode(device);
     const metricMarkup=power||voltage?`<small class="inventory-device-metrics"><span>${power?`Potência ${esc(power.value)}`:""}</span><span>${voltage?`Tensão ${esc(voltage.value)}`:""}</span></small>`:"";
-    const switchValue=(Array.isArray(reading?.status)?reading.status:[]).find(item=>item?.code===switchCode)?.value,powerGlyph='<svg viewBox="0 0 28 28" aria-hidden="true" focusable="false"><path d="M19.25 4.9a10.5 10.5 0 1 1-10.5 0"/><path d="M14 2.4v10.2"/></svg>';
+    const switchValue=tuyaSwitchState(device,reading,switchCode),powerGlyph='<svg viewBox="0 0 28 28" aria-hidden="true" focusable="false"><path d="M19.25 4.9a10.5 10.5 0 1 1-10.5 0"/><path d="M14 2.4v10.2"/></svg>';
     const switchButton=switchCode?`<button class="favorite-state-symbol ${switchValue===true?"on":switchValue===false?"off":"unknown"}" type="button" data-favorite-toggle="${esc(device.device_id)}" data-favorite-code="${esc(switchCode)}" aria-label="${switchValue===true?"Ligado":switchValue===false?"Desligado":"Sem leitura"} · ${esc(device.name)}" ${typeof switchValue!=="boolean"?"disabled":""}>${powerGlyph}</button>`:"";
     return `<article class="favorite-device inventory-device ${fault||offline?"is-fault":""} ${isConfirmed?"is-confirmed":"is-pending"}" data-inventory-device="${esc(device.device_id)}" tabindex="0" aria-label="${esc(device.name)} · ${esc(statusText)}"><span class="favorite-device-icon" aria-hidden="true">${equipmentIconSvg(device,"tuya")}</span><div class="favorite-device-info"><strong class="favorite-device-name" data-device-name="${esc(device.device_id)}" title="Toque para informação; duplo clique para configurar">${esc(device.name)}</strong><span>${esc(device.room||device.floor||statusText)}</span>${metricMarkup}</div><div class="favorite-device-actions">${switchButton}<button type="button" class="favorite-expand" data-inventory-expand="${esc(device.device_id)}" aria-label="Opções de ${esc(device.name)}" title="Opções">⌄</button></div></article>`;
   }).join("");
@@ -1293,14 +1346,19 @@ function render() {
   const liveUtilityPages=["casa","devices","profile","automatismos","producao"];
   const gatewayBackedPages = ["inicio", "engine", "gestao-excedentes", ...CATEGORIES.map(c => c.id), ...liveAreaPages, ...liveUtilityPages];
   let pageHtml;
-  if (state.mode !== "SIMULATED" && !gatewayBackedPages.includes(state.page)) {
-    pageHtml = `<div class="page-heading"><div><p class="eyebrow">FUNÇÃO NÃO DISPONÍVEL NO GATEWAY ATUAL</p><h1>${esc(pageLabel(state.page))}</h1><p>Esta área ainda não tem um contrato de dados ou comandos físicos no Gateway. Para evitar confusão, a sessão autenticada não apresenta controlos ou valores de demonstração aqui.</p></div></div><div class="empty-state">Sem dados reais fornecidos pelo Gateway para esta área. A administração está na página Owner.</div>`;
-  } else {
-    pageHtml = state.page === "inicio" ? renderOverview() : state.page === "gestao-excedentes" ? renderSurplusManager() : state.mode!=="SIMULATED"&&liveAreaPages.includes(state.page)?renderGatewayArea(state.page):state.mode!=="SIMULATED"&&liveUtilityPages.includes(state.page)?renderGatewayUtilityPage(state.page):state.page === "engine" && state.mode !== "SIMULATED" ? renderLiveEnergyEngine() : (workspacePage || (CATEGORIES.some(c=>c.id===state.page) ? renderCategory(state.page) : renderOverview()));
-    if (state.page === "engine" && sessionInfo().user?.role === "owner") pageHtml = pageHtml.replace('<label class="feature-field">Cargas flexíveis', `${renderLoadBuilder()}<label class="feature-field">Cargas flexíveis`);
-    if(state.mode === "SIMULATED" && state.page === "automatismos") pageHtml = renderAutomationsPage(workspace, automationEditingId);
-    if(state.mode === "SIMULATED" && state.page === "producao") pageHtml = renderSolarProductionPage();
-    if(state.mode === "SIMULATED" && state.page === "profile") pageHtml += renderDemoAdminPanel();
+  try {
+    if (state.mode !== "SIMULATED" && !gatewayBackedPages.includes(state.page)) {
+      pageHtml = `<div class="page-heading"><div><p class="eyebrow">FUNÇÃO NÃO DISPONÍVEL NO GATEWAY ATUAL</p><h1>${esc(pageLabel(state.page))}</h1><p>Esta área ainda não tem um contrato de dados ou comandos físicos no Gateway. Para evitar confusão, a sessão autenticada não apresenta controlos ou valores de demonstração aqui.</p></div></div><div class="empty-state">Sem dados reais fornecidos pelo Gateway para esta área. A administração está na página Owner.</div>`;
+    } else {
+      pageHtml = state.page === "inicio" ? renderOverview() : state.page === "gestao-excedentes" ? renderSurplusManager() : state.mode!=="SIMULATED"&&liveAreaPages.includes(state.page)?renderGatewayArea(state.page):state.mode!=="SIMULATED"&&liveUtilityPages.includes(state.page)?renderGatewayUtilityPage(state.page):state.page === "engine" && state.mode !== "SIMULATED" ? renderLiveEnergyEngine() : (workspacePage || (CATEGORIES.some(c=>c.id===state.page) ? renderCategory(state.page) : renderOverview()));
+      if (state.page === "engine" && sessionInfo().user?.role === "owner") pageHtml = pageHtml.replace('<label class="feature-field">Cargas flexíveis', `${renderLoadBuilder()}<label class="feature-field">Cargas flexíveis`);
+      if(state.mode === "SIMULATED" && state.page === "automatismos") pageHtml = renderAutomationsPage(workspace, automationEditingId);
+      if(state.mode === "SIMULATED" && state.page === "producao") pageHtml = renderSolarProductionPage();
+      if(state.mode === "SIMULATED" && state.page === "profile") pageHtml += renderDemoAdminPanel();
+    }
+  } catch (error) {
+    console.error(`Could not render SolarMiner page: ${state.page}`, error);
+    pageHtml = `<div class="page-heading"><div><p class="eyebrow">GATEWAY · INTERFACE</p><h1>${esc(pageLabel(state.page))}</h1></div></div><section class="panel"><h2>Não foi possível abrir esta área</h2><p class="field-note">A navegação continua disponível. Atualiza a página ou abre outra área; os dados guardados no Gateway não foram alterados.</p></section>`;
   }
   const energyTabScroll=$("#page-content .energy-tabs")?.scrollLeft||0;
   $("#page-content").innerHTML = pageHtml;
@@ -1361,12 +1419,12 @@ $('#page-content').addEventListener('click',async e=>{
       const beforeProbe=await testTuyaLanDevice(deviceId),before=beforeProbe.reading;
       if(!tuyaReadingConfirmed(before))throw new Error("O teste de resposta LAN não confirmou este dispositivo.");
       state.tuyaReadings=[...(state.tuyaReadings||[]).filter(item=>item.device_id!==deviceId),before];
-      const current=(before.status||[]).find(item=>item.code===code)?.value;
+      const device=state.tuyaDevices.find(item=>item.device_id===deviceId);
+      const current=device?tuyaSwitchState(device,before,code):undefined;
       if(typeof current!=="boolean")throw new Error("O canal selecionado não tem um estado ON/OFF válido.");
-      const desired=!current,result=await controlGatewayTuyaSwitch(deviceId,desired,code);
-      const afterProbe=await testTuyaLanDevice(deviceId),after=afterProbe.reading;
+      const {after,confirmed}=await commandAndVerifyTuyaSwitch(device,before,code,!current);
       if(after)state.tuyaReadings=[...(state.tuyaReadings||[]).filter(item=>item.device_id!==deviceId),after];
-      if(!result.state_confirmed||!after||((after.status||[]).find(item=>item.code===code)?.value)!==desired){
+      if(!confirmed){
         showFeatureNotice("O Gateway enviou o comando, mas a leitura posterior não confirmou o estado pedido.");
       }
       lastTuyaReadAt=0;
@@ -2277,8 +2335,8 @@ function openTuyaDeviceEditor(device){
   const allFunctions=Array.isArray(device.functions)?device.functions:[],statuses=Array.isArray(device.status_spec)?device.status_spec:[];
   const glyph=tuyaDeviceGlyph(device);
   const localLabel= item=>tuyaFriendlyCapabilityLabel(item,device);
-  const defaultDps=code=>/^switch_(\d+)$/.test(code)?code.match(/^switch_(\d+)$/)[1]:code==="switch"?"1":"";
-  const channelRows=channels.map((item,index)=>`<label class="tuya-channel-edit"><span><strong>${esc(localLabel(item)||`Canal ${index+1}`)}</strong><small>${esc(item.code)} · ${esc(item.type||"interruptor")}</small></span><input type="text" maxlength="80" data-tuya-capability-label="${esc(item.code)}" value="${esc(localLabel(item)||`Canal ${index+1}`)}" aria-label="Nome do canal ${esc(index+1)}"><input type="number" min="1" max="65535" data-tuya-dps="${esc(item.code)}" value="${esc(device.local_dps_map?.[item.code]||defaultDps(item.code))}" aria-label="DPS local do canal ${esc(index+1)}" placeholder="DPS"></label>`).join("");
+  const defaultDps=item=>device.local_dps_map?.[item.code]||item.dp_id||item.dpId||(/^switch_(\d+)$/.test(item.code)?item.code.match(/^switch_(\d+)$/)[1]:item.code==="switch"?"1":"");
+  const channelRows=channels.map((item,index)=>`<label class="tuya-channel-edit"><span><strong>${esc(localLabel(item)||`Canal ${index+1}`)}</strong><small>${esc(item.code)} · ${esc(item.type||"interruptor")}${item.dp_id||item.dpId?` · DPS Tuya ${esc(item.dp_id||item.dpId)}`:""}</small></span><input type="text" maxlength="80" data-tuya-capability-label="${esc(item.code)}" value="${esc(localLabel(item)||`Canal ${index+1}`)}" aria-label="Nome do canal ${esc(index+1)}"><input type="number" min="1" max="65535" data-tuya-dps="${esc(item.code)}" value="${esc(defaultDps(item))}" aria-label="DPS local do canal ${esc(index+1)}" placeholder="DPS"></label>`).join("");
   const capabilityRows=allFunctions.filter(item=>!channels.includes(item)).map(item=>`<label class="tuya-capability-row"><span><strong>${esc(item.name||item.code||"Função")}</strong><small>${esc(item.code||"")} · ${esc(item.type||"tipo desconhecido")} · ${esc(typeof item.values==="string"?item.values:JSON.stringify(item.values??{}))}</small></span><input type="text" maxlength="80" data-tuya-capability-label="${esc(item.code)}" value="${esc(localLabel(item))}" aria-label="Nome local da característica ${esc(item.name||item.code||"")}"><input type="number" min="1" max="65535" data-tuya-dps="${esc(item.code)}" value="${esc(device.local_dps_map?.[item.code]||"")}" aria-label="DPS local de ${esc(item.name||item.code||"")}" placeholder="DPS"></label>`).join("");
   const statusRows=statuses.map(item=>`<label class="tuya-capability-row"><span><strong>${esc(item.name||item.code||"Leitura")}</strong><small>${esc(item.code||"")} · ${esc(item.type||"tipo desconhecido")}</small></span><input type="text" maxlength="80" data-tuya-capability-label="${esc(item.code)}" value="${esc(localLabel(item))}" aria-label="Nome local da leitura ${esc(item.name||item.code||"")}"><input type="number" min="1" max="65535" data-tuya-dps="${esc(item.code)}" value="${esc(device.local_dps_map?.[item.code]||"")}" aria-label="DPS local da leitura ${esc(item.name||item.code||"")}" placeholder="DPS"></label>`).join("");
   const dialog=document.createElement("dialog");dialog.className="settings-dialog tuya-device-editor";
@@ -2614,7 +2672,7 @@ $("#page-content").addEventListener("click", async event => {
   const inventoryRead=event.target.closest("[data-inventory-read]");
   if(inventoryRead){inventoryRead.disabled=true;try{const id=inventoryRead.dataset.inventoryRead,{reading}=await testTuyaLanReachability(id);state.tuyaReadings=[...(state.tuyaReadings||[]).filter(item=>item.device_id!==id),reading];render();if(!tuyaReadingConfirmed(reading))window.alert(`Sem resposta LAN: ${tuyaLanReasonText(reading.reason||"tuya_connection_failed")}`);}catch(error){window.alert("O teste de resposta LAN falhou: "+error.message);}finally{inventoryRead.disabled=false;}return;}
   const inventoryToggle=event.target.closest("[data-inventory-toggle]");
-  if(inventoryToggle){const device=state.tuyaDevices.find(item=>item.device_id===inventoryToggle.dataset.inventoryToggle);if(!device||!sessionInfo().authenticated||sessionInfo().user?.role!=="owner"){window.alert("Só o Owner autenticado pode controlar este equipamento.");return;}inventoryToggle.disabled=true;try{const {reading}=await testTuyaLanDevice(device.device_id),code=device.switch_code||reading.status.find(item=>typeof item.value==="boolean")?.code,observed=reading.status.find(item=>item.code===code)?.value;if(!tuyaReadingConfirmed(reading))throw new Error("Sem resposta à consulta LAN; não enviei comando.");if(!code||typeof observed!=="boolean")throw new Error("A leitura não identificou um DPS ON/OFF; não enviei comando.");const result=await controlGatewayTuyaSwitch(device.device_id,!observed,code);if(!result.state_confirmed)throw new Error("O Gateway não confirmou a alteração física.");const verified=await testTuyaLanDevice(device.device_id);state.tuyaReadings=[...(state.tuyaReadings||[]).filter(item=>item.device_id!==device.device_id),verified.reading];if(!tuyaReadingConfirmed(verified.reading)||verified.reading.status.find(item=>item.code===code)?.value!==!observed)throw new Error("O Gateway aceitou o comando, mas a leitura seguinte não confirmou o estado pedido.");render();}catch(error){window.alert("O estado do equipamento não foi confirmado: "+error.message);}finally{inventoryToggle.disabled=false;}return;}
+  if(inventoryToggle){const device=state.tuyaDevices.find(item=>item.device_id===inventoryToggle.dataset.inventoryToggle);if(!device||!sessionInfo().authenticated||sessionInfo().user?.role!=="owner"){window.alert("Só o Owner autenticado pode controlar este equipamento.");return;}inventoryToggle.disabled=true;try{const {reading}=await testTuyaLanDevice(device.device_id),code=tuyaPrimarySwitchCode(device),observed=tuyaSwitchState(device,reading,code);if(!tuyaReadingConfirmed(reading))throw new Error("Sem resposta à consulta LAN; não enviei comando.");if(!code||typeof observed!=="boolean")throw new Error("A LAN respondeu, mas o estado ON/OFF não está associado ao DPS local correto.");const {after,confirmed}=await commandAndVerifyTuyaSwitch(device,reading,code,!observed);state.tuyaReadings=[...(state.tuyaReadings||[]).filter(item=>item.device_id!==device.device_id),after];if(!confirmed)throw new Error("O Gateway enviou o comando, mas não confirmou o estado pedido em todos os canais.");render();}catch(error){window.alert("O estado do equipamento não foi confirmado: "+error.message);}finally{inventoryToggle.disabled=false;}return;}
   const tuyaCard=event.target.closest("[data-edit-tuya-device]");
   if(tuyaCard){const device=state.tuyaDevices.find(item=>item.device_id===tuyaCard.dataset.editTuyaDevice);if(device)openTuyaDeviceEditor(device);return;}
   const tuyaEvents=event.target.closest("[data-tuya-events]");

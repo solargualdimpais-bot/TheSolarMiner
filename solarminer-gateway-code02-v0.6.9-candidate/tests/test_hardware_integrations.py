@@ -6,6 +6,18 @@ import pytest
 from solarminer_gateway import integrations, huawei_router
 
 
+def test_tuya_local_dps_prefers_tuya_dp_id_to_channel_suffix():
+    device = {
+        "functions": [
+            {"code": "switch_1", "type": "Boolean", "dp_id": 7},
+            {"code": "switch_2", "type": "Boolean", "dpId": 9},
+        ],
+    }
+    assert integrations._tuya_local_dps(device, "switch_1") == "7"
+    assert integrations._tuya_local_dps(device, "switch_2") == "9"
+    assert integrations._tuya_local_dps({"functions": []}, "switch_2") == "2"
+
+
 def test_huawei_password_only_login_uses_admin_hash_without_username_xml():
     client = huawei_router.HuaweiHiLinkClient({"host": "192.168.8.1", "password": "router-password"})
     client.token = "tok-info-value"

@@ -596,11 +596,19 @@ def _tuya_lan_client(device: dict[str, Any]):
     return client
 
 
-def _tuya_local_dps(device: dict[str, Any], code: str) -> str:
+def _tuya_local_dps(device: dict[str, Any], code: str, *, status: bool = False) -> str:
     mapping = device.get("local_dps_map") if isinstance(device.get("local_dps_map"), dict) else {}
     value = mapping.get(code)
     if value is not None:
         return str(value)
+    # Preserve the product's actual DPS IDs when Tuya supplies them. The
+    # function suffix (for example switch_2) is not itself a guaranteed DPS ID.
+    schema = device.get("status_spec", []) if status else device.get("functions", [])
+    for entry in schema:
+        if isinstance(entry, dict) and entry.get("code") == code:
+            dp_id = entry.get("dp_id", entry.get("dpId"))
+            if isinstance(dp_id, int) and not isinstance(dp_id, bool) and dp_id > 0:
+                return str(dp_id)
     if code == "switch":
         return "1"
     match = re.fullmatch(r"switch_(\d+)", code)
@@ -670,11 +678,12 @@ def _persist_tuya_protocols(protocols: dict[str, str], local_ips: dict[str, str]
 def _tuya_local_status(device: dict[str, Any]) -> dict[str, Any]:
     _client, result, protocol = _tuya_probe_local_status(device)
     code_by_dps: dict[str, str] = {}
-    for entry in [*device.get("functions", []), *device.get("status_spec", [])]:
+    for entry, is_status in [*((item, False) for item in device.get("functions", [])),
+                             *((item, True) for item in device.get("status_spec", []))]:
         if not isinstance(entry, dict) or not isinstance(entry.get("code"), str):
             continue
         try:
-            code_by_dps[_tuya_local_dps(device, entry["code"])] = entry["code"]
+            code_by_dps[_tuya_local_dps(device, entry["code"], status=is_status)] = entry["code"]
         except ValueError:
             continue
     status = [{"code": code_by_dps.get(str(dps), f"dps_{dps}"), "value": value}
@@ -840,10 +849,18 @@ def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Eve
                 functions = spec.get("functions", [])
                 statuses = spec.get("status", [])
                 if isinstance(functions, list):
-                    item["functions"] = [{k: entry.get(k) for k in ("code", "name", "type", "values", "desc") if k in entry}
+                    item["functions"] = [{**{k: entry.get(k) for k in ("code", "name", "type", "values", "desc") if k in entry},
+                                           **({"dp_id": entry.get("dp_id", entry.get("dpId"))}
+                                              if isinstance(entry.get("dp_id", entry.get("dpId")), int)
+                                              and not isinstance(entry.get("dp_id", entry.get("dpId")), bool)
+                                              else {})}
                                           for entry in functions if isinstance(entry, dict)][:128]
                 if isinstance(statuses, list):
-                    item["status_spec"] = [{k: entry.get(k) for k in ("code", "name", "type", "values", "desc") if k in entry}
+                    item["status_spec"] = [{**{k: entry.get(k) for k in ("code", "name", "type", "values", "desc") if k in entry},
+                                            **({"dp_id": entry.get("dp_id", entry.get("dpId"))}
+                                               if isinstance(entry.get("dp_id", entry.get("dpId")), int)
+                                               and not isinstance(entry.get("dp_id", entry.get("dpId")), bool)
+                                               else {})}
                                             for entry in statuses if isinstance(entry, dict)][:128]
                 item["category"] = str(spec.get("category") or item["category"])[:64]
         except (RuntimeError, ValueError):
