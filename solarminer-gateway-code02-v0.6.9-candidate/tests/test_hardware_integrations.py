@@ -102,7 +102,7 @@ def test_qccdz_local_status_names_dps_18_as_switch(monkeypatch):
     monkeypatch.setattr(integrations, "_tuya_probe_local_status",
                         lambda device: (Client(), {"dps": {"18": True}}, "3.3"))
     result = integrations._tuya_local_status({"device_id": "ev-1", "category": "qccdz", "functions": []})
-    assert result["status"] == [{"code": "switch", "value": True}]
+    assert result["status"] == [{"code": "switch", "dps_id": 18, "value": True}]
 
 
 def test_huawei_password_only_login_uses_admin_hash_without_username_xml():
@@ -913,7 +913,7 @@ def test_tuya_local_protocol_fallback_probes_33_then_34_then_35_and_remembers_ma
     assert attempted == ["3.3", "3.4"]
     assert device["local_protocol"] == "3.4"
     assert result["local_protocol"] == "3.4"
-    assert result["status"] == [{"code": "dps_1", "value": True}]
+    assert result["status"] == [{"code": "dps_1", "dps_id": 1, "value": True}]
 
 
 def test_tuya_local_protocol_fallback_reports_all_attempts_without_cloud(monkeypatch):
