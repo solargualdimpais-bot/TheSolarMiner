@@ -39,6 +39,11 @@ try:
 except ImportError:  # Keep the rest of the Gateway usable if packaging is incomplete.
     tinytuya = None
 
+_TUYA_PROTOCOL_FALLBACKS = ("3.3", "3.4", "3.5")
+_TUYA_PROTOCOL_CONFIG_LOCK = threading.Lock()
+_TUYA_MAC_SCAN_LOCK = threading.Lock()
+_TUYA_MAC_SCAN_CACHE: tuple[float, dict[str, str]] = (0.0, {})
+
 
 class TuyaSyncCancelled(Exception):
     """Raised when an Owner cancels an in-progress inventory sync."""
@@ -511,16 +516,67 @@ def _tuya_request(config: dict[str, Any], path: str, token: str | None = None, *
     return value
 
 
+def _tuya_normalize_mac(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    compact = re.sub(r"[^0-9A-Fa-f]", "", value)
+    return compact.upper() if len(compact) == 12 else ""
+
+
+def _tuya_resolve_local_ip(device: dict[str, Any]) -> str:
+    host = device.get("local_ip")
+    if host:
+        try:
+            return _private_ip(host)
+        except ValueError:
+            if not _tuya_normalize_mac(device.get("local_mac")):
+                raise
+    mac = _tuya_normalize_mac(device.get("local_mac"))
+    if not mac:
+        raise RuntimeError("private_lan_target_required")
+    if tinytuya is None:
+        raise RuntimeError("tuya_lan_driver_unavailable")
+
+    # A MAC address identifies a LAN device but cannot be used as a TCP target.
+    # Resolve it from a bounded TinyTuya broadcast scan and cache the result briefly.
+    global _TUYA_MAC_SCAN_CACHE
+    with _TUYA_MAC_SCAN_LOCK:
+        now = time.monotonic()
+        expires_at, by_mac = _TUYA_MAC_SCAN_CACHE
+        if now >= expires_at:
+            found: dict[str, str] = {}
+            try:
+                scanned = tinytuya.deviceScan(verbose=False, maxretry=3, poll=False, byID=True)
+            except Exception as exc:
+                raise RuntimeError("tuya_local_ip_unresolved_from_mac") from exc
+            if isinstance(scanned, dict):
+                for scan_key, row in scanned.items():
+                    if not isinstance(row, dict):
+                        continue
+                    scanned_mac = _tuya_normalize_mac(row.get("mac"))
+                    scanned_ip = row.get("ip") or (scan_key if isinstance(scan_key, str) else None)
+                    if scanned_mac and isinstance(scanned_ip, str):
+                        try:
+                            found[scanned_mac] = _private_ip(scanned_ip)
+                        except ValueError:
+                            continue
+            _TUYA_MAC_SCAN_CACHE = (now + 30.0, found)
+            by_mac = found
+        host = by_mac.get(mac)
+    if not host:
+        raise RuntimeError("tuya_local_ip_unresolved_from_mac")
+    return host
+
+
 def _tuya_lan_client(device: dict[str, Any]):
     if tinytuya is None:
         raise RuntimeError("tuya_lan_driver_unavailable")
     key = device.get("local_key")
     # Cloud-reported `ip` can be a public/NAT address. LAN control only uses
     # the separately configured or locally discovered address.
-    host = device.get("local_ip")
     if not isinstance(key, str) or len(key) < 8:
         raise RuntimeError("tuya_local_key_missing")
-    host = _private_ip(host)
+    host = _tuya_resolve_local_ip(device)
     protocol = str(device.get("local_protocol", "3.3"))
     if protocol not in {"3.1", "3.2", "3.3", "3.4", "3.5"}:
         raise RuntimeError("tuya_local_protocol_unsupported")
@@ -545,10 +601,64 @@ def _tuya_local_dps(device: dict[str, Any], code: str) -> str:
     raise ValueError("tuya_local_datapoint_mapping_required")
 
 
+def _tuya_probe_local_status(device: dict[str, Any]):
+    """Find a working supported Tuya LAN protocol using read-only status requests."""
+    if tinytuya is None:
+        raise RuntimeError("tuya_lan_driver_unavailable")
+    key = device.get("local_key")
+    if not isinstance(key, str) or len(key) < 8:
+        raise RuntimeError("tuya_local_key_missing")
+    host = _tuya_resolve_local_ip(device)
+    device["local_ip"] = host
+    failures = []
+    for protocol in _TUYA_PROTOCOL_FALLBACKS:
+        candidate = {**device, "local_ip": host, "local_protocol": protocol}
+        try:
+            client = _tuya_lan_client(candidate)
+            result = client.status()
+            if (not isinstance(result, dict) or result.get("Error")
+                    or not isinstance(result.get("dps"), dict) or not result["dps"]):
+                failures.append(protocol)
+                continue
+            device["local_protocol"] = protocol
+            return client, result, protocol
+        except Exception:
+            failures.append(protocol)
+    raise RuntimeError("tuya_protocol_probe_failed:" + ",".join(failures))
+
+
+def _persist_tuya_protocols(protocols: dict[str, str], local_ips: dict[str, str] | None = None) -> None:
+    if not protocols:
+        return
+    with _TUYA_PROTOCOL_CONFIG_LOCK:
+        try:
+            current = load_config()
+        except (OSError, ValueError):
+            return
+        tuya = current.get("tuya")
+        if not isinstance(tuya, dict) or not isinstance(tuya.get("devices"), list):
+            return
+        changed = False
+        for device in tuya["devices"]:
+            if isinstance(device, dict) and device.get("device_id") in protocols:
+                protocol = protocols[device["device_id"]]
+                if device.get("local_protocol") != protocol:
+                    device["local_protocol"] = protocol
+                    changed = True
+                ip = (local_ips or {}).get(device["device_id"])
+                if ip and device.get("local_ip") != ip:
+                    device["local_ip"] = ip
+                    changed = True
+        if changed:
+            try:
+                save_config(current)
+            except (OSError, ValueError):
+                # Telemetry/control should still report its successful LAN result.
+                return
+
+
 def _tuya_local_status(device: dict[str, Any]) -> dict[str, Any]:
-    result = _tuya_lan_client(device).status()
-    if not isinstance(result, dict) or not isinstance(result.get("dps"), dict):
-        raise RuntimeError("tuya_lan_status_unavailable")
+    _client, result, protocol = _tuya_probe_local_status(device)
     code_by_dps: dict[str, str] = {}
     for entry in [*device.get("functions", []), *device.get("status_spec", [])]:
         if not isinstance(entry, dict) or not isinstance(entry.get("code"), str):
@@ -561,7 +671,8 @@ def _tuya_local_status(device: dict[str, Any]) -> dict[str, Any]:
               for dps, value in result["dps"].items()]
     return {"device_id": device["device_id"], "name": device.get("name", "Tuya device"),
             "status": status, "connection_state": "local_responded", "source": "TUYA_LAN",
-            "trust": "LIVE_UNVERIFIED", "observed_at": time.time()}
+            "trust": "LIVE_UNVERIFIED", "local_protocol": protocol,
+            "local_ip": device.get("local_ip", ""), "observed_at": time.time()}
 
 
 def read_tuya(config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -585,7 +696,14 @@ def read_tuya(config: dict[str, Any]) -> list[dict[str, Any]]:
 
     # Keep polling a large home bounded and return rows in their configured order.
     with ThreadPoolExecutor(max_workers=min(8, len(devices)), thread_name_prefix="tuya-lan") as pool:
-        return list(pool.map(read_one, devices))
+        results = list(pool.map(read_one, devices))
+    selected = {item["device_id"]: item["local_protocol"] for item in results
+                if item.get("connection_state") == "local_responded" and item.get("local_protocol") in _TUYA_PROTOCOL_FALLBACKS}
+    if selected:
+        local_ips = {item["device_id"]: item["local_ip"] for item in results
+                     if item.get("connection_state") == "local_responded" and item.get("local_ip")}
+        _persist_tuya_protocols(selected, local_ips)
+    return results
 
 
 def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Event | None = None) -> dict[str, Any]:
@@ -765,7 +883,8 @@ def control_tuya_switch(config: dict[str, Any], device_id: str, on: bool, code: 
     if not isinstance(code, str) or not code or not code.replace("_", "").replace("-", "").isalnum() or len(code) > 64:
         raise ValueError("tuya_switch_function_code_not_configured")
     dps = _tuya_local_dps(device, code)
-    client = _tuya_lan_client(device)
+    client, _initial_status, protocol = _tuya_probe_local_status(device)
+    _persist_tuya_protocols({device_id: protocol}, {device_id: device["local_ip"]})
     response = client.set_status(on, switch=int(dps))
     if not isinstance(response, dict) or (response.get("Error") and not response.get("dps")):
         raise RuntimeError("tuya_lan_command_rejected")
@@ -797,7 +916,9 @@ def control_tuya_level(config: dict[str, Any], device_id: str, percent: int) -> 
         raise ValueError("tuya_level_function_not_configured")
     target = round(low + (high - low) * percent / 100)
     dps = _tuya_local_dps(device, code)
-    response = _tuya_lan_client(device).set_value(int(dps), target)
+    client, _initial_status, protocol = _tuya_probe_local_status(device)
+    _persist_tuya_protocols({device_id: protocol}, {device_id: device["local_ip"]})
+    response = client.set_value(int(dps), target)
     if not isinstance(response, dict) or (response.get("Error") and not response.get("dps")):
         raise RuntimeError("tuya_lan_command_rejected")
     try:

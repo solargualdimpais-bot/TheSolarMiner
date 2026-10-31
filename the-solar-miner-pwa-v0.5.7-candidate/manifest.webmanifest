@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.65: previsões, histórico e ativação de convites no Gateway.",
+  "description": "The Solar Miner PWA v0.5.66: diagnóstico e configuração de equipamentos Tuya.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",

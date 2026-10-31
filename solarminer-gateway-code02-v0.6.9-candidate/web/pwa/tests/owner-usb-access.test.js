@@ -85,9 +85,9 @@ test("Owner recovery file parser accepts a generated key and rejects malformed/o
 });
 
 test("new PWA static cache version is changed and USB limitations are documented", () => {
-  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.65-surplus-manager/);
+  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.66-tuya-protocol-diagnostics/);
   assert.match(manifest, /v0\.5\.65/);
-  assert.equal(packageJson.version, "0.5.65");
+  assert.equal(packageJson.version, "0.5.66");
   assert.doesNotMatch(html, /gateway-update-refresh|Atualizar estado/);
   assert.doesNotMatch(app, /gateway-update-refresh/);
   const docs = read("OWNER_USB_AND_ACCESS.md");
@@ -123,7 +123,7 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   assert.match(embeddedApp, /startGatewayTailscale/);
   assert.match(embeddedApp, /liveHomeMetric\("Painéis"/);
   assert.match(embeddedApp, /liveMinerHomeMetric\(\)/);
-  assert.match(embeddedWorker, /static-v0\.5\.65-surplus-manager/);
+  assert.match(embeddedWorker, /static-v0\.5\.66-tuya-protocol-diagnostics/);
   assert.match(embeddedHtml, /data-owner-tab="gateway"/);
   assert.doesNotMatch(embeddedHtml, /data-owner-panel="console"/);
   assert.match(embeddedHtml, /Carrega em .Atualizar consola. para consultar os dados mais recentes/);

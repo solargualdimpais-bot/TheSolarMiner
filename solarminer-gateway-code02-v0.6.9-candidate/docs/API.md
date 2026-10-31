@@ -36,7 +36,7 @@ There is no PWA endpoint for log upload. The Gateway queues sanitized applicatio
 
 ## CODE02 v0.6.35 — diagnóstico de hardware
 
-`POST /api/v1/integrations/hardware/read` returns per-device diagnostics. For `SUN-15K-SG05LP3-EU-SM2`, Deye reads a limited set of candidate registers using FC03 and skips FC43. Results identify the community map source and remain `LIVE_UNVERIFIED`. Tuya operational status and switch/level commands use the device LAN protocol only; inventory sync remains a separate explicit Cloud operation. Tuya LAN failures are reported per configured device ID without Cloud fallback. Antminer model identity remains unverified by the API response.
+`POST /api/v1/integrations/hardware/read` returns per-device diagnostics. For `SUN-15K-SG05LP3-EU-SM2`, Deye reads a limited set of candidate registers using FC03 and skips FC43. Results identify the community map source and remain `LIVE_UNVERIFIED`. Tuya operational status uses LAN-only read probes in protocol order 3.3, 3.4, then 3.5; the first valid response is saved for that device. A configured MAC can be resolved to a private IP by LAN discovery. Owner switch/level commands are sent only after a valid local status response, and only once. Inventory sync remains a separate explicit Cloud operation. Tuya LAN failures are reported per configured device ID without Cloud fallback. DPS codes and indices remain per-device and come from its imported schema or explicit Owner mapping; there is no universal DPS list. Antminer model identity remains unverified by the API response.
 
 ## CODE02 v0.6.31 — estado e diagnóstico de recuperação de atualização
 

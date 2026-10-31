@@ -50,7 +50,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.108"
+PACKAGE_VERSION = "0.6.109"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -691,7 +691,8 @@ def _collect_tuya_device_events_once() -> int:
     """Poll configured Tuya Wi-Fi devices and save observed transitions locally."""
     config = hardware_integrations.load_config().get("tuya", {})
     devices = [item for item in config.get("devices", [])
-               if isinstance(item, dict) and item.get("local_key") and item.get("local_ip")]
+               if isinstance(item, dict) and item.get("local_key")
+               and (item.get("local_ip") or item.get("local_mac"))]
     if not devices:
         return 0
     readings = hardware_integrations.read_tuya({**config, "devices": devices})
@@ -1764,12 +1765,15 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
             configured_lan = []
             for item in devices:
                 host = item.get("local_ip")
-                if not item.get("local_key") or not host:
+                mac = hardware_integrations._tuya_normalize_mac(item.get("local_mac"))
+                if not item.get("local_key") or (not host and not mac):
                     continue
-                try:
-                    hardware_integrations._private_ip(host)
-                except ValueError:
-                    continue
+                if host:
+                    try:
+                        hardware_integrations._private_ip(host)
+                    except ValueError:
+                        if not mac:
+                            continue
                 configured_lan.append(item)
             readings = hardware_integrations.read_tuya({**config, "devices": configured_lan}) if configured_lan else []
             sweep_times.append(round((time.perf_counter() - sweep_started) * 1000, 1))
@@ -1779,10 +1783,11 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
                 row = by_id.get(device_id)
                 if row is None:
                     host = item.get("local_ip")
+                    mac = hardware_integrations._tuya_normalize_mac(item.get("local_mac"))
                     if not item.get("local_key"):
                         reason = "tuya_local_key_missing"
                     elif not host:
-                        reason = "private_lan_target_required"
+                        reason = "tuya_local_ip_unresolved_from_mac" if mac else "private_lan_target_required"
                     else:
                         try:
                             hardware_integrations._private_ip(host)
@@ -3207,7 +3212,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.108"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.109"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(
