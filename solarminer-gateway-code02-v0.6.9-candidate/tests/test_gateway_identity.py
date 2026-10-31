@@ -25,15 +25,43 @@ def test_identity_is_created_once_and_kept_stable(tmp_path):
         assert private.stat().st_mode & 0o777 == 0o600
 
 
-def test_identity_refuses_to_replace_an_incomplete_pair(tmp_path):
+def test_identity_recovers_missing_public_key_without_rotating_private_key(tmp_path):
     private = tmp_path / "gateway-identity.key"
     public = tmp_path / "gateway-identity.pub.pem"
-    private.write_text("keep existing file", encoding="utf-8")
+    fingerprint = provision_identity(private, public)
+    private_bytes = private.read_bytes()
+    public.unlink()
+
+    recovered_fingerprint = provision_identity(private, public)
+
+    assert recovered_fingerprint == fingerprint
+    assert private.read_bytes() == private_bytes
+    assert identity_fingerprint(private, public) == fingerprint
+
+
+def test_identity_still_refuses_public_key_without_private_key(tmp_path):
+    private = tmp_path / "gateway-identity.key"
+    public = tmp_path / "gateway-identity.pub.pem"
+    provision_identity(private, public)
+    public_bytes = public.read_bytes()
+    private.unlink()
 
     with pytest.raises(RuntimeError, match="incomplete"):
         provision_identity(private, public)
 
-    assert private.read_text(encoding="utf-8") == "keep existing file"
+    assert public.read_bytes() == public_bytes
+    assert not private.exists()
+
+
+def test_identity_refuses_invalid_private_key_when_public_is_missing(tmp_path):
+    private = tmp_path / "gateway-identity.key"
+    public = tmp_path / "gateway-identity.pub.pem"
+    private.write_text("not a private key", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        provision_identity(private, public)
+
+    assert private.read_text(encoding="utf-8") == "not a private key"
     assert not public.exists()
 
 

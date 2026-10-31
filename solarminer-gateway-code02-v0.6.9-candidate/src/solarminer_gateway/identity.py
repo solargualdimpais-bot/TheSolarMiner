@@ -16,6 +16,33 @@ def provision_identity(private_path: Path, public_path: Path) -> str:
     private_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     public_path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
     private_exists, public_exists = private_path.exists(), public_path.exists()
+    # The private identity is stored on the persistent data volume while the
+    # public half lives on the OS volume. Reinstalling Debian can therefore
+    # leave a valid private key but remove its public counterpart. Recover the
+    # public half from that private key without rotating or overwriting either
+    # key. A public key without its private counterpart remains unrecoverable.
+    if private_exists and not public_exists:
+        private = serialization.load_pem_private_key(private_path.read_bytes(), password=None)
+        if not isinstance(private, Ed25519PrivateKey):
+            raise RuntimeError("Existing Gateway private identity is not Ed25519")
+        public_bytes = private.public_key().public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        fd, name = tempfile.mkstemp(prefix=f".{public_path.name}.", dir=public_path.parent)
+        temporary = Path(name)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                os.fchmod(stream.fileno(), 0o644)
+                stream.write(public_bytes)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.link(temporary, public_path)
+        except FileExistsError as exc:
+            raise RuntimeError("Gateway public identity appeared during recovery; refusing to overwrite it") from exc
+        finally:
+            temporary.unlink(missing_ok=True)
+        public_exists = True
     if private_exists != public_exists:
         raise RuntimeError("Gateway identity is incomplete; refusing to replace either key")
 
