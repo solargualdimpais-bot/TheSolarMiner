@@ -7,6 +7,12 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_nginx_proxies_verify_backend_using_certificate_dns_san():
     nginx_config = (ROOT / "packaging/solarminer-gateway-nginx.conf").read_text()
     tailscale_script = (ROOT / "packaging/solarminer-tailscale-cert").read_text()
+    tailscale_service = (ROOT / "packaging/solarminer-tailscale-cert.service").read_text()
+    assert "ProtectSystem=strict" in tailscale_service
+    assert "ReadWritePaths=/etc/solarminer /etc/nginx/conf.d /var/log /run" in tailscale_service
+    assert "systemctl start nginx.service" in tailscale_script
+    assert 'nginx_diagnostic=$(nginx -t 2>&1)' in tailscale_script
+    assert "printf '%s\\n' \"$nginx_diagnostic\" | tee -a \"$LOG\"" in tailscale_script
     postinst = (ROOT / "packaging/postinst").read_text()
 
     # postinst provisions DNS:localhost in the backend certificate. Nginx

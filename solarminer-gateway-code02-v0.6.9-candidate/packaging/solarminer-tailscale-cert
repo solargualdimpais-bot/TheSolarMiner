@@ -79,7 +79,8 @@ if [ -f "$CONFIG" ] && [ ! -L "$CONFIG" ]; then
   had_previous_config=1
 fi
 mv -f "$CONFIG.new" "$CONFIG"
-if ! nginx -t >>"$LOG" 2>&1; then
+nginx_diagnostic=$(nginx -t 2>&1) || {
+  printf '%s\n' "$nginx_diagnostic" | tee -a "$LOG"
   if [ "$had_previous_config" -eq 1 ]; then
     mv -f "$work/nginx.previous.conf" "$CONFIG"
     log "Rejected Tailscale Nginx candidate; previous configuration restored."
@@ -88,6 +89,11 @@ if ! nginx -t >>"$LOG" 2>&1; then
     log "Rejected Tailscale Nginx candidate; no previous configuration existed."
   fi
   fail "nginx_configuration_invalid; see preceding nginx -t output"
+}
+printf '%s\n' "$nginx_diagnostic" >>"$LOG"
+if ! systemctl is-active --quiet nginx.service; then
+  systemctl start nginx.service || fail "nginx_start_failed"
+else
+  systemctl reload nginx.service || fail "nginx_reload_failed"
 fi
-systemctl reload nginx.service || fail "nginx_reload_failed"
 log "HTTPS certificate and Nginx Tailscale endpoint are ready."
