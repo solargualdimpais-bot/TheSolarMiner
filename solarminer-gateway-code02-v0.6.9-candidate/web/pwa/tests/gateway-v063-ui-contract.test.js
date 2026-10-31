@@ -129,6 +129,7 @@ test("Devices inventory waits to distinguish a single card click from a double c
 
 test("Favorite card render retains the switch code list for its controls", () => {
   assert.match(app, /return \{id,kind,device,details,status,codes,channels,isLevel,percent\}/);
+  assert.match(app, /rows\.map\(\(\{id,kind,device,details,status,codes,channels,isLevel,percent,reading\}\)=>/);
   assert.match(app, /tuyaPrimarySwitchCode\(device,codes\)/);
   assert.match(app, /let probe;try\{probe=await testTuyaLanReachability\(deviceId\);\}catch\(error\)\{statusNode\.textContent=`Teste LAN falhou: \$\{error\.message\}`/);
   assert.match(app, /A resposta LAN foi recebida; houve uma falha ao atualizar o cartão/);
@@ -186,6 +187,6 @@ test("LAN discovery tries the local neighbor cache after broadcast errors", () =
 test("USB release rollback verification includes the installed Gateway release", () => {
   const rollbackLoops = workflow.match(/for VERSION in[^\n]+/g) || [];
   assert.equal(rollbackLoops.length, 2);
-  for (const loop of rollbackLoops) assert.match(loop, /0\.6\.112 0\.6\.113 0\.6\.114 0\.6\.115 0\.6\.116 0\.6\.117; do/);
+  for (const loop of rollbackLoops) assert.match(loop, /0\.6\.112 0\.6\.113 0\.6\.114 0\.6\.115 0\.6\.116 0\.6\.117 0\.6\.118; do/);
 });
 

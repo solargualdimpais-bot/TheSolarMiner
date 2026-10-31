@@ -1,4 +1,4 @@
-SolarMiner Gateway CODE02 0.6.118 — instalador inicial USB
+SolarMiner Gateway CODE02 0.6.119 — instalador inicial USB
 
 O envio automático de diagnósticos para o repositório privado exige um token Fine-grained limitado ao repositório de diagnósticos e à permissão Issues: Read and write. Configura-o depois em Owner → Gateway → Relatórios automáticos; sem token, os relatórios permanecem na fila local.
 ==========================================================
