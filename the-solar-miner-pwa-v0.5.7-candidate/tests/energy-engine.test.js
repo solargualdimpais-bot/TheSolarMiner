@@ -30,6 +30,10 @@ test("Owner PWA reads Gateway engine history and stores battery settings on Gate
   assert.match(app, /<small>Saldo após consumo<\/small>/);
   assert.match(app, /Previsão do dia comparada com a produção medida/);
   assert.match(app, /data-engine-history-day="-1"/);
+  assert.match(app, /class="engine-history-arrow left" data-engine-history-day="-1"/);
+  assert.match(app, /class="engine-history-arrow right" data-engine-history-day="1"/);
+  assert.match(app, /dayKey>=todayKey\|\|loading\?/);
+  assert.match(read(root, "styles.css"), /\.engine-history-arrow\.left\{left:0\}/);
   assert.match(app, /FV medido acumulado/);
   assert.match(app, /bank\.active!==false/);
   assert.match(app, /Potência FV estimada \+1 h/);

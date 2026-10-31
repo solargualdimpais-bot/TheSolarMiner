@@ -19,6 +19,7 @@ from . import energy_registry
 ENGINE_CONFIG_KEY = "energy_engine_config"
 BATTERY_ESTIMATOR_STATE_KEY = "energy_engine_battery_estimator"
 SOLAR_DAY_FORECAST_KEY = "energy_engine_solar_day_forecast"
+TUYA_TELEMETRY_KEY = "energy_engine_tuya_telemetry"
 DEFAULT_CONFIG: dict[str, Any] = {
     "site_location_name": None, "site_latitude": None, "site_longitude": None,
     "pv_capacity_kw": None, "pv_system_efficiency": 0.85,
@@ -92,6 +93,116 @@ def get_config(conn: sqlite3.Connection) -> dict[str, Any]:
     result = {**DEFAULT_CONFIG, **saved}
     result["automation"] = {**DEFAULT_CONFIG["automation"], **(saved.get("automation") or {})}
     result["surplus_manager"] = {**DEFAULT_CONFIG["surplus_manager"], **(saved.get("surplus_manager") or {})}
+    return result
+
+
+def persist_tuya_telemetry(conn: sqlite3.Connection, readings: list[dict[str, Any]],
+                           devices: list[dict[str, Any]]) -> int:
+    """Keep the latest verified LAN status and recognized SI measurements per Tuya device."""
+    row = conn.execute("SELECT value FROM system_state WHERE key=?", (TUYA_TELEMETRY_KEY,)).fetchone()
+    try:
+        saved = json.loads(row[0]) if row else {}
+    except (TypeError, json.JSONDecodeError):
+        saved = {}
+    if not isinstance(saved, dict):
+        saved = {}
+    by_id = {item.get("device_id"): item for item in devices if isinstance(item, dict)}
+    count = 0
+    for reading in readings:
+        device_id = reading.get("device_id")
+        if not isinstance(device_id, str):
+            continue
+        previous = saved.get(device_id, {}) if isinstance(saved.get(device_id), dict) else {}
+        observed_at = reading.get("observed_at") or datetime.now(timezone.utc).isoformat()
+        if isinstance(observed_at, (int, float)) and not isinstance(observed_at, bool):
+            try:
+                observed_at = datetime.fromtimestamp(float(observed_at), timezone.utc).isoformat()
+            except (OverflowError, OSError, ValueError):
+                observed_at = datetime.now(timezone.utc).isoformat()
+        updated = {**previous, "device_id": device_id, "name": str(reading.get("name") or previous.get("name") or "Tuya")[:120],
+                   "connection_state": reading.get("connection_state", "failed"), "last_attempt_at": observed_at}
+        if reading.get("connection_state") == "local_responded" and isinstance(reading.get("status"), list) and reading["status"]:
+            device = by_id.get(device_id, {})
+            specs = [item for item in [*(device.get("functions") or []), *(device.get("status_spec") or [])] if isinstance(item, dict)]
+            labels = device.get("capability_labels") if isinstance(device.get("capability_labels"), dict) else {}
+            metrics: dict[str, dict[str, Any]] = {}
+            raw_status = []
+            patterns = {
+                "voltage": (r"(^|_)(cur_)?voltage($|_)", r"voltage|tension|tensao"),
+                "current": (r"(^|_)(cur_)?current($|_)", r"current|corrente"),
+                "power": (r"(^|_)(cur_)?power($|_)", r"power|potencia|watt"),
+                "energy": (r"(^|_)(add_ele|total_energy|energy_total|electricity|energy)($|_)", r"energy|energia|electricity|consumo"),
+            }
+            for item in reading["status"]:
+                if not isinstance(item, dict) or not isinstance(item.get("code"), str):
+                    continue
+                code, value = item["code"], item.get("value")
+                raw_status.append({"code": code, "value": value})
+                if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+                    continue
+                try:
+                    numeric = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(numeric):
+                    continue
+                spec = next((candidate for candidate in specs if candidate.get("code") == code), {})
+                meta = spec.get("values", {})
+                if isinstance(meta, str):
+                    try:
+                        meta = json.loads(meta)
+                    except json.JSONDecodeError:
+                        meta = {}
+                if not isinstance(meta, dict):
+                    meta = {}
+                text = " ".join((code, str(spec.get("name") or ""), str(labels.get(code) or ""))).casefold()
+                for field, (code_pattern, name_pattern) in patterns.items():
+                    if not (re.search(code_pattern, code, re.I) or re.search(name_pattern, text, re.I)):
+                        continue
+                    scale = meta.get("scale", 0)
+                    try:
+                        numeric /= 10 ** int(scale)
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    unit = str(meta.get("unit") or "").strip().casefold()
+                    expected = {"voltage": {"v": 1, "volt": 1, "volts": 1, "mv": 0.001},
+                                "current": {"a": 1, "amp": 1, "amps": 1, "ma": 0.001},
+                                "power": {"w": 1, "watt": 1, "watts": 1, "kw": 1000},
+                                "energy": {"kwh": 1, "wh": 0.001}}[field]
+                    if unit not in expected:
+                        continue
+                    numeric *= expected[unit]
+                    canonical_unit = {"voltage": "V", "current": "A", "power": "W", "energy": "kWh"}[field]
+                    metrics[field] = {"code": code, "value": round(numeric, 6), "unit": canonical_unit,
+                                      "observed_at": observed_at, "trust": "LIVE_UNVERIFIED"}
+                    count += 1
+                    break
+            updated.update({"verified": True, "status": raw_status, "metrics": metrics, "observed_at": observed_at})
+        elif not previous.get("verified"):
+            updated["verified"] = False
+        saved[device_id] = updated
+    conn.execute("INSERT INTO system_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                 (TUYA_TELEMETRY_KEY, json.dumps(saved, separators=(",", ":"), ensure_ascii=False)))
+    return count
+
+
+def read_tuya_telemetry(conn: sqlite3.Connection, *, max_age_seconds: int = 120) -> dict[str, dict[str, Any]]:
+    row = conn.execute("SELECT value FROM system_state WHERE key=?", (TUYA_TELEMETRY_KEY,)).fetchone()
+    try:
+        saved = json.loads(row[0]) if row else {}
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(saved, dict):
+        return {}
+    now = datetime.now(timezone.utc)
+    result = {}
+    for device_id, item in saved.items():
+        if not isinstance(item, dict):
+            continue
+        stamp = _parse_utc(item.get("observed_at"))
+        age = (now - stamp).total_seconds() if stamp else None
+        result[device_id] = {**item, "age_seconds": round(age, 1) if age is not None else None,
+                             "fresh": bool(item.get("verified") and age is not None and 0 <= age <= max_age_seconds)}
     return result
 
 
@@ -229,7 +340,7 @@ def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, 
     for load in loads:
         allowed_load = {"id", "name", "kind", "control_type", "rated_power_w", "minimum_power_w", "maximum_power_w", "manufacturer", "volume_l",
                         "priority", "enabled", "automatic", "tuya_device_id", "tuya_switch_code",
-                        "minimum_on_seconds", "minimum_off_seconds", "requires_load_id"}
+                        "tuya_measurement_codes", "minimum_on_seconds", "minimum_off_seconds", "requires_load_id"}
         if not isinstance(load, dict) or set(load) - allowed_load:
             raise ValueError("invalid_flexible_load")
         identifier, name, kind, control = load.get("id"), load.get("name"), load.get("kind"), load.get("control_type")
@@ -266,6 +377,15 @@ def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, 
         if requires_load_id is not None and (not isinstance(requires_load_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,47}", requires_load_id)):
             raise ValueError("invalid_flexible_load_dependency")
         device_id, switch_code = load.get("tuya_device_id"), load.get("tuya_switch_code")
+        measurement_codes = load.get("tuya_measurement_codes", {})
+        if not isinstance(measurement_codes, dict) or set(measurement_codes) - {"voltage", "current", "power", "energy"}:
+            raise ValueError("invalid_tuya_measurement_codes")
+        measurement_codes = {key: value for key, value in measurement_codes.items()
+                             if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value)}
+        if len(measurement_codes) != len(load.get("tuya_measurement_codes", {})):
+            raise ValueError("invalid_tuya_measurement_code")
+        if measurement_codes and control not in {"tuya_smart", "tuya_breaker"}:
+            raise ValueError("tuya_measurement_device_required")
         if control in {"tuya_smart", "tuya_breaker"}:
             if not isinstance(device_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", device_id):
                 raise ValueError("tuya_device_required_for_load")
@@ -282,6 +402,7 @@ def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, 
                                  "rated_power_w": rated, "minimum_power_w": minimum_power,
                                  "maximum_power_w": maximum_power, "priority": priority, "enabled": enabled,
                                  "automatic": automatic, "tuya_device_id": device_id, "tuya_switch_code": switch_code,
+                                 "tuya_measurement_codes": measurement_codes,
                                  "minimum_on_seconds": min_on, "minimum_off_seconds": min_off,
                                  "requires_load_id": requires_load_id})
     for load in normalized_loads:
@@ -706,24 +827,9 @@ def _learn_solar_performance(conn: sqlite3.Connection, weather: dict[str, Any], 
                 historical_soc, _ = _estimate_battery_soc(historical_voltage, historical_power,
                                                           battery_capacity_kwh, 0.0, maximum_soc_percent,
                                                           as_of=stamp)
-            # A Cloud SOC value is a fallback for event classification only;
-            # it never seeds the integrated operating SOC. Require repeated
-            # samples in this hour to avoid treating a single bad point as full.
-            if historical_soc is None and battery:
-                reported_soc_values: list[float] = []
-                for soc_field in ("battery_soc", "battery_soc_percent"):
-                    rows = conn.execute("SELECT value_json FROM energy_readings WHERE equipment_id=? AND field=? AND observed_at>? AND observed_at<=?",
-                                        (battery["id"], soc_field, start, finish)).fetchall()
-                    for value_row in rows:
-                        try:
-                            value = json.loads(value_row[0])
-                            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and 0 <= value <= 100:
-                                reported_soc_values.append(float(value))
-                        except (TypeError, ValueError, json.JSONDecodeError):
-                            continue
-                if len(reported_soc_values) >= 2:
-                    reported_soc_values.sort()
-                    historical_soc = reported_soc_values[len(reported_soc_values) // 2]
+            # Historical battery fullness is inferred from the Gateway's
+            # voltage/charge-power anchor and integrated energy only. Do not
+            # use the Deye percentage register as a substitute.
             historical_charge_w = hourly_average(battery, "battery_charge_power", 2 if cloud_fallback else 10)
             historical_load_w = (sum(cloud_values["load_total_power"]) / len(cloud_values["load_total_power"])
                                  if cloud_fallback and cloud_values["load_total_power"] else
@@ -939,6 +1045,46 @@ def _series(conn: sqlite3.Connection, equipment_ids: list[str], field: str, sinc
                         params).fetchall()
     return [{"value": json.loads(r[0]), "unit": r[1], "observed_at": r[2], "source": r[3], "trust": r[4]}
             for r in reversed(rows)]
+
+
+def _integrate_power_kwh(points: list[dict[str, Any]], *, until: datetime,
+                         maximum_gap_seconds: int = 600) -> dict[str, Any]:
+    """Integrate measured PV power without filling long gaps or importing cloud history."""
+    samples: list[tuple[datetime, float]] = []
+    for point in points:
+        if not isinstance(point, dict) or _is_cloud_history(point):
+            continue
+        try:
+            stamp = datetime.fromisoformat(str(point["observed_at"]).replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            value = float(point["value"])
+            unit = str(point.get("unit") or "W").casefold()
+            watts = value * 1000 if unit == "kw" else value
+            if math.isfinite(watts) and watts >= 0:
+                samples.append((stamp.astimezone(timezone.utc), watts))
+        except (KeyError, TypeError, ValueError):
+            continue
+    samples = sorted({stamp: watts for stamp, watts in samples}.items())
+    total_kwh = 0.0
+    gaps = 0
+    integrated_intervals = 0
+    for (t0, p0), (t1, p1) in zip(samples, samples[1:]):
+        end = min(t1, until.astimezone(timezone.utc))
+        seconds = (end - t0).total_seconds()
+        if seconds <= 0:
+            continue
+        if seconds > maximum_gap_seconds:
+            gaps += 1
+            continue
+        if end != t1:
+            ratio = seconds / (t1 - t0).total_seconds()
+            p1 = p0 + (p1-p0)*ratio
+        total_kwh += ((p0+p1)/2) * seconds / 3_600_000
+        integrated_intervals += 1
+    return {"energy_kwh": round(total_kwh, 4), "first_sample_at": samples[0][0].isoformat() if samples else None,
+            "last_sample_at": samples[-1][0].isoformat() if samples else None,
+            "sample_count": len(samples), "integrated_intervals": integrated_intervals, "gaps_over_limit": gaps}
 
 
 def _ensure_solar_forecast_history(conn: sqlite3.Connection) -> None:
@@ -1564,10 +1710,32 @@ def _solar_day_forecast(conn: sqlite3.Connection, inverter: dict[str, Any] | Non
                             and actual_stamp.astimezone(site_tz).date() == today)
     except (TypeError, ValueError):
         counter_is_fresh = False
-    if (not counter_is_fresh or isinstance(actual_kwh, bool) or not isinstance(actual_kwh, (int, float))
-            or not math.isfinite(actual_kwh) or not 0 <= actual_kwh <= float(capacity_kw) * 24 * 1.5):
-        return {**unavailable, "local_date": today.isoformat(),
-                "reason": "A fresh, valid daily PV energy reading is required for today's measured production."}
+    valid_counter = (counter_is_fresh and not isinstance(actual_kwh, bool)
+                     and isinstance(actual_kwh, (int, float)) and math.isfinite(actual_kwh)
+                     and 0 <= actual_kwh <= float(capacity_kw) * 24 * 1.5)
+    measurement_source = "pv_daily_energy"
+    measurement_coverage = "FULL_DAILY_COUNTER"
+    accumulation_start_at = None
+    integration_quality = None
+    if not valid_counter:
+        day_start = datetime.combine(today, datetime.min.time(), tzinfo=site_tz).astimezone(timezone.utc)
+        power_history = _series(conn, [inverter["id"]], "pv_total_power", day_start.isoformat(),
+                                limit=50000, until=now.isoformat())
+        integrated = _integrate_power_kwh(power_history, until=now)
+        last_integrated_at = _parse_utc(integrated.get("last_sample_at"))
+        integration_quality = integrated
+        accumulation_start_at = integrated.get("first_sample_at")
+        if (integrated.get("integrated_intervals", 0) > 0 and last_integrated_at is not None
+                and 0 <= (now-last_integrated_at).total_seconds() <= 120):
+            actual_kwh = integrated["energy_kwh"]
+            measurement_source = "pv_power_integrated"
+            measurement_coverage = "PARTIAL_FROM_FIRST_LIVE_SAMPLE"
+        else:
+            # Still calculate the weather-driven remainder and load balance,
+            # while clearly marking that measured production is unavailable.
+            actual_kwh = 0.0
+            measurement_source = "weather_only_no_fresh_pv_meter"
+            measurement_coverage = "NO_FRESH_MEASURED_PRODUCTION"
 
     day_end_local = datetime.combine(today + timedelta(days=1), datetime.min.time(), tzinfo=site_tz)
     day_end = day_end_local.astimezone(timezone.utc)
@@ -1659,15 +1827,17 @@ def _solar_day_forecast(conn: sqlite3.Connection, inverter: dict[str, Any] | Non
         middle = history_used // 2
         history_full_median = full_values[middle] if history_used % 2 else (full_values[middle - 1] + full_values[middle]) / 2
         history_so_far_median = so_far_values[middle] if history_used % 2 else (so_far_values[middle - 1] + so_far_values[middle]) / 2
-        if history_so_far_median > 0.25:
+        if history_so_far_median > 0.25 and measurement_coverage == "FULL_DAILY_COUNTER":
             day_adjustment = max(0.5, min(1.5, float(actual_kwh) / history_so_far_median))
             historical_remaining = max(0.0, history_full_median - history_so_far_median) * day_adjustment
+        elif measurement_coverage != "NO_FRESH_MEASURED_PRODUCTION":
+            historical_remaining = max(0.0, history_full_median - history_so_far_median)
 
     # Blend today's observed trajectory with the learned installation reference.
     # When the house is consuming at least the PV output, that hour is stronger
     # evidence of normal operation and receives more weight than an unexplained dip.
     observed_performance = (max(0.0, float(actual_kwh)) / elapsed_weather_kwh
-                            if elapsed_weather_kwh > 0.25 else 1.0)
+                            if elapsed_weather_kwh > 0.25 and measurement_coverage == "FULL_DAILY_COUNTER" else 1.0)
     learned_performance = solar_model.get("performance_ratio", 1.0)
     if (isinstance(learned_performance, bool) or not isinstance(learned_performance, (int, float))
             or not math.isfinite(learned_performance)):
@@ -1685,7 +1855,8 @@ def _solar_day_forecast(conn: sqlite3.Connection, inverter: dict[str, Any] | Non
                             and load_value >= pv_value and load_stamp is not None and pv_stamp is not None
                             and 0 <= (now-load_stamp).total_seconds() <= 120
                             and 0 <= (now-pv_stamp).total_seconds() <= 120)
-    if elapsed_weather_kwh <= 0.25 and history_so_far_median is not None and history_so_far_median > 0.25:
+    if (measurement_coverage == "FULL_DAILY_COUNTER" and elapsed_weather_kwh <= 0.25
+            and history_so_far_median is not None and history_so_far_median > 0.25):
         observed_performance = max(0.0, min(1.5, float(actual_kwh) / history_so_far_median))
     observed_weight = 0.75 if demand_supported_now else 0.35
     if today.isoformat() in curtailed_dates:
@@ -1759,6 +1930,8 @@ def _solar_day_forecast(conn: sqlite3.Connection, inverter: dict[str, Any] | Non
     forecast_uncertainty_kwh = forecast_error_mae_kwh
     result = {"state": "ESTIMATED", "local_date": today.isoformat(),
               "estimated_total_kwh": round(total_kwh, 2), "actual_today_kwh": round(float(actual_kwh), 2),
+              "measurement_source": measurement_source, "measurement_coverage": measurement_coverage,
+              "accumulation_start_at": accumulation_start_at, "power_integration": integration_quality,
               "remaining_estimate_kwh": round(max(0.0, remaining_kwh), 2),
               "potential_max_total_kwh": round(potential_total_kwh, 2),
               "potential_max_remaining_kwh": round(max(0.0, adjusted_potential_remaining), 2),
@@ -2241,7 +2414,8 @@ def _bounded_load_forecast(series: list[dict[str, Any]], current_w: float | None
 
 
 def build_dispatch_plan(current: dict[str, Any], config: dict[str, Any], *, sample_state: str = "UNKNOWN",
-                        telemetry_trust: str = "LIVE_UNVERIFIED", forecast_surplus_w: int | None = None) -> dict[str, Any]:
+                        telemetry_trust: str = "LIVE_UNVERIFIED", forecast_surplus_w: int | None = None,
+                        tesla_presence: dict[str, Any] | None = None) -> dict[str, Any]:
     """Compute conservative load allocations; this function never sends commands."""
     automation = config.get("automation", {})
     manager = config.get("surplus_manager", {})
@@ -2257,9 +2431,11 @@ def build_dispatch_plan(current: dict[str, Any], config: dict[str, Any], *, samp
         return {**common, "state": "BLOCKED_STALE_TELEMETRY", "reason": "A fresh Deye sample is required."}
     if telemetry_trust not in {"PHYSICALLY_CORROBORATED", "OWNER_COMMISSIONED"}:
         return {**common, "state": "BLOCKED_UNTRUSTED_TELEMETRY", "reason": "Control readings are not physically commissioned."}
-    allowed_soc_sources = {None, "gateway_energy_integrated"}
+    # Automatic dispatch never uses the inverter's reported SOC as a fallback.
+    # SOC must come from the Gateway's confirmed full-charge anchor and energy integration.
+    allowed_soc_sources = {"gateway_energy_integrated"}
     if manager.get("enabled"):
-        allowed_soc_sources.update({"deye_live_reported", "gateway_voltage_plateau_inferred"})
+        allowed_soc_sources.add("gateway_voltage_plateau_inferred")
     if (current.get("battery_soc_percent") is None
             or current.get("battery_soc_source") not in allowed_soc_sources
             or current.get("pv_power_w") is None or current.get("load_power_w") is None):
@@ -2310,7 +2486,10 @@ def build_dispatch_plan(current: dict[str, Any], config: dict[str, Any], *, samp
             available = min(available, max(0, forecast_surplus_w - margin))
     actions = []
     actions_by_id: dict[str, dict[str, Any]] = {}
-    profile = manager.get("priority_profile", "tesla_home") if manager.get("enabled") else None
+    configured_profile = manager.get("priority_profile", "tesla_home")
+    presence_state = tesla_presence.get("state") if isinstance(tesla_presence, dict) else None
+    profile = ("tesla_home" if presence_state == "DETECTED" else
+               "tesla_away" if presence_state == "NOT_DETECTED" else configured_profile) if manager.get("enabled") else None
     priority_orders = {
         "tesla_home": {"ev_charger": 0, "water_heater": 1, "underfloor_heating": 2, "generic": 3, "miner": 4},
         "tesla_away": {"miner": 0, "water_heater": 1, "underfloor_heating": 2, "generic": 3, "ev_charger": 4},
@@ -2368,7 +2547,10 @@ def build_dispatch_plan(current: dict[str, Any], config: dict[str, Any], *, samp
             continue
         if control == "antminer_braiins":
             minimum = max(1, load.get("minimum_power_w", 1))
-            target = min(load.get("maximum_power_w", 2900), available)
+            meter = current.get("tuya_load_telemetry", {}).get(load.get("id"), {})
+            measured = meter.get("metrics", {}).get("power", {}) if meter.get("fresh") else {}
+            baseline = max(0, round(float(measured.get("value", 0)))) if measured.get("unit") == "W" else 0
+            target = min(load.get("maximum_power_w", 2900), baseline + available)
             target = target if target >= minimum else 0
             if target and dependency_id and actions_by_id.get(dependency_id, {}).get("state") != "ON":
                 action = {"load_id": load["id"], "name": load["name"], "state": "BLOCKED_RELAY_NOT_READY",
@@ -2378,18 +2560,27 @@ def build_dispatch_plan(current: dict[str, Any], config: dict[str, Any], *, samp
             if target:
                 available -= target
             action = {"load_id": load["id"], "name": load["name"], "state": "TARGET" if target else "BELOW_MINIMUM_SURPLUS",
-                      "target_power_w": target, "control_type": control}
+                      "target_power_w": target, "control_type": control,
+                      "measured_power_w": baseline if meter.get("fresh") else None,
+                      "tuya_telemetry_fresh": bool(meter.get("fresh"))}
             actions.append(action); actions_by_id[load["id"]] = action
             continue
         rated = load.get("rated_power_w", load.get("maximum_power_w", 0))
-        turn_on = available >= rated
-        if turn_on:
+        meter = current.get("tuya_load_telemetry", {}).get(load.get("id"), {})
+        observed_on = meter.get("switch_on") if meter.get("fresh") else None
+        measured = meter.get("metrics", {}).get("power", {}) if meter.get("fresh") else {}
+        measured_power = measured.get("value") if measured.get("unit") == "W" else None
+        turn_on = observed_on is True or available >= rated
+        if turn_on and observed_on is not True:
             available -= rated
         action = {"load_id": load["id"], "name": load["name"],
                   "state": "ON" if turn_on else "WAITING_FOR_SURPLUS",
-                  "target_power_w": rated if turn_on else 0, "control_type": control}
+                  "target_power_w": round(measured_power) if turn_on and observed_on is True and measured_power is not None else rated if turn_on else 0,
+                  "control_type": control, "observed_switch_on": observed_on,
+                  "measured_power_w": measured_power, "tuya_telemetry_fresh": bool(meter.get("fresh"))}
         actions.append(action); actions_by_id[load["id"]] = action
     return {**common, "state": "PLAN_READY", "reason": "A previsão orienta o plano; a telemetria real limita a potência e confirma as condições de segurança.",
+            "tesla_presence": presence_state or "UNKNOWN", "effective_priority_profile": profile,
             "estimated_surplus_w": surplus, "potential_surplus_w": forecast_surplus_w if manager.get("enabled") else None,
             "safety_margin_w": margin,
             "unallocated_surplus_w": available, "actions": actions}
@@ -2425,6 +2616,17 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
                                         "source": "DEYE_MODBUS_FC03_CANDIDATE_MAP", "trust": "LIVE_UNVERIFIED",
                                         "evidence": {"register": metric.get("register"), "label": metric.get("label")}}
     config = get_config(conn)
+    presence_row = conn.execute("SELECT value FROM system_state WHERE key='energy_tesla_presence'").fetchone()
+    try:
+        tesla_presence = json.loads(presence_row[0]) if presence_row else None
+        checked_at = datetime.fromisoformat(str((tesla_presence or {}).get("checked_at", "")).replace("Z", "+00:00"))
+        if checked_at.tzinfo is None:
+            checked_at = checked_at.replace(tzinfo=timezone.utc)
+        presence_age = (datetime.now(timezone.utc) - checked_at).total_seconds()
+        if not 0 <= presence_age <= 180 or (tesla_presence or {}).get("state") not in {"DETECTED", "NOT_DETECTED"}:
+            tesla_presence = {"state": "UNKNOWN", "checked_at": None, "reason": "stale_or_unavailable"}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        tesla_presence = {"state": "UNKNOWN", "checked_at": None, "reason": "stale_or_unavailable"}
     configured_pv_strings = [item for item in config.get("pv_strings", [])
                              if isinstance(item, dict) and item.get("active", True)]
     mppt_capacity_kw: dict[int, float] = {1: 0.0, 2: 0.0}
@@ -2494,14 +2696,6 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
     battery_power_history = _dedupe_time_series(battery_power_history)
     pv = _number(inverter_readings, "pv_total_power")
     load = _number(inverter_readings, "load_total_power")
-    deye_soc = (_number(battery_readings, "battery_soc")
-                if _number(battery_readings, "battery_soc") is not None
-                else _number(battery_readings, "battery_soc_percent"))
-    deye_soc_item = battery_readings.get("battery_soc") or battery_readings.get("battery_soc_percent")
-    deye_soc_fresh = False
-    if deye_soc_item and deye_soc is not None and deye_soc_item.get("source") != "DEYE_CLOUD_HISTORY":
-        observed_soc_at = _parse_utc(deye_soc_item.get("observed_at"))
-        deye_soc_fresh = observed_soc_at is not None and 0 <= (datetime.now(timezone.utc) - observed_soc_at).total_seconds() <= 1200
     all_banks = config.get("battery_banks", [])
     banks = [bank for bank in all_banks if bank.get("active", True)]
     capacity = (sum(float(bank["capacity_kwh"]) for bank in banks) if banks
@@ -2514,18 +2708,12 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
     available = None
     charge_headroom = None
     bank_summary = []
-    # Prefer a continuous Gateway estimate. If it is unavailable, retain a fresh,
-    # explicitly sourced inverter SOC as a reported measurement; imported Cloud
-    # history and stale SOC must never be used for current energy/autonomy.
+    # SOC is derived only from a Gateway-confirmed full-charge anchor followed by
+    # integration of battery power. Deye's percentage register is not a fallback.
     soc, soc_estimate = _estimate_battery_soc_persistent(
         conn, battery_voltage_history, battery_power_history, capacity, 0.0, max_soc)
-    # A fresh, non-cloud Deye SOC is a reported measurement, not a Gateway
-    # estimate. Use it as a fallback when integration is unavailable, and retain
-    # its source label so consumers can distinguish measured from estimated SOC.
     battery_voltage = _number(battery_readings, "battery_voltage")
     battery_charge_power = _number(battery_readings, "battery_charge_power")
-    reported_live_soc = (deye_soc if deye_soc_fresh and deye_soc is not None
-                         and math.isfinite(deye_soc) and 0 <= deye_soc <= 100 else None)
     voltage_item = battery_readings.get("battery_voltage")
     charge_item = battery_readings.get("battery_charge_power")
     def fresh_local(item: dict[str, Any] | None) -> bool:
@@ -2537,19 +2725,13 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
         battery_voltage_history, battery_power_history, battery_voltage, battery_charge_power)
         if fresh_local(voltage_item) and fresh_local(charge_item) else None)
     inferred_voltage_full = soc is None and voltage_plateau is not None
-    displayed_soc = (soc if soc is not None else reported_live_soc if reported_live_soc is not None
-                     else max_soc if inferred_voltage_full else None)
+    displayed_soc = soc if soc is not None else max_soc if inferred_voltage_full else None
     displayed_soc_source = ("gateway_energy_integrated" if soc is not None else
-                            "deye_live_reported" if reported_live_soc is not None else
                             "gateway_voltage_plateau_inferred" if inferred_voltage_full else
                             "unavailable")
     if inferred_voltage_full:
         soc_estimate = {**soc_estimate, **voltage_plateau,
                         "reason": "VOLTAGE_PLATEAU_CONFIRMED_WITH_LOCAL_CHARGE_TAPER"}
-    elif soc is None and reported_live_soc is not None:
-        soc_estimate = {**soc_estimate, "state": "DEYE_SOC_REPORTED_LIVE",
-                        "reported_source": displayed_soc_source,
-                        "reason": "FRESH_NON_CLOUD_INVERTER_SOC_USED_WITH_SOURCE_LABEL"}
     if displayed_soc is not None and banks:
         capacity = sum(float(bank["capacity_kwh"]) for bank in banks)
         bank_summary = [{**bank, "estimated_soc_percent": displayed_soc if bank.get("active", True) else None,
@@ -2777,7 +2959,7 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
                         "battery_soc_integrated_percent": soc,
                         "battery_soc_source": displayed_soc_source,
                         "battery_soc_estimate": soc_estimate,
-                        "battery_inverter_reported_soc_percent": deye_soc,
+                        "battery_inverter_reported_soc_percent": None,
                         "battery_voltage_max_30d_v": soc_estimate.get("voltage_max_30d_v") if soc_estimate else None,
                         "battery_energy_estimate_state": soc_estimate.get("state", "UNAVAILABLE") if soc_estimate else "UNAVAILABLE",
                         "battery_voltage_v": battery_voltage,
@@ -2798,6 +2980,27 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
                         "maximum_soc_percent": max_soc, "battery_banks": bank_summary,
                         "pv_potential_next_15m_kw": round(projected_potential_kw, 3) if projected_potential_kw is not None else None,
                         "curtailment_assessment": curtailment_assessment}
+    cached_tuya = read_tuya_telemetry(conn)
+    tuya_load_telemetry: dict[str, dict[str, Any]] = {}
+    loads_by_id = {item.get("id"): item for item in config.get("loads", []) if isinstance(item, dict)}
+    for load_item in config.get("loads", []):
+        if not isinstance(load_item, dict):
+            continue
+        meter_load = load_item
+        if load_item.get("control_type") == "antminer_braiins" and load_item.get("requires_load_id"):
+            meter_load = loads_by_id.get(load_item.get("requires_load_id"), load_item)
+        device_id = meter_load.get("tuya_device_id")
+        cached = cached_tuya.get(device_id, {}) if device_id else {}
+        selected_codes = meter_load.get("tuya_measurement_codes", {})
+        metrics = {field: metric for field, metric in (cached.get("metrics") or {}).items()
+                   if selected_codes.get(field) == metric.get("code")}
+        switch_code = meter_load.get("tuya_switch_code")
+        switch_row = next((item for item in cached.get("status", []) if item.get("code") == switch_code), None)
+        tuya_load_telemetry[load_item["id"]] = {"device_id": device_id, "name": cached.get("name"),
+            "connection_state": cached.get("connection_state", "unknown"), "verified": bool(cached.get("verified")),
+            "fresh": bool(cached.get("fresh")), "observed_at": cached.get("observed_at"), "metrics": metrics,
+            "switch_on": switch_row.get("value") if isinstance(switch_row, dict) and isinstance(switch_row.get("value"), bool) else None}
+    current["tuya_load_telemetry"] = tuya_load_telemetry
     sample_state = "UNKNOWN"
     if latest_sample is not None:
         try:
@@ -2817,7 +3020,7 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
                           if projected_potential_kw is not None and forecast_load_w is not None else None)
     dispatch = build_dispatch_plan(current, config, sample_state=sample_state,
                                    telemetry_trust=("OWNER_COMMISSIONED" if config.get("automation", {}).get("deye_map_verified") else "LIVE_UNVERIFIED"),
-                                   forecast_surplus_w=forecast_surplus_w)
+                                   forecast_surplus_w=forecast_surplus_w, tesla_presence=tesla_presence)
     execution_row = conn.execute("SELECT value FROM system_state WHERE key='energy_dispatch_last'").fetchone()
     try:
         dispatch_execution = json.loads(execution_row[0]) if execution_row else None
@@ -2855,6 +3058,8 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
                                 "forecast_surplus_w": forecast_surplus_w,
                                 "minimum_potential_surplus_w": config.get("surplus_manager", {}).get("minimum_potential_surplus_w", 800),
                                 "priority_profile": config.get("surplus_manager", {}).get("priority_profile", "tesla_home"),
+                                "tesla_presence": tesla_presence,
+                                "effective_priority_profile": dispatch.get("effective_priority_profile"),
                                 "battery_reserve_soc_percent": config.get("surplus_manager", {}).get("battery_reserve_soc_percent", 70),
                                 "notice": "A previsão orienta o plano, mas a potência em tempo real limita sempre qualquer aumento."},
             "dispatch_execution": dispatch_execution,

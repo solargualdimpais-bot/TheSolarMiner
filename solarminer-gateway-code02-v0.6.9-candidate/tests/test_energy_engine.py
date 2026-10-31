@@ -834,6 +834,18 @@ def test_forecast_guided_dispatch_respects_profile_actual_surplus_and_manual_ove
     assert home["potential_surplus_w"] == 5000
     assert home["actions"][0]["load_id"] == "aqs"
 
+    detected = energy_engine.build_dispatch_plan(current, config, sample_state="LIVE",
+        telemetry_trust="OWNER_COMMISSIONED", forecast_surplus_w=5000,
+        tesla_presence={"state": "DETECTED"})
+    assert detected["effective_priority_profile"] == "tesla_home"
+    assert detected["actions"][0]["load_id"] == "aqs"
+
+    not_detected = energy_engine.build_dispatch_plan(current, config, sample_state="LIVE",
+        telemetry_trust="OWNER_COMMISSIONED", forecast_surplus_w=5000,
+        tesla_presence={"state": "NOT_DETECTED"})
+    assert not_detected["effective_priority_profile"] == "tesla_away"
+    assert not_detected["actions"][0]["load_id"] == "miner"
+
     away_config = {**config, "surplus_manager": {**config["surplus_manager"], "priority_profile": "tesla_away"}}
     away = energy_engine.build_dispatch_plan(current, away_config, sample_state="LIVE",
         telemetry_trust="OWNER_COMMISSIONED", forecast_surplus_w=5000)

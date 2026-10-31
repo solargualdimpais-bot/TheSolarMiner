@@ -50,7 +50,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.109"
+PACKAGE_VERSION = "0.6.110"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -543,6 +543,9 @@ def _run_automatic_dispatch() -> dict[str, Any]:
             if any(action.get("control_type") in {"tuya_smart", "tuya_breaker"} for action in plan.get("actions", [])):
                 tuya_readings = hardware_integrations.read_tuya(tuya_config)
                 _persist_tuya_device_events(conn, tuya_readings)
+                energy_engine.persist_tuya_telemetry(conn, tuya_readings, tuya_config.get("devices", []))
+                _update_tuya_device_records(integration_config, tuya_readings)
+                hardware_integrations.save_config(integration_config)
                 tuya_states = {item.get("device_id"): item for item in tuya_readings}
         except (ValueError, RuntimeError, OSError, json.JSONDecodeError) as exc:
             outcome = {"state": "BLOCKED_INTEGRATION_READ", "reason": type(exc).__name__, "actions": []}
@@ -687,9 +690,57 @@ async def _energy_dispatch_loop() -> None:
         await asyncio.sleep(10)
 
 
+def _read_tesla_local_presence() -> dict[str, Any]:
+    """Match the configured Tesla Wi-Fi MAC against the Huawei's LAN client table."""
+    config = hardware_integrations.load_config()
+    tesla = config.get("tesla", {}) if isinstance(config.get("tesla"), dict) else {}
+    mac = str(tesla.get("local_mac") or "").strip().upper()
+    checked_at = utcnow()
+    if not mac:
+        return {"state": "NOT_CONFIGURED", "checked_at": checked_at, "ip": None}
+    router = config.get("huawei_router", {}) if isinstance(config.get("huawei_router"), dict) else {}
+    if not router.get("password"):
+        return {"state": "UNKNOWN", "checked_at": checked_at, "ip": None,
+                "reason": "huawei_router_not_configured"}
+    try:
+        clients = hardware_integrations.huawei_router.read_huawei_clients(router)
+    except hardware_integrations.huawei_router.HuaweiRouterError as exc:
+        return {"state": "UNKNOWN", "checked_at": checked_at, "ip": None,
+                "reason": str(exc)[:80]}
+    found = next((item for item in clients if str(item.get("mac", "")).upper() == mac), None)
+    return {"state": "DETECTED" if found else "NOT_DETECTED", "checked_at": checked_at,
+            "ip": found.get("ip") if found else None, "reason": None}
+
+
+def _persist_tesla_presence(snapshot: dict[str, Any]) -> None:
+    with db() as conn:
+        conn.execute("INSERT INTO system_state(key,value) VALUES('energy_tesla_presence',?) "
+                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                     (json.dumps(snapshot, separators=(",", ":")),))
+        conn.commit()
+
+
+async def _tesla_presence_loop() -> None:
+    """Refresh Tesla LAN presence without requiring the PWA to stay open."""
+    while True:
+        try:
+            config = hardware_integrations.load_config()
+            tesla = config.get("tesla", {}) if isinstance(config.get("tesla"), dict) else {}
+            router = config.get("huawei_router", {}) if isinstance(config.get("huawei_router"), dict) else {}
+            if tesla.get("local_mac") and router.get("password"):
+                snapshot = await asyncio.to_thread(_read_tesla_local_presence)
+                await asyncio.to_thread(_persist_tesla_presence, snapshot)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            LOG.warning("Tesla LAN presence check failed (%s)", type(exc).__name__)
+        await asyncio.sleep(60)
+
+
 def _collect_tuya_device_events_once() -> int:
     """Poll configured Tuya Wi-Fi devices and save observed transitions locally."""
-    config = hardware_integrations.load_config().get("tuya", {})
+    integration_config = hardware_integrations.load_config()
+    config = integration_config.get("tuya", {})
     devices = [item for item in config.get("devices", [])
                if isinstance(item, dict) and item.get("local_key")
                and (item.get("local_ip") or item.get("local_mac"))]
@@ -698,7 +749,11 @@ def _collect_tuya_device_events_once() -> int:
     readings = hardware_integrations.read_tuya({**config, "devices": devices})
     with db() as conn:
         recorded = _persist_tuya_device_events(conn, readings)
+        energy_engine.persist_tuya_telemetry(conn, readings, devices)
         conn.commit()
+    latest_config = hardware_integrations.load_config()
+    _update_tuya_device_records(latest_config, readings)
+    hardware_integrations.save_config(latest_config)
     return recorded
 
 
@@ -730,6 +785,7 @@ async def lifespan(_: FastAPI):
         _latest_deye_sample = None
     sampler = asyncio.create_task(_energy_sampling_loop(), name="solarminer-energy-sampler")
     dispatcher = asyncio.create_task(_energy_dispatch_loop(), name="solarminer-energy-dispatcher")
+    tesla_presence = asyncio.create_task(_tesla_presence_loop(), name="solarminer-tesla-presence")
     tuya_observer = asyncio.create_task(_tuya_device_event_loop(), name="solarminer-tuya-event-observer")
     history_retention = asyncio.create_task(_history_retention_loop(), name="solarminer-history-retention")
     try:
@@ -737,6 +793,7 @@ async def lifespan(_: FastAPI):
     finally:
         sampler.cancel()
         dispatcher.cancel()
+        tesla_presence.cancel()
         tuya_observer.cancel()
         history_retention.cancel()
         try:
@@ -745,6 +802,10 @@ async def lifespan(_: FastAPI):
             pass
         try:
             await dispatcher
+        except asyncio.CancelledError:
+            pass
+        try:
+            await tesla_presence
         except asyncio.CancelledError:
             pass
         try:
@@ -1161,11 +1222,16 @@ def energy_engine_configure(payload: dict[str, Any], session: dict[str, Any] = D
                     raise ValueError("invalid_flexible_load")
                 if load.get("control_type") in {"tuya_smart", "tuya_breaker"}:
                     device = tuya_by_id.get(load.get("tuya_device_id"))
-                    allowed_codes = {entry.get("code") for entry in (device or {}).get("functions", []) if isinstance(entry, dict) and str(entry.get("type", "")).lower() in {"bool", "boolean"}}
+                    specs = [entry for entry in [*(device or {}).get("functions", []), *(device or {}).get("status_spec", [])] if isinstance(entry, dict)]
+                    allowed_codes = {entry.get("code") for entry in specs if str(entry.get("type", "")).lower() in {"bool", "boolean"}}
                     if device and device.get("switch_code"):
                         allowed_codes.add(device["switch_code"])
                     if not device or load.get("tuya_switch_code") not in allowed_codes:
                         raise ValueError("load_tuya_device_or_switch_code_not_configured")
+                    measurement_codes = load.get("tuya_measurement_codes", {})
+                    schema_codes = {entry.get("code") for entry in specs if isinstance(entry.get("code"), str)}
+                    if not isinstance(measurement_codes, dict) or any(code not in schema_codes for code in measurement_codes.values()):
+                        raise ValueError("load_tuya_measurement_code_not_configured")
             result = energy_engine.save_config(conn, config_payload)
             audit(conn, session["user_id"], "energy.engine.configure", "energy-engine", "success", {
                 "battery_capacity_kwh_configured": result["battery_capacity_kwh"] is not None,
@@ -1707,6 +1773,25 @@ def _persist_tuya_device_events(conn: sqlite3.Connection, readings: list[dict[st
     return recorded
 
 
+def _update_tuya_device_records(config: dict[str, Any], readings: list[dict[str, Any]]) -> None:
+    """Persist sticky LAN confirmation and the last valid status without trusting PWA claims."""
+    tuya = config.get("tuya", {}) if isinstance(config.get("tuya"), dict) else {}
+    by_id = {item.get("device_id"): item for item in readings if isinstance(item, dict)}
+    for device in tuya.get("devices", []):
+        if not isinstance(device, dict):
+            continue
+        reading = by_id.get(device.get("device_id"))
+        if reading is None:
+            continue
+        valid = (reading.get("connection_state") == "local_responded"
+                 and isinstance(reading.get("status"), list) and bool(reading.get("status")))
+        device["local_control_state"] = "ready" if valid else "unavailable"
+        device["local_verified"] = bool(device.get("local_verified") or valid)
+        if valid:
+            device["current_status"] = reading["status"]
+            device["last_status_at"] = int(time.time())
+
+
 def _append_tuya_command_event(conn: sqlite3.Connection, device_id: str, code: str, requested_on: bool,
                               *, confirmed: bool, automatic: bool = False, source: str = "TUYA_LAN") -> None:
     config = hardware_integrations.load_config().get("tuya", {})
@@ -2046,15 +2131,8 @@ def hardware_provider_read(provider: str, payload: dict[str, Any] | None = None,
                     tuya_config = {**item, "devices": [d for d in item["devices"] if d.get("device_id") == device_id]}
                 result = {"tuya": hardware_integrations.read_tuya(tuya_config)}
                 _persist_tuya_device_events(conn, result["tuya"])
-                by_id = {row.get("device_id"): row for row in result["tuya"]}
-                for configured_device in item.get("devices", []):
-                    reading = by_id.get(configured_device.get("device_id"))
-                    if not reading:
-                        continue
-                    configured_device["local_control_state"] = "ready" if reading.get("connection_state") == "local_responded" else "unavailable"
-                    if reading.get("connection_state") == "local_responded":
-                        configured_device["current_status"] = reading.get("status", [])
-                        configured_device["last_status_at"] = int(time.time())
+                energy_engine.persist_tuya_telemetry(conn, result["tuya"], item.get("devices", []))
+                _update_tuya_device_records(config, result["tuya"])
                 hardware_integrations.save_config(config)
             result["provider"] = provider
             result["collected_at"] = datetime.now(timezone.utc).isoformat()
@@ -2256,10 +2334,32 @@ def _require_owner(session: dict[str, Any], conn) -> None:
 
 @app.get("/api/v1/energy/ev/tesla")
 def ev_tesla_config(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
-    with db() as conn: _require_owner(session, conn)
-    try: return hardware_integrations.public_tesla_config()
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        raise HTTPException(500, "ev_tesla_config_unavailable") from exc
+    with db() as conn:
+        _require_owner(session, conn)
+        try:
+            result = hardware_integrations.public_tesla_config()
+            row = conn.execute("SELECT value FROM system_state WHERE key='energy_tesla_presence'").fetchone()
+            if row:
+                try: result["local_presence"] = json.loads(row["value"])
+                except (TypeError, json.JSONDecodeError): pass
+            return result
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise HTTPException(500, "ev_tesla_config_unavailable") from exc
+
+
+@app.post("/api/v1/energy/ev/tesla/presence")
+def ev_tesla_local_presence(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    with db() as conn:
+        _require_owner(session, conn)
+        try:
+            snapshot = _read_tesla_local_presence()
+            _persist_tesla_presence(snapshot)
+            audit(conn, session["user_id"], "energy.ev.tesla.presence", "ev", "success", {
+                "state": snapshot["state"], "source": "huawei_client_table"})
+            return snapshot
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            audit(conn, session["user_id"], "energy.ev.tesla.presence", "ev", "failed", {"reason": type(exc).__name__})
+            raise HTTPException(502, "ev_tesla_presence_read_failed") from exc
 
 
 @app.put("/api/v1/energy/ev/tesla")
@@ -3212,7 +3312,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.109"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.110"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

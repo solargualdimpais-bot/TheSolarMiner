@@ -105,6 +105,7 @@ cp "$ROOT/docs/ACCEPTANCE_MATRIX_V069.md" "$STAGE/usr/share/doc/solarminer-gatew
 cp "$ROOT/docs/TEST_REPORT_V069.md" "$STAGE/usr/share/doc/solarminer-gateway/TEST_REPORT_V069.md"
 cp "$ROOT/docs/V069_LIMITATIONS.md" "$STAGE/usr/share/doc/solarminer-gateway/V069_LIMITATIONS.md"
 cp "$ROOT/docs/PWA_V057_CHANGELOG.md" "$STAGE/usr/share/doc/solarminer-gateway/PWA_V057_CHANGELOG.md"
+cp "$ROOT/docs/CHANGELOG_V06110.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V06110.md"
 cp "$ROOT/docs/SOURCE_PROVENANCE.md" "$STAGE/usr/share/doc/solarminer-gateway/SOURCE_PROVENANCE.md"
 cp "$ROOT/packaging/catalog/catalog.json" "$STAGE/usr/share/solarminer/catalog.json"
 cp "$ROOT/packaging/catalog/catalog.sig" "$STAGE/usr/share/solarminer/catalog.sig"

@@ -69,6 +69,24 @@ def test_owner_terminal_diagnostics_reports_runtime_capabilities(client):
     assert result["available"] is (result["pty_available"] and result["shell_available"])
 
 
+def test_owner_can_check_tesla_presence_by_mac_without_fleet_credentials(client, monkeypatch):
+    owner, private, _ = create_owner(client)
+    token = login(client, owner, private).json()["access_token"]
+    monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: {
+        "tesla": {"local_mac": "4C:FC:AA:D5:86:68"},
+        "huawei_router": {"host": "192.168.8.1", "username": "admin", "password": "router-secret"},
+    })
+    monkeypatch.setattr(gateway.hardware_integrations.huawei_router, "read_huawei_clients", lambda _config: [
+        {"name": "Tesla", "mac": "4C:FC:AA:D5:86:68", "ip": "192.168.8.100"},
+    ])
+    response = client.post("/api/v1/energy/ev/tesla/presence",
+                           headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "DETECTED"
+    assert response.json()["ip"] == "192.168.8.100"
+    assert client.post("/api/v1/energy/ev/tesla/presence").status_code == 401
+
+
 @pytest.mark.skipif(os.name != "posix", reason="O terminal PTY do Gateway corre em Linux/POSIX")
 def test_owner_terminal_executes_and_streams_real_gateway_shell(client, tmp_path, monkeypatch):
     owner, private, _ = create_owner(client)

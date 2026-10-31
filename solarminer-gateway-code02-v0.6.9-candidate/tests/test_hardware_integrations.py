@@ -946,6 +946,25 @@ def test_tesla_config_keeps_credentials_private_and_validates_selected_vehicle_i
     }, config)["vehicle_ids"] == ["12345678901234567"]
 
 
+def test_tesla_local_mac_can_be_saved_without_fleet_credentials_and_preserves_existing_fleet():
+    local_only = integrations.validate_tesla_config({"local_mac": "4c:fc:aa:d5:86:68"}, existing={})
+    assert local_only == {"region": "europe", "local_mac": "4C:FC:AA:D5:86:68"}
+    public = integrations.public_tesla_config({"tesla": local_only})
+    assert public["local_mac"] == "4C:FC:AA:D5:86:68"
+    assert public["configured"] is False
+
+    previous = {"tesla": {"region": "europe", "client_id": "client-id",
+                           "refresh_token": "refresh-token-value", "vehicle_ids": ["12345678901234567"]}}
+    updated = integrations.validate_tesla_config({"local_mac": "4C:FC:AA:D5:86:68"}, existing=previous)
+    assert updated["refresh_token"] == "refresh-token-value"
+    assert updated["vehicle_ids"] == ["12345678901234567"]
+
+
+def test_tesla_local_mac_rejects_malformed_address():
+    with pytest.raises(ValueError, match="invalid_tesla_local_mac"):
+        integrations.validate_tesla_config({"local_mac": "not-a-mac"}, existing={})
+
+
 @pytest.mark.parametrize("region,vehicle_ids", [("other", ["123"]), ("europe", []), ("europe", ["../other"]), ("europe", ["123", "456"])])
 def test_tesla_config_rejects_invalid_region_or_vehicle_ids(region, vehicle_ids):
     with pytest.raises(ValueError):

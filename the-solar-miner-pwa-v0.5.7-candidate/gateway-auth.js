@@ -544,6 +544,9 @@ export async function saveGatewayTeslaEvConfig(config) {
 export async function readGatewayTeslaEvCharging() {
   return gatewayApi("/api/v1/energy/ev/tesla/read", { method: "POST", body: {} });
 }
+export async function readGatewayTeslaLocalPresence() {
+  return gatewayApi("/api/v1/energy/ev/tesla/presence", { method: "POST", body: {} });
+}
 export async function revokeGatewayInvite(inviteId) {
   if (!/^[0-9a-f-]{36}$/i.test(inviteId)) throw new Error("Identificador de convite inválido.");
   return gatewayApi(`/api/v1/invites/${encodeURIComponent(inviteId)}/revoke`, { method: "POST", body: {} });

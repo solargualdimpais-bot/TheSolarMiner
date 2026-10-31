@@ -32,7 +32,7 @@ test("PV string editor captures module details and derives total nominal power",
   assert.match(app, /name="active" type="checkbox" checked> String online/);
   assert.match(app, /String “\$\{name\}” guardada no Gateway\./);
   assert.match(app, /Não foi possível guardar a string “\$\{name\}”: \$\{error\.message\}/);
-  assert.match(app, /state\.page=pageBeforeSave;\s*render\(\);window\.scrollTo\(\{top:scrollBeforeSave,behavior:"auto"\}\)/);
+  assert.match(app, /state\.page=pageBeforeSave==="paineis-solares"\?pageBeforeSave:"paineis-solares";\s*render\(\);window\.scrollTo\(\{top:scrollBeforeSave,behavior:"auto"\}\)/);
   assert.match(energyEngine, /"panel_count"/);
   assert.match(energyEngine, /"panel_power_w"/);
   assert.match(app, /await saveGatewayEnergyEngineConfig\(\{pv_strings:strings\}\)/);
@@ -42,6 +42,36 @@ test("PV string editor captures module details and derives total nominal power",
   assert.match(readFileSync(new URL("../gateway-auth.js", import.meta.url), "utf8"), /export async function readGatewayEnergyEngineConfig\(\)/);
   assert.match(energyEngine, /"pv_strings": normalized_pv_strings/);
   assert.match(gatewayApp, /@app\.get\("\/api\/v1\/energy\/engine\/config"\)/);
+});
+
+test("AQS save waits for valid fields, confirms persistence, and stays in its area", () => {
+  assert.match(app, /id="aqs-form"[\s\S]*?button type="submit" class="button primary" disabled>Guardar/);
+  assert.match(app, /function updateAqsSaveButton\(form\)/);
+  assert.match(app, /const saved=await readGatewayEnergyEngineConfig\(\),savedLoads=Array\.isArray\(saved\?\.loads\)\?saved\.loads:null/);
+  assert.match(app, /state\.page=pageBeforeSave==="aqs"\?pageBeforeSave:"aqs"/);
+});
+
+test("AQS breaker options show one Tuya device name and select its configured primary channel", () => {
+  assert.match(app, /const devicesById=new Map\(\)/);
+  assert.match(app, /if\(!device\?\.device_id\|\|devicesById\.has\(device\.device_id\)\)continue/);
+  assert.match(app, /\$\{esc\(device\.name\)\}<\/option>/);
+});
+
+test("Favorite controls refresh the target device before toggling and show a simple detail on tap", () => {
+  assert.match(app, /readGatewayHardwareProvider\("tuya",deviceId\),before=/);
+  assert.match(app, /controlGatewayTuyaSwitch\(deviceId,desired,code\)/);
+  assert.match(app, /readGatewayHardwareProvider\("tuya",deviceId\),after=/);
+  assert.match(app, /openFavoriteDeviceDetails\(favoriteCard\.dataset\.favoriteDevice,favoriteCard\.dataset\.deviceKind\)/);
+  assert.match(app, /function openFavoriteDeviceDetails\(deviceId,kind\)/);
+  assert.match(app, /function tuyaSimpleReadings\(device,reading\)/);
+  assert.match(app, /function favoriteReadingConfirmed\(item\)/);
+  assert.match(app, /A testar agora uma leitura real na LAN/);
+  assert.match(app, /Configuração guardada, mas a leitura ainda não foi confirmada/);
+  assert.match(app, /function renderTuyaDeviceCards\(devices\)/);
+  assert.match(app, /tuya-read-state/);
+  assert.match(app, /confirmed\?'Confirmado':'Por confirmar'/);
+  assert.match(app, /const ordered=\[\.\.\.devices\]\.sort/);
+  assert.match(app, /tuya-device-list[\s\S]*?addEventListener\("keydown"/);
 });
 
 test("LAN discovery tries the local neighbor cache after broadcast errors", () => {

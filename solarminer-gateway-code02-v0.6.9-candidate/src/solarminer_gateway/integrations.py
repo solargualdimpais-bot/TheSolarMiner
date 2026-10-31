@@ -186,7 +186,7 @@ def public_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
         "deye_cloud": {"data_center": deye_cloud.get("data_center", "eu"), "app_id": deye_cloud.get("app_id"),
                        "email": deye_cloud.get("email"), "configured": bool(deye_cloud.get("app_id") and deye_cloud.get("app_secret") and deye_cloud.get("email") and deye_cloud.get("password")),
                        "secrets_returned": False},
-        "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "uid": tuya.get("uid"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": [{"device_id": x.get("device_id"), "name": x.get("name"), "room": x.get("room", ""), "floor": x.get("floor", ""), "name_source": x.get("name_source", "cloud"), "switch_code": x.get("switch_code"), "switch_channels": [item.get("code") for item in x.get("functions", []) if isinstance(item, dict) and str(item.get("type", "")).lower() in {"bool", "boolean"}], "channel_count": x.get("channel_count", 0), "device_kind": x.get("device_kind", "unknown"), "device_kind_label": x.get("device_kind_label", TUYA_DEVICE_KINDS["unknown"]), "device_kind_confidence": x.get("device_kind_confidence", "low"), "device_kind_override": x.get("device_kind_override"), "channel_labels": x.get("channel_labels", {}), "capability_labels": x.get("capability_labels", {}), "level_code": x.get("level_code"), "level_min": x.get("level_min", 0), "level_max": x.get("level_max", 100), "category": x.get("category"), "product_id": x.get("product_id"), "product_name": x.get("product_name"), "online": x.get("online"), "ip": x.get("local_ip", ""), "local_ip": x.get("local_ip", ""), "local_mac": x.get("local_mac", ""), "local_protocol": x.get("local_protocol", "3.3"), "local_dps_map": x.get("local_dps_map", {}), "local_control_state": x.get("local_control_state", "not_tested"), "cloud_source": x.get("cloud_source"), "cloud_missing": x.get("cloud_missing", False), "local_key_available": bool(x.get("local_key")), "functions": x.get("functions", []), "status_spec": x.get("status_spec", []), "current_status": x.get("current_status", []), "last_status_at": x.get("last_status_at")} for x in tuya.get("devices", []) if isinstance(x, dict)], "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
+        "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "uid": tuya.get("uid"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": [{"device_id": x.get("device_id"), "name": x.get("name"), "room": x.get("room", ""), "floor": x.get("floor", ""), "name_source": x.get("name_source", "cloud"), "switch_code": x.get("switch_code"), "switch_channels": [item.get("code") for item in x.get("functions", []) if isinstance(item, dict) and str(item.get("type", "")).lower() in {"bool", "boolean"}], "channel_count": x.get("channel_count", 0), "device_kind": x.get("device_kind", "unknown"), "device_kind_label": x.get("device_kind_label", TUYA_DEVICE_KINDS["unknown"]), "device_kind_confidence": x.get("device_kind_confidence", "low"), "device_kind_override": x.get("device_kind_override"), "channel_labels": x.get("channel_labels", {}), "capability_labels": x.get("capability_labels", {}), "level_code": x.get("level_code"), "level_min": x.get("level_min", 0), "level_max": x.get("level_max", 100), "category": x.get("category"), "product_id": x.get("product_id"), "product_name": x.get("product_name"), "online": x.get("online"), "ip": x.get("local_ip", ""), "local_ip": x.get("local_ip", ""), "local_mac": x.get("local_mac", ""), "local_protocol": x.get("local_protocol", "3.3"), "local_dps_map": x.get("local_dps_map", {}), "local_control_state": x.get("local_control_state", "not_tested"), "local_verified": bool(x.get("local_verified", False)), "cloud_source": x.get("cloud_source"), "cloud_missing": x.get("cloud_missing", False), "local_key_available": bool(x.get("local_key")), "functions": x.get("functions", []), "status_spec": x.get("status_spec", []), "current_status": x.get("current_status", []), "last_status_at": x.get("last_status_at")} for x in tuya.get("devices", []) if isinstance(x, dict)], "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
         "secrets_returned": False,
     }
 
@@ -196,6 +196,7 @@ def public_tesla_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
     tesla = config.get("tesla", {}) if isinstance(config.get("tesla", {}), dict) else {}
     return {"region": tesla.get("region", "europe"), "vehicle_ids": tesla.get("vehicle_ids", []),
             "client_id": tesla.get("client_id"), "configured": bool(tesla.get("client_id") and tesla.get("refresh_token")),
+            "local_mac": tesla.get("local_mac", ""),
             "purpose": "ev_charging_status_read_only", "control_available": False, "secrets_returned": False}
 
 
@@ -326,7 +327,7 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
             # Cloud-imported secrets and capability metadata can only come from
             # the Gateway's previous trusted inventory, never from PWA input.
             previous = existing_devices.get(device_id, {})
-            for key in ("local_key", "local_ip", "local_mac", "local_protocol", "local_dps_map", "local_control_state", "product_id", "product_name", "category", "online", "ip", "functions", "status_spec", "current_status", "last_status_at", "cloud_source", "cloud_missing", "last_synced_at", "device_kind", "device_kind_label", "device_kind_confidence", "channel_count"):
+            for key in ("local_key", "local_ip", "local_mac", "local_protocol", "local_dps_map", "local_control_state", "local_verified", "product_id", "product_name", "category", "online", "ip", "functions", "status_spec", "current_status", "last_status_at", "cloud_source", "cloud_missing", "last_synced_at", "device_kind", "device_kind_label", "device_kind_confidence", "channel_count"):
                 if key in previous:
                     normalized_device[key] = previous[key]
             kind_override = device.get("device_kind_override", previous.get("device_kind_override"))
@@ -432,15 +433,24 @@ def validate_tesla_config(item: Any, existing: dict[str, Any] | None = None) -> 
     refresh_token = item.get("refresh_token") or old.get("refresh_token")
     region = item.get("region", old.get("region", "europe"))
     vehicle_ids = item.get("vehicle_ids", old.get("vehicle_ids", []))
+    local_mac = item.get("local_mac", old.get("local_mac", ""))
     if region not in TESLA_API_BASES: raise ValueError("invalid_tesla_region")
-    if not isinstance(client_id, str) or not 1 <= len(client_id) <= 256: raise ValueError("invalid_tesla_client_id")
-    if not isinstance(refresh_token, str) or not 8 <= len(refresh_token) <= 4096: raise ValueError("invalid_tesla_refresh_token")
-    if not isinstance(vehicle_ids, list) or len(vehicle_ids) != 1: raise ValueError("invalid_tesla_vehicle_ids")
+    fleet_configured = bool(old.get("client_id") and old.get("refresh_token") and old.get("vehicle_ids"))
+    fleet_requested = any(key in item for key in ("client_id", "refresh_token", "vehicle_ids"))
+    if fleet_requested or fleet_configured:
+        if not isinstance(client_id, str) or not 1 <= len(client_id) <= 256: raise ValueError("invalid_tesla_client_id")
+        if not isinstance(refresh_token, str) or not 8 <= len(refresh_token) <= 4096: raise ValueError("invalid_tesla_refresh_token")
+        if not isinstance(vehicle_ids, list) or len(vehicle_ids) != 1: raise ValueError("invalid_tesla_vehicle_ids")
     normalized_ids = []
-    for value in vehicle_ids:
+    for value in vehicle_ids if isinstance(vehicle_ids, list) else []:
         if not isinstance(value, str) or not 1 <= len(value) <= 64 or not all(c.isalnum() or c in "-_" for c in value): raise ValueError("invalid_tesla_vehicle_id")
         if value not in normalized_ids: normalized_ids.append(value)
-    return {"region": region, "client_id": client_id, "refresh_token": refresh_token, "vehicle_ids": normalized_ids}
+    if not isinstance(local_mac, str) or (local_mac.strip() and not re.fullmatch(r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", local_mac.strip())):
+        raise ValueError("invalid_tesla_local_mac")
+    result = {"region": region, "local_mac": local_mac.strip().upper()}
+    if fleet_configured or fleet_requested:
+        result.update({"client_id": client_id, "refresh_token": refresh_token, "vehicle_ids": normalized_ids})
+    return result
 
 
 def _json_request(url: str, headers: dict[str, str], timeout: float = 8.0) -> dict[str, Any]:
@@ -777,7 +787,7 @@ def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Eve
                 item["local_key"] = key
             elif isinstance(previous.get("local_key"), str):
                 item["local_key"] = previous["local_key"]
-            for retained in ("switch_code", "level_code", "level_min", "level_max", "favorite", "room", "floor", "name_source", "local_name", "channel_labels", "capability_labels", "local_ip", "local_mac", "local_protocol", "local_dps_map", "local_control_state"):
+            for retained in ("switch_code", "level_code", "level_min", "level_max", "favorite", "room", "floor", "name_source", "local_name", "channel_labels", "capability_labels", "local_ip", "local_mac", "local_protocol", "local_dps_map", "local_control_state", "local_verified"):
                 if retained in previous:
                     item[retained] = previous[retained]
             discovered.append(item)

@@ -28,7 +28,7 @@ test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV 
   for (const tab of ["access", "updates", "tailscale", "gateway", "equipment"]) assert.match(html, new RegExp(`data-owner-tab="${tab}"`));
   for (const tab of ["deye", "antminer", "tuya"]) assert.match(html, new RegExp(`data-owner-device="${tab}"`));
   const workspace = read("../workspace-ui.js");
-  for (const id of ["ev-tesla-refresh-token", "ev-tesla-vehicle-id", "ev-tesla-save", "ev-tesla-read"]) assert.match(workspace, new RegExp(`id="${id}"`));
+  for (const id of ["ev-tesla-refresh-token", "ev-tesla-vehicle-id", "ev-tesla-local-mac", "ev-tesla-save", "ev-tesla-presence", "ev-tesla-fleet-save", "ev-tesla-read"]) assert.match(workspace, new RegExp(`id="${id}"`));
   assert.match(app, /info\.user\.role !== "owner"/);
   assert.match(app, /saveGatewayHardwareIntegrationConfig/);
   assert.match(app, /readGatewayHardwareProvider/);
@@ -58,6 +58,10 @@ test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV 
   assert.match(app, /A enviar o comando através do Gateway e a aguardar a resposta da Braiins OS/);
   assert.ok(app.includes("updateOperationDialog({title:`${title} · falhou`"));
   assert.match(auth, /\/api\/v1\/energy\/ev\/tesla\/read/);
+  assert.match(auth, /\/api\/v1\/energy\/ev\/tesla\/presence/);
+  assert.match(app, /readGatewayTeslaLocalPresence/);
+  assert.match(app, /username="admin"/);
+  assert.doesNotMatch(app, /huawei-router-username/);
   assert.doesNotMatch(app, /hardware-tesla-(?:region|client-id|refresh-token|vehicles)/);
   assert.doesNotMatch(auth, /tuya.*localStorage/i);
 });
