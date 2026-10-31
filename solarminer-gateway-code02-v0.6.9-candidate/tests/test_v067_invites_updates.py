@@ -558,6 +558,10 @@ def test_tuya_sync_imports_local_key_and_device_capabilities(monkeypatch):
         if path == "/v1.0/iot-03/devices/tuya_1/specification":
             return {"result": {"category": "cz", "functions": [{"code": "switch_1", "type": "Boolean", "values": "{}"}],
                                 "status": [{"code": "cur_power", "type": "Integer", "values": "{}"}]}}
+        if path == "/v1.0/iot-03/categories/cz/functions":
+            return {"result": {"category": "cz", "functions": [{"code": "switch", "type": "Boolean", "name": "Switch"}]}}
+        if path == "/v1.0/iot-03/categories/cz/status":
+            return {"result": {"category": "cz", "status_list": [{"code": "cur_power", "type": "Integer", "name": "Power"}]}}
         raise AssertionError(path)
     original = gateway.hardware_integrations._tuya_request
     monkeypatch.setattr(gateway.hardware_integrations, "_tuya_request", request)
@@ -569,11 +573,45 @@ def test_tuya_sync_imports_local_key_and_device_capabilities(monkeypatch):
     assert device["local_key"] == "private-local-key-123"
     assert device["functions"][0]["code"] == "switch_1"
     assert device["status_spec"][0]["code"] == "cur_power"
+    assert result["product_schemas"]["pid"]["functions"][0]["code"] == "switch_1"
+    assert device["schema_source"] == "TUYA_DEVICE_SPEC"
     # Sync imports capability metadata only; operational readings are obtained
     # from the device locally and must not be fetched through the Tuya cloud.
     assert "current_status" not in device
     assert not any(path.endswith("/status") for path in calls)
     assert calls[0] == "/v1.0/token?grant_type=1"
+
+
+def test_tuya_sync_reuses_only_matching_cached_product_schema(monkeypatch):
+    config = {"region": "eu_central", "client_id": "client", "client_secret": "secret-value",
+              "uid": "user-123", "devices": [], "product_schemas": {
+                  "pid-exact": {"category": "cz", "product_name": "Plug Pro",
+                                "functions": [{"code": "switch_1", "name": "Relay A", "type": "Boolean", "dp_id": 6}],
+                                "status_spec": [{"code": "cur_power", "name": "Power", "type": "Integer"}],
+                                "cached_at": 123456},
+              }}
+
+    def request(_config, path, token=None, **kwargs):
+        if path == "/v1.0/token?grant_type=1":
+            return {"result": {"access_token": "temporary-token"}}
+        if path.startswith("/v2.0/cloud/thing/device?"):
+            return {"result": [{"id": "tuya_new_1", "name": "Plug copy", "category": "cz",
+                                "productId": "pid-exact", "productName": "Plug Pro", "isOnline": True}]}
+        if path == "/v2.0/cloud/thing/tuya_new_1":
+            return {"result": {"id": "tuya_new_1", "local_key": "private-local-key-123",
+                                "ip": "192.168.8.42", "is_online": True}}
+        if path == "/v1.0/iot-03/devices/tuya_new_1/specification":
+            raise RuntimeError("specification_temporarily_unavailable")
+        raise AssertionError(path)
+
+    monkeypatch.setattr(gateway.hardware_integrations, "_tuya_request", request)
+    result = gateway.hardware_integrations.synchronize_tuya_devices(config)
+    device = result["devices"][0]
+    assert device["product_id"] == "pid-exact"
+    assert device["schema_source"] == "TUYA_PRODUCT_SCHEMA_CACHE"
+    assert device["functions"][0]["dp_id"] == 6
+    assert device["status_spec"][0]["code"] == "cur_power"
+    assert result["product_schemas"]["pid-exact"]["category"] == "cz"
 
 
 def test_tuya_lan_diagnostics_excludes_setup_failures_from_response_latency(client, monkeypatch):

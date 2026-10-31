@@ -142,10 +142,18 @@ test("Any authenticated PWA can manage its favorites and choose registered Gatew
   assert.match(app, /const canUsePwa=sessionInfo\(\)\.authenticated,canControl=canUsePwa&&sessionInfo\(\)\.user\?\.role==="owner"/);
   assert.match(app, /favoriteDeviceIds=normalizeFavoriteIds\(favorites\)/);
   assert.match(app, /addFavoriteId\(workspace\.prefs\.favoriteDeviceIds,id\)/);
+  assert.match(app, /reorderFavoriteIds\(workspace\.prefs\.favoriteDeviceIds,visibleOrder\)/);
+  assert.match(app, /Mantém premido e arrasta para mudar a posição/);
   assert.match(app, /state\.equipment\|\|\[\]/);
   assert.match(app, /Adicionar aos meus favoritos/);
   assert.match(app, /const owner=sessionInfo\(\)\.authenticated&&sessionInfo\(\)\.user\?\.role==="owner"/);
   assert.match(app, /Só o Owner pode registar ou configurar dispositivos no Gateway/);
+});
+
+test("QCCDZ EV chargers use their dedicated switch profile rather than generic EV function guessing", () => {
+  assert.match(app, /category==="qccdz"/);
+  assert.match(app, /replace\(\/\[\^a-z0-9\]\/g,""\)==="qccdz"/);
+  assert.match(app, /device\?\.switch_code\|\|"switch"/);
 });
 
 test("Tuya device editor opens a Gateway event log for state, availability and automated actions", () => {
@@ -166,6 +174,9 @@ test("Tuya profiles can be inferred or overridden and breakers expose one contro
   assert.match(gatewayIntegrations, /断路器/);
   assert.match(gatewayIntegrations, /device_kind_override/);
   assert.match(app, /name="device_kind_override"/);
+  assert.match(app, /\["ev_charger","Carregador EV"\]/);
+  assert.match(app, /refreshTuyaSchemaIfNeeded/);
+  assert.match(app, /Outras leituras DPS recebidas/);
   assert.match(app, /Disjuntor · um botão ON\/OFF/);
   assert.match(app, /if\(\(device\.device_kind_override\|\|device\.device_kind\)==="breaker"\)codes=\[/);
 });

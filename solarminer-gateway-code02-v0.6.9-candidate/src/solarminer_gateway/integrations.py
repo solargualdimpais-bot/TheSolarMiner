@@ -70,6 +70,8 @@ DEYE_CLOUD_BASES = {
 }
 MAX_CONFIG_BYTES = 1_048_576
 MAX_TUYA_DEVICES = 200
+MAX_TUYA_PRODUCT_SCHEMAS = 64
+MAX_TUYA_SCHEMA_CATALOG_BYTES = 262_144
 CGMINER_COMMANDS = ("summary", "stats", "devs")
 CGMINER_OPTIONAL_READ_COMMANDS = ("tunerstatus",)
 _TESLA_EV_READ_LOCK = threading.Lock()
@@ -77,7 +79,7 @@ _TESLA_EV_READ_LOCK = threading.Lock()
 TUYA_DEVICE_KINDS = {
     "breaker": "Disjuntor", "switch": "Interruptor", "multi_switch": "Interruptor multicanal",
     "dimmer": "Regulador de luz", "blind": "Estore / persiana", "socket": "Tomada",
-    "light": "Luz", "sensor": "Sensor", "unknown": "Equipamento Tuya",
+    "light": "Luz", "sensor": "Sensor", "ev_charger": "Carregador EV", "unknown": "Equipamento Tuya",
 }
 
 
@@ -92,7 +94,10 @@ def classify_tuya_device(device: dict[str, Any]) -> dict[str, Any]:
     functions = device.get("functions") if isinstance(device.get("functions"), list) else []
     bool_functions = [item for item in functions if isinstance(item, dict) and str(item.get("type", "")).casefold() in {"bool", "boolean"}]
     category = str(device.get("category") or "").casefold()
-    if category in {"dlq", "breaker", "circuit_breaker"} or any(token in text for token in ("breaker", "circuit breaker", "disjuntor", "断路器", "空气开关", "漏电保护")):
+    category_key = "".join(char for char in category if char.isalnum())
+    if category_key in {"qccdz", "evcharger", "electricvehiclecharger", "evse", "wallbox"} or any(token in text for token in ("ev charger", "evcharger", "electric vehicle charger", "vehicle charger", "wallbox", "carregador ev", "carregador de veículo", "carregador de veiculo")):
+        kind, confidence = "ev_charger", "high"
+    elif category in {"dlq", "breaker", "circuit_breaker"} or any(token in text for token in ("breaker", "circuit breaker", "disjuntor", "断路器", "空气开关", "漏电保护")):
         kind, confidence = "breaker", "high"
     elif category in {"cl", "blind", "curtain"} or any(token in text for token in ("curtain", "blind", "estore", "persiana", "窗帘", "卷帘")):
         kind, confidence = "blind", "high"
@@ -110,10 +115,15 @@ def classify_tuya_device(device: dict[str, Any]) -> dict[str, Any]:
         kind, confidence = "switch", "medium"
     else:
         kind, confidence = "unknown", "low"
-    if kind == "breaker":
+    if category_key == "qccdz":
+        # QCCDZ uses the confirmed charger profile: DPS 18 is the relay.
+        channel_count = 1
+    elif kind == "breaker":
         channel_count = 1 if bool_functions or device.get("switch_code") else 0
     elif kind == "multi_switch":
-        channel_count = len(bool_functions)
+        channel_codes = {str(item.get("code")) for item in bool_functions
+                         if re.fullmatch(r"switch_[1-9]\d*", str(item.get("code") or ""), re.IGNORECASE)}
+        channel_count = len(channel_codes) or len(bool_functions)
     elif kind in {"switch", "dimmer", "socket", "light"}:
         channel_count = max(1, len(bool_functions)) if bool_functions or device.get("switch_code") else 0
     else:
@@ -186,7 +196,7 @@ def public_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
         "deye_cloud": {"data_center": deye_cloud.get("data_center", "eu"), "app_id": deye_cloud.get("app_id"),
                        "email": deye_cloud.get("email"), "configured": bool(deye_cloud.get("app_id") and deye_cloud.get("app_secret") and deye_cloud.get("email") and deye_cloud.get("password")),
                        "secrets_returned": False},
-        "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "uid": tuya.get("uid"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": [{"device_id": x.get("device_id"), "name": x.get("name"), "room": x.get("room", ""), "floor": x.get("floor", ""), "name_source": x.get("name_source", "cloud"), "switch_code": x.get("switch_code"), "switch_channels": [item.get("code") for item in x.get("functions", []) if isinstance(item, dict) and str(item.get("type", "")).lower() in {"bool", "boolean"}], "channel_count": x.get("channel_count", 0), "device_kind": x.get("device_kind", "unknown"), "device_kind_label": x.get("device_kind_label", TUYA_DEVICE_KINDS["unknown"]), "device_kind_confidence": x.get("device_kind_confidence", "low"), "device_kind_override": x.get("device_kind_override"), "channel_labels": x.get("channel_labels", {}), "capability_labels": x.get("capability_labels", {}), "level_code": x.get("level_code"), "level_min": x.get("level_min", 0), "level_max": x.get("level_max", 100), "category": x.get("category"), "product_id": x.get("product_id"), "product_name": x.get("product_name"), "online": x.get("online"), "ip": x.get("local_ip", ""), "local_ip": x.get("local_ip", ""), "local_mac": x.get("local_mac", ""), "local_protocol": x.get("local_protocol", "3.3"), "local_dps_map": x.get("local_dps_map", {}), "local_control_state": x.get("local_control_state", "not_tested"), "local_verified": bool(x.get("local_verified", False)), "cloud_source": x.get("cloud_source"), "cloud_missing": x.get("cloud_missing", False), "local_key_available": bool(x.get("local_key")), "functions": x.get("functions", []), "status_spec": x.get("status_spec", []), "current_status": x.get("current_status", []), "last_status_at": x.get("last_status_at")} for x in tuya.get("devices", []) if isinstance(x, dict)], "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
+        "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "uid": tuya.get("uid"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": [{"device_id": x.get("device_id"), "name": x.get("name"), "room": x.get("room", ""), "floor": x.get("floor", ""), "name_source": x.get("name_source", "cloud"), "switch_code": x.get("switch_code"), "switch_channels": [item.get("code") for item in x.get("functions", []) if isinstance(item, dict) and str(item.get("type", "")).lower() in {"bool", "boolean"}], "channel_count": x.get("channel_count", 0), "device_kind": x.get("device_kind", "unknown"), "device_kind_label": x.get("device_kind_label", TUYA_DEVICE_KINDS["unknown"]), "device_kind_confidence": x.get("device_kind_confidence", "low"), "device_kind_override": x.get("device_kind_override"), "channel_labels": x.get("channel_labels", {}), "capability_labels": x.get("capability_labels", {}), "level_code": x.get("level_code"), "level_min": x.get("level_min", 0), "level_max": x.get("level_max", 100), "category": x.get("category"), "product_id": x.get("product_id"), "product_name": x.get("product_name"), "schema_source": x.get("schema_source", "TUYA_DEVICE"), "online": x.get("online"), "ip": x.get("local_ip", ""), "local_ip": x.get("local_ip", ""), "local_mac": x.get("local_mac", ""), "local_protocol": x.get("local_protocol", "3.3"), "local_dps_map": x.get("local_dps_map", {}), "local_control_state": x.get("local_control_state", "not_tested"), "local_verified": bool(x.get("local_verified", False)), "cloud_source": x.get("cloud_source"), "cloud_missing": x.get("cloud_missing", False), "local_key_available": bool(x.get("local_key")), "functions": x.get("functions", []), "status_spec": x.get("status_spec", []), "category_functions": x.get("category_functions", []), "category_status_spec": x.get("category_status_spec", []), "category_schema_source": x.get("category_schema_source"), "current_status": x.get("current_status", []), "last_status_at": x.get("last_status_at")} for x in tuya.get("devices", []) if isinstance(x, dict)], "product_schema_count": len(tuya.get("product_schemas", {})) if isinstance(tuya.get("product_schemas", {}), dict) else 0, "category_schema_count": len(tuya.get("category_schemas", {})) if isinstance(tuya.get("category_schemas", {}), dict) else 0, "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
         "secrets_returned": False,
     }
 
@@ -327,7 +337,7 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
             # Cloud-imported secrets and capability metadata can only come from
             # the Gateway's previous trusted inventory, never from PWA input.
             previous = existing_devices.get(device_id, {})
-            for key in ("local_key", "local_ip", "local_mac", "local_protocol", "local_dps_map", "local_control_state", "local_verified", "product_id", "product_name", "category", "online", "ip", "functions", "status_spec", "current_status", "last_status_at", "cloud_source", "cloud_missing", "last_synced_at", "device_kind", "device_kind_label", "device_kind_confidence", "channel_count"):
+            for key in ("local_key", "local_ip", "local_mac", "local_protocol", "local_dps_map", "local_control_state", "local_verified", "product_id", "product_name", "category", "online", "ip", "functions", "status_spec", "category_functions", "category_status_spec", "category_schema_source", "schema_source", "current_status", "last_status_at", "cloud_source", "cloud_missing", "last_synced_at", "device_kind", "device_kind_label", "device_kind_confidence", "channel_count"):
                 if key in previous:
                     normalized_device[key] = previous[key]
             kind_override = device.get("device_kind_override", previous.get("device_kind_override"))
@@ -350,7 +360,9 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
                         normalized_device["switch_code"] = next((entry.get("code") for entry in bool_functions
                             if entry.get("code") in {"switch", "switch_1"}), bool_functions[0].get("code"))
                 elif effective_kind == "multi_switch":
-                    profile["channel_count"] = len(bool_functions)
+                    channel_codes = {str(entry.get("code")) for entry in bool_functions
+                                     if re.fullmatch(r"switch_[1-9]\d*", str(entry.get("code") or ""), re.IGNORECASE)}
+                    profile["channel_count"] = len(channel_codes) or len(bool_functions)
             normalized_device.update(profile)
             name_source = device.get("name_source", previous.get("name_source", "cloud"))
             if name_source not in {"cloud", "local"}: raise ValueError("invalid_tuya_name_source")
@@ -421,7 +433,9 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
             normalized.append(normalized_device)
         if normalized and (not client_id or not client_secret): raise ValueError("tuya_credentials_required")
         result["tuya"] = {"region": region, "client_id": client_id, "client_secret": client_secret,
-                           "uid": uid, "devices": normalized}
+                           "uid": uid, "devices": normalized,
+                           # This Gateway-managed cache is never accepted from PWA input.
+                           "product_schemas": result.get("tuya", {}).get("product_schemas", {}), "category_schemas": result.get("tuya", {}).get("category_schemas", {})}
     return result
 
 
@@ -601,6 +615,9 @@ def _tuya_local_dps(device: dict[str, Any], code: str, *, status: bool = False) 
     value = mapping.get(code)
     if value is not None:
         return str(value)
+    category_key = "".join(char for char in str(device.get("category") or "").casefold() if char.isalnum())
+    if category_key == "qccdz" and code in {"switch", "switch_1"}:
+        return "18"
     # Preserve the product's actual DPS IDs when Tuya supplies them. The
     # function suffix (for example switch_2) is not itself a guaranteed DPS ID.
     schema = device.get("status_spec", []) if status else device.get("functions", [])
@@ -686,6 +703,9 @@ def _tuya_local_status(device: dict[str, Any]) -> dict[str, Any]:
             code_by_dps[_tuya_local_dps(device, entry["code"], status=is_status)] = entry["code"]
         except ValueError:
             continue
+    category_key = "".join(char for char in str(device.get("category") or "").casefold() if char.isalnum())
+    if category_key == "qccdz":
+        code_by_dps.setdefault("18", "switch")
     status = [{"code": code_by_dps.get(str(dps), f"dps_{dps}"), "value": value}
               for dps, value in result["dps"].items()]
     return {"device_id": device["device_id"], "name": device.get("name", "Tuya device"),
@@ -725,6 +745,47 @@ def read_tuya(config: dict[str, Any]) -> list[dict[str, Any]]:
     return results
 
 
+def _tuya_schema_entries(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    entries = []
+    for entry in value[:128]:
+        if not isinstance(entry, dict) or not isinstance(entry.get("code"), str):
+            continue
+        clean: dict[str, Any] = {"code": entry["code"][:128]}
+        for key, limit in (("name", 120), ("type", 32), ("values", 2048), ("desc", 256)):
+            field = entry.get(key)
+            if isinstance(field, str) and len(field) <= limit:
+                clean[key] = field
+        dp_id = entry.get("dp_id", entry.get("dpId"))
+        if isinstance(dp_id, int) and not isinstance(dp_id, bool) and 1 <= dp_id <= 65535:
+            clean["dp_id"] = dp_id
+        entries.append(clean)
+    return entries
+
+
+def _bounded_tuya_product_schemas(value: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, dict):
+        return {}
+    clean: dict[str, dict[str, Any]] = {}
+    for product_id, profile in value.items():
+        if not isinstance(product_id, str) or not 1 <= len(product_id) <= 128 or not isinstance(profile, dict):
+            continue
+        functions, statuses = _tuya_schema_entries(profile.get("functions")), _tuya_schema_entries(profile.get("status_spec"))
+        if not functions and not statuses:
+            continue
+        clean[product_id] = {"category": str(profile.get("category") or "")[:64],
+                             "product_name": str(profile.get("product_name") or "")[:120],
+                             "functions": functions, "status_spec": statuses,
+                             "cached_at": int(profile.get("cached_at") or 0)}
+    ordered = sorted(clean.items(), key=lambda pair: pair[1]["cached_at"], reverse=True)[:MAX_TUYA_PRODUCT_SCHEMAS]
+    result = dict(ordered)
+    while result and len(json.dumps(result, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > MAX_TUYA_SCHEMA_CATALOG_BYTES:
+        oldest = min(result, key=lambda key: result[key]["cached_at"])
+        result.pop(oldest)
+    return result
+
+
 def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Event | None = None) -> dict[str, Any]:
     """Import the Tuya project's inventory and safe device capabilities.
 
@@ -736,6 +797,9 @@ def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Eve
         raise ValueError("tuya_credentials_required")
     if not config.get("uid"):
         raise ValueError("tuya_uid_required")
+    product_schemas = _bounded_tuya_product_schemas(config.get("product_schemas"))
+    category_schemas = _bounded_tuya_product_schemas(config.get("category_schemas"))
+    queried_categories: set[str] = set()
     def check_cancelled() -> None:
         if cancelled is not None and cancelled.is_set():
             raise TuyaSyncCancelled("tuya_sync_cancelled")
@@ -796,7 +860,7 @@ def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Eve
                 item["local_key"] = key
             elif isinstance(previous.get("local_key"), str):
                 item["local_key"] = previous["local_key"]
-            for retained in ("switch_code", "level_code", "level_min", "level_max", "favorite", "room", "floor", "name_source", "local_name", "channel_labels", "capability_labels", "local_ip", "local_mac", "local_protocol", "local_dps_map", "local_control_state", "local_verified"):
+            for retained in ("switch_code", "level_code", "level_min", "level_max", "favorite", "room", "floor", "name_source", "local_name", "channel_labels", "capability_labels", "local_ip", "local_mac", "local_protocol", "local_dps_map", "local_control_state", "local_verified", "device_kind_override"):
                 if retained in previous:
                     item[retained] = previous[retained]
             discovered.append(item)
@@ -846,25 +910,52 @@ def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Eve
         try:
             spec = _tuya_request(config, f"/v1.0/iot-03/devices/{quoted}/specification", token).get("result")
             if isinstance(spec, dict):
-                functions = spec.get("functions", [])
-                statuses = spec.get("status", [])
-                if isinstance(functions, list):
-                    item["functions"] = [{**{k: entry.get(k) for k in ("code", "name", "type", "values", "desc") if k in entry},
-                                           **({"dp_id": entry.get("dp_id", entry.get("dpId"))}
-                                              if isinstance(entry.get("dp_id", entry.get("dpId")), int)
-                                              and not isinstance(entry.get("dp_id", entry.get("dpId")), bool)
-                                              else {})}
-                                          for entry in functions if isinstance(entry, dict)][:128]
-                if isinstance(statuses, list):
-                    item["status_spec"] = [{**{k: entry.get(k) for k in ("code", "name", "type", "values", "desc") if k in entry},
-                                            **({"dp_id": entry.get("dp_id", entry.get("dpId"))}
-                                               if isinstance(entry.get("dp_id", entry.get("dpId")), int)
-                                               and not isinstance(entry.get("dp_id", entry.get("dpId")), bool)
-                                               else {})}
-                                            for entry in statuses if isinstance(entry, dict)][:128]
+                item["functions"] = _tuya_schema_entries(spec.get("functions"))
+                item["status_spec"] = _tuya_schema_entries(spec.get("status"))
                 item["category"] = str(spec.get("category") or item["category"])[:64]
+                if item["functions"] or item["status_spec"]:
+                    item["schema_source"] = "TUYA_DEVICE_SPEC"
+                    if item.get("product_id"):
+                        product_schemas[item["product_id"]] = {
+                            "category": item.get("category", ""),
+                            "product_name": item.get("product_name", ""),
+                            "functions": item["functions"],
+                            "status_spec": item["status_spec"],
+                            "cached_at": int(time.time()),
+                        }
         except (RuntimeError, ValueError):
             details_failures += 1
+        if not item.get("functions") and not item.get("status_spec") and item.get("product_id"):
+            cached = product_schemas.get(item["product_id"])
+            if isinstance(cached, dict) and (not item.get("category") or not cached.get("category") or item["category"] == cached["category"]):
+                item["functions"] = cached.get("functions", [])
+                item["status_spec"] = cached.get("status_spec", [])
+                item["schema_source"] = "TUYA_PRODUCT_SCHEMA_CACHE"
+        category = item.get("category")
+        category_key = "".join(char for char in str(category or "").casefold() if char.isalnum())
+        if isinstance(category, str) and category and category not in category_schemas and category not in queried_categories:
+            queried_categories.add(category)
+            category_functions: list[dict[str, Any]] = []
+            category_status: list[dict[str, Any]] = []
+            try:
+                function_result = _tuya_request(config, f"/v1.0/iot-03/categories/{urllib.parse.quote(category, safe='')}/functions", token).get("result")
+                if isinstance(function_result, dict):
+                    category_functions = _tuya_schema_entries(function_result.get("functions"))
+                status_result = _tuya_request(config, f"/v1.0/iot-03/categories/{urllib.parse.quote(category, safe='')}/status", token).get("result")
+                if isinstance(status_result, dict):
+                    category_status = _tuya_schema_entries(status_result.get("status_list", status_result.get("statusList", status_result.get("status"))))
+                if category_functions or category_status:
+                    category_schemas[category] = {"category": category, "functions": category_functions,
+                                                  "status_spec": category_status, "cached_at": int(time.time())}
+            except (RuntimeError, ValueError):
+                details_failures += 1
+        category_profile = category_schemas.get(category) if isinstance(category, str) else None
+        if isinstance(category_profile, dict):
+            # Category schemas are a reference only. They never become this
+            # device's switch map or confirmed telemetry specification.
+            item["category_functions"] = category_profile.get("functions", [])
+            item["category_status_spec"] = category_profile.get("status_spec", [])
+            item["category_schema_source"] = "TUYA_CATEGORY_REFERENCE"
         profile = classify_tuya_device(item)
         bool_functions = [entry for entry in item.get("functions", [])
                           if isinstance(entry, dict) and str(entry.get("type", "")).casefold() in {"bool", "boolean"}]
@@ -876,19 +967,27 @@ def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Eve
             if override == "breaker":
                 profile["channel_count"] = 1 if bool_functions else 0
             elif override == "multi_switch":
-                profile["channel_count"] = len(bool_functions)
+                channel_codes = {str(entry.get("code")) for entry in bool_functions
+                                 if re.fullmatch(r"switch_[1-9]\d*", str(entry.get("code") or ""), re.IGNORECASE)}
+                profile["channel_count"] = len(channel_codes) or len(bool_functions)
         item.update(profile)
         if profile["device_kind"] == "breaker" and bool_functions and not item.get("switch_code"):
             # A breaker is represented as one on/off control, even when a
             # cloud schema happens to advertise extra boolean metadata.
             item["switch_code"] = next((entry.get("code") for entry in bool_functions
                                          if entry.get("code") in {"switch", "switch_1"}), bool_functions[0].get("code"))
+        elif category_key == "qccdz" and not item.get("switch_code"):
+            item["switch_code"] = next((entry.get("code") for entry in bool_functions
+                                         if entry.get("code") in {"switch", "switch_1"}), "switch")
         check_cancelled()
 
     check_cancelled()
+    product_schemas = _bounded_tuya_product_schemas(product_schemas)
+    category_schemas = _bounded_tuya_product_schemas(category_schemas)
     return {"devices": discovered, "device_count": len(discovered),
             "local_keys_available": sum(bool(item.get("local_key")) for item in discovered),
-            "schema_failures": details_failures, "pages": pages}
+            "schema_failures": details_failures, "pages": pages,
+            "product_schemas": product_schemas, "category_schemas": category_schemas}
 
 
 def control_tuya_switch(config: dict[str, Any], device_id: str, on: bool, code: str | None = None) -> dict[str, Any]:

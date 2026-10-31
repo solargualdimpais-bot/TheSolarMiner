@@ -1,4 +1,4 @@
-const CACHE_NAME = "the-solar-miner-static-v0.5.77-device-inventory-normalization";
+const CACHE_NAME = "the-solar-miner-static-v0.5.78-device-inventory-normalization";
 const STATIC_ASSETS = [
   "./", "./index.html", "./styles.css", "./app.js", "./gateway-connection.js", "./qrcode-generator.js",
   "./gateway-auth.js", "./favorite-list.js", "./app-core.js", "./workspace-ui.js", "./demo-mode.js", "./photo-format.js",

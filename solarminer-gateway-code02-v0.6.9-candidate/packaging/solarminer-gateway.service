@@ -14,7 +14,7 @@ Environment=SOLARMINER_PWA_DIR=/opt/solarminer/current/usr/share/solarminer/pwa
 Environment=SOLARMINER_CATALOG_DIR=/opt/solarminer/current/usr/share/solarminer
 Environment=SOLARMINER_HOST=0.0.0.0
 Environment=SOLARMINER_PORT=8443
-Environment=SOLARMINER_PACKAGE_VERSION=0.6.120
+Environment=SOLARMINER_PACKAGE_VERSION=0.6.121
 ExecStartPre=/usr/bin/solarminer-data-volume-check
 ExecStart=/usr/bin/python3 -m solarminer_gateway.app
 Restart=on-failure

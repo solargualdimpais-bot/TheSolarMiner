@@ -481,6 +481,7 @@ html[data-font="small"]{--font-ui-scale:.9;}html[data-font="normal"]{--font-ui-s
 .home-favorites .favorite-device-grid{grid-template-columns:repeat(2,minmax(0,1fr));align-items:stretch;gap:10px}
 .home-favorites .favorite-device{aspect-ratio:1;min-height:0;padding:14px;display:flex;flex-direction:column;align-items:stretch;justify-content:space-between;gap:12px;border-radius:18px;cursor:default}
 .home-favorites .favorite-device{cursor:pointer}
+.home-favorites .favorite-device.is-reordering{opacity:.58;outline:2px solid var(--gold-2,#e2d0a4);transform:scale(.98);z-index:2;box-shadow:0 12px 32px rgba(0,0,0,.32)}
 .home-favorites .favorite-device-info{gap:7px}
 .home-favorites .favorite-device-name{font-family:var(--serif,'Iowan Old Style','Baskerville',Georgia,serif);font-size:clamp(16px,2.1vw,21px);font-weight:500;letter-spacing:-.018em;line-height:1.12;color:var(--text);overflow-wrap:anywhere}
 .home-favorites .favorite-device-info span{font-size:12px;line-height:1.4;color:#c4c0b5}

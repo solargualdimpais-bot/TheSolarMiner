@@ -18,6 +18,26 @@ def test_tuya_local_dps_prefers_tuya_dp_id_to_channel_suffix():
     assert integrations._tuya_local_dps({"functions": []}, "switch_2") == "2"
 
 
+def test_qccdz_ev_charger_uses_its_dps_18_switch_profile():
+    device = {"category": "qccdz", "functions": []}
+    profile = integrations.classify_tuya_device(device)
+    assert profile["device_kind"] == "ev_charger"
+    assert profile["channel_count"] == 1
+    assert integrations._tuya_local_dps(device, "switch") == "18"
+    assert integrations._tuya_local_dps(device, "switch_1") == "18"
+    assert integrations._tuya_local_dps({"category": "qld", "functions": []}, "switch") == "1"
+
+
+def test_qccdz_local_status_names_dps_18_as_switch(monkeypatch):
+    class Client:
+        pass
+
+    monkeypatch.setattr(integrations, "_tuya_probe_local_status",
+                        lambda device: (Client(), {"dps": {"18": True}}, "3.3"))
+    result = integrations._tuya_local_status({"device_id": "ev-1", "category": "qccdz", "functions": []})
+    assert result["status"] == [{"code": "switch", "value": True}]
+
+
 def test_huawei_password_only_login_uses_admin_hash_without_username_xml():
     client = huawei_router.HuaweiHiLinkClient({"host": "192.168.8.1", "password": "router-password"})
     client.token = "tok-info-value"
@@ -169,6 +189,9 @@ def test_deye_cloud_history_splits_timed_out_intervals(monkeypatch):
     ({"category": "kg", "product_name": "six channel relay", "functions": [
         {"code": f"switch_{index}", "type": "Boolean"} for index in range(1, 7)]}, "multi_switch", 6),
     ({"category": "cl", "product_name": "curtain motor", "functions": []}, "blind", 0),
+    ({"category": "evse", "product_name": "AC wallbox charger", "functions": []}, "ev_charger", 0),
+    ({"category": "qccdz", "product_name": "AC charger", "functions": []}, "ev_charger", 1),
+    ({"category": "unknown", "name": "Carregador EV garagem", "functions": []}, "ev_charger", 0),
 ])
 def test_tuya_device_profile_is_inferred_from_product_and_schema(device, expected_kind, expected_channels):
     profile = integrations.classify_tuya_device(device)
@@ -192,6 +215,15 @@ def test_owner_can_override_tuya_device_profile_and_return_to_automatic():
         "device_id": "breaker_1", "name": "Disjuntor", "device_kind_override": "auto",
     }]}}, existing=edited)
     assert "device_kind_override" not in auto["tuya"]["devices"][0]
+
+
+def test_ev_charger_profile_is_specific_and_exposes_ev_label():
+    profile = integrations.classify_tuya_device({
+        "category": "evse", "product_name": "AC Wallbox Charger", "functions": [],
+    })
+    assert profile["device_kind"] == "ev_charger"
+    assert profile["device_kind_label"] == "Carregador EV"
+    assert profile["channel_count"] == 0
 
 
 @pytest.mark.parametrize("station_id,days", [("../x", 90), ("123", 91), (True, 90)])
