@@ -50,7 +50,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.112"
+PACKAGE_VERSION = "0.6.113"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -1839,11 +1839,17 @@ def tuya_device_events(device_id: str, limit: int = 100,
 @app.post("/api/v1/integrations/tuya/lan-diagnostics")
 def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
                          session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
-    """Measure read-only Tuya LAN response times; never sends control commands."""
+    """Measure read-only Tuya LAN response times for all devices or one selected device."""
     payload = payload or {}
+    if set(payload) - {"rounds", "device_id"}:
+        raise HTTPException(422, "tuya_diagnostic_payload_invalid")
     rounds = payload.get("rounds", 3)
     if isinstance(rounds, bool) or not isinstance(rounds, int) or not 1 <= rounds <= 5:
         raise HTTPException(422, "tuya_diagnostic_rounds_must_be_1_to_5")
+    selected_device_id = payload.get("device_id")
+    if selected_device_id is not None and (not isinstance(selected_device_id, str)
+                                           or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", selected_device_id)):
+        raise HTTPException(422, "tuya_diagnostic_device_id_invalid")
     with db() as conn:
         actor = _revalidate_actor(conn, session, "manage_gateway")
         if actor["role"] != "owner":
@@ -1851,6 +1857,10 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
         config = hardware_integrations.load_config().get("tuya", {})
         devices = [item for item in config.get("devices", [])
                    if isinstance(item, dict) and isinstance(item.get("device_id"), str)]
+        if selected_device_id is not None:
+            devices = [item for item in devices if item.get("device_id") == selected_device_id]
+            if not devices:
+                raise HTTPException(404, "tuya_device_not_configured")
         if not devices:
             return {"rounds": rounds, "configured_count": 0, "lan_testable_count": 0,
                     "elapsed_ms": 0, "devices": [], "control_commands_sent": False}
@@ -1892,14 +1902,16 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
                         except ValueError as exc:
                             reason = str(exc)
                     samples[device_id].append({"ok": False, "latency_ms": None,
-                                               "reason": reason})
+                                               "reason": reason, "status": []})
                 else:
                     ok = row.get("connection_state") == "local_responded"
                     samples[device_id].append({"ok": ok,
                                                # Only successful LAN replies are response-time samples.
                                                # Setup failures are not network latency.
                                                "latency_ms": row.get("latency_ms") if ok else None,
-                                               "reason": row.get("reason")})
+                                               "reason": row.get("reason"),
+                                               "status": row.get("status", []) if ok else [],
+                                               "local_protocol": row.get("local_protocol") if ok else None})
         elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
         result = []
         for item in devices:
@@ -1915,6 +1927,9 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
                            "failure_count": sum(1 for row in rows if not row["ok"]),
                            "average_latency_ms": round(sum(times) / len(times), 1) if times else None,
                            "worst_latency_ms": round(max(times), 1) if times else None,
+                           "connection_state": "local_responded" if times else "failed",
+                           "status": next((row["status"] for row in reversed(rows) if row["ok"]), []),
+                           "local_protocol": next((row["local_protocol"] for row in reversed(rows) if row["ok"]), None),
                            "power_telemetry_configured": power_telemetry,
                            "reason": next((row["reason"] for row in rows if row.get("reason")),
                                           "private_lan_target_required" if not item.get("local_ip") else None)})
@@ -3324,7 +3339,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.112"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.113"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

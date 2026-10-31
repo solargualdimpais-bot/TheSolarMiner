@@ -79,7 +79,7 @@ test("Favorite controls refresh the target device before toggling and show a sim
   assert.match(app, /function tuyaSimpleReadings\(device,reading\)/);
   assert.match(app, /function favoriteReadingConfirmed\(item\)/);
   assert.match(app, /A testar agora uma leitura real na LAN/);
-  assert.match(app, /Configuração guardada, mas a leitura ainda não foi confirmada/);
+  assert.match(app, /Configuração guardada, mas a leitura LAN falhou/);
   assert.match(app, /function renderTuyaDeviceCards\(devices\)/);
   assert.match(app, /tuya-read-state/);
   assert.match(app, /confirmed\?'Confirmado':'Por confirmar'/);
@@ -107,8 +107,24 @@ test("Devices inventory waits to distinguish a single card click from a double c
 
 test("Tuya editor distinguishes a confirmed save from a failed follow-up LAN test", () => {
   assert.match(app, /Falha ao guardar no Gateway: \$\{error\.message\}/);
-  assert.match(app, /Configuração guardada, mas o teste de leitura falhou: \$\{error\.message\}/);
-  assert.match(app, /Array\.isArray\(probe\.tuya\)\?probe\.tuya:\[\]/);
+  assert.match(app, /Configuração guardada, mas a leitura LAN falhou/);
+  assert.match(app, /const \{reading,result\}=await testTuyaLanDevice\(device\.device_id\)/);
+});
+
+test("Tuya connection test keeps the fresh status response and reports latency without assuming a switch", () => {
+  const handler=app.match(/const inventoryRead=event\.target\.closest\("\[data-inventory-read\]"\);[\s\S]*?const inventoryToggle=/)?.[0]||"";
+  assert.match(handler, /testTuyaLanDevice\(id\)/);
+  assert.match(handler, /state\.tuyaReadings=.*reading/);
+  assert.doesNotMatch(handler, /refreshHardwareIntegrationConfig/);
+  assert.match(app, /Ligação LAN confirmada · \$\{result\.success_count\}\/\$\{result\.rounds\} respostas · média \$\{result\.average_latency_ms\} ms/);
+  assert.match(app, /async function testTuyaLanDevice\(deviceId\)[\s\S]*?runGatewayTuyaLanDiagnostics\(3,deviceId\)/);
+  assert.match(app, /Online na Tuya · sem resposta LAN/);
+});
+
+test("Tuya device switch is updated only after a fresh LAN status confirms the requested state", () => {
+  assert.match(app, /const result = await controlGatewayTuyaSwitch\(deviceId, on\);[\s\S]*?const \{reading\}=await testTuyaLanDevice\(deviceId\);[\s\S]*?reading\.status\.find\(item=>item\.code===code\)\?\.value!==on/);
+  assert.match(app, /inventoryToggle[\s\S]*?testTuyaLanDevice\(device\.device_id\)[\s\S]*?controlGatewayTuyaSwitch\(device\.device_id,!observed,code\)/);
+  assert.match(app, /inventory-device-icon/);
 });
 
 test("LAN discovery tries the local neighbor cache after broadcast errors", () => {
@@ -120,5 +136,5 @@ test("LAN discovery tries the local neighbor cache after broadcast errors", () =
 test("USB release rollback verification includes the installed Gateway release", () => {
   const rollbackLoops = workflow.match(/for VERSION in[^\n]+/g) || [];
   assert.equal(rollbackLoops.length, 2);
-  for (const loop of rollbackLoops) assert.match(loop, /0\.6\.110 0\.6\.111; do/);
+  for (const loop of rollbackLoops) assert.match(loop, /0\.6\.111 0\.6\.112; do/);
 });

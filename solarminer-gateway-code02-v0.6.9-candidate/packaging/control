@@ -1,5 +1,5 @@
 Package: solarminer-gateway
-Version: 0.6.112
+Version: 0.6.113
 Depends: dpkg, python3 (>= 3.13), python3-venv, python3-pydantic (>= 2), python3-fastapi (>= 0.115.11), python3-uvicorn, python3-argon2, python3-cryptography, openssl, nginx, adduser, ca-certificates, curl, util-linux
 Section: net
 Priority: optional

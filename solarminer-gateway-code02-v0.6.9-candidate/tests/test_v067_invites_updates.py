@@ -596,6 +596,40 @@ def test_tuya_lan_diagnostics_excludes_setup_failures_from_response_latency(clie
     assert device["reason"] == "private_lan_target_required"
 
 
+def test_tuya_lan_diagnostics_can_probe_one_device_for_three_read_only_rounds(client, monkeypatch):
+    headers = {"Authorization": f"Bearer {owner_session(client)}"}
+    monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: {"tuya": {"devices": [
+        {"device_id": "target-device", "name": "Target", "local_ip": "192.168.1.30",
+         "local_mac": "AA:BB:CC:DD:EE:30", "local_key": "key-target", "switch_code": "switch_1",
+         "status_spec": [{"code": "switch_1", "name": "Switch"}, {"code": "cur_power", "name": "Power"}]},
+        {"device_id": "other-device", "name": "Other", "local_ip": "192.168.1.31",
+         "local_key": "key-other"},
+    ]}})
+    calls = []
+    def read_tuya(config):
+        devices = config["devices"]
+        calls.append([item["device_id"] for item in devices])
+        return [{"device_id": item["device_id"], "connection_state": "local_responded",
+                 "latency_ms": 12.0, "local_protocol": "3.4",
+                 "status": [{"code": "switch_1", "value": True}]}
+                for item in devices]
+    monkeypatch.setattr(gateway.hardware_integrations, "read_tuya", read_tuya)
+    response = client.post("/api/v1/integrations/tuya/lan-diagnostics", headers=headers,
+                           json={"rounds": 3, "device_id": "target-device"})
+    assert response.status_code == 200, response.text
+    report = response.json()
+    assert report["configured_count"] == 1
+    assert calls == [["target-device"]] * 3
+    device = report["devices"][0]
+    assert device["success_count"] == 3
+    assert device["rounds"] == 3
+    assert device["average_latency_ms"] == 12.0
+    assert device["connection_state"] == "local_responded"
+    assert device["local_protocol"] == "3.4"
+    assert device["status"] == [{"code": "switch_1", "value": True}]
+    assert report["control_commands_sent"] is False
+
+
 def test_tinytuya_lan_scanner_is_exported_by_bundled_package():
     assert callable(gateway.hardware_integrations.tinytuya.deviceScan)
 
