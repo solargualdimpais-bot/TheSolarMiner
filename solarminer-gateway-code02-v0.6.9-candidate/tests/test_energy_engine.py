@@ -205,7 +205,7 @@ def test_cloud_power_and_load_train_solar_reference_when_mppt_samples_are_absent
     assert result["recent_performance_observations"][-1]["classification"] == "DEMAND_SUPPORTED_NORMAL_REFERENCE"
 
 
-def test_cloud_history_can_flag_low_confidence_curtailment_with_full_battery_context():
+def test_cloud_history_soc_is_not_used_to_claim_full_battery_or_curtailment():
     conn = database()
     inverter = energy_registry.upsert_equipment(conn, {"category": "inversores", "name": "Deye",
         "protocol": "Modbus TCP FC03", "connection_state": "CONNECTED"}, equipment_id="deye-inverter-local")
@@ -225,12 +225,8 @@ def test_cloud_history_can_flag_low_confidence_curtailment_with_full_battery_con
     result = energy_engine._learn_solar_performance(
         conn, {"hourly": [{"observed_at": completed_hour.isoformat(), "shortwave_radiation_w_m2": 900}]},
         inverter, battery, 8.0, 0.85, 100.0, 20.0)
-    assert result["new_curtailment_candidates"] == 1
-    candidate = result["last_curtailment_candidate"]
-    assert candidate["battery_soc_percent"] == 100
-    assert candidate["battery_charge_power_w"] == 5
-    assert candidate["evidence_source"] == "WEATHER_AND_DEYE_CLOUD_WITH_BATTERY_HISTORY"
-    assert candidate["confidence"] == "LOW_CONTEXT_ONLY"
+    assert result["new_curtailment_candidates"] == 0
+    assert result["last_curtailment_candidate"] is None
 
 
 def test_fresh_deye_soc_and_pack_ceiling_confirm_full_battery_without_dispatch_estimate():
@@ -252,10 +248,11 @@ def test_fresh_deye_soc_and_pack_ceiling_confirm_full_battery_without_dispatch_e
             "observed_at": stamp, "source": "DEYE_MODBUS_FC03_CANDIDATE_MAP", "trust": "LIVE_UNVERIFIED"})
     energy_engine.save_config(conn, {"battery_capacity_kwh": 20})
     result = energy_engine.build_summary(conn)
-    assert result["current"]["battery_soc_percent"] == 100
+    assert result["current"]["battery_soc_percent"] is None
     assert result["current"]["battery_soc_integrated_percent"] is None
-    assert result["current"]["battery_soc_source"] == "deye_live_reported"
-    assert result["current"]["battery_energy_available_kwh_above_minimum"] == 16
+    assert result["current"]["battery_soc_source"] == "unavailable"
+    assert result["current"]["battery_inverter_reported_soc_percent"] is None
+    assert result["current"]["battery_energy_available_kwh_above_minimum"] is None
     assert energy_engine.build_dispatch_plan(
         {**result["current"], "pv_power_w": 1800, "load_power_w": 1700},
         {"automation": {"enabled": True, "commissioned": True, "deye_map_verified": True}},
@@ -286,9 +283,8 @@ def test_live_engine_assessment_flags_full_battery_low_charge_and_pv_below_engin
         "state": "available", "provider": "test", "timezone": "UTC", "hourly": hourly})
     result = energy_engine.build_summary(conn)
     assessment = result["current"]["curtailment_assessment"]
-    assert assessment["state"] == "POSSIBLE_CURTAILMENT", assessment
-    assert assessment["evidence"]["battery_charge_power_w"] == 5
-    assert assessment["evidence"]["battery_at_configured_maximum"] is True
+    assert assessment["state"] == "INSUFFICIENT_DATA", assessment
+    assert assessment["evidence"]["battery_at_configured_maximum"] is False
 
 
 def test_daily_history_pruning_removes_records_past_90_days_from_cloud_and_logs(tmp_path, monkeypatch):
@@ -521,7 +517,7 @@ def test_energy_summary_uses_persisted_soc_energy_and_counter_history():
     assert result["current"]["battery_soc_percent"] == 94.79
     assert result["current"]["battery_soc_source"] == "gateway_energy_integrated"
     assert result["current"]["battery_soc_estimate"]["voltage_max_30d_v"] == 55.0
-    assert result["current"]["battery_inverter_reported_soc_percent"] == 80
+    assert result["current"]["battery_inverter_reported_soc_percent"] is None
     assert result["current"]["battery_current_a"] == -1.5
     assert result["current"]["battery_energy_available_kwh_above_minimum"] == 14.958
     assert result["current"]["battery_charge_headroom_kwh_to_maximum"] == 0.042
@@ -567,13 +563,13 @@ def test_only_online_parallel_battery_banks_contribute_capacity():
     assert summary["current"]["battery_energy_available_kwh_above_minimum"] is None
 
 
-def test_battery_energy_is_unknown_without_capacity_but_fresh_reported_soc_remains_visible():
+def test_battery_energy_and_soc_are_unknown_without_gateway_anchor_and_capacity():
     conn = database()
     battery = energy_registry.upsert_equipment(conn, {"category": "baterias", "name": "Deye battery"}, "deye-battery-test")
     insert_reading(conn, battery["id"], "battery_soc", 100, "%", datetime.now(timezone.utc).isoformat())
     result = energy_engine.build_summary(conn)
-    assert result["current"]["battery_soc_percent"] == 100
-    assert result["current"]["battery_soc_source"] == "deye_live_reported"
+    assert result["current"]["battery_soc_percent"] is None
+    assert result["current"]["battery_soc_source"] == "unavailable"
     assert result["current"]["battery_energy_available_kwh_above_minimum"] is None
     assert result["current"]["battery_at_configured_maximum"] is True
 
@@ -606,7 +602,7 @@ def test_offlining_parallel_bank_removes_its_proportional_energy_share():
     assert remaining_energy == 10
 
 
-def test_fresh_deye_reported_soc_drives_energy_and_autonomy_when_integrator_is_unavailable():
+def test_fresh_deye_reported_soc_does_not_drive_energy_or_autonomy_without_gateway_anchor():
     conn = database()
     inverter = energy_registry.upsert_equipment(conn, {"category": "inversores", "name": "Deye"}, "deye-inverter-soc-test")
     battery = energy_registry.upsert_equipment(conn, {"category": "baterias", "name": "Battery"}, "deye-battery-test")
@@ -614,17 +610,15 @@ def test_fresh_deye_reported_soc_drives_energy_and_autonomy_when_integrator_is_u
     insert_reading(conn, inverter["id"], "load_total_power", 1800, "W", datetime.now(timezone.utc).isoformat())
     insert_reading(conn, battery["id"], "battery_soc", 100, "%", datetime.now(timezone.utc).isoformat())
     current = energy_engine.build_summary(conn)["current"]
-    assert current["battery_inverter_reported_soc_percent"] == 100
-    assert current["battery_soc_percent"] == 100
-    assert current["battery_soc_source"] == "deye_live_reported"
+    assert current["battery_inverter_reported_soc_percent"] is None
+    assert current["battery_soc_percent"] is None
+    assert current["battery_soc_source"] == "unavailable"
     assert current["battery_soc_integrated_percent"] is None
-    assert current["battery_energy_available_kwh_above_minimum"] == 24
-    assert current["battery_autonomy_forecast"]["state"] == "ESTIMATED"
-    assert current["battery_autonomy_forecast"]["hours"] > 0
-    assert current["battery_soc_estimate"]["reason"] == "FRESH_NON_CLOUD_INVERTER_SOC_USED_WITH_SOURCE_LABEL"
+    assert current["battery_energy_available_kwh_above_minimum"] is None
+    assert current["battery_autonomy_forecast"]["state"] == "INSUFFICIENT_DATA"
 
 
-def test_live_half_minute_sample_updates_reported_soc_without_changing_history():
+def test_live_half_minute_sample_ignores_reported_soc_without_changing_history():
     conn = database()
     inverter = energy_registry.upsert_equipment(conn, {"category": "inversores", "name": "Deye"}, "deye-inverter-test")
     battery = energy_registry.upsert_equipment(conn, {"category": "baterias", "name": "Battery"}, "deye-battery-test")
@@ -642,8 +636,8 @@ def test_live_half_minute_sample_updates_reported_soc_without_changing_history()
     })
 
     assert result["current"]["pv_power_w"] == 1800
-    assert result["current"]["battery_soc_percent"] == 82
-    assert result["current"]["battery_soc_source"] == "deye_live_reported"
+    assert result["current"]["battery_soc_percent"] is None
+    assert result["current"]["battery_soc_source"] == "unavailable"
     assert result["latest_readings"]["pv_total_power"]["observed_at"] == fresh
     assert result["latest_readings"]["pv_total_power"]["trust"] == "LIVE_UNVERIFIED"
     assert [point["value"] for point in result["history"]["pv_total_power"]] == [1000]
@@ -784,6 +778,7 @@ def test_dispatch_plan_starts_relay_before_miner_and_allocates_heaters_after_max
         ],
     }
     current = {"pv_power_w": 5000, "load_power_w": 1000, "battery_soc_percent": 100,
+               "battery_soc_source": "gateway_energy_integrated",
                "battery_charge_headroom_kwh_to_maximum": 0, "battery_charge_power_w": 0, "battery_power_w": 0}
     result = energy_engine.build_dispatch_plan(current, config, sample_state="LIVE", telemetry_trust="OWNER_COMMISSIONED")
     assert [item["state"] for item in result["actions"]] == ["ON", "TARGET", "WAITING_FOR_SURPLUS"]
@@ -796,6 +791,7 @@ def test_dispatch_sheds_automatic_loads_when_battery_needs_charge():
               "loads": [{"id": "aqs", "name": "AQS", "control_type": "tuya_breaker",
                          "rated_power_w": 1500, "enabled": True, "automatic": True}]}
     current = {"pv_power_w": 4000, "load_power_w": 1000, "battery_soc_percent": 90,
+               "battery_soc_source": "gateway_energy_integrated",
                "battery_charge_headroom_kwh_to_maximum": 1, "battery_charge_power_w": 500,
                "battery_power_w": -500}
     result = energy_engine.build_dispatch_plan(current, config, sample_state="LIVE", telemetry_trust="OWNER_COMMISSIONED")
@@ -825,7 +821,7 @@ def test_forecast_guided_dispatch_respects_profile_actual_surplus_and_manual_ove
         ],
     }
     current = {"pv_power_w": 2200, "load_power_w": 1000, "battery_soc_percent": 85,
-               "battery_soc_source": "deye_live_reported", "battery_charge_headroom_kwh_to_maximum": 0,
+               "battery_soc_source": "gateway_energy_integrated", "battery_charge_headroom_kwh_to_maximum": 0,
                "battery_charge_power_w": 0, "battery_discharge_power_w": 0, "battery_power_w": 0}
     home = energy_engine.build_dispatch_plan(current, config, sample_state="LIVE",
         telemetry_trust="OWNER_COMMISSIONED", forecast_surplus_w=5000)
