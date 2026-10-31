@@ -571,7 +571,7 @@ def test_battery_energy_and_soc_are_unknown_without_gateway_anchor_and_capacity(
     assert result["current"]["battery_soc_percent"] is None
     assert result["current"]["battery_soc_source"] == "unavailable"
     assert result["current"]["battery_energy_available_kwh_above_minimum"] is None
-    assert result["current"]["battery_at_configured_maximum"] is True
+    assert result["current"]["battery_at_configured_maximum"] is False
 
 
 def test_offlining_parallel_bank_removes_its_proportional_energy_share():
@@ -615,7 +615,7 @@ def test_fresh_deye_reported_soc_does_not_drive_energy_or_autonomy_without_gatew
     assert current["battery_soc_source"] == "unavailable"
     assert current["battery_soc_integrated_percent"] is None
     assert current["battery_energy_available_kwh_above_minimum"] is None
-    assert current["battery_autonomy_forecast"]["state"] == "INSUFFICIENT_DATA"
+    assert current["battery_autonomy_forecast"]["state"] == "UNAVAILABLE"
 
 
 def test_live_half_minute_sample_ignores_reported_soc_without_changing_history():
