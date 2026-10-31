@@ -71,7 +71,8 @@ test("terminal WebSocket honors the confirmed Tailscale HTTPS route", () => {
 });
 
 test("service worker only caches allowlisted static resources and versions cache explicitly", () => {
-  assert.match(sw, /the-solar-miner-static-v0\.5\.70-device-live-status/);
+  assert.match(sw, /the-solar-miner-static-v0\.5\.73-navigation-submit-fix/);
+  assert.match(sw, /\.\/favorite-list\.js/);
   assert.match(sw, /url\.pathname\.includes\("\/api\/v1\/"\)/);
   assert.match(sw, /request\.headers\.has\("Authorization"\)/);
   assert.match(sw, /request\.headers\.has\("Cookie"\)/);
@@ -91,3 +92,4 @@ test("real API failure states do not relabel demo readings as LIVE", () => {
   assert.match(app, /Dados de demonstração · não são leituras reais/);
   assert.match(app, /A identidade não foi validada|Identidade não validada/);
 });
+

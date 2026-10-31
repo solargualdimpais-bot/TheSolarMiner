@@ -324,13 +324,15 @@ async function refreshTuyaInventoryStatus(){
   state.tuyaInventoryRefreshing=true;
   try{
     const hardware=await readGatewayHardwareIntegrationConfig();
+    // Navigation may change while the request is in flight; background polls
+    // must not redraw a different page when they complete.
     const devices=Array.isArray(hardware.tuya?.devices)?hardware.tuya.devices:[];
     const signature=JSON.stringify(devices.map(device=>[device.device_id,device.current_connection_state,device.local_control_state,device.current_status_reason,device.current_status]));
     const changed=signature!==state.tuyaInventorySignature;
     state.tuyaInventorySignature=signature;
     state.tuyaDevices=devices;
     state.tuyaReadings=tuyaReadingsFromConfig(state.tuyaDevices);
-    if(changed)renderAfterLiveRefresh();
+    if(changed&&["devices","inicio"].includes(state.page))renderAfterLiveRefresh();
   }catch{/* Keep the last confirmed state and its timestamp visible if this poll fails. */}
   finally{state.tuyaInventoryRefreshing=false;}
 }
@@ -1198,12 +1200,13 @@ function renderGatewayUtilityPage(page){
 }
 function renderDeviceInventoryPage(){
   const user=sessionInfo().user||{},owner=user.role==="owner",devices=Array.isArray(state.tuyaDevices)?state.tuyaDevices.filter(device=>device&&typeof device==="object"):[],readings=Array.isArray(state.tuyaReadings)?state.tuyaReadings.filter(reading=>reading&&typeof reading==="object"):[];
-  const confirmed=device=>device.local_verified===true||tuyaReadingConfirmed(readings.find(row=>row.device_id===device.device_id));
+  const readingByDevice=new Map(readings.map(reading=>[reading.device_id,reading]));
+  const confirmed=device=>device.local_verified===true||tuyaReadingConfirmed(readingByDevice.get(device.device_id));
   const confirmedDevices=devices.filter(confirmed),pendingDevices=devices.filter(device=>!confirmed(device));
   const activeTab=["confirmed","pending","add"].includes(state.devicesTab)?state.devicesTab:"confirmed";
   const tabs=`<nav class="device-inventory-tabs" aria-label="Separadores de dispositivos">${[["confirmed",`Confirmados (${confirmedDevices.length})`],["pending",`Por confirmar (${pendingDevices.length})`],["add","Adicionar / sincronizar"]].map(([id,label])=>`<button type="button" class="device-inventory-tab ${activeTab===id?"active":""}" data-device-tab="${id}" aria-selected="${activeTab===id}">${label}</button>`).join("")}</nav>`;
   const cards=list=>list.map(device=>{
-    const reading=readings.find(row=>row.device_id===device.device_id)||{status:Array.isArray(device.current_status)?device.current_status:[],connection_state:"stored_status"};
+    const reading=readingByDevice.get(device.device_id)||{status:Array.isArray(device.current_status)?device.current_status:[],connection_state:"stored_status"};
     const isConfirmed=confirmed(device),fault=tuyaFault(device,reading),offline=reading?.lan_probe?reading.connection_state==="failed"&&device.online===false:device.online===false;
     const statusText=fault?fault.label:offline?"Offline":tuyaDeviceState(device,reading);
     const metrics=tuyaSimpleReadings(device,reading),power=metrics.find(metric=>metric.label==="Potência"),voltage=metrics.find(metric=>metric.label==="Tensão"),switchCode=tuyaPrimarySwitchCode(device);
@@ -1293,6 +1296,10 @@ function render() {
   }
   const energyTabScroll=$("#page-content .energy-tabs")?.scrollLeft||0;
   $("#page-content").innerHTML = pageHtml;
+  const pvStringForm=$("#pv-string-form");
+  pvStringForm?.addEventListener("submit",event=>{event.preventDefault();event.stopImmediatePropagation();void savePvStringForm(pvStringForm);});
+  const aqsForm=$("#aqs-form");
+  aqsForm?.addEventListener("submit",event=>{event.preventDefault();event.stopImmediatePropagation();void saveAqsForm(aqsForm);});
   const engineChartDialog=$("#engine-history-dialog");
   if(engineChartDialog){engineChartDialog.addEventListener("close",()=>{state.engineHistoryChart.open=false;});if(state.engineHistoryChart.open&&!engineChartDialog.open)engineChartDialog.showModal();}
   const newEnergyTabs=$("#page-content .energy-tabs");if(newEnergyTabs)newEnergyTabs.scrollLeft=energyTabScroll;
@@ -1310,7 +1317,10 @@ function navigate(page) {
   if (page === "mais") { populateMore(); $("#more-dialog").showModal(); return; }
   if (page === "owner" && (!sessionInfo().authenticated || sessionInfo().user.role !== "owner")) return;
   if (!["inicio", ...CATEGORIES.map(c=>c.id), "energia", "casa", "profile", "engine", "gestao-excedentes", "devices", "inversores", "baterias", "paineis-solares", "ev", "aqs", "mineradoras", "soalho-radiante", "automatismos", "producao", "owner"].includes(page)) return;
-  const enteringEnergy=page==="energia"&&state.page!=="energia";state.page = page; render(); if(enteringEnergy&&sessionInfo().authenticated)refreshGatewayReadings(); if(page==="casa" && workspace.house.restoreScroll){const y=Number(workspace.house.returnScrollY||0);workspace.house.restoreScroll=false;requestAnimationFrame(()=>window.scrollTo({top:y,behavior:"auto"}));}else window.scrollTo({top:0,behavior:"smooth"});
+  const enteringEnergy=page==="energia"&&state.page!=="energia",enteringDevices=page==="devices"&&state.page!=="devices";state.page = page; render();
+  if(enteringEnergy&&sessionInfo().authenticated)refreshGatewayReadings();
+  if(enteringDevices&&sessionInfo().user?.role==="owner")void refreshTuyaInventoryStatus();
+  if(page==="casa" && workspace.house.restoreScroll){const y=Number(workspace.house.returnScrollY||0);workspace.house.restoreScroll=false;requestAnimationFrame(()=>window.scrollTo({top:y,behavior:"auto"}));}else window.scrollTo({top:0,behavior:"auto"});
 }
 function populateMore() { $("#more-links").innerHTML = [{id:"energia",label:"Energia",icon:"◉"},{id:"casa",label:"Casa",icon:"⌂"},{id:"profile",label:"Profile",icon:"○"},{id:"devices",label:"Dispositivos",icon:"⚙"},{id:"automatismos",label:"Automatismos",icon:"⟳"},...CATEGORIES,{id:"paineis-solares",label:"Painéis solares",icon:"☼"}].map(c=>`<button data-page="${esc(c.id)}"><span>${esc(c.icon)}</span>${esc(c.label)}<span class="more-arrow">↗</span></button>`).join("") + (state.mode==="SIMULATED"?`<button id="more-settings"><span>⚙</span>Personalizar demonstração<span class="more-arrow">↗</span></button>`:""); $("#more-settings")?.addEventListener("click",()=>{$("#more-dialog").close();$("#settings-dialog").showModal();}); }
 
@@ -1390,8 +1400,6 @@ $("#mobile-nav").addEventListener("click", e => {
 });
 $("#page-content").addEventListener("submit", e => {
   if(e.target.id === "area-battery-bank-form") { e.preventDefault(); $("#area-battery-bank-save")?.click(); return; }
-  if(e.target.id === "pv-string-form") { e.preventDefault(); e.stopPropagation(); void savePvStringForm(e.target); return; }
-  if(e.target.id === "aqs-form") { e.preventDefault(); saveAqsForm(e.target); return; }
   if(e.target.id === "auto-form") { e.preventDefault(); if(saveAutomationForm(e.target,workspace)){automationEditingId="";render();showFeatureNotice("Automatismo guardado na demonstração local. Nenhum comando foi enviado.");} return; }
   if(e.target.id === "demo-user-form") { e.preventDefault(); if(addDemoUser(e.target)){render();showFeatureNotice("Utilizador fictício adicionado. Não foi criada uma conta real.");} return; }
   const userEdit=e.target.closest('form[data-demo-user-edit]');if(userEdit){e.preventDefault();if(saveDemoUserEdit(userEdit,userEdit.dataset.demoUserEdit)){render();showFeatureNotice('Utilizador fictício atualizado localmente.');}return;}
@@ -3128,7 +3136,7 @@ hydrateWorkspacePhotos();
 if (sessionInfo().authenticated) refreshGatewayReadings();
 setInterval(() => {
   const lastRefresh=Date.parse(state.lastUpdated||"");
-  if (document.visibilityState === "visible" && sessionInfo().authenticated && !state.refreshing && (state.page==="energia" || !Number.isFinite(lastRefresh) || Date.now()-lastRefresh>=30_000)) {
+  if (document.visibilityState === "visible" && sessionInfo().authenticated && !state.refreshing && (!Number.isFinite(lastRefresh) || Date.now()-lastRefresh>=30_000)) {
     refreshGatewayReadings();
   }
 }, 10_000);

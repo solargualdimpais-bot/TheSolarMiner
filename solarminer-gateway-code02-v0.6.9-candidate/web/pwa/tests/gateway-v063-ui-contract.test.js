@@ -42,7 +42,7 @@ test("PV string editor captures module details and derives total nominal power",
   assert.match(app, /const index=strings\.findIndex\(item=>item\.id===id\)/);
   assert.match(app, /const saved=await readGatewayEnergyEngineConfig\(\)/);
   assert.match(app, /const savedStrings=Array\.isArray\(saved\?\.pv_strings\)/);
-  assert.match(app, /e\.preventDefault\(\); e\.stopPropagation\(\); void savePvStringForm/);
+  assert.match(app, /pvStringForm\?\.addEventListener\("submit",event=>\{event\.preventDefault\(\);event\.stopImmediatePropagation\(\);void savePvStringForm\(pvStringForm\);\}\)/);
   assert.match(readFileSync(new URL("../gateway-auth.js", import.meta.url), "utf8"), /export async function readGatewayEnergyEngineConfig\(\)/);
   assert.match(energyEngine, /"pv_strings": normalized_pv_strings/);
   assert.match(gatewayApp, /@app\.get\("\/api\/v1\/energy\/engine\/config"\)/);
@@ -103,6 +103,22 @@ test("Devices inventory preserves explicit LAN readings across cache refreshes a
   assert.match(app, /if\(reading\?\.connection_state!==\"local_responded\"\)return \[\]/);
 });
 
+test("PV string and AQS dialogs intercept native form submits before the browser can reset the page", () => {
+  assert.match(app, /pvStringForm\?\.addEventListener\("submit",event=>\{event\.preventDefault\(\);event\.stopImmediatePropagation\(\);void savePvStringForm\(pvStringForm\);\}\)/);
+  assert.match(app, /aqsForm\?\.addEventListener\("submit",event=>\{event\.preventDefault\(\);event\.stopImmediatePropagation\(\);void saveAqsForm\(aqsForm\);\}\)/);
+  assert.doesNotMatch(app, /e\.target\.id === "pv-string-form"/);
+  assert.doesNotMatch(app, /e\.target\.id === "aqs-form"/);
+});
+
+test("Devices navigation is immediate and background inventory refreshes do not redraw another page", () => {
+  assert.match(app, /enteringDevices=page==="devices"&&state\.page!=="devices"/);
+  assert.match(app, /if\(enteringDevices&&sessionInfo\(\)\.user\?\.role==="owner"\)void refreshTuyaInventoryStatus\(\)/);
+  assert.match(app, /window\.scrollTo\(\{top:0,behavior:"auto"\}\)/);
+  assert.match(app, /if\(changed&&\["devices","inicio"\]\.includes\(state\.page\)\)renderAfterLiveRefresh\(\)/);
+  assert.doesNotMatch(app, /state\.page==="energia"\s*\|\|\s*!Number\.isFinite\(lastRefresh\)/);
+  assert.match(app, /const readingByDevice=new Map\(readings\.map\(reading=>\[reading\.device_id,reading\]\)\)/);
+});
+
 test("Devices inventory waits to distinguish a single card click from a double click on the name", () => {
   assert.match(app, /let inventoryCardClickTimer = null/);
   assert.match(app, /inventoryCardClickTimer=setTimeout\(\(\)=>\{inventoryCardClickTimer=null;openFavoriteDeviceDetails\(deviceId,"tuya"\);\},280\)/);
@@ -154,5 +170,6 @@ test("LAN discovery tries the local neighbor cache after broadcast errors", () =
 test("USB release rollback verification includes the installed Gateway release", () => {
   const rollbackLoops = workflow.match(/for VERSION in[^\n]+/g) || [];
   assert.equal(rollbackLoops.length, 2);
-  for (const loop of rollbackLoops) assert.match(loop, /0\.6\.112 0\.6\.113 0\.6\.114; do/);
+  for (const loop of rollbackLoops) assert.match(loop, /0\.6\.112 0\.6\.113 0\.6\.114 0\.6\.115; do/);
 });
+
