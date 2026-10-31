@@ -9,7 +9,7 @@ Type=oneshot
 User=solarminer
 Group=solarminer
 Environment=PYTHONPATH=/opt/solarminer/current/usr/lib/solarminer-gateway
-Environment=SOLARMINER_PACKAGE_VERSION=0.6.113
+Environment=SOLARMINER_PACKAGE_VERSION=0.6.114
 ExecStart=/usr/bin/python3 -m solarminer_gateway.error_reporting
 ExecStartPre=/usr/bin/solarminer-data-volume-check
 UMask=0077
@@ -26,3 +26,4 @@ LockPersonality=true
 MemoryDenyWriteExecute=true
 RestrictNamespaces=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+

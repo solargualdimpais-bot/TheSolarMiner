@@ -4,7 +4,7 @@ set -eu
 
 [ "$(id -u)" -eq 0 ] || { echo "Executa como root: sh repair-existing-from-usb.sh" >&2; exit 1; }
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-TARGET_VERSION=0.6.113
+TARGET_VERSION=0.6.114
 PACKAGE="$HERE/solarminer-gateway_${TARGET_VERSION}_amd64.deb"
 MANIFEST="$HERE/solarminer-release.json"
 PUBLIC_KEY="$HERE/release-pubkey.pem"
@@ -190,3 +190,4 @@ PY
   attempt=$((attempt + 1)); sleep 2
 done
 fail "Health check não confirmou $TARGET_VERSION; rollback será tentado. Consulta $LOG."
+

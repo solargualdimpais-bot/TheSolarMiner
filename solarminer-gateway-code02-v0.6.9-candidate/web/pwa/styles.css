@@ -539,3 +539,6 @@ html[data-font="small"]{--font-ui-scale:.9;}html[data-font="normal"]{--font-ui-s
 .engine-history-arrow.left{left:0}.engine-history-arrow.right{right:0}.engine-history-arrow:disabled{opacity:.35;cursor:not-allowed}
 .engine-history-plot>.solar-potential-chart{display:block;width:100%}
 @media(max-width:580px){.engine-history-plot{padding:0 32px}.engine-history-arrow{width:28px;height:38px;font-size:24px}}
+
+.home-favorites .inventory-device-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 8px;width:100%;font-size:10px!important;line-height:1.35;letter-spacing:normal!important;color:var(--gold-2,#e2d0a4)!important}.home-favorites .inventory-device-metrics span:last-child{text-align:right}.home-favorites .inventory-device-metrics span:empty{visibility:hidden}
+

@@ -1,6 +1,6 @@
 PYTHON ?= python3
 OUT ?= dist
-PACKAGE = $(OUT)/solarminer-gateway_0.6.113_amd64.deb
+PACKAGE = $(OUT)/solarminer-gateway_0.6.114_amd64.deb
 
 .PHONY: test deb test-package clean
 
@@ -16,3 +16,4 @@ test-package: deb
 
 clean:
 	rm -rf .pytest_cache src/solarminer_gateway/__pycache__ tests/__pycache__
+

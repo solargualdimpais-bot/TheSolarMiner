@@ -71,9 +71,9 @@ test("EV page renders the Tesla Fleet and local-presence controls used by its ha
 });
 
 test("Favorite controls refresh the target device before toggling and show a simple detail on tap", () => {
-  assert.match(app, /readGatewayHardwareProvider\("tuya",deviceId\),before=/);
+  assert.match(app, /const beforeProbe=await testTuyaLanDevice\(deviceId\),before=beforeProbe\.reading/);
   assert.match(app, /controlGatewayTuyaSwitch\(deviceId,desired,code\)/);
-  assert.match(app, /readGatewayHardwareProvider\("tuya",deviceId\),after=/);
+  assert.match(app, /const afterProbe=await testTuyaLanDevice\(deviceId\),after=afterProbe\.reading/);
   assert.match(app, /openFavoriteDeviceDetails\(favoriteCard\.dataset\.favoriteDevice,favoriteCard\.dataset\.deviceKind\)/);
   assert.match(app, /function openFavoriteDeviceDetails\(deviceId,kind\)/);
   assert.match(app, /function tuyaSimpleReadings\(device,reading\)/);
@@ -87,22 +87,24 @@ test("Favorite controls refresh the target device before toggling and show a sim
   assert.match(app, /tuya-device-list[\s\S]*?addEventListener\("keydown"/);
 });
 
-test("Devices inventory refreshes cached live Tuya state each second and places power before voltage", () => {
+test("Devices inventory preserves explicit LAN readings across cache refreshes and places power before voltage", () => {
   assert.match(app, /async function refreshTuyaInventoryStatus\(\)/);
-  assert.match(app, /setInterval\(\(\) => \{ void refreshTuyaInventoryStatus\(\); \},1_000\)/);
+  assert.match(app, /setInterval\(\(\) => \{ void refreshTuyaInventoryStatus\(\); \},10_000\)/);
   assert.match(app, /!\[\"devices\",\"inicio\"\]\.includes\(state\.page\)/);
   assert.match(app, /function tuyaCachedReadings\(devices\)/);
+  assert.match(app, /function tuyaReadingsFromConfig\(devices\)[\s\S]*?lan_probe===true/);
+  assert.match(app, /tuyaReadings=tuyaReadingsFromConfig\(state\.tuyaDevices\)/);
   assert.match(app, /const changed=signature!==state\.tuyaInventorySignature/);
   assert.match(app, /current_connection_state===\"local_responded\"&&device\.local_control_state===\"ready\"/);
   assert.match(app, /metrics\.find\(metric=>metric\.label===\"Potência\"\),voltage=metrics\.find\(metric=>metric\.label===\"Tensão\"\)/);
-  assert.match(app, /class=\"inventory-device-metrics\"><span>\$\{power\?/);
+  assert.match(app, /class="inventory-device-metrics"><span>/);
   assert.match(app, /if\(reading\?\.connection_state!==\"local_responded\"\)return \[\]/);
 });
 
 test("Devices inventory waits to distinguish a single card click from a double click on the name", () => {
   assert.match(app, /let inventoryCardClickTimer = null/);
   assert.match(app, /inventoryCardClickTimer=setTimeout\(\(\)=>\{inventoryCardClickTimer=null;openFavoriteDeviceDetails\(deviceId,"tuya"\);\},280\)/);
-  assert.match(app, /addEventListener\("dblclick",event=>\{const name=event\.target\.closest\("\[data-device-name\]"\);if\(!name\)return;clearTimeout\(inventoryCardClickTimer\);inventoryCardClickTimer=null/);
+  assert.match(app, /addEventListener\("dblclick",event=>\{const card=event\.target\.closest\("\[data-inventory-device\]"\);if\(!card\|\|!event\.target\.closest\("\.favorite-device-info"\)\)return/);
 });
 
 test("Tuya editor distinguishes a confirmed save from a failed follow-up LAN test", () => {
@@ -118,13 +120,14 @@ test("Tuya connection test keeps the fresh status response and reports latency w
   assert.doesNotMatch(handler, /refreshHardwareIntegrationConfig/);
   assert.match(app, /Ligação LAN confirmada · \$\{result\.success_count\}\/\$\{result\.rounds\} respostas · média \$\{result\.average_latency_ms\} ms/);
   assert.match(app, /async function testTuyaLanDevice\(deviceId\)[\s\S]*?runGatewayTuyaLanDiagnostics\(3,deviceId\)/);
-  assert.match(app, /Online na Tuya · sem resposta LAN/);
+  assert.match(app, /Tuya Cloud online · LAN sem resposta/);
+  assert.match(app, /tuyaReadingConfirmed\(reading\)\{return Boolean\(reading&&reading\.connection_state==="local_responded"\);\}/);
 });
 
 test("Tuya device switch is updated only after a fresh LAN status confirms the requested state", () => {
   assert.match(app, /const result = await controlGatewayTuyaSwitch\(deviceId, on\);[\s\S]*?const \{reading\}=await testTuyaLanDevice\(deviceId\);[\s\S]*?reading\.status\.find\(item=>item\.code===code\)\?\.value!==on/);
   assert.match(app, /inventoryToggle[\s\S]*?testTuyaLanDevice\(device\.device_id\)[\s\S]*?controlGatewayTuyaSwitch\(device\.device_id,!observed,code\)/);
-  assert.match(app, /inventory-device-icon/);
+  assert.match(app, /device-inventory-content home-favorites/);
 });
 
 test("LAN discovery tries the local neighbor cache after broadcast errors", () => {
@@ -136,5 +139,6 @@ test("LAN discovery tries the local neighbor cache after broadcast errors", () =
 test("USB release rollback verification includes the installed Gateway release", () => {
   const rollbackLoops = workflow.match(/for VERSION in[^\n]+/g) || [];
   assert.equal(rollbackLoops.length, 2);
-  for (const loop of rollbackLoops) assert.match(loop, /0\.6\.111 0\.6\.112; do/);
+  for (const loop of rollbackLoops) assert.match(loop, /0\.6\.111 0\.6\.112 0\.6\.113; do/);
 });
+

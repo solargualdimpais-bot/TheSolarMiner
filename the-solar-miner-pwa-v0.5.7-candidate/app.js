@@ -10,6 +10,7 @@ import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, rea
 let automationEditingId = "";
 const state = { page: "inicio", devicesTab: "confirmed", mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], energyEngine: null, siteProfile: null, tuyaDevices: [], tuyaReadings: [], tuyaInventorySignature: "", lastUpdated: null, lastMeasurementAt: null, refreshing: false, tuyaInventoryRefreshing: false, pendingLiveRender: false, demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [], engineHistoryChart: { open: false, dateKey: "", loading: false, error: null } };
 let inventoryCardClickTimer = null;
+let favoriteCardClickTimer = null;
 let houseView={tab:"overview",floorId:null,roomId:null,planEditing:false};
 let housePlanPointer=null;
 let lastTuyaReadAt=0;
@@ -282,7 +283,7 @@ async function refreshGatewayReadings() {
     if (sessionInfo().user?.role === "owner") {
       try {
         const hardware = await readGatewayHardwareIntegrationConfig(); state.tuyaDevices = hardware.tuya?.devices || [];
-        state.tuyaReadings = tuyaCachedReadings(state.tuyaDevices);
+        state.tuyaReadings = tuyaReadingsFromConfig(state.tuyaDevices);
         if(!state.tuyaDevices.length) lastTuyaReadAt=0;
       } catch { /* Keep last successful values visible with their original timestamp. */ }
     }
@@ -313,6 +314,10 @@ function tuyaCachedReadings(devices){
     return {device_id:device.device_id,name:device.name||"Tuya",status,connection_state:online?"local_responded":device.local_control_state==="unavailable"||device.local_verified?"failed":"stored_status",reason:device.current_status_reason||undefined,observed_at:device.last_status_at||undefined,source:"TUYA_LAN",trust:online?"LIVE_UNVERIFIED":"UNAVAILABLE"};
   });
 }
+function tuyaReadingsFromConfig(devices){
+  const probes=new Map((state.tuyaReadings||[]).filter(reading=>reading?.lan_probe===true).map(reading=>[reading.device_id,reading]));
+  return tuyaCachedReadings(devices).map(reading=>probes.get(reading.device_id)||reading);
+}
 async function refreshTuyaInventoryStatus(){
   if(!["devices","inicio"].includes(state.page)||document.visibilityState!=="visible"||!sessionInfo().authenticated||sessionInfo().user?.role!=="owner"||state.tuyaInventoryRefreshing)return;
   state.tuyaInventoryRefreshing=true;
@@ -323,7 +328,7 @@ async function refreshTuyaInventoryStatus(){
     const changed=signature!==state.tuyaInventorySignature;
     state.tuyaInventorySignature=signature;
     state.tuyaDevices=devices;
-    state.tuyaReadings=tuyaCachedReadings(state.tuyaDevices);
+    state.tuyaReadings=tuyaReadingsFromConfig(state.tuyaDevices);
     if(changed)renderAfterLiveRefresh();
   }catch{/* Keep the last confirmed state and its timestamp visible if this poll fails. */}
   finally{state.tuyaInventoryRefreshing=false;}
@@ -602,7 +607,8 @@ function openFavoriteDeviceDetails(deviceId,kind){
     const live=state.tuyaReadings.find(item=>item.device_id===deviceId)||{status:device.current_status||[],connection_state:"stored_status",reason:device.local_control_state==="unavailable"?"tuya_connection_failed":undefined},status=live?.status||[];
     const metrics=tuyaSimpleReadings(device,live);
     const fault=tuyaFault(device,live);
-    details=`<div class="device-detail-grid">${row("Estado",fault?fault.label:tuyaDeviceState(device,live))}${row("Ligação",tuyaReadingConfirmed(live)?"Confirmada nesta leitura LAN":device.online===true?"Online na Tuya; teste local sem resposta":device.local_verified?"Leitura local anterior; testar novamente":"Ainda não confirmada")}${metrics.map(metric=>row(metric.label,metric.value)).join("")}</div>${live?.reason?`<p class="empty-state">${esc(tuyaLanReasonText(live.reason))}</p>`:""}`;
+    const linkLabel=tuyaReadingConfirmed(live)?`LAN confirmada · ${Number(live.success_count)||1}/${Number(live.rounds)||1} respostas · média ${Math.round(Number(live.latency_ms)||0)} ms`:device.online===true?"Tuya Cloud online · LAN sem resposta":"LAN sem resposta";
+    details=`<div class="device-detail-grid">${row("Estado",fault?fault.label:tuyaDeviceState(device,live))}${row("Ligação",linkLabel)}${metrics.map(metric=>row(metric.label,metric.value)).join("")}</div>${live?.reason?`<p class="empty-state">${esc(tuyaLanReasonText(live.reason))}</p>`:""}`;
   }else{
     const readings=(device.readings||[]).map(value=>row(value.evidence?.label||value.field,`${formatReading(value).value} ${value.unit||""}`)).join("");
     details=`<div class="device-detail-grid">${row("Categoria",device.category)}${row("Fabricante",device.manufacturer)}${row("Modelo",device.model)}${row("Ligação",device.connection_state||device.status)}${row("Última comunicação",timeLabel(device.last_communication_at))}</div><h3>Leituras disponíveis</h3>${readings?`<div class="device-detail-grid telemetry-grid">${readings}</div>`:`<p class="empty-state">Ainda não há leituras disponíveis para este dispositivo.</p>`}`;
@@ -610,19 +616,19 @@ function openFavoriteDeviceDetails(deviceId,kind){
   dialog.innerHTML=`<form method="dialog" class="dialog-body"><div class="dialog-header"><div><p class="eyebrow">FAVORITO · INFORMAÇÃO DO DISPOSITIVO</p><h2>${esc(device.name||deviceId)}</h2></div><button class="icon-button" value="close" aria-label="Fechar">×</button></div>${details}<div class="dialog-actions"><button class="button secondary" value="close">Fechar</button></div></form>`;
   document.body.append(dialog);dialog.addEventListener("close",()=>dialog.remove(),{once:true});dialog.showModal();
 }
-function tuyaReadingConfirmed(reading){return Boolean(reading&&reading.connection_state==="local_responded"&&Array.isArray(reading.status)&&reading.status.length>0);}
+function tuyaReadingConfirmed(reading){return Boolean(reading&&reading.connection_state==="local_responded");}
 async function testTuyaLanDevice(deviceId){
   const report=await runGatewayTuyaLanDiagnostics(3,deviceId),result=(Array.isArray(report.devices)?report.devices:[]).find(item=>item?.device_id===deviceId);
-  if(!result)throw new Error("O Gateway não devolveu o resultado deste dispositivo.");
-  const reading={device_id:deviceId,name:result.name||"Tuya",status:Array.isArray(result.status)?result.status:[],connection_state:result.connection_state||"failed",reason:result.reason||undefined,latency_ms:result.average_latency_ms,local_protocol:result.local_protocol,source:"TUYA_LAN",trust:result.connection_state==="local_responded"?"LIVE_UNVERIFIED":"UNAVAILABLE",success_count:result.success_count,rounds:result.rounds,power_telemetry_configured:result.power_telemetry_configured};
+  if(!result)throw new Error("O Gateway não devolveu o resultado do teste LAN para este dispositivo.");
+  const reading={device_id:deviceId,name:result.name||"Tuya",status:Array.isArray(result.status)?result.status:[],connection_state:result.connection_state||"failed",reason:result.reason||undefined,latency_ms:result.average_latency_ms,local_protocol:result.local_protocol,source:"TUYA_LAN",lan_probe:true,checked_at:new Date().toISOString(),trust:result.connection_state==="local_responded"?"LIVE_UNVERIFIED":"UNAVAILABLE",success_count:result.success_count,rounds:result.rounds,power_telemetry_configured:result.power_telemetry_configured};
   return {reading,result};
 }
 function favoriteReadingConfirmed(item){return item?.kind==="tuya"?tuyaReadingConfirmed(item.status):Boolean(item?.reading&&Array.isArray(item.reading.readings)&&item.reading.readings.some(value=>value.value!=null&&Number.isFinite(Number(value.value))));}
 function tuyaDeviceState(device,reading){
   const status=reading?.status||[],code=device?.switch_code||status.find(item=>typeof item.value==="boolean")?.code;
   const value=status.find(item=>item.code===code)?.value;
-  if(reading?.connection_state==="failed")return device?.online===true?"Online na Tuya · sem resposta LAN":device?.online===false?"Offline segundo a Tuya":"Sem resposta LAN";
-  if(reading?.connection_state==="stored_status")return device?.online===true?"Online na Tuya · leitura local por testar":device?.online===false?"Offline segundo a Tuya":"Leitura local por testar";
+  if(reading?.connection_state==="failed")return device?.online===false?"Offline segundo a Tuya":"ON/OFF por confirmar";
+  if(reading?.connection_state==="stored_status")return device?.online===false?"Offline segundo a Tuya":"ON/OFF por confirmar";
   return value===true?"Ligado":value===false?"Desligado":tuyaReadingConfirmed(reading)?"Online · sem estado ON/OFF":"Por confirmar";
 }
 function tuyaFault(device,reading){
@@ -1103,18 +1109,20 @@ function renderDeviceInventoryPage(){
   const tabs=`<nav class="device-inventory-tabs" aria-label="Separadores de dispositivos">${[["confirmed",`Confirmados (${confirmedDevices.length})`],["pending",`Por confirmar (${pendingDevices.length})`],["add","Adicionar / sincronizar"]].map(([id,label])=>`<button type="button" class="device-inventory-tab ${activeTab===id?"active":""}" data-device-tab="${id}" aria-selected="${activeTab===id}">${label}</button>`).join("")}</nav>`;
   const cards=list=>list.map(device=>{
     const reading=readings.find(row=>row.device_id===device.device_id)||{status:device.current_status||[],connection_state:"stored_status"};
-    const isConfirmed=confirmed(device),fault=tuyaFault(device,reading),offline=device.online===false;
+    const isConfirmed=confirmed(device),fault=tuyaFault(device,reading),offline=reading?.lan_probe?reading.connection_state==="failed"&&device.online===false:device.online===false;
     const statusText=fault?fault.label:offline?"Offline":tuyaDeviceState(device,reading);
-    const metrics=tuyaSimpleReadings(device,reading),power=metrics.find(metric=>metric.label==="Potência"),voltage=metrics.find(metric=>metric.label==="Tensão"),otherMetrics=metrics.filter(metric=>!['Potência','Tensão'].includes(metric.label)),switchCode=device.switch_code||"";
-    const metricMarkup=power||voltage?`<small class="inventory-device-metrics"><span>${power?`Potência ${esc(power.value)}`:""}</span><span>${voltage?`Tensão ${esc(voltage.value)}`:""}</span></small>${otherMetrics.length?`<small>${otherMetrics.map(metric=>`${esc(metric.label)} ${esc(metric.value)}`).join(" · ")}</small>`:""}`:reading.connection_state==="local_responded"?`<small>Ligação LAN confirmada · ${Number(reading.success_count)||1}/${Number(reading.rounds)||1} respostas · ${Math.round(Number(reading.latency_ms)||0)} ms · ${reading.power_telemetry_configured?"potência declarada":"sem DPS de potência"}</small>`:`<small>${isConfirmed?"Leitura local anterior · testar novamente":"Leitura LAN por confirmar"}${reading.reason?` · ${esc(tuyaLanReasonText(reading.reason))}`:""}</small>`;
-    return `<article class="favorite-device inventory-device ${fault||offline?"is-fault":""} ${isConfirmed?"is-confirmed":"is-pending"}" data-inventory-device="${esc(device.device_id)}" tabindex="0" aria-label="${esc(device.name)} · ${esc(statusText)}"><span class="favorite-device-info"><strong class="inventory-device-name" data-device-name="${esc(device.device_id)}" title="Duplo clique para configurar">${esc(device.name)}</strong><span>${esc(statusText)}${device.room?` · ${esc(device.room)}`:""}</span>${metricMarkup}</span><span class="favorite-device-actions">${switchCode?`<button class="favorite-state" type="button" data-inventory-toggle="${esc(device.device_id)}" aria-label="Ligar ou desligar ${esc(device.name)}">${tuyaDeviceState(device,reading)}</button>`:""}<button class="button secondary" type="button" data-inventory-read="${esc(device.device_id)}">Ler agora</button><span class="favorite-device-icon inventory-device-icon" aria-hidden="true">${tuyaDeviceGlyph(device)}</span></span></article>`;
+    const metrics=tuyaSimpleReadings(device,reading),power=metrics.find(metric=>metric.label==="Potência"),voltage=metrics.find(metric=>metric.label==="Tensão"),switchCode=device.switch_code||reading?.status?.find(item=>typeof item.value==="boolean")?.code||"";
+    const metricMarkup=power||voltage?`<small class="inventory-device-metrics"><span>${power?`Potência ${esc(power.value)}`:""}</span><span>${voltage?`Tensão ${esc(voltage.value)}`:""}</span></small>`:"";
+    const switchValue=reading?.status?.find(item=>item.code===switchCode)?.value,powerGlyph='<svg viewBox="0 0 28 28" aria-hidden="true" focusable="false"><path d="M19.25 4.9a10.5 10.5 0 1 1-10.5 0"/><path d="M14 2.4v10.2"/></svg>';
+    const switchButton=switchCode?`<button class="favorite-state-symbol ${switchValue===true?"on":switchValue===false?"off":"unknown"}" type="button" data-inventory-toggle="${esc(device.device_id)}" aria-label="${switchValue===true?"Ligado":switchValue===false?"Desligado":"Sem leitura"} · ${esc(device.name)}" ${typeof switchValue!=="boolean"?"disabled":""}>${powerGlyph}</button>`:"";
+    return `<article class="favorite-device inventory-device ${fault||offline?"is-fault":""} ${isConfirmed?"is-confirmed":"is-pending"}" data-inventory-device="${esc(device.device_id)}" tabindex="0" aria-label="${esc(device.name)} · ${esc(statusText)}"><div class="favorite-device-info"><strong class="favorite-device-name" data-device-name="${esc(device.device_id)}" title="Duplo clique para configurar">${esc(device.name)}</strong><span>${esc(device.room||device.floor||statusText)}</span>${metricMarkup}</div><div class="favorite-device-actions">${switchButton}<button class="inventory-read-button" type="button" data-inventory-read="${esc(device.device_id)}" aria-label="Testar ligação de ${esc(device.name)}">Ler</button></div></article>`;
   }).join("");
   const equipmentCards=(state.equipment||[]).filter(item=>!["inversores","baterias"].includes(item.category)).map(item=>{const active=Array.isArray(item.readings)&&item.readings.some(reading=>reading.value!=null&&Number.isFinite(Number(reading.value)));const metrics=(item.readings||[]).slice(0,3).map(reading=>`${esc(reading.evidence?.label||reading.field)} ${esc(formatReading(reading).value)} ${esc(reading.unit||"")}`).join(" · ");return `<article class="favorite-device inventory-device ${active?"is-confirmed":"is-pending"}" data-inventory-equipment="${esc(item.id)}" tabindex="0"><span class="favorite-device-icon" aria-hidden="true">⌁</span><span class="favorite-device-info"><strong>${esc(item.name)}</strong><span>${esc(item.connection_state||item.status||"Registado")}</span><small>${metrics||"Sem medições disponíveis"}</small></span></article>`;}).join("");
   let content="";
   if(activeTab==="confirmed")content=confirmedDevices.length||equipmentCards?`<div class="favorite-device-grid inventory-device-grid">${cards(confirmedDevices)}${equipmentCards}</div>`:`<div class="empty-state">Ainda não há equipamentos confirmados por uma leitura Tuya LAN válida.</div>`;
   else if(activeTab==="pending")content=pendingDevices.length?`<div class="favorite-device-grid inventory-device-grid">${cards(pendingDevices)}</div>`:`<div class="empty-state">Todos os dispositivos sincronizados têm uma leitura confirmada.</div>`;
   else content=`<section class="panel"><h2>Adicionar ou sincronizar dispositivos</h2><p>Importa a lista da conta Tuya e configura IP/MAC no Gateway. Depois de guardar, o Gateway testa a comunicação LAN; só uma resposta válida move o dispositivo para Confirmados.</p>${owner?`<button type="button" class="button primary" data-page="owner">Abrir integração Tuya / MOES</button>`:`<p class="field-note">Apenas o Owner pode sincronizar ou configurar dispositivos.</p>`}</section>`;
-  return `<div class="page-heading"><div><p class="eyebrow">CONTROLO · GATEWAY</p><h1>Dispositivos</h1><p>Leituras verificadas primeiro; toca num cartão para ver o resumo e faz duplo clique no nome para editar.</p></div><button class="button secondary" id="gateway-area-refresh">Atualizar ↻</button></div>${tabs}<section class="device-inventory-content" data-device-tab-content="${activeTab}">${content}</section>`;
+  return `<div class="page-heading"><div><p class="eyebrow">CONTROLO · GATEWAY</p><h1>Dispositivos</h1><p>Toca num cartão para ver o resumo; faz duplo clique no nome para editar.</p></div><button class="button secondary" id="gateway-area-refresh">Atualizar ↻</button></div>${tabs}<section class="device-inventory-content home-favorites" data-device-tab-content="${activeTab}">${content}</section>`;
 }
 function renderGatewayHousePage(){
   const profile=state.siteProfile||{floors:[]}, owner=sessionInfo().authenticated&&sessionInfo().user?.role==="owner";
@@ -1224,10 +1232,10 @@ $('#page-content').addEventListener('contextmenu',e=>{const target=e.target.clos
 $('#page-content').addEventListener('keydown',e=>{if(e.key!=='F10'||!e.shiftKey)return;const target=e.target.closest('[data-ws-editable]');if(!target)return;e.preventDefault();const context=editTargetFrom(target);if(context)openContextEditor(context.type,context.id);});
 $('#page-content').addEventListener('click',e=>{if(Date.now()<suppressClickUntil){e.preventDefault();e.stopImmediatePropagation();return;}const target=e.target.closest('[data-ws-editable]');if(!target||(e.target.closest('button,input,select,textarea,a,[role="switch"]')&&!e.target.closest('.ws-room-image,.ws-device-open,.ws-floor-tabs [data-ws-editable],.ws-horizontal-tabs [data-ws-editable]')))return;const context=editTargetFrom(target);if(!context)return;if(context.type==='room'){workspace.house.returnScrollY=window.scrollY;const floor=target.dataset.floor,room=target.dataset.room;handleWorkspaceAction('open-room',{dataset:{wsAction:'open-room',floor,room}});navigate('casa');}else if(context.type==='device'){workspace.house.returnScrollY=window.scrollY;const device=target.dataset.device;handleWorkspaceAction('open-device',{dataset:{wsAction:'open-device',device}});navigate('casa');}else if(context.type==='house')navigate('casa');},true);
 $('#page-content').addEventListener('dblclick',e=>{const target=e.target.closest('[data-ws-editable]');if(!target)return;const context=editTargetFrom(target);if(context?.type==='room'){handleWorkspaceAction('open-room',{dataset:{wsAction:'open-room',floor:target.dataset.floor,room:target.dataset.room}});navigate('casa');}else if(context?.type==='device'){handleWorkspaceAction('open-device',{dataset:{wsAction:'open-device',device:target.dataset.device}});navigate('casa');}});
-$('#page-content').addEventListener('dblclick',e=>{if(e.target.closest('button,a,input,select,textarea'))return;const card=e.target.closest('.favorite-device[data-favorite-device]');if(!card)return;if(e.target.closest('.favorite-device-name')&&card.dataset.deviceKind==="tuya"){const device=state.tuyaDevices.find(item=>item.device_id===card.dataset.favoriteDevice);if(device)openTuyaDeviceEditor(device);return;}openFavoriteDeviceDetails(card.dataset.favoriteDevice,card.dataset.deviceKind);});
+$('#page-content').addEventListener('dblclick',e=>{if(e.target.closest('button,a,input,select,textarea'))return;const card=e.target.closest('.favorite-device[data-favorite-device]');if(!card||!e.target.closest('.favorite-device-info'))return;clearTimeout(favoriteCardClickTimer);favoriteCardClickTimer=null;if(card.dataset.deviceKind==="tuya"){const device=state.tuyaDevices.find(item=>item.device_id===card.dataset.favoriteDevice);if(device){openTuyaDeviceEditor(device);return;}}openFavoriteDeviceDetails(card.dataset.favoriteDevice,card.dataset.deviceKind);});
 $('#page-content').addEventListener('click',async e=>{
   const favoriteCard=e.target.closest('.favorite-device[data-favorite-device]');
-  if(favoriteCard&&!e.target.closest('button,a,input,select,textarea')){openFavoriteDeviceDetails(favoriteCard.dataset.favoriteDevice,favoriteCard.dataset.deviceKind);return;}
+  if(favoriteCard&&!e.target.closest('button,a,input,select,textarea')){clearTimeout(favoriteCardClickTimer);favoriteCardClickTimer=setTimeout(()=>{favoriteCardClickTimer=null;openFavoriteDeviceDetails(favoriteCard.dataset.favoriteDevice,favoriteCard.dataset.deviceKind);},340);return;}
   if(e.target.closest('#profile-open-gateway')){$('#gateway-dialog').showModal();return;}
   const toggle=e.target.closest('[data-favorite-toggle]');
   if(toggle){
@@ -1236,13 +1244,13 @@ $('#page-content').addEventListener('click',async e=>{
     if(favoriteControlPending.has(deviceId))return;
     favoriteControlPending.add(deviceId);document.querySelectorAll('[data-favorite-toggle]').forEach(button=>{if(button.dataset.favoriteToggle===deviceId)button.disabled=true;});
     try{
-      const beforeResult=await readGatewayHardwareProvider("tuya",deviceId),before=(beforeResult.tuya||[]).find(item=>item.device_id===deviceId);
-      if(!before)throw new Error("O Gateway não devolveu uma leitura atual deste dispositivo.");
+      const beforeProbe=await testTuyaLanDevice(deviceId),before=beforeProbe.reading;
+      if(!tuyaReadingConfirmed(before))throw new Error("O teste de resposta LAN não confirmou este dispositivo.");
       state.tuyaReadings=[...(state.tuyaReadings||[]).filter(item=>item.device_id!==deviceId),before];
       const current=(before.status||[]).find(item=>item.code===code)?.value;
       if(typeof current!=="boolean")throw new Error("O canal selecionado não tem um estado ON/OFF válido.");
       const desired=!current,result=await controlGatewayTuyaSwitch(deviceId,desired,code);
-      const afterResult=await readGatewayHardwareProvider("tuya",deviceId),after=(afterResult.tuya||[]).find(item=>item.device_id===deviceId);
+      const afterProbe=await testTuyaLanDevice(deviceId),after=afterProbe.reading;
       if(after)state.tuyaReadings=[...(state.tuyaReadings||[]).filter(item=>item.device_id!==deviceId),after];
       if(!result.state_confirmed||!after||((after.status||[]).find(item=>item.code===code)?.value)!==desired){
         showFeatureNotice("O Gateway enviou o comando, mas a leitura posterior não confirmou o estado pedido.");
@@ -2582,7 +2590,7 @@ $("#page-content").addEventListener("click", async event => {
     if (checkPresence) checkPresence.disabled = false;
   }
 });
-$("#page-content").addEventListener("dblclick",event=>{const name=event.target.closest("[data-device-name]");if(!name)return;clearTimeout(inventoryCardClickTimer);inventoryCardClickTimer=null;const device=state.tuyaDevices.find(item=>item.device_id===name.dataset.deviceName);if(device)openTuyaDeviceEditor(device);});
+$("#page-content").addEventListener("dblclick",event=>{const card=event.target.closest("[data-inventory-device]");if(!card||!event.target.closest(".favorite-device-info"))return;clearTimeout(inventoryCardClickTimer);inventoryCardClickTimer=null;const device=state.tuyaDevices.find(item=>item.device_id===card.dataset.inventoryDevice);if(device)openTuyaDeviceEditor(device);});
 $("#page-content").addEventListener("keydown",event=>{if(!["Enter"," "].includes(event.key)||event.target.closest("button"))return;const card=event.target.closest("[data-inventory-device]");if(!card)return;event.preventDefault();openFavoriteDeviceDetails(card.dataset.inventoryDevice,"tuya");});
 document.addEventListener("click",event=>{if(event.target.closest(".solar-chart-wrap"))return;document.querySelectorAll(".solar-chart-tooltip:not([hidden])").forEach(tooltip=>{tooltip.hidden=true;});});
 
@@ -3033,9 +3041,10 @@ setInterval(() => {
     refreshGatewayReadings();
   }
 }, 10_000);
-setInterval(() => { void refreshTuyaInventoryStatus(); },1_000);
+setInterval(() => { void refreshTuyaInventoryStatus(); },10_000);
 setInterval(() => {
   const info=sessionInfo();
   if(document.visibilityState!=="visible"||!info.authenticated||info.user?.role!=="owner"||gatewayAutoUpdateSuppressed||gatewayUpdateCheckInProgress||$("#operation-dialog")?.open)return;
   runGatewayUpdateCheck({automatic:true});
 },60_000);
+

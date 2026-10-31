@@ -1,4 +1,4 @@
-SolarMiner Gateway CODE02 0.6.113 — instalador inicial USB
+SolarMiner Gateway CODE02 0.6.114 — instalador inicial USB
 
 O envio automático de diagnósticos para o repositório privado exige um token Fine-grained limitado ao repositório de diagnósticos e à permissão Issues: Read and write. Configura-o depois em Owner → Gateway → Relatórios automáticos; sem token, os relatórios permanecem na fila local.
 ==========================================================
@@ -16,3 +16,4 @@ No fim, `tailscale up` apresenta um endereço de autorização. Abre-o num dispo
 A pen não executa programas automaticamente ao ser inserida; em Debian, inicia o script uma vez como root. Este comando destina-se apenas a um Debian limpo. A separação protege os dados se reinstalares apenas a partição do Debian; não protege contra formatar o disco inteiro ou falha física do disco. Mantém ainda uma cópia externa. Para um Gateway já instalado, usa `repair-existing-from-usb.sh` e segue `REPAIR_EXISTING_README.txt`. A chave privada de release não é incluída neste ZIP.
 
 Na primeira ligação, usa o endpoint Tailscale detetado (a opção recomendada para evitar instalar certificados no iPhone). Só o primeiro registo com a palavra-passe definida na consola pode criar o Owner. O IP LAN `https://192.168.8.168:8443` está disponível na rede local, mas usa um certificado local próprio; o iPhone tem de confiar nesse certificado. Não existe forma de um PWA HTTPS confiar em HTTPS de IP privado sem certificado confiável. Guarda a chave de recuperação Owner, apresentada uma única vez, num ficheiro offline. O manual completo fica em /usr/share/doc/solarminer-gateway/OWNER_FIRST_BOOTSTRAP.md.
+

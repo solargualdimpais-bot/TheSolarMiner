@@ -1,4 +1,4 @@
-SolarMiner Gateway 0.6.113 — reparar Gateway instalado através de USB
+SolarMiner Gateway 0.6.114 — reparar Gateway instalado através de USB
 
 Usa este procedimento num Gateway Debian 13 amd64 que já tenha SolarMiner instalado e cuja chave pública de release esteja em /etc/solarminer/release-pubkey.pem.
 
@@ -12,3 +12,4 @@ Usa este procedimento num Gateway Debian 13 amd64 que já tenha SolarMiner insta
 8. Se o Gateway ainda não estiver autorizado no Tailnet, executa `tailscale up` como root e aprova o URL na conta Tailscale. Ativa MagicDNS e HTTPS Certificates no Admin Console.
 
 O script não formata o disco nem usa o updater online ou `git pull`. Mantém o log em /var/log/solarminer-usb-repair.log, o backup em /var/lib/solarminer/backups/ e a release anterior em /opt/solarminer/releases/. Não apagues esses ficheiros. Este procedimento exige Debian 13 amd64, a chave de release já provisionada e uma versão instalada incluída no bundle. Para Debian acabado de instalar sem SolarMiner, usa `install-from-usb.sh`; uma formatação exige backup da base de dados para outro suporte antes de apagar o disco.
+
