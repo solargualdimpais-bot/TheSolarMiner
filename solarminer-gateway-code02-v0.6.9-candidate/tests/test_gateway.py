@@ -1459,6 +1459,12 @@ def test_site_profile_is_shared_and_owner_only_for_writes(client):
     saved = client.put("/api/v1/site/profile", headers=owner_headers, json=profile)
     assert saved.status_code == 200, saved.text
     assert client.get("/api/v1/site/profile", headers=owner_headers).json() == profile
+    replacement = "data:image/jpeg;base64," + base64.b64encode(b"\xff\xd8\xffnew-house-photo\xff\xd9").decode("ascii")
+    photo_saved = client.put("/api/v1/site/profile/photo", headers=owner_headers,
+                             json={"kind": "house", "floor_id": "", "room_id": "", "photo_data_url": replacement})
+    assert photo_saved.status_code == 200, photo_saved.text
+    assert photo_saved.json()["photo_data_url"] == replacement
+    assert photo_saved.json()["floors"] == profile["floors"]
 
     with gateway.db() as conn:
         conn.execute("INSERT INTO users(id,account_id,username,password_hash,role,status,created_at) VALUES(?,?,?,?, 'viewer','active',?)",

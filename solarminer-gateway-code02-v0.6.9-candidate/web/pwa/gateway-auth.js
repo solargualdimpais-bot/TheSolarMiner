@@ -438,7 +438,7 @@ export async function saveGatewaySiteProfile(profile) {
   return gatewayApi("/api/v1/site/profile", { method: "PUT", body: profile });
 }
 export async function saveGatewaySitePhoto({ kind, floorId, roomId = "", photoDataUrl }) {
-  if (!new Set(["floor", "plan", "room"]).has(kind) || !floorId || typeof photoDataUrl !== "string") throw new Error("Fotografia do piso inválida.");
+  if (!new Set(["house", "floor", "plan", "room"]).has(kind) || (kind !== "house" && !floorId) || (photoDataUrl !== null && typeof photoDataUrl !== "string")) throw new Error("Fotografia inválida.");
   return gatewayApi("/api/v1/site/profile/photo", { method: "PUT", body: { kind, floor_id: floorId, room_id: roomId, photo_data_url: photoDataUrl } });
 }
 export async function saveGatewayEnergyEngineConfig(config) {

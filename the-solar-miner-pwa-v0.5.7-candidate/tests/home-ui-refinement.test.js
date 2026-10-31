@@ -33,8 +33,8 @@ test("Home favorites expose local device controls and responsive typography", ()
 });
 
 test("Live Home stays compact and the forecast plus daily history live in Energy", () => {
-  const liveHome = app.match(/function renderOverview\(\) \{[\s\S]*?if \(state\.mode !== "SIMULATED"\) \{([\s\S]*?)\n  \}\n  const totals/)?.[1] || "";
-  const energyArea = app.match(/function renderGatewayArea\(page\) \{([\s\S]*?)\n\}\nfunction renderGatewayUtilityPage/)?.[1] || "";
+  const liveHome = app.match(/function renderOverview\(\) \{[\s\S]*?if \(state\.mode !== "SIMULATED"\) \{([\s\S]*?)\r?\n  \}\r?\n  const totals/)?.[1] || "";
+  const energyArea = app.match(/function renderGatewayArea\(page\) \{([\s\S]*?)\r?\n\}\r?\nfunction renderGatewayUtilityPage/)?.[1] || "";
   assert.match(liveHome, /Dispositivos favoritos/);
   assert.doesNotMatch(liveHome, /Equipamentos e leituras|Equipamentos ativos|flowPanel\(\)|chart\(\)/);
   assert.match(energyArea, /energyForecastHistory=page==="energia"/);

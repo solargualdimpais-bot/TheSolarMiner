@@ -50,7 +50,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.104"
+PACKAGE_VERSION = "0.6.105"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -1078,26 +1078,31 @@ def write_site_profile_photo(payload: dict[str, Any], session: dict[str, Any] = 
         if not isinstance(payload, dict) or set(payload) != {"kind", "floor_id", "room_id", "photo_data_url"}:
             raise HTTPException(422, "invalid_site_photo_request")
         kind, floor_id, room_id = payload["kind"], payload["floor_id"], payload["room_id"]
-        if kind not in {"floor", "plan", "room"} or not isinstance(floor_id, str):
+        if kind not in {"house", "floor", "plan", "room"} or not isinstance(floor_id, str):
             raise HTTPException(422, "invalid_site_photo_target")
         profile = site_profile.get_profile(conn)
-        floor = next((item for item in profile["floors"] if item["id"] == floor_id), None)
-        if floor is None:
-            raise HTTPException(404, "site_floor_not_found")
-        if kind == "room":
-            room = next((item for item in floor["rooms"] if item["id"] == room_id), None)
-            if room is None:
-                raise HTTPException(404, "site_room_not_found")
-            room["photo_data_url"] = payload["photo_data_url"]
-        elif kind == "plan":
-            floor["plan_data_url"] = payload["photo_data_url"]
+        if kind == "house":
+            if floor_id or room_id:
+                raise HTTPException(422, "invalid_site_photo_target")
+            profile["photo_data_url"] = payload["photo_data_url"]
         else:
-            floor["photo_data_url"] = payload["photo_data_url"]
+            floor = next((item for item in profile["floors"] if item["id"] == floor_id), None)
+            if floor is None:
+                raise HTTPException(404, "site_floor_not_found")
+            if kind == "room":
+                room = next((item for item in floor["rooms"] if item["id"] == room_id), None)
+                if room is None:
+                    raise HTTPException(404, "site_room_not_found")
+                room["photo_data_url"] = payload["photo_data_url"]
+            elif kind == "plan":
+                floor["plan_data_url"] = payload["photo_data_url"]
+            else:
+                floor["photo_data_url"] = payload["photo_data_url"]
         try:
             result = site_profile.save_profile(conn, profile)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
-        audit(conn, session["user_id"], "site.profile.photo_configure", f"{kind}:{floor_id}", "success", {})
+        audit(conn, session["user_id"], "site.profile.photo_configure", f"{kind}:{floor_id or 'property'}", "success", {})
         return result
 
 
@@ -3202,7 +3207,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.104"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.105"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(
