@@ -273,7 +273,6 @@ def analyze_device(device: dict[str, Any], status: list[dict[str, Any]] | None =
             "selection_source": "confirmed_category" if category == "qccdz" else "owner_selected" if selected_key else "signature_suggestion" if top and top.get("eligible") else "none",
             "write_authorized": False, "scores": scores, "dps": observed,
             "dynamic_entities": dynamic_entities,
-            "candidate_templates": COMMUNITY_TEMPLATES,
             "raw_dps": {str(key): value for key, value in sorted(raw.items())},
             "source_connector": "TUYA_LAN" if raw else None,
             "trust": "LIVE_UNVERIFIED" if raw else None}
