@@ -85,9 +85,9 @@ test("Owner recovery file parser accepts a generated key and rejects malformed/o
 });
 
 test("new PWA static cache version is changed and USB limitations are documented", () => {
-  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.68-device-live-status/);
-  assert.match(manifest, /v0\.5\.68/);
-  assert.equal(packageJson.version, "0.5.68");
+  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.69-device-live-status/);
+  assert.match(manifest, /v0\.5\.69/);
+  assert.equal(packageJson.version, "0.5.69");
   assert.doesNotMatch(html, /gateway-update-refresh|Atualizar estado/);
   assert.doesNotMatch(app, /gateway-update-refresh/);
   const docs = read("OWNER_USB_AND_ACCESS.md");
@@ -123,7 +123,7 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   assert.match(embeddedApp, /startGatewayTailscale/);
   assert.match(embeddedApp, /liveHomeMetric\("Painéis"/);
   assert.match(embeddedApp, /liveMinerHomeMetric\(\)/);
-  assert.match(embeddedWorker, /static-v0\.5\.68-device-live-status/);
+  assert.match(embeddedWorker, /static-v0\.5\.69-device-live-status/);
   assert.match(embeddedHtml, /data-owner-tab="gateway"/);
   assert.doesNotMatch(embeddedHtml, /data-owner-panel="console"/);
   assert.match(embeddedHtml, /Carrega em .Atualizar consola. para consultar os dados mais recentes/);
@@ -142,10 +142,10 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   assert.doesNotMatch(embeddedHtml, /gateway-console-update-check/);
   assert.doesNotMatch(embeddedHtml, /gateway-console-command/);
   assert.match(embeddedWorker, /password-device-login/);
-  assert.match(embeddedHtml, /OWNER PWA 0\.5\.68/);
+  assert.match(embeddedHtml, /OWNER PWA 0\.5\.69/);
   assert.match(embeddedHtml, /gateway-password-login-form/);
-  assert.match(control, /^Version: 0\.6\.111$/m);
-  assert.match(installer, /solarminer-gateway_0\.6\.111_amd64\.deb/);
+  assert.match(control, /^Version: 0\.6\.112$/m);
+  assert.match(installer, /solarminer-gateway_0\.6\.112_amd64\.deb/);
   assert.match(embeddedApp, /RECOVERY_BLOCKED/);
   assert.match(embeddedApp, /rollbackFailure/);
   assert.match(installer, /install-tailscale\.sh/);

@@ -99,6 +99,18 @@ test("Devices inventory refreshes cached live Tuya state each second and places 
   assert.match(app, /if\(reading\?\.connection_state!==\"local_responded\"\)return \[\]/);
 });
 
+test("Devices inventory waits to distinguish a single card click from a double click on the name", () => {
+  assert.match(app, /let inventoryCardClickTimer = null/);
+  assert.match(app, /inventoryCardClickTimer=setTimeout\(\(\)=>\{inventoryCardClickTimer=null;openFavoriteDeviceDetails\(deviceId,"tuya"\);\},280\)/);
+  assert.match(app, /addEventListener\("dblclick",event=>\{const name=event\.target\.closest\("\[data-device-name\]"\);if\(!name\)return;clearTimeout\(inventoryCardClickTimer\);inventoryCardClickTimer=null/);
+});
+
+test("Tuya editor distinguishes a confirmed save from a failed follow-up LAN test", () => {
+  assert.match(app, /Falha ao guardar no Gateway: \$\{error\.message\}/);
+  assert.match(app, /Configuração guardada, mas o teste de leitura falhou: \$\{error\.message\}/);
+  assert.match(app, /Array\.isArray\(probe\.tuya\)\?probe\.tuya:\[\]/);
+});
+
 test("LAN discovery tries the local neighbor cache after broadcast errors", () => {
   assert.match(gatewayApp, /trying neighbor cache/);
   assert.match(gatewayApp, /neighbor_cache_empty/);
@@ -108,5 +120,5 @@ test("LAN discovery tries the local neighbor cache after broadcast errors", () =
 test("USB release rollback verification includes the installed Gateway release", () => {
   const rollbackLoops = workflow.match(/for VERSION in[^\n]+/g) || [];
   assert.equal(rollbackLoops.length, 2);
-  for (const loop of rollbackLoops) assert.match(loop, /0\.6\.109 0\.6\.110; do/);
+  for (const loop of rollbackLoops) assert.match(loop, /0\.6\.110 0\.6\.111; do/);
 });

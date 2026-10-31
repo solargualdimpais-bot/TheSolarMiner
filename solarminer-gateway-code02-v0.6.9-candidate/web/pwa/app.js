@@ -9,6 +9,7 @@ import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, rea
 
 let automationEditingId = "";
 const state = { page: "inicio", devicesTab: "confirmed", mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], energyEngine: null, siteProfile: null, tuyaDevices: [], tuyaReadings: [], tuyaInventorySignature: "", lastUpdated: null, lastMeasurementAt: null, refreshing: false, tuyaInventoryRefreshing: false, pendingLiveRender: false, demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [], engineHistoryChart: { open: false, dateKey: "", loading: false, error: null } };
+let inventoryCardClickTimer = null;
 let houseView={tab:"overview",floorId:null,roomId:null,planEditing:false};
 let housePlanPointer=null;
 let lastTuyaReadAt=0;
@@ -2167,7 +2168,31 @@ function openTuyaDeviceEditor(device){
   favoriteButton.addEventListener("click",()=>{workspace.prefs.favoriteDeviceIds=isFavorite?favoriteIds.filter(id=>id!==device.device_id):[...new Set([...favoriteIds,device.device_id])];saveDemoWorkspace();dialog.close("favorite-updated");render();});
   dialog.querySelector(".dialog-actions").prepend(favoriteButton);
   document.body.append(dialog);dialog.addEventListener("close",()=>dialog.remove());dialog.querySelector("[data-tuya-editor-cancel]").addEventListener("click",()=>dialog.close("cancel"));
-  dialog.querySelector("#tuya-device-edit-form").addEventListener("submit",async event=>{event.preventDefault();const form=event.currentTarget,save=form.querySelector('[type="submit"]'),status=form.querySelector("#tuya-device-edit-status");save.disabled=true;status.textContent="A guardar alterações locais no Gateway…";try{const config=await readGatewayHardwareIntegrationConfig(),labels={},dpsMap={};for(const input of form.querySelectorAll("[data-tuya-capability-label]"))labels[input.dataset.tuyaCapabilityLabel]=input.value.trim();for(const input of form.querySelectorAll("[data-tuya-dps]"))if(input.value.trim())dpsMap[input.dataset.tuyaDps]=input.value.trim();const next=(config.tuya?.devices||[]).map(item=>item.device_id===device.device_id?{...item,name:form.elements.name.value.trim(),name_source:"local",device_kind_override:form.elements.device_kind_override.value,room:form.elements.room.value.trim(),floor:form.elements.floor.value.trim(),local_ip:form.elements.local_ip.value.trim(),local_mac:form.elements.local_mac.value.trim().toUpperCase(),local_protocol:form.elements.local_protocol.value,local_dps_map:dpsMap,channel_labels:Object.fromEntries(channels.map(channel=>[channel.code,labels[channel.code]||""])),capability_labels:labels}:item);if(!next.some(item=>item.device_id===device.device_id))throw new Error("O dispositivo deixou de constar na configuração do Gateway.");const saved=await saveGatewayHardwareIntegrationConfig({tuya:{devices:next}}),persisted=(saved.tuya?.devices||[]).find(item=>item.device_id===device.device_id),requestedIp=form.elements.local_ip.value.trim();if(!persisted||String(persisted.local_ip||"").trim()!==requestedIp)throw new Error("O Gateway não confirmou o IP local deste dispositivo. As alterações não foram fechadas; atualiza a lista e tenta novamente.");await refreshHardwareIntegrationConfig();const confirmed=state.tuyaDevices.find(item=>item.device_id===device.device_id),requestedMac=form.elements.local_mac.value.trim().toUpperCase();if(!confirmed||String(confirmed.local_ip||"").trim()!==requestedIp||String(confirmed.local_mac||"").trim().toUpperCase()!==requestedMac)throw new Error("O Gateway não confirmou o IP e o MAC guardados. Atualiza a lista e tenta novamente.");status.textContent="Configuração guardada. A testar agora uma leitura real na LAN…";const probe=await readGatewayHardwareProvider("tuya",device.device_id),reading=(probe.tuya||[]).find(item=>item.device_id===device.device_id);if(reading)state.tuyaReadings=[...(state.tuyaReadings||[]).filter(item=>item.device_id!==device.device_id),reading];if(!tuyaReadingConfirmed(reading)){status.textContent=`Configuração guardada, mas a leitura ainda não foi confirmada: ${tuyaLanReasonText(reading?.reason||"tuya_lan_status_unavailable")}`;save.disabled=false;return;}status.textContent="Leitura LAN confirmada. O dispositivo já pode aparecer como ativo.";dialog.close("saved");render();}catch(error){status.textContent=`Não foi possível guardar no Gateway: ${error.message}`;save.disabled=false;}});
+  const editorForm=dialog.querySelector("#tuya-device-edit-form");
+  editorForm.addEventListener("submit",async event=>{
+    event.preventDefault();const form=event.currentTarget,save=form.querySelector('[type="submit"]'),status=form.querySelector("#tuya-device-edit-status");save.disabled=true;status.textContent="A guardar alterações no Gateway…";
+    let saved;
+    try{
+      const config=await readGatewayHardwareIntegrationConfig(),labels={},dpsMap={};
+      for(const input of form.querySelectorAll("[data-tuya-capability-label]"))labels[input.dataset.tuyaCapabilityLabel]=input.value.trim();
+      for(const input of form.querySelectorAll("[data-tuya-dps]"))if(input.value.trim())dpsMap[input.dataset.tuyaDps]=input.value.trim();
+      const next=(config.tuya?.devices||[]).map(item=>item.device_id===device.device_id?{...item,name:form.elements.name.value.trim(),name_source:"local",device_kind_override:form.elements.device_kind_override.value,room:form.elements.room.value.trim(),floor:form.elements.floor.value.trim(),local_ip:form.elements.local_ip.value.trim(),local_mac:form.elements.local_mac.value.trim().toUpperCase(),local_protocol:form.elements.local_protocol.value,local_dps_map:dpsMap,channel_labels:Object.fromEntries(channels.map(channel=>[channel.code,labels[channel.code]||""])),capability_labels:labels}:item);
+      if(!next.some(item=>item.device_id===device.device_id))throw new Error("O dispositivo deixou de constar na configuração do Gateway.");
+      saved=await saveGatewayHardwareIntegrationConfig({tuya:{devices:next}});
+      const persisted=(saved.tuya?.devices||[]).find(item=>item.device_id===device.device_id),requestedIp=form.elements.local_ip.value.trim();
+      if(!persisted||String(persisted.local_ip||"").trim()!==requestedIp)throw new Error("O Gateway não confirmou o IP local deste dispositivo.");
+    }catch(error){status.textContent=`Falha ao guardar no Gateway: ${error.message}`;save.disabled=false;return;}
+    status.textContent="Configuração guardada. A testar agora uma leitura real na LAN…";
+    try{
+      await refreshHardwareIntegrationConfig();
+      const confirmed=state.tuyaDevices.find(item=>item.device_id===device.device_id),requestedIp=form.elements.local_ip.value.trim(),requestedMac=form.elements.local_mac.value.trim().toUpperCase();
+      if(!confirmed||String(confirmed.local_ip||"").trim()!==requestedIp||String(confirmed.local_mac||"").trim().toUpperCase()!==requestedMac)throw new Error("O Gateway guardou a configuração, mas a lista atualizada ainda não confirmou IP e MAC.");
+      const probe=await readGatewayHardwareProvider("tuya",device.device_id),reading=(Array.isArray(probe.tuya)?probe.tuya:[]).find(item=>item?.device_id===device.device_id);
+      if(reading)state.tuyaReadings=[...(state.tuyaReadings||[]).filter(item=>item.device_id!==device.device_id),reading];
+      if(!tuyaReadingConfirmed(reading)){status.textContent=`Configuração guardada, mas a leitura ainda não foi confirmada: ${tuyaLanReasonText(reading?.reason||"tuya_lan_status_unavailable")}`;save.disabled=false;return;}
+      status.textContent="Leitura LAN confirmada. O dispositivo já pode aparecer como ativo.";dialog.close("saved");render();
+    }catch(error){status.textContent=`Configuração guardada, mas o teste de leitura falhou: ${error.message}`;save.disabled=false;}
+  });
   dialog.showModal();
 }
 function setProviderResult(provider, result) {
@@ -2457,7 +2482,7 @@ $("#page-content").addEventListener("click", async event => {
   const tab=event.target.closest("[data-device-tab]");
   if(tab){state.devicesTab=tab.dataset.deviceTab;render();return;}
   const inventoryCard=event.target.closest("[data-inventory-device]");
-  if(inventoryCard&&!event.target.closest("button")){openFavoriteDeviceDetails(inventoryCard.dataset.inventoryDevice,"tuya");return;}
+  if(inventoryCard&&!event.target.closest("button")){clearTimeout(inventoryCardClickTimer);const deviceId=inventoryCard.dataset.inventoryDevice;inventoryCardClickTimer=setTimeout(()=>{inventoryCardClickTimer=null;openFavoriteDeviceDetails(deviceId,"tuya");},280);return;}
   const inventoryEquipment=event.target.closest("[data-inventory-equipment]");
   if(inventoryEquipment){openFavoriteDeviceDetails(inventoryEquipment.dataset.inventoryEquipment,"equipment");return;}
   const inventoryRead=event.target.closest("[data-inventory-read]");
@@ -2546,7 +2571,7 @@ $("#page-content").addEventListener("click", async event => {
     if (checkPresence) checkPresence.disabled = false;
   }
 });
-$("#page-content").addEventListener("dblclick",event=>{const name=event.target.closest("[data-device-name]");if(!name)return;const device=state.tuyaDevices.find(item=>item.device_id===name.dataset.deviceName);if(device)openTuyaDeviceEditor(device);});
+$("#page-content").addEventListener("dblclick",event=>{const name=event.target.closest("[data-device-name]");if(!name)return;clearTimeout(inventoryCardClickTimer);inventoryCardClickTimer=null;const device=state.tuyaDevices.find(item=>item.device_id===name.dataset.deviceName);if(device)openTuyaDeviceEditor(device);});
 $("#page-content").addEventListener("keydown",event=>{if(!["Enter"," "].includes(event.key)||event.target.closest("button"))return;const card=event.target.closest("[data-inventory-device]");if(!card)return;event.preventDefault();openFavoriteDeviceDetails(card.dataset.inventoryDevice,"tuya");});
 document.addEventListener("click",event=>{if(event.target.closest(".solar-chart-wrap"))return;document.querySelectorAll(".solar-chart-tooltip:not([hidden])").forEach(tooltip=>{tooltip.hidden=true;});});
 
