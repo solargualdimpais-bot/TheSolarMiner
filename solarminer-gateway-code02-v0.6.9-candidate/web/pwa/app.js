@@ -2534,12 +2534,21 @@ async function runGatewayUpdateCheck({automatic=false}={}) {
       if(result.activation_available){
         gatewayUpdateNotice=result;gatewayAutoUpdateSuppressed=true;try{localStorage.setItem("solarminer-gateway-update-notice-v1",result.available_version);}catch{}renderGatewayUpdateBanner();
         const prompt={title:"Atualização verificada",message:`Versão instalada: ${result.installed_version||"desconhecida"}. Nova versão: ${result.available_version}. Queres aplicar agora?`,actions:[{label:"Cancelar",value:"cancel"},{label:"Atualizar",value:"apply",primary:true}]};
-        const choice=automatic?await showOperationDialog(prompt):(renderOperationDialog(prompt),await checking);
-        if(choice==="apply"){gatewayUpdateNotice=null;try{localStorage.removeItem("solarminer-gateway-update-notice-v1");}catch{}renderGatewayUpdateBanner();await applyVerifiedGatewayUpdate(result);}
-        else {gatewayUpdateNotice=result;renderGatewayUpdateBanner();}
+        if(automatic){
+          gatewayUpdateNotice=result;
+          renderGatewayUpdateBanner();
+        } else {
+          renderOperationDialog(prompt);
+          const choice=await checking;
+          if(choice==="apply"){gatewayUpdateNotice=null;try{localStorage.removeItem("solarminer-gateway-update-notice-v1");}catch{}renderGatewayUpdateBanner();await applyVerifiedGatewayUpdate(result);}
+          else {gatewayUpdateNotice=result;renderGatewayUpdateBanner();}
+        }
       } else {
-        renderOperationDialog({title:"Atualização bloqueada",message:`O pacote foi verificado, mas a verificação de recuperação bloqueou a instalação.${result.preflight_reason?` Motivo: ${result.preflight_reason}.`:" O Gateway não devolveu o motivo detalhado."}`,actions:[{label:"OK",value:"ok",primary:true}]});
-        gatewayUpdateNotice=result;gatewayAutoUpdateSuppressed=true;renderGatewayUpdateBanner();if(!automatic)await checking;else await new Promise(resolve=>{$("#operation-dialog").addEventListener("close",resolve,{once:true});});
+        if(!automatic){
+          renderOperationDialog({title:"Atualização bloqueada",message:`O pacote foi verificado, mas a verificação de recuperação bloqueou a instalação.${result.preflight_reason?` Motivo: ${result.preflight_reason}.`:" O Gateway não devolveu o motivo detalhado."}`,actions:[{label:"OK",value:"ok",primary:true}]});
+          await checking;
+        }
+        gatewayUpdateNotice=result;gatewayAutoUpdateSuppressed=true;renderGatewayUpdateBanner();
       }
     } else if (result.status === "current") {
       gatewayUpdateNotice=null;gatewayAutoUpdateSuppressed=false;try{localStorage.removeItem("solarminer-gateway-update-notice-v1");}catch{}renderGatewayUpdateBanner();
