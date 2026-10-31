@@ -66,6 +66,21 @@ test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV 
   assert.doesNotMatch(auth, /tuya.*localStorage/i);
 });
 
+test("Saving a Tuya device in either form runs only the selected LAN reachability test", () => {
+  const app = read("../app.js");
+  const auth = read("../gateway-auth.js");
+  const gateway = read("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/app.py");
+  const integrations = read("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/integrations.py");
+  assert.match(app, /async function testTuyaLanReachability\(deviceId\)[\s\S]*?testGatewayTuyaLanReachability\(deviceId\)/);
+  assert.match(app, /saveGatewayHardwareIntegrationConfig\([\s\S]*?testTuyaLanReachability\(id\)/);
+  assert.match(app, /saveGatewayHardwareIntegrationConfig\(\{tuya:\{devices:next\}\}\)[\s\S]*?testTuyaLanReachability\(device\.device_id\)/);
+  assert.match(auth, /\/api\/v1\/integrations\/tuya\/lan-reachability/);
+  assert.match(gateway, /@app\.post\(\"\/api\/v1\/integrations\/tuya\/lan-reachability\"\)/);
+  assert.match(gateway, /status_read\": False, \"dps_read\": False, \"cloud_requested\": False/);
+  assert.match(integrations, /probe_tuya_lan_reachability\(host: str, timeout: float = 1\.0\)/);
+  assert.match(integrations, /socket\.create_connection\(\(address, 6668\), timeout=timeout\)/);
+});
+
 test("Antminer power target prefers the active tuner target over the saved profile target", () => {
   const app = read("../app.js");
   const helper = app.match(/function antminerCurrentPowerTarget\(data\)\{[\s\S]*?\n\}/)?.[0];

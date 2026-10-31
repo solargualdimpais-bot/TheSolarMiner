@@ -140,7 +140,8 @@ test("Live house structure is Gateway-backed and editing controls are Owner-only
 test("Any authenticated PWA can manage its favorites and choose registered Gateway equipment", () => {
   assert.match(app, /const canUsePwa=sessionInfo\(\)\.authenticated/);
   assert.match(app, /const canUsePwa=sessionInfo\(\)\.authenticated,canControl=canUsePwa&&sessionInfo\(\)\.user\?\.role==="owner"/);
-  assert.match(app, /favoriteDeviceIds=favorites\.filter\(id=>all\.some\(item=>item\.id===id\)\)/);
+  assert.match(app, /favoriteDeviceIds=normalizeFavoriteIds\(favorites\)/);
+  assert.match(app, /addFavoriteId\(workspace\.prefs\.favoriteDeviceIds,id\)/);
   assert.match(app, /state\.equipment\|\|\[\]/);
   assert.match(app, /Adicionar aos meus favoritos/);
   assert.match(app, /const owner=sessionInfo\(\)\.authenticated&&sessionInfo\(\)\.user\?\.role==="owner"/);

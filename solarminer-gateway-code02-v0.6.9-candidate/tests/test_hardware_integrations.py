@@ -848,6 +848,7 @@ def test_tuya_switch_control_posts_only_configured_switch_and_reads_back(monkeyp
             calls.append(("set_status", on, switch))
             return {"dps": {str(switch): on}}
     monkeypatch.setattr(integrations, "_tuya_lan_client", lambda device: LocalDevice())
+    monkeypatch.setattr(integrations, "_persist_tuya_protocols", lambda *args, **kwargs: None)
     monkeypatch.setattr(integrations, "_tuya_local_status", lambda device: {"status": [{"code": "switch_1", "value": True}]})
     monkeypatch.setattr(integrations, "_tuya_request", lambda *args, **kwargs: pytest.fail("Tuya control used Cloud"))
     result = integrations.control_tuya_switch({
@@ -926,6 +927,36 @@ def test_tuya_level_control_rejects_unconfigured_device_without_request(monkeypa
     with pytest.raises(ValueError, match="tuya_device_not_configured"):
         integrations.control_tuya_level({"client_id": "client", "client_secret": "secret", "devices": []}, "unlisted", 25)
     assert calls == []
+
+
+def test_tuya_setting_control_writes_only_a_declared_countdown_value(monkeypatch):
+    calls = []
+    class LocalDevice:
+        def set_socketTimeout(self, value): pass
+        def set_retry(self, value): pass
+        def status(self): return {"dps": {"7": 120}}
+        def set_value(self, dps, value):
+            calls.append((dps, value))
+            return {"dps": {str(dps): value}}
+    monkeypatch.setattr(integrations, "_tuya_lan_client", lambda device: LocalDevice())
+    monkeypatch.setattr(integrations, "_tuya_local_status", lambda device: {"status": [{"code": "countdown_1", "value": 120}]})
+    monkeypatch.setattr(integrations, "_tuya_request", lambda *args, **kwargs: pytest.fail("Tuya setting control used Cloud"))
+    config = {"devices": [{"device_id": "breaker-1", "local_ip": "192.168.1.10", "local_key": "local-key-123",
+                           "local_dps_map": {"countdown_1": "7"},
+                           "functions": [{"code": "countdown_1", "name": "Countdown", "type": "Integer", "values": '{"min":0,"max":3600,"step":1}'}]}]}
+    result = integrations.control_tuya_setting(config, "breaker-1", "countdown_1", 120)
+    assert calls == [(7, 120)]
+    assert result["state_confirmed"] is True
+    assert result["source"] == "TUYA_LAN"
+
+
+def test_tuya_setting_control_rejects_undeclared_or_out_of_range_values(monkeypatch):
+    config = {"devices": [{"device_id": "breaker-1", "functions": [{"code": "countdown", "name": "Countdown", "type": "Integer", "values": '{"min":0,"max":60}'}]}]}
+    monkeypatch.setattr(integrations, "_tuya_lan_client", lambda device: pytest.fail("Invalid setting sent to device"))
+    with pytest.raises(ValueError, match="tuya_setting_value_out_of_range"):
+        integrations.control_tuya_setting(config, "breaker-1", "countdown", 61)
+    with pytest.raises(ValueError, match="tuya_setting_not_declared"):
+        integrations.control_tuya_setting(config, "breaker-1", "child_lock", True)
 
 
 def test_tesla_config_keeps_credentials_private_and_validates_selected_vehicle_ids():

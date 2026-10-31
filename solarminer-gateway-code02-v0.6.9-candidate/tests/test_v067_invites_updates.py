@@ -630,6 +630,42 @@ def test_tuya_lan_diagnostics_can_probe_one_device_for_three_read_only_rounds(cl
     assert report["control_commands_sent"] is False
 
 
+def test_tuya_lan_reachability_checks_only_selected_private_ip_without_reading_status_or_cloud(client, monkeypatch):
+    headers = {"Authorization": f"Bearer {owner_session(client)}"}
+    monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: {"tuya": {"devices": [
+        {"device_id": "target-device", "name": "Target", "local_ip": "192.168.1.30",
+         "local_mac": "AA:BB:CC:DD:EE:30"},
+        {"device_id": "other-device", "name": "Other", "local_ip": "192.168.1.31"},
+    ]}})
+    probes = []
+    monkeypatch.setattr(gateway.hardware_integrations, "probe_tuya_lan_reachability",
+                        lambda host: probes.append(host) or {"state": "lan_reachable", "host": host,
+                                                               "port": 6668, "latency_ms": 4.2})
+    monkeypatch.setattr(gateway.hardware_integrations, "read_tuya",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("DPS status must not be read")))
+    response = client.post("/api/v1/integrations/tuya/lan-reachability", headers=headers,
+                           json={"device_id": "target-device"})
+    assert response.status_code == 200, response.text
+    assert probes == ["192.168.1.30"]
+    assert response.json() == {"device_id": "target-device", "connection_state": "lan_reachable",
+                               "reason": None, "local_ip": "192.168.1.30", "local_mac": "AA:BB:CC:DD:EE:30",
+                               "port": 6668, "latency_ms": 4.2, "status_read": False,
+                               "dps_read": False, "cloud_requested": False}
+
+
+def test_tuya_lan_reachability_requires_private_local_ip(client, monkeypatch):
+    headers = {"Authorization": f"Bearer {owner_session(client)}"}
+    monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: {"tuya": {"devices": [
+        {"device_id": "mac-only", "name": "MAC only", "local_mac": "AA:BB:CC:DD:EE:30"},
+    ]}})
+    response = client.post("/api/v1/integrations/tuya/lan-reachability", headers=headers,
+                           json={"device_id": "mac-only"})
+    assert response.status_code == 200, response.text
+    assert response.json()["reason"] == "private_lan_target_required"
+    assert response.json()["status_read"] is False
+    assert response.json()["cloud_requested"] is False
+
+
 def test_tinytuya_lan_scanner_is_exported_by_bundled_package():
     assert callable(gateway.hardware_integrations.tinytuya.deviceScan)
 
@@ -758,5 +794,25 @@ def test_tuya_level_command_is_owner_only_and_rejects_invalid_payload(client, mo
         conn.execute("UPDATE users SET role='viewer' WHERE username=?", ("owner-v067",))
     denied = client.post("/api/v1/integrations/tuya/level", headers=headers,
                          json={"device_id": "configured-device", "percent": 50})
+    assert denied.status_code in (401, 403)
+    assert len(calls) == 1
+
+
+def test_tuya_setting_command_is_owner_only_and_rejects_invalid_payload(client, monkeypatch):
+    token = owner_session(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    calls = []
+    monkeypatch.setattr(gateway.hardware_integrations, "control_tuya_setting",
+                        lambda *args: calls.append(args) or {"command_accepted": True, "state_confirmed": True})
+    invalid = client.post("/api/v1/integrations/tuya/setting", headers=headers,
+                          json={"device_id": "configured-device", "code": "countdown", "value": 999999})
+    assert invalid.status_code == 200  # Endpoint delegates schema/range validation to the Gateway integration.
+    assert len(calls) == 1
+    malformed = client.post("/api/v1/integrations/tuya/setting", headers=headers,
+                            json={"device_id": "configured-device", "code": "countdown", "value": {"seconds": 20}})
+    assert malformed.status_code == 422
+    assert len(calls) == 1
+    denied = client.post("/api/v1/integrations/tuya/setting",
+                         json={"device_id": "configured-device", "code": "countdown", "value": 20})
     assert denied.status_code in (401, 403)
     assert len(calls) == 1

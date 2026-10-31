@@ -520,6 +520,10 @@ export async function controlGatewayTuyaLevel(deviceId, percent) {
   if (typeof deviceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(deviceId) || !Number.isInteger(percent) || percent < 0 || percent > 100) throw new Error("Comando Tuya percentual inválido.");
   return gatewayApi("/api/v1/integrations/tuya/level", { method: "POST", body: { device_id: deviceId, percent } });
 }
+export async function controlGatewayTuyaSetting(deviceId, code, value) {
+  if (typeof deviceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(deviceId) || typeof code !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(code) || !["boolean", "number", "string"].includes(typeof value) || (typeof value === "number" && !Number.isInteger(value))) throw new Error("Definição Tuya inválida.");
+  return gatewayApi("/api/v1/integrations/tuya/setting", { method: "POST", body: { device_id: deviceId, code, value } });
+}
 export async function readGatewayTuyaDeviceEvents(deviceId, limit = 100) {
   if (typeof deviceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(deviceId) || !Number.isInteger(limit) || limit < 1 || limit > 500) throw new Error("Dispositivo inválido.");
   return gatewayApi(`/api/v1/integrations/tuya/${encodeURIComponent(deviceId)}/events?limit=${limit}`);
@@ -528,6 +532,10 @@ export async function runGatewayTuyaLanDiagnostics(rounds = 3, deviceId = undefi
   if (!Number.isInteger(rounds) || rounds < 1 || rounds > 5) throw new Error("O diagnóstico aceita entre uma e cinco rondas.");
   if (deviceId !== undefined && (typeof deviceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(deviceId))) throw new Error("Dispositivo Tuya inválido.");
   return gatewayApi("/api/v1/integrations/tuya/lan-diagnostics", { method: "POST", body: { rounds, ...(deviceId ? { device_id: deviceId } : {}) } });
+}
+export async function testGatewayTuyaLanReachability(deviceId) {
+  if (typeof deviceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(deviceId)) throw new Error("Dispositivo Tuya inválido.");
+  return gatewayApi("/api/v1/integrations/tuya/lan-reachability", { method: "POST", body: { device_id: deviceId } });
 }
 export async function discoverGatewayTuyaLanDevices() {
   return gatewayApi("/api/v1/integrations/tuya/lan-discovery", { method: "POST", body: {} });

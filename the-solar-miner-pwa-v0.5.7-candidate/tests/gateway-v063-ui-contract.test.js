@@ -38,6 +38,8 @@ test("PV string editor captures module details and derives total nominal power",
   assert.match(energyEngine, /"panel_count"/);
   assert.match(energyEngine, /"panel_power_w"/);
   assert.match(app, /await saveGatewayEnergyEngineConfig\(\{pv_strings:strings\}\)/);
+  assert.match(app, /const current=await readGatewayEnergyEngineConfig\(\);\s*const strings=Array\.isArray\(current\?\.pv_strings\)\?\[\.\.\.current\.pv_strings\]:\[\]/);
+  assert.match(app, /const index=strings\.findIndex\(item=>item\.id===id\)/);
   assert.match(app, /const saved=await readGatewayEnergyEngineConfig\(\)/);
   assert.match(app, /const savedStrings=Array\.isArray\(saved\?\.pv_strings\)/);
   assert.match(app, /e\.preventDefault\(\); e\.stopPropagation\(\); void savePvStringForm/);
@@ -78,8 +80,8 @@ test("Favorite controls refresh the target device before toggling and show a sim
   assert.match(app, /function openFavoriteDeviceDetails\(deviceId,kind\)/);
   assert.match(app, /function tuyaSimpleReadings\(device,reading\)/);
   assert.match(app, /function favoriteReadingConfirmed\(item\)/);
-  assert.match(app, /A testar agora uma leitura real na LAN/);
-  assert.match(app, /Configuração guardada, mas a leitura LAN falhou/);
+  assert.match(app, /A testar apenas a resposta na LAN/);
+  assert.match(app, /Configuração guardada, mas sem resposta LAN/);
   assert.match(app, /function renderTuyaDeviceCards\(devices\)/);
   assert.match(app, /tuya-read-state/);
   assert.match(app, /confirmed\?'Confirmado':'Por confirmar'/);
@@ -109,19 +111,32 @@ test("Devices inventory waits to distinguish a single card click from a double c
 
 test("Tuya editor distinguishes a confirmed save from a failed follow-up LAN test", () => {
   assert.match(app, /Falha ao guardar no Gateway: \$\{error\.message\}/);
-  assert.match(app, /Configuração guardada, mas a leitura LAN falhou/);
-  assert.match(app, /const \{reading,result\}=await testTuyaLanDevice\(device\.device_id\)/);
+  assert.match(app, /Configuração guardada, mas sem resposta LAN/);
+  assert.match(app, /const \{reading,result\}=await testTuyaLanReachability\(device\.device_id\)/);
 });
 
-test("Tuya connection test keeps the fresh status response and reports latency without assuming a switch", () => {
-  const handler=app.match(/const inventoryRead=event\.target\.closest\("\[data-inventory-read\]"\);[\s\S]*?const inventoryToggle=/)?.[0]||"";
-  assert.match(handler, /testTuyaLanDevice\(id\)/);
-  assert.match(handler, /state\.tuyaReadings=.*reading/);
-  assert.doesNotMatch(handler, /refreshHardwareIntegrationConfig/);
-  assert.match(app, /Ligação LAN confirmada · \$\{result\.success_count\}\/\$\{result\.rounds\} respostas · média \$\{result\.average_latency_ms\} ms/);
-  assert.match(app, /async function testTuyaLanDevice\(deviceId\)[\s\S]*?runGatewayTuyaLanDiagnostics\(3,deviceId\)/);
-  assert.match(app, /Tuya Cloud online · LAN sem resposta/);
-  assert.match(app, /tuyaReadingConfirmed\(reading\)\{return Boolean\(reading&&reading\.connection_state==="local_responded"\);\}/);
+test("Tuya save and manual re-test use only basic LAN reachability, and closed Tuya ports stay unconfirmed", () => {
+  assert.match(app, /async function testTuyaLanReachability\(deviceId\)[\s\S]*?cloud_requested:false/);
+  assert.match(app, /data-tuya-detail-read/);
+  assert.match(app, /testTuyaLanReachability\(deviceId\)/);
+  assert.match(app, /tuyaReadingConfirmed\(reading\)\{return Boolean\(reading&&\["local_responded","lan_reachable"\]\.includes\(reading\.connection_state\)\);\}/);
+  assert.doesNotMatch(app, /tuyaReadingConfirmed\(reading\)\{return Boolean\(reading&&\["local_responded","lan_reachable","lan_host_responded"\]/);
+});
+
+test("Tuya cards mirror the Home layout and expose schema-driven quick controls", () => {
+  assert.match(app, /data-favorite-expand=/);
+  assert.match(app, /data-inventory-expand=/);
+  assert.match(app, /function openTuyaQuickControls\(device\)/);
+  assert.match(app, /function tuyaSwitchCodes\(device\)/);
+  assert.match(app, /data-tuya-setting=/);
+  assert.match(app, /data-tuya-channel-label=/);
+});
+
+test("Devices inventory tolerates missing optional Tuya arrays", () => {
+  assert.match(app, /devices=Array\.isArray\(state\.tuyaDevices\)/);
+  assert.match(app, /readings=Array\.isArray\(state\.tuyaReadings\)/);
+  assert.match(app, /Array\.isArray\(device\?\.functions\)/);
+  assert.match(app, /Array\.isArray\(reading\?\.status\)/);
 });
 
 test("Tuya device switch is updated only after a fresh LAN status confirms the requested state", () => {
@@ -139,6 +154,6 @@ test("LAN discovery tries the local neighbor cache after broadcast errors", () =
 test("USB release rollback verification includes the installed Gateway release", () => {
   const rollbackLoops = workflow.match(/for VERSION in[^\n]+/g) || [];
   assert.equal(rollbackLoops.length, 2);
-  for (const loop of rollbackLoops) assert.match(loop, /0\.6\.111 0\.6\.112 0\.6\.113; do/);
+  for (const loop of rollbackLoops) assert.match(loop, /0\.6\.112 0\.6\.113 0\.6\.114; do/);
 });
 

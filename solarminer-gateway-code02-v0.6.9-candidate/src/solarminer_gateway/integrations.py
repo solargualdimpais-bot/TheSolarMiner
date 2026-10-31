@@ -942,6 +942,65 @@ def control_tuya_level(config: dict[str, Any], device_id: str, percent: int) -> 
             "source": "TUYA_LAN"}
 
 
+def control_tuya_setting(config: dict[str, Any], device_id: str, code: str, value: Any) -> dict[str, Any]:
+    """Write a schema-declared Tuya setting (timer, lock, light mode or alarm threshold)."""
+    if not isinstance(config, dict):
+        raise RuntimeError("tuya_config_unavailable")
+    device = next((item for item in config.get("devices", [])
+                   if isinstance(item, dict) and item.get("device_id") == device_id), None)
+    if device is None:
+        raise ValueError("tuya_device_not_configured")
+    if not isinstance(code, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", code):
+        raise ValueError("tuya_setting_code_invalid")
+    schema = next((item for item in device.get("functions", [])
+                   if isinstance(item, dict) and item.get("code") == code), None)
+    if schema is None:
+        raise ValueError("tuya_setting_not_declared")
+    semantic = " ".join(str(schema.get(key, "")) for key in ("code", "name", "desc")).lower()
+    if not re.search(r"count.?down|child.?lock|maintenance.?lock|light.?mode|relay.?status|alarm|over.?power|under.?power|over.?current|under.?current|over.?voltage|under.?voltage|trip", semantic):
+        raise ValueError("tuya_setting_not_supported")
+    type_name = str(schema.get("type", "")).lower()
+    raw_values = schema.get("values", {})
+    if isinstance(raw_values, str):
+        try:
+            raw_values = json.loads(raw_values) if raw_values else {}
+        except json.JSONDecodeError:
+            raw_values = {}
+    values = raw_values if isinstance(raw_values, dict) else {}
+    if type_name in {"bool", "boolean"}:
+        if not isinstance(value, bool):
+            raise ValueError("tuya_setting_value_must_be_boolean")
+    elif type_name in {"integer", "int", "number"}:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("tuya_setting_value_must_be_integer")
+        minimum, maximum, step = values.get("min"), values.get("max"), values.get("step", 1)
+        if any(isinstance(bound, bool) or not isinstance(bound, (int, float)) for bound in (minimum, maximum)):
+            raise ValueError("tuya_setting_range_unavailable")
+        if not minimum <= value <= maximum or (isinstance(step, (int, float)) and step > 0 and (value - minimum) % step != 0):
+            raise ValueError("tuya_setting_value_out_of_range")
+    elif type_name in {"enum", "string"}:
+        options = values.get("range")
+        if not isinstance(value, str) or not isinstance(options, list) or value not in options:
+            raise ValueError("tuya_setting_value_not_in_declared_options")
+    else:
+        raise ValueError("tuya_setting_type_not_supported")
+    dps = _tuya_local_dps(device, code)
+    client, _initial_status, protocol = _tuya_probe_local_status(device)
+    _persist_tuya_protocols({device_id: protocol}, {device_id: device["local_ip"]})
+    response = client.set_value(int(dps), value)
+    if not isinstance(response, dict) or (response.get("Error") and not response.get("dps")):
+        raise RuntimeError("tuya_lan_command_rejected")
+    try:
+        rows = _tuya_local_status(device).get("status", [])
+        observed = next((item.get("value") for item in rows if item.get("code") == code), None)
+    except (RuntimeError, ValueError, OSError):
+        observed = None
+    return {"device_id": device_id, "setting_code": code, "requested_value": value,
+            "observed_value": observed, "command_accepted": True, "state_confirmed": observed == value,
+            "connection_state": "control_confirmed" if observed == value else "command_accepted_state_unconfirmed",
+            "control_command_sent": True, "source": "TUYA_LAN"}
+
+
 def read_antminer(host: str, port: int = 4028, timeout: float = 2.0) -> dict[str, Any]:
     address = _private_ip(host)
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535: raise ValueError("invalid_port")
@@ -1314,6 +1373,28 @@ def probe_tcp(host: str, port: int, timeout: float = 2.0) -> dict[str, Any]:
         else:
             reason = f"tcp_connection_error:{type(exc).__name__}"
         raise RuntimeError(reason) from exc
+
+
+def probe_tuya_lan_reachability(host: str, timeout: float = 1.0) -> dict[str, Any]:
+    """Check one Tuya LAN address with a TCP handshake only; do not authenticate or read DPS."""
+    address = _private_ip(host)
+    started = time.perf_counter()
+    try:
+        with socket.create_connection((address, 6668), timeout=timeout):
+            return {"state": "lan_reachable", "host": address, "port": 6668,
+                    "latency_ms": round((time.perf_counter() - started) * 1000, 1)}
+    except OSError as exc:
+        elapsed = round((time.perf_counter() - started) * 1000, 1)
+        if getattr(exc, "errno", None) == errno.ECONNREFUSED:
+            # A TCP reset is still a response from that LAN address; the Tuya
+            # application port itself is closed, so do not label it reachable.
+            return {"state": "lan_host_responded", "host": address, "port": 6668,
+                    "latency_ms": elapsed, "reason": "tuya_lan_port_closed"}
+        if isinstance(exc, TimeoutError):
+            return {"state": "failed", "host": address, "port": 6668,
+                    "latency_ms": elapsed, "reason": "lan_response_timeout"}
+        return {"state": "failed", "host": address, "port": 6668,
+                "latency_ms": elapsed, "reason": f"lan_connection_failed:{type(exc).__name__}"}
 
 
 _DEYE_SG05LP3_MODEL = "SUN-15K-SG05LP3-EU-SM2"

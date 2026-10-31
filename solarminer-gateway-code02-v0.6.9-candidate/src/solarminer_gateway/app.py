@@ -50,7 +50,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.114"
+PACKAGE_VERSION = "0.6.115"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -1939,6 +1939,37 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
                 "devices": result, "control_commands_sent": False}
 
 
+@app.post("/api/v1/integrations/tuya/lan-reachability")
+def tuya_lan_reachability(payload: dict[str, Any],
+                          session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Test only the selected configured device's LAN TCP reachability; no Tuya status or cloud calls."""
+    device_id = payload.get("device_id") if isinstance(payload, dict) else None
+    if not isinstance(device_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", device_id):
+        raise HTTPException(422, "tuya_device_id_invalid")
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        devices = hardware_integrations.load_config().get("tuya", {}).get("devices", [])
+        device = next((item for item in devices if isinstance(item, dict) and item.get("device_id") == device_id), None)
+        if device is None:
+            raise HTTPException(404, "tuya_device_not_configured")
+        host = device.get("local_ip")
+        if not host:
+            return {"device_id": device_id, "connection_state": "failed", "reason": "private_lan_target_required",
+                    "local_mac": device.get("local_mac", ""), "status_read": False, "cloud_requested": False}
+        try:
+            probe = hardware_integrations.probe_tuya_lan_reachability(host)
+        except ValueError as exc:
+            return {"device_id": device_id, "connection_state": "failed", "reason": str(exc),
+                    "local_mac": device.get("local_mac", ""), "status_read": False, "cloud_requested": False}
+        state = probe["state"]
+        return {"device_id": device_id, "connection_state": state, "reason": probe.get("reason"),
+                "local_ip": probe.get("host", host), "local_mac": device.get("local_mac", ""),
+                "port": probe.get("port"), "latency_ms": probe.get("latency_ms"),
+                "status_read": False, "dps_read": False, "cloud_requested": False}
+
+
 @app.post("/api/v1/integrations/huawei/clients")
 def huawei_router_clients(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
     """Read Huawei's connected-client table and match known Tuya MAC/IP pairs."""
@@ -2352,6 +2383,38 @@ def tuya_level_control(payload: dict[str, Any], session: dict[str, Any] = Depend
             LOG.error("Tuya level control failed (%s)", type(exc).__name__)
             audit(conn, session["user_id"], "hardware.tuya.level", device_id, "failed", {"reason": type(exc).__name__, "control_command_sent": False})
             raise HTTPException(502, "tuya_level_control_failed") from exc
+
+
+@app.post("/api/v1/integrations/tuya/setting")
+def tuya_setting_control(payload: dict[str, Any], session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Owner-only setting command limited to declared, supported DPS functions."""
+    with db() as conn:
+        _require_owner(session, conn)
+        if not isinstance(payload, dict) or set(payload) != {"device_id", "code", "value"}:
+            raise HTTPException(422, "tuya_setting_payload_invalid")
+        device_id, code, value = payload.get("device_id"), payload.get("code"), payload.get("value")
+        if (not isinstance(device_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", device_id)
+                or not isinstance(code, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", code)
+                or isinstance(value, (dict, list, float)) or not isinstance(value, (bool, int, str))):
+            raise HTTPException(422, "tuya_setting_payload_invalid")
+        try:
+            config = hardware_integrations.load_config().get("tuya", {})
+            result = hardware_integrations.control_tuya_setting(config, device_id, code, value)
+            audit(conn, session["user_id"], "hardware.tuya.setting", device_id,
+                  "success" if result.get("state_confirmed") else "unconfirmed",
+                  {"setting_code": code, "state_confirmed": bool(result.get("state_confirmed")), "control_command_sent": True})
+            return result
+        except ValueError as exc:
+            audit(conn, session["user_id"], "hardware.tuya.setting", device_id, "rejected", {"reason": str(exc)[:120]})
+            raise HTTPException(422, str(exc)) from exc
+        except RuntimeError as exc:
+            reason = str(exc)[:120]
+            audit(conn, session["user_id"], "hardware.tuya.setting", device_id, "failed", {"reason": reason, "control_command_sent": False})
+            raise HTTPException(502, reason) from exc
+        except (OSError, json.JSONDecodeError) as exc:
+            LOG.error("Tuya setting control failed (%s)", type(exc).__name__)
+            audit(conn, session["user_id"], "hardware.tuya.setting", device_id, "failed", {"reason": type(exc).__name__, "control_command_sent": False})
+            raise HTTPException(502, "tuya_setting_control_failed") from exc
 
 
 def _require_owner(session: dict[str, Any], conn) -> None:
@@ -3339,7 +3402,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.114"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.115"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

@@ -541,4 +541,33 @@ html[data-font="small"]{--font-ui-scale:.9;}html[data-font="normal"]{--font-ui-s
 @media(max-width:580px){.engine-history-plot{padding:0 32px}.engine-history-arrow{width:28px;height:38px;font-size:24px}}
 
 .home-favorites .inventory-device-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 8px;width:100%;font-size:10px!important;line-height:1.35;letter-spacing:normal!important;color:var(--gold-2,#e2d0a4)!important}.home-favorites .inventory-device-metrics span:last-child{text-align:right}.home-favorites .inventory-device-metrics span:empty{visibility:hidden}
-
+.favorite-device-grid{grid-auto-flow:row;grid-auto-rows:auto;overflow:visible}
+.favorite-device-icon .device-type-icon,.tuya-device-glyph .device-type-icon{display:block;width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.favorite-device-icon .device-type-icon text{fill:currentColor;stroke:none;font:700 5px/1 system-ui,sans-serif;letter-spacing:.15px}
+.favorite-device.inventory-device{grid-template-columns:38px minmax(0,1fr) auto;align-items:center}
+.favorite-device.inventory-device>.favorite-device-icon{grid-column:1;grid-row:1;align-self:start}
+.favorite-device.inventory-device>.favorite-device-info{grid-column:2;grid-row:1;min-width:0}
+.favorite-device.inventory-device>.favorite-device-actions{grid-column:3;grid-row:1}
+.home-favorites .favorite-device>.favorite-device-icon{align-self:flex-start;flex:none}
+@media(max-width:380px){.favorite-device.inventory-device{grid-template-columns:30px minmax(0,1fr) auto;gap:7px}.favorite-device.inventory-device .favorite-device-icon{width:30px;height:30px;min-width:30px;min-height:30px}}
+/* Tuya cards: device identity at upper left, verified switch at upper right, labels below. */
+.favorite-device-icon .device-type-icon{width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.home-favorites .favorite-device{position:relative;padding:14px;}
+.home-favorites .favorite-device>.favorite-device-icon{position:absolute;top:13px;left:13px;align-self:auto;width:42px;height:42px;}
+.home-favorites .favorite-device-info{position:absolute;left:14px;right:62px;bottom:14px;min-width:0;}
+.home-favorites .favorite-device-actions{position:absolute;inset:0;display:block;pointer-events:none;}
+.home-favorites .favorite-device-actions .favorite-state-symbol{position:absolute;top:12px;right:12px;width:42px;height:42px;pointer-events:auto;}
+.favorite-expand{position:absolute;right:13px;bottom:12px;display:grid;place-items:center;width:38px;height:38px;padding:0;border:1px solid rgba(220,201,156,.22);border-radius:50%;background:rgba(18,18,17,.8);color:var(--gold-2,#e2d0a4);font-size:24px;line-height:1;cursor:pointer;pointer-events:auto}
+.favorite-expand:hover,.favorite-expand:focus-visible{background:#302a1e;border-color:var(--gold-2,#e2d0a4)}
+.inventory-device.is-fault{border-color:rgba(255,75,75,.65);background:rgba(125,20,20,.18)}
+.inventory-device.is-pending{opacity:.8}
+.tuya-quick-controls{width:min(560px,calc(100vw - 20px));max-height:min(92dvh,940px);}
+.tuya-quick-controls .dialog-body{display:grid;gap:14px;}
+.tuya-quick-channel-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;}
+.tuya-quick-channel{display:flex;align-items:center;gap:10px;min-width:0;padding:10px;border:1px solid var(--line);border-radius:13px;background:var(--panel-2,#141413);}
+.tuya-quick-channel>span{min-width:0;overflow-wrap:anywhere;cursor:text;}
+.tuya-quick-channel strong{font-size:13px;font-weight:550;}
+.tuya-countdown-picker{display:grid;grid-template-columns:44px minmax(90px,1fr) 44px;gap:8px;align-items:center;}
+.tuya-countdown-picker button{height:48px;border:1px solid var(--line);border-radius:12px;background:var(--panel-2,#141413);color:var(--gold-2,#e2d0a4);font-size:24px;}
+.tuya-countdown-picker input{min-width:0;min-height:48px;text-align:center;font-size:18px;}
+@media(max-width:420px){.tuya-quick-channel-list{grid-template-columns:1fr}.home-favorites .favorite-device{padding:11px}.home-favorites .favorite-device>.favorite-device-icon{top:10px;left:10px}.home-favorites .favorite-device-actions .favorite-state-symbol{top:9px;right:9px}.home-favorites .favorite-device-info{left:11px;bottom:11px;right:54px}.favorite-expand{right:9px;bottom:9px;width:34px;height:34px}}
