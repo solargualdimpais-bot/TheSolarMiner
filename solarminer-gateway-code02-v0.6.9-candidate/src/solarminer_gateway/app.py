@@ -50,7 +50,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.110"
+PACKAGE_VERSION = "0.6.111"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -751,17 +751,14 @@ def _collect_tuya_device_events_once() -> int:
         recorded = _persist_tuya_device_events(conn, readings)
         energy_engine.persist_tuya_telemetry(conn, readings, devices)
         conn.commit()
-    latest_config = hardware_integrations.load_config()
-    _update_tuya_device_records(latest_config, readings)
-    hardware_integrations.save_config(latest_config)
     return recorded
 
 
 def _tuya_event_poll_interval_seconds() -> int:
     try:
-        return max(60, min(3600, int(os.environ.get("SOLARMINER_TUYA_EVENT_POLL_SECONDS", "60"))))
+        return max(1, min(3600, int(os.environ.get("SOLARMINER_TUYA_EVENT_POLL_SECONDS", "1"))))
     except (TypeError, ValueError):
-        return 60
+        return 1
 
 
 async def _tuya_device_event_loop() -> None:
@@ -1277,7 +1274,22 @@ def hardware_integrations_status(session: dict[str, Any] = Depends(require_permi
         actor = _revalidate_actor(conn, session, "manage_gateway")
         if actor["role"] != "owner": raise HTTPException(403, "owner_required")
     try:
-        return hardware_integrations.public_config()
+        result = hardware_integrations.public_config()
+        with db() as conn:
+            telemetry = energy_engine.read_tuya_telemetry(conn, max_age_seconds=3)
+        for device in result.get("tuya", {}).get("devices", []):
+            if not isinstance(device, dict):
+                continue
+            row = telemetry.get(device.get("device_id"), {})
+            if not row:
+                continue
+            device["current_status"] = row.get("status", [])
+            device["last_status_at"] = row.get("observed_at")
+            device["local_control_state"] = "ready" if row.get("fresh") else "unavailable"
+            device["local_verified"] = bool(device.get("local_verified") or row.get("verified"))
+            device["current_connection_state"] = row.get("connection_state", "failed") if row.get("fresh") else "failed"
+            device["current_status_reason"] = row.get("reason")
+        return result
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise HTTPException(500, "integration_config_unavailable") from exc
 
@@ -3312,7 +3324,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.110"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.111"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

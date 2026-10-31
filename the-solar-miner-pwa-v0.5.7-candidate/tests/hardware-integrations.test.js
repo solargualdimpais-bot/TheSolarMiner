@@ -93,7 +93,7 @@ test("periodic Gateway refresh preserves open dialogs and renders updated data a
   const app = read("../app.js");
   assert.match(app, /function renderAfterLiveRefresh\(\)\s*\{\s*if \(document\.querySelector\("dialog\[open\]"\)\) \{ state\.pendingLiveRender = true;/);
   assert.match(app, /document\.addEventListener\("close", \(\) => \{\s*if \(state\.pendingLiveRender && !document\.querySelector\("dialog\[open\]"\)\)/);
-  assert.equal((app.match(/renderAfterLiveRefresh\(\);/g) || []).length, 2);
+  assert.equal((app.match(/renderAfterLiveRefresh\(\);/g) || []).length, 3);
 });
 
 test("Deye Cloud history connection is configured by the Owner and runs only on explicit actions", () => {
