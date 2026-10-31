@@ -578,7 +578,9 @@ def test_tuya_sync_imports_local_key_and_device_capabilities(monkeypatch):
     # Sync imports capability metadata only; operational readings are obtained
     # from the device locally and must not be fetched through the Tuya cloud.
     assert "current_status" not in device
-    assert not any(path.endswith("/status") for path in calls)
+    assert "/v1.0/iot-03/devices/tuya_1/status" not in calls
+    assert device["category_schema_source"] == "TUYA_CATEGORY_REFERENCE"
+    assert result["category_schemas"]["cz"]["status_spec"][0]["code"] == "cur_power"
     assert calls[0] == "/v1.0/token?grant_type=1"
 
 
@@ -602,6 +604,10 @@ def test_tuya_sync_reuses_only_matching_cached_product_schema(monkeypatch):
                                 "ip": "192.168.8.42", "is_online": True}}
         if path == "/v1.0/iot-03/devices/tuya_new_1/specification":
             raise RuntimeError("specification_temporarily_unavailable")
+        if path == "/v1.0/iot-03/categories/cz/functions":
+            return {"result": {"functions": [{"code": "switch_1", "type": "Boolean"}]}}
+        if path == "/v1.0/iot-03/categories/cz/status":
+            return {"result": {"status_list": [{"code": "cur_power", "type": "Integer"}]}}
         raise AssertionError(path)
 
     monkeypatch.setattr(gateway.hardware_integrations, "_tuya_request", request)
