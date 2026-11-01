@@ -564,6 +564,24 @@ html[data-font="small"]{--font-ui-scale:.9;}html[data-font="normal"]{--font-ui-s
 .inventory-device.is-pending{opacity:.8}
 .tuya-quick-controls{width:min(560px,calc(100vw - 20px));max-height:min(92dvh,940px);}
 .tuya-quick-controls .dialog-body{display:grid;gap:14px;}
+.breaker-detail-view{display:grid;justify-items:center;gap:18px;padding:18px 8px 8px}
+.breaker-detail-state{display:grid;justify-items:center;gap:10px;text-align:center}
+.breaker-detail-state>strong{font-size:18px}
+.breaker-detail-power{width:88px;height:88px;flex-basis:88px;border-width:2px;background:var(--panel-2,#141413);}
+.breaker-detail-power svg{width:48px;height:48px}
+.breaker-detail-power.on{box-shadow:0 0 22px rgba(220,201,156,.24)}
+.breaker-detail-metrics{width:100%;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.breaker-detail-metrics .detail-item{min-height:68px;padding:14px;text-align:center}
+.breaker-detail-settings{width:100%;padding-top:4px}
+.breaker-detail-settings .button{width:100%;min-height:48px}
+.tuya-breaker-tabs{display:grid;grid-auto-columns:minmax(0,1fr);grid-auto-flow:column;gap:6px;padding:5px;border-radius:14px;background:var(--panel-2,#141413)}
+.tuya-breaker-tabs button{min-width:0;min-height:44px;padding:7px 10px;border:0;border-radius:10px;background:transparent;color:var(--muted);font-weight:650}
+.tuya-breaker-tabs button[aria-pressed="true"]{background:var(--gold-2,#e2d0a4);color:#211f1b}
+.tuya-breaker-panel{display:grid;gap:12px}
+.tuya-breaker-panel[hidden]{display:none}
+.tuya-countdown-picker:has(input[type="range"]){grid-template-columns:42px minmax(80px,1fr) 44px;}
+.tuya-countdown-picker input[type="range"]{width:100%;accent-color:var(--gold-2,#e2d0a4)}
+.tuya-countdown-picker output{grid-column:1/-1;text-align:center;font-size:16px;font-weight:650}
 .tuya-quick-channel-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;}
 .tuya-quick-channel{display:flex;align-items:center;gap:10px;min-width:0;padding:10px;border:1px solid var(--line);border-radius:13px;background:var(--panel-2,#141413);}
 .tuya-quick-channel>span{min-width:0;overflow-wrap:anywhere;cursor:text;}

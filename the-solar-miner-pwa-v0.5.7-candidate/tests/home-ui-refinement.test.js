@@ -199,6 +199,18 @@ test("Tuya profiles can be inferred or overridden and breakers expose one contro
   assert.match(app, /if\(\(device\.device_kind_override\|\|device\.device_kind\)==="breaker"\)codes=\[/);
 });
 
+test("Breaker name details show measured values and Settings; arrow opens only three compact icon tabs", () => {
+  assert.match(app, /function tuyaIsBreaker\(device\)/);
+  assert.match(app, /data-breaker-detail-settings/);
+  assert.match(app, /breaker-detail-metrics/);
+  assert.match(app, /data-breaker-tab="switch"/);
+  assert.match(app, /data-breaker-tab="countdown"/);
+  assert.match(app, /data-breaker-tab="lock"/);
+  assert.match(app, /data-breaker-countdown-save/);
+  assert.match(app, /data-breaker-lock-code/);
+  assert.match(app, /breaker\?breakerMenu/);
+});
+
 test("Energy page shows Gateway daily solar estimate and battery energy above cut-off", () => {
   assert.match(app, /engine\.forecast\?\.solar_day/);
   assert.match(app, /Produção solar prevista até ao fim do dia/);
