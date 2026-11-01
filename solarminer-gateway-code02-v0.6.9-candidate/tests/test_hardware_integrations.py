@@ -15,7 +15,8 @@ def test_tuya_local_dps_prefers_tuya_dp_id_to_channel_suffix():
     }
     assert integrations._tuya_local_dps(device, "switch_1") == "7"
     assert integrations._tuya_local_dps(device, "switch_2") == "9"
-    assert integrations._tuya_local_dps({"functions": []}, "switch_2") == "2"
+    with pytest.raises(ValueError, match="tuya_local_datapoint_mapping_required"):
+        integrations._tuya_local_dps({"functions": []}, "switch_2")
 
 
 def test_tuya_multichannel_switch_requires_real_dp_mapping():
@@ -144,6 +145,34 @@ def test_tuya_dps_registry_keeps_dp18_scoped_and_unknown_read_only():
     assert unknown["raw_dps"]["250"] == {"x": 1}
 
 
+def test_tuya_dlq_category_uses_product_schema_ids_for_breaker_semantics():
+    device = {
+        "category": "dlq",
+        "product_id": "breaker-product-a",
+        "functions": [
+            {"code": "relay_state", "name": "Estado do relé", "type": "Boolean", "dp_id": 7},
+            {"code": "switch", "name": "Switch", "type": "Boolean", "dp_id": 12},
+        ],
+        "status_spec": [
+            {"code": "daily_energy", "name": "Daily electricity", "type": "Raw", "dp_id": 38},
+            {"code": "cur_voltage_a", "name": "Phase A voltage", "type": "Integer", "dp_id": 44},
+        ],
+        "current_status": [
+            {"dps_id": 7, "code": "dps_7", "value": True},
+            {"dps_id": 38, "code": "dps_38", "value": "today-series"},
+            {"dps_id": 44, "code": "dps_44", "value": 2291},
+        ],
+    }
+    report = tuya_dps_registry.analyze_device(device)
+    by_id = {item["dps_id"]: item for item in report["dps"]}
+    assert by_id[7]["semantic_code"] == "switch"
+    assert by_id[7]["function_code"] == "relay_state"
+    assert by_id[38]["semantic_code"] == "daily_energy"
+    assert by_id[44]["semantic_code"] == "voltage_phase_a"
+    assert by_id[44]["function_code"] == "cur_voltage_a"
+    assert report["write_authorized"] is False
+
+
 def test_tuya_dps_registry_suggests_hybrid_entities_without_writes():
     status = [{"dps_id": dp, "code": f"dps_{dp}", "value": value}
               for dp, value in [(1, False), (2, False), (3, False), (4, False), (5, False), (6, False),
@@ -216,7 +245,8 @@ def test_qccdz_ev_charger_uses_its_dps_18_switch_profile():
     assert profile["channel_count"] == 1
     assert integrations._tuya_local_dps(device, "switch") == "18"
     assert integrations._tuya_local_dps(device, "switch_1") == "18"
-    assert integrations._tuya_local_dps({"category": "qld", "functions": []}, "switch") == "1"
+    with pytest.raises(ValueError, match="tuya_local_datapoint_mapping_required"):
+        integrations._tuya_local_dps({"category": "qld", "functions": []}, "switch")
 
 
 def test_qccdz_local_status_names_dps_18_as_switch(monkeypatch):
@@ -1112,6 +1142,7 @@ def test_tuya_switch_control_posts_only_configured_switch_without_immediate_read
     result = integrations.control_tuya_switch({
         "region": "eu_central",
         "devices": [{"device_id": "device_123", "name": "AQS 1", "switch_code": "switch_1",
+                      "functions": [{"code": "switch_1", "type": "Boolean", "dp_id": 1}],
                       "local_key": "local-key-123", "local_ip": "192.168.8.44"}],
     }, "device_123", True)
     assert calls == [("set_status", True, 1)]
@@ -1138,6 +1169,7 @@ def test_tuya_switch_command_uses_saved_protocol_without_reading_status(monkeypa
     monkeypatch.setattr(integrations, "_persist_tuya_protocols", lambda *_args, **_kwargs: None)
     result = integrations.control_tuya_switch({"devices": [{
         "device_id": "relay-1", "name": "Relay", "switch_code": "switch_1",
+        "functions": [{"code": "switch_1", "type": "Boolean", "dp_id": 1}],
         "local_key": "local-key-123", "local_ip": "192.168.8.44", "local_protocol": "3.4",
     }]}, "relay-1", True)
     assert commands == [("3.4", True, 1)]

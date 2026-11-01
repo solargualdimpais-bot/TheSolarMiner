@@ -656,8 +656,6 @@ def _tuya_local_dps(device: dict[str, Any], code: str, *, status: bool = False) 
                     str(entry.get("type", "")).casefold() in {"bool", "boolean"}}
         if {f"switch_{index}" for index in range(1, 7)}.issubset(declared):
             return "13"
-    if code == "switch":
-        return "1"
     match = re.fullmatch(r"switch_(\d+)", code)
     if match and 1 <= int(match.group(1)) <= 64:
         switch_functions = [entry for entry in device.get("functions", [])
@@ -681,7 +679,11 @@ def _tuya_local_dps(device: dict[str, Any], code: str, *, status: bool = False) 
                     and int(match.group(1)) <= 6):
                 return str(int(match.group(1)))
             raise ValueError("tuya_local_datapoint_mapping_required")
-        return str(int(match.group(1)))
+        # Do not infer a DPS from the function suffix for a generic Tuya
+        # product. The suffix is a function code, not a guaranteed local DP
+        # number. Only the explicitly scoped KG six-channel profile above may
+        # use its documented standard numbering when the product schema omits
+        # dp_id; all other products need an exact schema or owner mapping.
     if code.isdigit() and 1 <= int(code) <= 65535:
         return str(int(code))
     raise ValueError("tuya_local_datapoint_mapping_required")

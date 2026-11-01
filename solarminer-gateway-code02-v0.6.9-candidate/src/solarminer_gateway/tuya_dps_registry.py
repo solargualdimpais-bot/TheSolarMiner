@@ -6,10 +6,12 @@ explicit owner mapping in ``local_dps_map``.
 """
 from __future__ import annotations
 
+import json
 import re
+import unicodedata
 from typing import Any
 
-REGISTRY_VERSION = 2
+REGISTRY_VERSION = 3
 
 
 def _dp(dp_id: int, semantic: str, label: str, data_type: str, *, unit: str | None = None,
@@ -38,6 +40,135 @@ def _dp(dp_id: int, semantic: str, label: str, data_type: str, *, unit: str | No
 _OFFICIAL_SWITCH = "Tuya Developer Platform: Smart Switch Product Function Definition"
 _OWNER_NOTES = "Owner-provided device observations in the supplied DPS proposal"
 _COMMUNITY = "Community-reported Tuya DPS template; device-specific validation required"
+
+# Tuya's official DLQ (circuit-breaker) category standard is code-based: it
+# names common functions such as ``switch``, ``daily_energy``, ``cur_current_a``
+# and ``fault``, but does not assign one universal DP number to every product.
+# Resolve these concepts through the exact device schema's code -> dp_id map.
+# Category references describe/read; they never authorize a command by themselves.
+_DLQ_SCHEMA_CONCEPTS: dict[str, dict[str, Any]] = {
+    "switch": {"semantic_code": "switch", "display_name": "Interruptor", "data_type": "boolean"},
+    "daily_energy": {"semantic_code": "daily_energy", "display_name": "Consumo diário", "data_type": "raw", "unit": "kWh"},
+    "month_energy": {"semantic_code": "monthly_energy", "display_name": "Consumo mensal", "data_type": "raw", "unit": "kWh"},
+    "total_ele": {"semantic_code": "total_energy", "display_name": "Energia total", "data_type": "integer", "unit": "kWh", "scale": 1},
+    "total_forward_energy": {"semantic_code": "total_forward_energy", "display_name": "Energia ativa total", "data_type": "integer", "unit": "kWh", "scale": 2},
+    "cur_voltage_a": {"semantic_code": "voltage_phase_a", "display_name": "Tensão · fase A", "data_type": "integer", "unit": "V", "scale": 1},
+    "cur_voltage_b": {"semantic_code": "voltage_phase_b", "display_name": "Tensão · fase B", "data_type": "integer", "unit": "V", "scale": 1},
+    "cur_voltage_c": {"semantic_code": "voltage_phase_c", "display_name": "Tensão · fase C", "data_type": "integer", "unit": "V", "scale": 1},
+    "cur_current_a": {"semantic_code": "current_phase_a", "display_name": "Corrente · fase A", "data_type": "integer", "unit": "mA", "scale": 0},
+    "cur_current_b": {"semantic_code": "current_phase_b", "display_name": "Corrente · fase B", "data_type": "integer", "unit": "mA", "scale": 0},
+    "cur_current_c": {"semantic_code": "current_phase_c", "display_name": "Corrente · fase C", "data_type": "integer", "unit": "mA", "scale": 0},
+    "cur_activepower_a": {"semantic_code": "active_power_phase_a", "display_name": "Potência ativa · fase A", "data_type": "integer", "unit": "W", "scale": 1},
+    "cur_activepower_b": {"semantic_code": "active_power_phase_b", "display_name": "Potência ativa · fase B", "data_type": "integer", "unit": "W", "scale": 1},
+    "cur_activepower_c": {"semantic_code": "active_power_phase_c", "display_name": "Potência ativa · fase C", "data_type": "integer", "unit": "W", "scale": 1},
+    "cur_voltage": {"semantic_code": "voltage", "display_name": "Tensão", "data_type": "integer", "unit": "V"},
+    "cur_current": {"semantic_code": "current", "display_name": "Corrente", "data_type": "integer", "unit": "mA"},
+    "cur_power": {"semantic_code": "active_power", "display_name": "Potência ativa", "data_type": "integer", "unit": "W"},
+    "fault": {"semantic_code": "fault", "display_name": "Falhas e alarmes", "data_type": "bitmap"},
+    "breaker_current_status": {"semantic_code": "connection_mode", "display_name": "Estado de ligação", "data_type": "enum"},
+    "alarm_range_setting": {"semantic_code": "alarm_thresholds", "display_name": "Limites dos alarmes", "data_type": "string"},
+    "alarm_set_1": {"semantic_code": "alarm_setting_1", "display_name": "Configuração de alarme 1", "data_type": "raw"},
+    "alarm_set_2": {"semantic_code": "alarm_setting_2", "display_name": "Configuração de alarme 2", "data_type": "raw"},
+}
+
+
+def _category_schema_concept(category: str, entry: dict[str, Any]) -> dict[str, Any] | None:
+    """Interpret documented category codes while retaining the product DP ID."""
+    category_key = re.sub(r"[^a-z0-9]", "", category.casefold())
+    code = str(entry.get("code") or "").casefold()
+    concept = _DLQ_SCHEMA_CONCEPTS.get(code) if category_key == "dlq" else None
+    if category_key in {"kg", "cz", "pc"}:
+        if re.fullmatch(r"switch(?:_[1-6])?", code):
+            suffix = code.partition("_")[2]
+            concept = {"semantic_code": f"switch_{suffix}" if suffix else "switch",
+                       "display_name": f"Interruptor {suffix}" if suffix else "Interruptor", "data_type": "boolean"}
+        elif re.fullmatch(r"countdown(?:_[1-6])?", code):
+            suffix = code.partition("_")[2]
+            concept = {"semantic_code": code, "display_name": f"Temporizador {suffix}" if suffix else "Temporizador",
+                       "data_type": "integer", "unit": "s", "scale": 0}
+        else:
+            concept = {"add_ele": {"semantic_code": "accumulated_energy", "display_name": "Energia acumulada", "data_type": "integer", "unit": "kWh", "scale": 3},
+                       "cur_current": {"semantic_code": "current", "display_name": "Corrente", "data_type": "integer", "unit": "mA", "scale": 0},
+                       "cur_power": {"semantic_code": "active_power", "display_name": "Potência ativa", "data_type": "integer", "unit": "W", "scale": 1},
+                       "cur_voltage": {"semantic_code": "voltage", "display_name": "Tensão", "data_type": "integer", "unit": "V", "scale": 1},
+                       "fault": {"semantic_code": "fault", "display_name": "Falhas e alarmes", "data_type": "bitmap"}}.get(code)
+    elif category_key in {"cl", "clkg"}:
+        if code in {"control", "control_2", "mach_operate"}:
+            concept = {"semantic_code": "curtain_control", "display_name": "Controlo da cortina", "data_type": "enum"}
+        elif code.startswith("percent_control") or code == "position":
+            concept = {"semantic_code": "curtain_position", "display_name": "Posição da cortina", "data_type": "integer", "unit": "%", "scale": 0}
+        elif code in {"countdown", "countdown_set"}:
+            concept = {"semantic_code": "countdown", "display_name": "Temporizador", "data_type": "enum"}
+        elif code in {"control_back", "control_back_mode", "opposite"}:
+            concept = {"semantic_code": "motor_direction", "display_name": "Direção do motor", "data_type": "enum"}
+    elif category_key in {"dj", "xdd", "fwd", "dc", "dd", "tgq", "tgkg"}:
+        if code in {"switch_led", "switch"}:
+            concept = {"semantic_code": "light_switch", "display_name": "Interruptor da luz", "data_type": "boolean"}
+        elif code in {"work_mode", "light_mode"}:
+            concept = {"semantic_code": "light_mode", "display_name": "Modo de iluminação", "data_type": "enum"}
+        elif code in {"bright_value", "brightness"}:
+            concept = {"semantic_code": "brightness", "display_name": "Brilho", "data_type": "integer"}
+        elif code in {"temp_value", "colour_temperature"}:
+            concept = {"semantic_code": "colour_temperature", "display_name": "Temperatura de cor", "data_type": "integer"}
+        elif code in {"countdown", "light_countdown"}:
+            concept = {"semantic_code": "countdown", "display_name": "Temporizador", "data_type": "integer", "unit": "s", "scale": 0}
+    if concept is None and category_key != "dlq":
+        return None
+    if concept is None:
+        # The product code remains authoritative where present. For translated
+        # display names, accept only a short curated set of exact equivalents;
+        # never infer from a bare numeric DP or a vague word like "energy".
+        name = str(entry.get("name") or entry.get("desc") or "")
+        normalized_name = unicodedata.normalize("NFKD", name.casefold())
+        normalized_name = "".join(char for char in normalized_name if not unicodedata.combining(char))
+        normalized_name = re.sub(r"[^a-z0-9]+", " ", normalized_name).strip()
+        name_aliases = {
+            "interruptor": "switch", "relay": "switch", "rele": "switch", "estado do rele": "switch",
+            "daily electricity consumption data": "daily_energy", "daily electricity": "daily_energy",
+            "consumo diario de eletricidade": "daily_energy", "energia diaria": "daily_energy",
+            "monthly electricity consumption data": "month_energy", "consumo mensal de eletricidade": "month_energy",
+            "total electricity": "total_ele", "energia total": "total_ele", "energia acumulada total": "total_ele",
+            "forward total active electricity": "total_forward_energy", "energia ativa total": "total_forward_energy",
+            "phase a voltage": "cur_voltage_a", "tensao fase a": "cur_voltage_a",
+            "phase b voltage": "cur_voltage_b", "tensao fase b": "cur_voltage_b",
+            "phase c voltage": "cur_voltage_c", "tensao fase c": "cur_voltage_c",
+            "phase a current": "cur_current_a", "corrente fase a": "cur_current_a",
+            "phase b current": "cur_current_b", "corrente fase b": "cur_current_b",
+            "phase c current": "cur_current_c", "corrente fase c": "cur_current_c",
+            "phase a active power": "cur_activepower_a", "potencia ativa fase a": "cur_activepower_a",
+            "phase b active power": "cur_activepower_b", "potencia ativa fase b": "cur_activepower_b",
+            "phase c active power": "cur_activepower_c", "potencia ativa fase c": "cur_activepower_c",
+            "fault alert": "fault", "alarme de falha": "fault", "alerta de falha": "fault",
+        }
+        alias_code = name_aliases.get(normalized_name)
+        concept = _DLQ_SCHEMA_CONCEPTS.get(alias_code or "")
+    if concept is None:
+        return None
+    declared_type = str(entry.get("type") or "").casefold()
+    expected_types = {
+        "boolean": {"bool", "boolean"}, "raw": {"raw"},
+        "integer": {"value", "integer", "int", "number"},
+        "bitmap": {"fault", "bitmap"}, "enum": {"enum"}, "string": {"string", "char"},
+    }.get(str(concept.get("data_type") or ""))
+    if declared_type and expected_types and declared_type not in expected_types:
+        return None
+    actual_values = entry.get("values")
+    if isinstance(actual_values, str):
+        try:
+            actual_values = json.loads(actual_values)
+        except (TypeError, ValueError):
+            actual_values = {}
+    if not isinstance(actual_values, dict):
+        actual_values = {}
+    resolved = dict(concept)
+    if isinstance(actual_values.get("unit"), str) and actual_values["unit"].strip():
+        resolved["unit"] = actual_values["unit"].strip()
+    actual_scale = actual_values.get("scale")
+    if isinstance(actual_scale, (int, float)) and not isinstance(actual_scale, bool):
+        resolved["scale"] = actual_scale
+    return {**resolved, "confidence": "DOCUMENTED",
+            "source": f"Tuya official {category_key.upper()} category standard + exact product schema",
+            "validation_status": "category_reference_product_schema_resolved"}
 
 DEFINITIONS: tuple[dict[str, Any], ...] = tuple([
     *[_dp(i, f"switch_{i}", f"Switch {i}", "boolean", confidence="DOCUMENTED",
@@ -237,6 +368,15 @@ def analyze_device(device: dict[str, Any], status: list[dict[str, Any]] | None =
     reference_key = selected_key or (top["preset_id"] if top and top.get("eligible") else None)
     definitions = PRESETS[reference_key]["definitions"] if reference_key else []
     schema_by_id = {dp_id: code for code, dp_id in schema.items()}
+    schema_entry_by_id: dict[int, dict[str, Any]] = {}
+    for schema_key in ("functions", "status_spec"):
+        entries = device.get(schema_key)
+        for entry in entries if isinstance(entries, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            dp_id = entry.get("dp_id", entry.get("dpId"))
+            if isinstance(dp_id, int) and not isinstance(dp_id, bool) and dp_id > 0:
+                schema_entry_by_id[dp_id] = entry
     observed = []
     for dp_id in sorted(available):
         known = _BY_ID.get(dp_id) if dp_id in definitions else None
@@ -278,6 +418,10 @@ def analyze_device(device: dict[str, Any], status: list[dict[str, Any]] | None =
             known = {"semantic_code": "switch", "display_name": "Interruptor do carregador",
                      "data_type": "boolean", "unit": None, "scale": None,
                      "confidence": "CONFIRMED", "source": "Owner-confirmed QCCDZ category mapping"}
+        if category == "dlq":
+            # DLQ meanings follow Tuya's category function code; DP numbering
+            # belongs to the exact product schema and can differ by product.
+            known = _category_schema_concept(category, schema_entry_by_id.get(dp_id, {}))
         if dp_id in mapping_conflicts:
             known = None
         observed.append({"dps_id": dp_id, "semantic_code": known["semantic_code"] if known else "unknown",
