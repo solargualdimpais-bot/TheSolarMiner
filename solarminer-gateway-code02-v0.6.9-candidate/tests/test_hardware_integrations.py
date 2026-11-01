@@ -145,6 +145,50 @@ def test_tuya_dps_registry_keeps_dp18_scoped_and_unknown_read_only():
     assert unknown["raw_dps"]["250"] == {"x": 1}
 
 
+def test_tuya_community_catalog_is_exact_product_scoped_and_never_authorizes_writes():
+    ev_profile = tuya_dps_registry.analyze_device({
+        "category": "qccdz", "product_id": "tj9l3ghsjnbdjom6",
+        "current_status": [{"dps_id": 18, "code": "dps_18", "value": False}],
+    })
+    dp18 = next(row for row in ev_profile["dps"] if row["dps_id"] == 18)
+    assert dp18["semantic_code"] != "switch"
+    assert "factory_reset" in dp18["display_name"]
+    assert dp18["confidence"] == "COMMUNITY_REFERENCE"
+    assert dp18["write_supported"] is False
+    assert ev_profile["write_authorized"] is False
+    by_id = {row["dps_id"]: row for row in ev_profile["dps"]}
+    assert by_id[3]["display_name"] == "Charger state"
+    assert by_id[14]["display_name"] == "charging_mode"
+    assert by_id[106]["semantic_code"] == "current_x"
+    assert all(row["write_supported"] is False for row in by_id.values())
+
+    different_product = tuya_dps_registry.analyze_device({
+        "category": "qccdz", "product_id": "unlisted-ev-product",
+        "current_status": [{"dps_id": 18, "code": "dps_18", "value": False}],
+    })
+    other_dp18 = next(row for row in different_product["dps"] if row["dps_id"] == 18)
+    assert other_dp18["semantic_code"] == "switch"
+    assert other_dp18["confidence"] == "OWNER_CONFIRMED"
+    assert other_dp18["write_supported"] is False
+
+
+def test_tuya_qccdz_owner_reference_labels_are_ev_scoped_and_read_only():
+    status = [{"dps_id": dp, "code": f"dps_{dp}", "value": value}
+              for dp, value in ((3, "charging"), (10, 0), (14, "charge_now"),
+                                (15, 1), (16, False), (18, True), (25, 2),
+                                (27, "online"), (101, "connect"), (106, 4))]
+    report = tuya_dps_registry.analyze_device({"category": "qccdz", "current_status": status})
+    by_id = {row["dps_id"]: row for row in report["dps"]}
+    assert by_id[3]["semantic_code"] == "charger_state"
+    assert by_id[10]["semantic_code"] == "alarms_faults"
+    assert by_id[14]["semantic_code"] == "charging_mode"
+    assert by_id[18]["semantic_code"] == "switch"
+    assert by_id[25]["semantic_code"] == "last_session_energy"
+    assert by_id[106]["semantic_code"] == "total_energy"
+    assert all(row["write_supported"] is False for row in by_id.values())
+    assert report["write_authorized"] is False
+
+
 def test_tuya_dlq_category_uses_product_schema_ids_for_breaker_semantics():
     device = {
         "category": "dlq",

@@ -9,9 +9,11 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
-REGISTRY_VERSION = 3
+REGISTRY_VERSION = 4
 
 
 def _dp(dp_id: int, semantic: str, label: str, data_type: str, *, unit: str | None = None,
@@ -40,6 +42,77 @@ def _dp(dp_id: int, semantic: str, label: str, data_type: str, *, unit: str | No
 _OFFICIAL_SWITCH = "Tuya Developer Platform: Smart Switch Product Function Definition"
 _OWNER_NOTES = "Owner-provided device observations in the supplied DPS proposal"
 _COMMUNITY = "Community-reported Tuya DPS template; device-specific validation required"
+
+
+@lru_cache(maxsize=1)
+def _community_profiles_by_product_id() -> dict[str, list[dict[str, Any]]]:
+    """Load bundled community DPS references, indexed by exact Tuya product ID."""
+    path = Path(__file__).with_name("tuya_community_catalog.json")
+    try:
+        catalog = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    result: dict[str, list[dict[str, Any]]] = {}
+    records = catalog.get("records", []) if isinstance(catalog, dict) else []
+    for record in records if isinstance(records, list) else []:
+        if not isinstance(record, dict):
+            continue
+        for product in record.get("products", []) if isinstance(record.get("products"), list) else []:
+            product_id = str(product.get("id") or "").strip() if isinstance(product, dict) else ""
+            if not product_id:
+                continue
+            result.setdefault(product_id, []).append({"record": record, "product": product,
+                                                       "source": catalog.get("source", {})})
+    return result
+
+
+def _community_dp_reference(product_id: str, dp_id: int) -> dict[str, Any] | None:
+    """Return a non-authorizing community hint only for an exact Product ID."""
+    candidates: list[dict[str, Any]] = []
+    for match in _community_profiles_by_product_id().get(product_id, []):
+        record = match["record"]
+        for dp in record.get("dps", []) if isinstance(record.get("dps"), list) else []:
+            if isinstance(dp, dict) and str(dp.get("id")) == str(dp_id):
+                candidates.append({**dp, "config": record.get("config"),
+                                   "device_name": record.get("name"),
+                                   "manufacturer": match["product"].get("manufacturer"),
+                                   "model": match["product"].get("model"),
+                                   "repository": match["source"].get("repository"),
+                                   "commit": match["source"].get("commit")})
+    if not candidates:
+        return None
+    # A reused PID with conflicting community meanings is not a safe hint.
+    meanings = {(str(item.get("type") or "").casefold(), str(item.get("unit") or "").casefold(),
+                 json.dumps(item.get("range"), sort_keys=True)) for item in candidates}
+    configs = {str(item.get("config") or "") for item in candidates}
+    labels_by_config: dict[str, set[str]] = {}
+    generic_names = {"sensor", "value", "option", "button", "switch"}
+    for item in candidates:
+        label = str(item.get("entity_name") or item.get("name") or "").strip()
+        if label and label.casefold() not in generic_names:
+            labels_by_config.setdefault(str(item.get("config") or ""), set()).add(label.casefold())
+    if len(meanings) != 1 or (len(configs) > 1 and len({tuple(sorted(x)) for x in labels_by_config.values()}) > 1):
+        return None
+    result = dict(candidates[0])
+    result["related_fields"] = sorted({str(item.get("entity_name") or item.get("name") or "")
+                                       for item in candidates if item.get("entity_name") or item.get("name")})
+    result["reference_labels"] = sorted({label for labels in labels_by_config.values() for label in labels})
+    return result
+
+
+def _community_dp_ids(product_id: str) -> set[int]:
+    """Return IDs in exact-product community profiles for display only."""
+    result: set[int] = set()
+    for match in _community_profiles_by_product_id().get(product_id, []):
+        dps = match["record"].get("dps", [])
+        for dp in dps if isinstance(dps, list) else []:
+            try:
+                identifier = int(dp.get("id")) if isinstance(dp, dict) else 0
+            except (TypeError, ValueError):
+                identifier = 0
+            if identifier > 0:
+                result.add(identifier)
+    return result
 
 # Tuya's official DLQ (circuit-breaker) category standard is code-based: it
 # names common functions such as ``switch``, ``daily_energy``, ``cur_current_a``
@@ -317,6 +390,7 @@ def analyze_device(device: dict[str, Any], status: list[dict[str, Any]] | None =
     available = set(raw)
     available.update(schema.values())
     category = "".join(ch for ch in str(device.get("category") or "").casefold() if ch.isalnum())
+    product_id = str(device.get("product_id") or "")
     if category == "qccdz":
         ordered = ["qccdz_ev_charger"]
     else:
@@ -378,7 +452,11 @@ def analyze_device(device: dict[str, Any], status: list[dict[str, Any]] | None =
             if isinstance(dp_id, int) and not isinstance(dp_id, bool) and dp_id > 0:
                 schema_entry_by_id[dp_id] = entry
     observed = []
-    for dp_id in sorted(available):
+    # Community DPS enrich the detail view for the exact Product ID only.
+    # They are intentionally excluded from preset scoring and command routing.
+    community_dp_ids = _community_dp_ids(product_id)
+    display_ids = available | community_dp_ids
+    for dp_id in sorted(display_ids):
         known = _BY_ID.get(dp_id) if dp_id in definitions else None
         # DP 18 means current in the energy-monitor preset but is the confirmed
         # relay only for the owner's QCCDZ EV-charger family. Keep this override
@@ -414,14 +492,71 @@ def analyze_device(device: dict[str, Any], status: list[dict[str, Any]] | None =
             known = {"semantic_code": f"pair_{pair}_mode", "display_name": f"Pair K{pair*2-1}/K{pair*2} mode",
                      "data_type": "enum", "unit": None, "scale": None,
                      "confidence": "CONFIRMED", "source": _OWNER_NOTES}
-        if category == "qccdz" and dp_id == 18:
-            known = {"semantic_code": "switch", "display_name": "Interruptor do carregador",
-                     "data_type": "boolean", "unit": None, "scale": None,
-                     "confidence": "CONFIRMED", "source": "Owner-confirmed QCCDZ category mapping"}
+        community_reference = _community_dp_reference(str(device.get("product_id") or ""), dp_id)
+        if category == "qccdz":
+            # Owner-confirmed QCCDZ EV charger map. These IDs are scoped to
+            # this EV category and are descriptive only; product schema still
+            # controls every writable command and its accepted value range.
+            qccdz_map = {
+                3: ("charger_state", "Estado do carregador", "string"),
+                10: ("alarms_faults", "Alarmes e avarias", "unknown"),
+                11: ("alarm_configuration_1", "Configuração de alarmes 1", "unknown"),
+                12: ("alarm_configuration_2", "Configuração de alarmes 2", "unknown"),
+                14: ("charging_mode", "Modo de carregamento", "enum"),
+                15: ("balance_energy", "Energia de equilíbrio", "unknown"),
+                16: ("clear_energy", "Limpar energia", "unknown"),
+                18: ("switch", "Interruptor do carregador", "boolean"),
+                20: ("clear_alarms", "Limpar alarmes", "unknown"),
+                25: ("last_session_energy", "Energia da última sessão", "unknown"),
+                27: ("online_status", "Estado online", "unknown"),
+                101: ("operational_status", "Estado operacional", "unknown"),
+                106: ("total_energy", "Energia total", "unknown"),
+            }
+            if dp_id in qccdz_map:
+                semantic, label, data_type = qccdz_map[dp_id]
+                schema_code = str(schema_by_id.get(dp_id) or "").casefold()
+                exact_entry = schema_entry_by_id.get(dp_id, {})
+                if community_reference and not schema_code:
+                    # Exact Product ID community data supersedes category notes.
+                    known = None
+                elif schema_code in {"switch", "switch_1", "relay_status"}:
+                    known = {"semantic_code": "switch", "display_name": "Interruptor do carregador",
+                             "data_type": "boolean", "unit": None, "scale": None,
+                             "confidence": "PRODUCT_SCHEMA", "source": "Exact Tuya product schema"}
+                elif schema_code:
+                    schema_type = str(exact_entry.get("type") or "unknown").casefold()
+                    type_names = {"bool": "boolean", "boolean": "boolean", "value": "integer",
+                                  "int": "integer", "integer": "integer", "enum": "enum",
+                                  "raw": "raw", "string": "string", "bitmap": "bitmap"}
+                    known = {"semantic_code": schema_code,
+                             "display_name": str(exact_entry.get("name") or exact_entry.get("desc") or schema_code),
+                             "data_type": type_names.get(schema_type, schema_type),
+                             "unit": None, "scale": None, "confidence": "PRODUCT_SCHEMA",
+                             "source": "Exact Tuya product schema"}
+                elif not schema_code and not community_reference and dp_id not in community_dp_ids:
+                    known = {"semantic_code": semantic, "display_name": label,
+                             "data_type": data_type, "unit": None, "scale": None,
+                             "confidence": "OWNER_CONFIRMED", "source": "Owner-provided QCCDZ EV charger map"}
+                elif not schema_code and dp_id in community_dp_ids:
+                    known = None
+                else:
+                    known = {"semantic_code": semantic, "display_name": label,
+                             "data_type": data_type, "unit": None, "scale": None,
+                             "confidence": "OWNER_CONFIRMED", "source": "Owner-provided QCCDZ EV charger map"}
         if category == "dlq":
             # DLQ meanings follow Tuya's category function code; DP numbering
             # belongs to the exact product schema and can differ by product.
             known = _category_schema_concept(category, schema_entry_by_id.get(dp_id, {}))
+        if (known is None or (community_reference and schema_by_id.get(dp_id) is None)) and dp_id not in mapping_conflicts:
+            if community_reference:
+                label = (" · ".join(community_reference.get("reference_labels") or []) or
+                         community_reference.get("entity_name") or community_reference.get("name") or f"DPS {dp_id}")
+                known = {"semantic_code": str(label).casefold().replace(" ", "_"),
+                         "display_name": str(label),
+                         "data_type": str(community_reference.get("type") or "unknown"),
+                         "unit": community_reference.get("unit"), "scale": community_reference.get("scale"),
+                         "confidence": "COMMUNITY_REFERENCE",
+                         "source": f"{community_reference.get('repository')} · {community_reference.get('config')}"}
         if dp_id in mapping_conflicts:
             known = None
         observed.append({"dps_id": dp_id, "semantic_code": known["semantic_code"] if known else "unknown",
@@ -433,7 +568,8 @@ def analyze_device(device: dict[str, Any], status: list[dict[str, Any]] | None =
                          "validation_status": "suggestion_only" if known else "unmapped",
                          "function_code": schema_by_id.get(dp_id), "raw_value": raw.get(dp_id),
                          "read_supported": bool(dp_id in raw or schema_by_id.get(dp_id)),
-                         "write_supported": False})
+                         "write_supported": False,
+                         "community_reference": community_reference if known and community_reference else None})
     dynamic_entities = []
     if selected_key == "six_channel_hybrid":
         for pair, dp_id in enumerate((113, 114, 115), start=1):
