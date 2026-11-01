@@ -71,8 +71,8 @@ DEYE_CLOUD_BASES = {
 }
 MAX_CONFIG_BYTES = 1_048_576
 MAX_TUYA_DEVICES = 200
-MAX_TUYA_PRODUCT_SCHEMAS = 64
-MAX_TUYA_SCHEMA_CATALOG_BYTES = 262_144
+MAX_TUYA_PRODUCT_SCHEMAS = 200
+MAX_TUYA_SCHEMA_CATALOG_BYTES = 524_288
 CGMINER_COMMANDS = ("summary", "stats", "devs")
 CGMINER_OPTIONAL_READ_COMMANDS = ("tunerstatus",)
 _TESLA_EV_READ_LOCK = threading.Lock()
@@ -187,6 +187,8 @@ def public_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
     config = value if value is not None else load_config()
     tuya = config.get("tuya", {}) if isinstance(config.get("tuya", {}), dict) else {}
     deye_cloud = config.get("deye_cloud", {}) if isinstance(config.get("deye_cloud", {}), dict) else {}
+    product_catalog = _bounded_tuya_product_schemas(tuya.get("product_schemas"))
+    category_catalog = _bounded_tuya_product_schemas(tuya.get("category_schemas"))
     return {
         "deye": {k: config.get("deye", {}).get(k) for k in ("host", "port", "unit_id", "model") if config.get("deye", {}).get(k) is not None},
         "antminer": {k: config.get("antminer", {}).get(k) for k in ("host", "port", "rest_port", "model") if config.get("antminer", {}).get(k) is not None},
@@ -197,7 +199,7 @@ def public_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
         "deye_cloud": {"data_center": deye_cloud.get("data_center", "eu"), "app_id": deye_cloud.get("app_id"),
                        "email": deye_cloud.get("email"), "configured": bool(deye_cloud.get("app_id") and deye_cloud.get("app_secret") and deye_cloud.get("email") and deye_cloud.get("password")),
                        "secrets_returned": False},
-        "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "uid": tuya.get("uid"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": [{"device_id": x.get("device_id"), "name": x.get("name"), "room": x.get("room", ""), "floor": x.get("floor", ""), "name_source": x.get("name_source", "cloud"), "switch_code": x.get("switch_code"), "switch_channels": [item.get("code") for item in x.get("functions", []) if isinstance(item, dict) and str(item.get("type", "")).lower() in {"bool", "boolean"}], "channel_count": x.get("channel_count", 0), "device_kind": x.get("device_kind", "unknown"), "device_kind_label": x.get("device_kind_label", TUYA_DEVICE_KINDS["unknown"]), "device_kind_confidence": x.get("device_kind_confidence", "low"), "device_kind_override": x.get("device_kind_override"), "channel_labels": x.get("channel_labels", {}), "capability_labels": x.get("capability_labels", {}), "level_code": x.get("level_code"), "level_min": x.get("level_min", 0), "level_max": x.get("level_max", 100), "category": x.get("category"), "product_id": x.get("product_id"), "product_name": x.get("product_name"), "schema_source": x.get("schema_source", "TUYA_DEVICE"), "online": x.get("online"), "ip": x.get("local_ip", ""), "local_ip": x.get("local_ip", ""), "local_mac": x.get("local_mac", ""), "local_protocol": x.get("local_protocol", "3.3"), "local_dps_map": x.get("local_dps_map", {}), "dps_preset_id": x.get("dps_preset_id"), "dps_knowledge": tuya_dps_registry.analyze_device(x), "local_control_state": x.get("local_control_state", "not_tested"), "local_verified": bool(x.get("local_verified", False)), "cloud_source": x.get("cloud_source"), "cloud_missing": x.get("cloud_missing", False), "local_key_available": bool(x.get("local_key")), "functions": x.get("functions", []), "status_spec": x.get("status_spec", []), "category_functions": x.get("category_functions", []), "category_status_spec": x.get("category_status_spec", []), "category_schema_source": x.get("category_schema_source"), "current_status": x.get("current_status", []), "last_status_at": x.get("last_status_at")} for x in tuya.get("devices", []) if isinstance(x, dict)], "product_schema_count": len(tuya.get("product_schemas", {})) if isinstance(tuya.get("product_schemas", {}), dict) else 0, "category_schema_count": len(tuya.get("category_schemas", {})) if isinstance(tuya.get("category_schemas", {}), dict) else 0, "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
+        "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "uid": tuya.get("uid"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": [{"device_id": x.get("device_id"), "name": x.get("name"), "room": x.get("room", ""), "floor": x.get("floor", ""), "name_source": x.get("name_source", "cloud"), "switch_code": x.get("switch_code"), "switch_channels": [item.get("code") for item in x.get("functions", []) if isinstance(item, dict) and str(item.get("type", "")).lower() in {"bool", "boolean"}], "channel_count": x.get("channel_count", 0), "device_kind": x.get("device_kind", "unknown"), "device_kind_label": x.get("device_kind_label", TUYA_DEVICE_KINDS["unknown"]), "device_kind_confidence": x.get("device_kind_confidence", "low"), "device_kind_override": x.get("device_kind_override"), "channel_labels": x.get("channel_labels", {}), "capability_labels": x.get("capability_labels", {}), "level_code": x.get("level_code"), "level_min": x.get("level_min", 0), "level_max": x.get("level_max", 100), "category": x.get("category"), "product_id": x.get("product_id"), "product_name": x.get("product_name"), "schema_source": x.get("schema_source", "TUYA_DEVICE"), "online": x.get("online"), "ip": x.get("local_ip", ""), "local_ip": x.get("local_ip", ""), "local_mac": x.get("local_mac", ""), "local_protocol": x.get("local_protocol", "3.3"), "local_dps_map": x.get("local_dps_map", {}), "dps_preset_id": x.get("dps_preset_id"), "dps_knowledge": tuya_dps_registry.analyze_device(x), "local_control_state": x.get("local_control_state", "not_tested"), "local_verified": bool(x.get("local_verified", False)), "cloud_source": x.get("cloud_source"), "cloud_missing": x.get("cloud_missing", False), "local_key_available": bool(x.get("local_key")), "functions": x.get("functions", []), "status_spec": x.get("status_spec", []), "category_functions": x.get("category_functions", []), "category_status_spec": x.get("category_status_spec", []), "category_schema_source": x.get("category_schema_source"), "current_status": x.get("current_status", []), "last_status_at": x.get("last_status_at")} for x in tuya.get("devices", []) if isinstance(x, dict)], "product_catalog": product_catalog, "category_catalog": category_catalog, "product_schema_count": len(product_catalog), "category_schema_count": len(category_catalog), "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
         "secrets_returned": False,
     }
 
@@ -621,6 +623,15 @@ def _tuya_lan_client(device: dict[str, Any]):
     return client
 
 
+def _tuya_command_rejection(response: Any, dps: str) -> RuntimeError:
+    """Keep a short, safe protocol hint so LAN rejects can be diagnosed."""
+    raw_error = response.get("Error", response.get("error", response.get("ErrorCode"))) if isinstance(response, dict) else None
+    if isinstance(raw_error, dict):
+        raw_error = raw_error.get("code") or raw_error.get("message") or raw_error.get("msg")
+    hint = re.sub(r"[^A-Za-z0-9_-]+", "_", str(raw_error or "no_dps_ack")).strip("_")[:48]
+    return RuntimeError(f"tuya_lan_command_rejected:dps_{dps}:{hint or 'no_dps_ack'}")
+
+
 def _tuya_local_dps(device: dict[str, Any], code: str, *, status: bool = False) -> str:
     mapping = device.get("local_dps_map") if isinstance(device.get("local_dps_map"), dict) else {}
     value = mapping.get(code)
@@ -814,7 +825,12 @@ def _bounded_tuya_product_schemas(value: Any) -> dict[str, dict[str, Any]]:
             continue
         clean[product_id] = {"category": str(profile.get("category") or "")[:64],
                              "product_name": str(profile.get("product_name") or "")[:120],
+                             "device_kind": str(profile.get("device_kind") or "unknown")[:32],
+                             "channel_count": max(0, min(64, _safe_channel_count(profile.get("channel_count")))),
+                             "preset_id": str(profile.get("preset_id") or "")[:64],
+                             "schema_source": str(profile.get("schema_source") or "TUYA_DEVICE_SPEC")[:48],
                              "functions": functions, "status_spec": statuses,
+                             "dps_profile": profile.get("dps_profile") if isinstance(profile.get("dps_profile"), dict) else {},
                              "cached_at": int(profile.get("cached_at") or 0)}
     ordered = sorted(clean.items(), key=lambda pair: pair[1]["cached_at"], reverse=True)[:MAX_TUYA_PRODUCT_SCHEMAS]
     result = dict(ordered)
@@ -822,6 +838,13 @@ def _bounded_tuya_product_schemas(value: Any) -> dict[str, dict[str, Any]]:
         oldest = min(result, key=lambda key: result[key]["cached_at"])
         result.pop(oldest)
     return result
+
+
+def _safe_channel_count(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Event | None = None) -> dict[str, Any]:
@@ -957,6 +980,7 @@ def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Eve
                         product_schemas[item["product_id"]] = {
                             "category": item.get("category", ""),
                             "product_name": item.get("product_name", ""),
+                            "schema_source": "TUYA_DEVICE_SPEC",
                             "functions": item["functions"],
                             "status_spec": item["status_spec"],
                             "cached_at": int(time.time()),
@@ -1009,6 +1033,22 @@ def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Eve
                                  if re.fullmatch(r"switch_[1-9]\d*", str(entry.get("code") or ""), re.IGNORECASE)}
                 profile["channel_count"] = len(channel_codes) or len(bool_functions)
         item.update(profile)
+        if item.get("product_id") and (item.get("functions") or item.get("status_spec")):
+            # Build the reusable catalog entry from this exact product ID.
+            # Category schemas remain reference-only; they are never copied
+            # into a product entry as if they were the device's own schema.
+            product_schemas[item["product_id"]] = {
+                "category": item.get("category", ""),
+                "product_name": item.get("product_name", ""),
+                "device_kind": profile["device_kind"],
+                "channel_count": profile["channel_count"],
+                "preset_id": item.get("dps_preset_id") or tuya_dps_registry.analyze_device(item).get("preset_id") or "",
+                "schema_source": item.get("schema_source", "TUYA_DEVICE_SPEC"),
+                "functions": item.get("functions", []),
+                "status_spec": item.get("status_spec", []),
+                "dps_profile": tuya_dps_registry.product_profile(item),
+                "cached_at": int(time.time()),
+            }
         if profile["device_kind"] == "breaker" and bool_functions and not item.get("switch_code"):
             # A breaker is represented as one on/off control, even when a
             # cloud schema happens to advertise extra boolean metadata.
@@ -1052,7 +1092,7 @@ def control_tuya_switch(config: dict[str, Any], device_id: str, on: bool, code: 
     client = _tuya_lan_client(device)
     response = client.set_status(on, switch=int(dps))
     if not isinstance(response, dict) or (response.get("Error") and not response.get("dps")):
-        raise RuntimeError("tuya_lan_command_rejected")
+        raise _tuya_command_rejection(response, dps)
     return {"device_id": device_id, "switch_code": code, "requested_on": on,
             "command_accepted": True, "observed_on": None,
             "state_confirmed": False, "connection_state": "command_accepted_awaiting_independent_scan",
@@ -1077,7 +1117,7 @@ def control_tuya_level(config: dict[str, Any], device_id: str, percent: int) -> 
     client = _tuya_lan_client(device)
     response = client.set_value(int(dps), target)
     if not isinstance(response, dict) or (response.get("Error") and not response.get("dps")):
-        raise RuntimeError("tuya_lan_command_rejected")
+        raise _tuya_command_rejection(response, dps)
     return {"device_id": device_id, "level_code": code, "requested_percent": percent, "requested_value": target,
             "command_accepted": True, "control_command_sent": True, "state_confirmed": False,
             "observed_value": None, "connection_state": "command_accepted_awaiting_independent_scan",
@@ -1156,7 +1196,7 @@ def control_tuya_setting(config: dict[str, Any], device_id: str, code: str, valu
     client = _tuya_lan_client(device)
     response = client.set_value(int(dps), value)
     if not isinstance(response, dict) or (response.get("Error") and not response.get("dps")):
-        raise RuntimeError("tuya_lan_command_rejected")
+        raise _tuya_command_rejection(response, dps_id)
     return {"device_id": device_id, "setting_code": code, "requested_value": value,
             "observed_value": None, "command_accepted": True, "state_confirmed": False,
             "connection_state": "command_accepted_awaiting_independent_scan",

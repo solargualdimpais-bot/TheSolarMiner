@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-REGISTRY_VERSION = 1
+REGISTRY_VERSION = 2
 
 
 def _dp(dp_id: int, semantic: str, label: str, data_type: str, *, unit: str | None = None,
@@ -284,7 +284,12 @@ def analyze_device(device: dict[str, Any], status: list[dict[str, Any]] | None =
                                          "source_dps": [pair * 2 - 1, pair * 2],
                                          "supported_controls": [],
                                          "note": "Cortina detetada; posição e comandos não inferidos."})
-    return {"registry_version": REGISTRY_VERSION, "preset_id": selected_key,
+    return {"registry_version": REGISTRY_VERSION, "product_id": str(device.get("product_id") or "")[:128],
+            "product_name": str(device.get("product_name") or "")[:120], "category": str(device.get("category") or "")[:64],
+            "device_kind": str(device.get("device_kind") or "unknown")[:32],
+            "channel_count": device.get("channel_count") if isinstance(device.get("channel_count"), int) and not isinstance(device.get("channel_count"), bool) else None,
+            "schema_source": str(device.get("schema_source") or "UNKNOWN")[:48],
+            "functions": schema, "preset_id": selected_key,
             "preset_label": PRESETS[selected_key]["label"] if selected_key else None,
             "preset_scope": PRESETS[selected_key]["scope"] if selected_key else None,
             "confidence": "CONFIRMED" if selected_key and category == "qccdz" else "OWNER_CONFIRMED" if selected_key else "SUGGESTED" if top and top.get("eligible") else "UNKNOWN",
@@ -294,4 +299,44 @@ def analyze_device(device: dict[str, Any], status: list[dict[str, Any]] | None =
             "raw_dps": {str(key): value for key, value in sorted(raw.items())},
             "source_connector": "TUYA_LAN" if raw else None,
             "trust": "LIVE_UNVERIFIED" if raw else None}
+
+
+def product_profile(device: dict[str, Any]) -> dict[str, Any]:
+    """Return a reusable semantic catalog profile for this exact product schema.
+
+    Tuya's product specification is authoritative for the product ID. Category
+    and public preset matches add context only and never replace that schema.
+    Raw live values are deliberately omitted from this reusable profile.
+    """
+    knowledge = analyze_device(device)
+    functions = device.get("functions") if isinstance(device.get("functions"), list) else []
+    bool_switches = {str(item.get("code")) for item in functions
+                     if isinstance(item, dict) and
+                     str(item.get("type", "")).casefold() in {"bool", "boolean"} and
+                     re.fullmatch(r"switch(?:_[1-9]\d*)?", str(item.get("code", "")), re.IGNORECASE)}
+    indexed = {int(match.group(1)) for code in bool_switches
+               if (match := re.fullmatch(r"switch_([1-9]\d*)", code, re.IGNORECASE))}
+    channel_count = device.get("channel_count")
+    if isinstance(channel_count, bool) or not isinstance(channel_count, int) or channel_count < 0:
+        channel_count = max(indexed) if indexed else (1 if "switch" in {code.casefold() for code in bool_switches} else len(bool_switches))
+    schema_dps = []
+    for item in knowledge.get("dps", []):
+        if not isinstance(item, dict):
+            continue
+        schema_dps.append({key: value for key, value in item.items() if key != "raw_value"})
+    category = str(device.get("category") or "")[:64]
+    return {
+        "product_id": str(device.get("product_id") or "")[:128],
+        "product_name": str(device.get("product_name") or "")[:120],
+        "category": category,
+        "device_kind": str(device.get("device_kind") or "unknown")[:32],
+        "channel_count": max(0, min(64, channel_count)),
+        "registry_version": REGISTRY_VERSION,
+        "preset_id": knowledge.get("preset_id"),
+        "confidence": knowledge.get("confidence", "UNKNOWN"),
+        "selection_source": knowledge.get("selection_source", "none"),
+        "schema_source": str(device.get("schema_source") or "UNKNOWN")[:48],
+        "dps": schema_dps,
+        "functions": _schema_ids(device),
+    }
 

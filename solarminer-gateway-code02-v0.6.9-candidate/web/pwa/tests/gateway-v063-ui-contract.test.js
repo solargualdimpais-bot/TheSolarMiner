@@ -184,6 +184,13 @@ test("Tuya cards mirror the Home layout and expose schema-driven quick controls"
   assert.match(app, /data-tuya-channel-label=/);
 });
 
+test("Tuya state uses the product DPS catalog and breaker menu tolerates optional controls", () => {
+  assert.match(app, /function tuyaSpecDpsId\(device,spec\)[\s\S]*?device\?\.product_profile\?\.dps/);
+  assert.match(app, /status\.find\(item=>Number\(item\?\.dps_id\?\?item\?\.dp_id\)===dpId/);
+  assert.ok(app.includes("const quickEditable=breaker?[...(breakerCountdown?[breakerCountdown]:[]),...breakerLocks]"));
+  assert.match(app, /data-inventory-expand/);
+});
+
 test("Devices inventory tolerates missing optional Tuya arrays", () => {
   assert.match(app, /function normalizeTuyaInventoryDevice\(device\)/);
   assert.match(app, /function normalizeTuyaInventory\(devices\)/);
@@ -217,6 +224,6 @@ test("LAN discovery tries the local neighbor cache after broadcast errors", () =
 test("USB release rollback verification includes the installed Gateway release", () => {
   const rollbackLoops = workflow.match(/for VERSION in[^\n]+/g) || [];
   assert.equal(rollbackLoops.length, 2);
-  for (const loop of rollbackLoops) assert.match(loop, /0\.6\.112 0\.6\.113 0\.6\.114 0\.6\.115 0\.6\.116 0\.6\.117 0\.6\.118 0\.6\.119 0\.6\.120 0\.6\.121 0\.6\.122 0\.6\.123 0\.6\.124 0\.6\.125 0\.6\.126 0\.6\.127; do/);
+  for (const loop of rollbackLoops) assert.match(loop, /0\.6\.112 0\.6\.113 0\.6\.114 0\.6\.115 0\.6\.116 0\.6\.117 0\.6\.118 0\.6\.119 0\.6\.120 0\.6\.121 0\.6\.122 0\.6\.123 0\.6\.124 0\.6\.125 0\.6\.126 0\.6\.127 0\.6\.128 0\.6\.129 0\.6\.130; do/);
 });
 

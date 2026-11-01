@@ -652,10 +652,16 @@ function tuyaPrimarySwitchCode(device,codes=tuyaSwitchCodes(device)){
 }
 function tuyaSwitchState(device,reading,code){
   const status=Array.isArray(reading?.status)?reading.status:[];
-  const direct=status.find(item=>item?.code===code)?.value;
+  const directItem=status.find(item=>item?.code===code);
+  const boolValue=value=>typeof value==="boolean"?value:typeof value==="number"&&(value===0||value===1)?Boolean(value):typeof value==="string"&&/^(true|false|0|1)$/i.test(value)?value.toLowerCase()==="true"||value==="1":undefined;
+  const direct=boolValue(directItem?.value);
   if(typeof direct==="boolean")return direct;
+  const spec=[...(device?.functions||[]),...(device?.status_spec||[])].find(item=>item?.code===code);
+  const kgMatch=tuyaIsKgHybrid(device)&&String(code||"").match(/^switch_([1-6])$/i);
+  const dpId=spec?tuyaSpecDpsId(device,spec):Number.isInteger(Number(device?.local_dps_map?.[code]))?Number(device.local_dps_map[code]):kgMatch?Number(kgMatch[1]):tuyaIsKgHybrid(device)&&code==="switch_all"?13:null;
+  if(dpId!==null){const byId=boolValue(status.find(item=>Number(item?.dps_id??item?.dp_id)===dpId||item?.code===`dps_${dpId}`)?.value);if(typeof byId==="boolean")return byId;}
   if(code==="switch_all"){
-    const values=tuyaSwitchChannelCodes(device).map(channel=>status.find(item=>item?.code===channel)?.value).filter(value=>typeof value==="boolean");
+    const values=tuyaSwitchChannelCodes(device).map(channel=>tuyaSwitchState(device,reading,channel)).filter(value=>typeof value==="boolean");
     return values.length?values.some(Boolean):undefined;
   }
   return undefined;
@@ -675,10 +681,14 @@ function tuyaIsKgHybrid(device){
   return (category==="kg"||device?.dps_knowledge?.preset_id==="six_channel_hybrid")&&channels.length>=6;
 }
 function tuyaSpecDpsId(device,spec){
+  const mapped=device?.local_dps_map?.[spec?.code];
+  if(Number.isInteger(Number(mapped))&&Number(mapped)>0)return Number(mapped);
   const direct=spec?.dp_id??spec?.dpId;
   if(Number.isInteger(Number(direct))&&Number(direct)>0)return Number(direct);
-  const mapped=device?.local_dps_map?.[spec?.code];
-  return Number.isInteger(Number(mapped))&&Number(mapped)>0?Number(mapped):null;
+  const catalog=[...(device?.product_profile?.dps||[]),...(device?.dps_knowledge?.dps||[])];
+  const entry=catalog.find(item=>item?.function_code===spec?.code||item?.semantic_code===spec?.code);
+  const catalogId=Number(entry?.dps_id);
+  return Number.isInteger(catalogId)&&catalogId>0?catalogId:null;
 }
 function tuyaKgPairModeSpecs(device){
   if(!tuyaIsKgHybrid(device))return [];
@@ -842,7 +852,7 @@ function openTuyaQuickControls(device){
   }).join("");
   const kgGlobalSettings=editable.filter(item=>[14,107].includes(tuyaSpecDpsId(device,item))||/relay.?status|power.?on.?state|switch.?type|io.?set|scene|number/i.test(`${item.code} ${item.name||""}`));
   const breakerCountdown=editable.find(item=>/count.?down/i.test(`${item.code} ${item.name||""}`)&&item.kind==="integer"),breakerLocks=editable.filter(item=>/(child.?lock|maintenance.?lock)/i.test(`${item.code} ${item.name||""}`));
-  const quickEditable=breaker?[...breakerCountdown,...breakerLocks]:kgHybrid?kgGlobalSettings:editable;
+  const quickEditable=breaker?[...(breakerCountdown?[breakerCountdown]:[]),...breakerLocks]:kgHybrid?kgGlobalSettings:editable;
   const quickSettingRows=quickEditable.map(item=>`<label class="tuya-setting-row"><span><strong>${esc(item.name||item.code)}</strong></span>${item.kind==="boolean"?`<select data-tuya-setting="${esc(item.code)}"><option value="true" ${item.current===true?"selected":""}>Ligado</option><option value="false" ${item.current===false?"selected":""}>Desligado</option></select>`:item.kind==="enum"?`<select data-tuya-setting="${esc(item.code)}">${item.values.range.map(value=>`<option value="${esc(value)}" ${value===item.current?"selected":""}>${esc(value)}</option>`).join("")}</select>`:`<input type="number" data-tuya-setting="${esc(item.code)}" min="${Number(item.values.min)}" max="${Number(item.values.max)}" step="${Number(item.values.step)||1}" value="${Number.isInteger(Number(item.current))?Number(item.current):Number(item.values.min)}">`}</label>`).join("");
   const settingControl=item=>item.kind==="boolean"?`<select data-tuya-setting="${esc(item.code)}" ${item.localDpsMapped?"":"disabled"}><option value="true" ${item.current===true?"selected":""}>Ativo</option><option value="false" ${item.current===false?"selected":""}>Inativo</option></select>`:item.kind==="integer"?`<label class="tuya-countdown-picker"><button type="button" data-step="-1" aria-label="Diminuir">−</button><input type="range" data-tuya-setting="${esc(item.code)}" min="${Number(item.values.min)}" max="${Number(item.values.max)}" step="${Number(item.values.step)||1}" value="${Number.isInteger(Number(item.current))?Number(item.current):Number(item.values.min)}"><output data-countdown-value>${Number.isInteger(Number(item.current))?Number(item.current):Number(item.values.min)} s</output><button type="button" data-step="1" aria-label="Aumentar">＋</button></label>`:`<select data-tuya-setting="${esc(item.code)}" ${item.localDpsMapped?"":"disabled"}>${item.values.range.map(value=>`<option value="${esc(value)}" ${value===item.current?"selected":""}>${esc(value)}</option>`).join("")}</select>`;
   const settingRows=editable.map(item=>`<label class="tuya-setting-row"><span><strong>${esc(item.name||item.code)}</strong><small>${esc(item.code)}</small></span>${settingControl(item)}</label>`).join("");

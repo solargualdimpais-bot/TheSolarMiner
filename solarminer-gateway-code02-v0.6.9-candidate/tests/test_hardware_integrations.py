@@ -41,6 +41,58 @@ def test_tuya_kg_standard_six_switch_profile_maps_only_full_declared_channels():
         integrations._tuya_local_dps(incomplete, "switch_1")
 
 
+def test_tuya_product_catalog_keys_profile_by_product_and_channel_count_without_live_values():
+    device = {
+        "product_id": "kg-six-product",
+        "product_name": "KG Six Channel",
+        "category": "kg",
+        "device_kind": "multi_switch",
+        "channel_count": 6,
+        "schema_source": "TUYA_DEVICE_SPEC",
+        "functions": [{"code": f"switch_{index}", "type": "Boolean", "dp_id": index}
+                      for index in range(1, 7)] + [
+            {"code": "switch_all", "type": "Boolean", "dp_id": 13},
+            {"code": "pair_1_mode", "type": "Enum", "dp_id": 113,
+             "values": {"range": ["switch", "curtain"]}},
+        ],
+        "status_spec": [{"code": f"switch_{index}", "type": "Boolean", "dp_id": index}
+                        for index in range(1, 7)],
+        "current_status": [{"code": "switch_1", "dps_id": 1, "value": True}],
+    }
+    profile = tuya_dps_registry.product_profile(device)
+    assert profile["product_id"] == "kg-six-product"
+    assert profile["category"] == "kg"
+    assert profile["channel_count"] == 6
+    assert profile["functions"]["switch_1"] == 1
+    assert next(row for row in profile["dps"] if row["dps_id"] == 1)["semantic_code"] == "switch_1"
+    assert all("raw_value" not in row for row in profile["dps"])
+    bounded = integrations._bounded_tuya_product_schemas({"kg-six-product": {
+        **profile, "functions": device["functions"], "status_spec": device["status_spec"], "cached_at": 10,
+    }})
+    assert bounded["kg-six-product"]["channel_count"] == 6
+    assert bounded["kg-six-product"]["dps_profile"]["product_id"] == "kg-six-product"
+    public = integrations.public_config({"tuya": {
+        "client_id": "client-public", "client_secret": "must-not-leak", "devices": [device],
+        "product_schemas": bounded,
+    }})["tuya"]
+    assert public["devices"][0]["dps_knowledge"]["channel_count"] == 6
+    assert public["product_catalog"]["kg-six-product"]["dps_profile"]["category"] == "kg"
+    assert "must-not-leak" not in json.dumps(public)
+
+
+def test_tuya_command_rejection_reports_target_dps_and_sanitized_device_hint(monkeypatch):
+    class LocalDevice:
+        def set_socketTimeout(self, _value): pass
+        def set_retry(self, _value): pass
+        def set_status(self, _on, switch=1):
+            return {"Error": "DPS 2 is not writable: local protocol!"}
+    monkeypatch.setattr(integrations, "_tuya_lan_client", lambda _device: LocalDevice())
+    device = {"device_id": "relay-1", "local_key": "local-key-123", "local_ip": "192.168.1.20",
+              "functions": [{"code": "switch_2", "type": "Boolean", "dp_id": 2}]}
+    with pytest.raises(RuntimeError, match=r"tuya_lan_command_rejected:dps_2:DPS_2_is_not_writable_local_protocol"):
+        integrations.control_tuya_switch({"devices": [device]}, "relay-1", True, "switch_2")
+
+
 def test_tuya_dps_registry_keeps_dp18_scoped_and_unknown_read_only():
     observed_energy = {"current_status": [
         {"dps_id": dp, "code": f"dps_{dp}", "value": value}
