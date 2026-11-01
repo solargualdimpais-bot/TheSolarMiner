@@ -593,6 +593,16 @@ def analyze_device(device: dict[str, Any], status: list[dict[str, Any]] | None =
                 known["data_type"] = custom.get("data_type") or known.get("data_type", "number")
                 if isinstance(custom.get("scale"), (int, float)) and not isinstance(custom.get("scale"), bool):
                     known["scale"] = custom["scale"]
+        # A custom override can create a row from scratch, so normalize again
+        # after applying it as well as after the catalog/category lookup.
+        if isinstance(known, dict):
+            known.setdefault("unit", None)
+            known.setdefault("scale", None)
+            known.setdefault("data_type", "unknown")
+            known.setdefault("semantic_code", "unknown")
+            known.setdefault("display_name", f"DPS {dp_id}")
+            known.setdefault("confidence", "UNKNOWN")
+            known.setdefault("source", "")
         observed.append({"dps_id": dp_id, "semantic_code": known["semantic_code"] if known else "unknown",
                          "display_name": known["display_name"] if known else f"Unknown DPS {dp_id}",
                          "data_type": known["data_type"] if known else "unknown",
