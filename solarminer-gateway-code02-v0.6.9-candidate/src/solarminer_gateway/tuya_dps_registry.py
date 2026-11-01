@@ -6,6 +6,7 @@ explicit owner mapping in ``local_dps_map``.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 REGISTRY_VERSION = 1
@@ -187,8 +188,18 @@ def analyze_device(device: dict[str, Any], status: list[dict[str, Any]] | None =
     top = scores[0] if scores else None
     second = scores[1] if len(scores) > 1 else None
     explicit_preset = str(device.get("dps_preset_id") or "")
+    declared_switches = {str(item.get("code")) for item in device.get("functions", [])
+                         if isinstance(item, dict) and
+                         re.fullmatch(r"switch_[1-6]", str(item.get("code", ""))) and
+                         str(item.get("type", "")).casefold() in {"bool", "boolean"}}
+    reported_switches = {str(item) for item in device.get("switch_channels", []) if isinstance(item, str)}
+    kg_six_channel_signature = (category == "kg" and
+                                (len(declared_switches) >= 6 or len(reported_switches) >= 6 or
+                                 isinstance(device.get("channel_count"), int) and device["channel_count"] >= 6))
     if category == "qccdz":
         selected = next((item for item in scores if item["preset_id"] == "qccdz_ev_charger"), None)
+    elif kg_six_channel_signature:
+        selected = next((item for item in scores if item["preset_id"] == "six_channel_hybrid"), None)
     elif explicit_preset in PRESETS and explicit_preset != "qccdz_ev_charger":
         selected = next((item for item in scores if item["preset_id"] == explicit_preset), None)
         if selected is None:
@@ -196,12 +207,16 @@ def analyze_device(device: dict[str, Any], status: list[dict[str, Any]] | None =
             selected = {"preset_id": explicit_preset, "label": preset["label"], "eligible": True,
                         "score": 0.0, "matched_dps": [], "required_matches": preset["minimum_matches"]}
     else:
-        # Matching a DPS signature is only a suggestion. The owner must select
-        # a preset (or the category must be a specifically confirmed family)
-        # before those semantics become active.
+        # Incomplete or ambiguous signatures remain suggestions. KG plus a
+        # declared six-channel switch profile is specific enough to apply the
+        # read-only preset; the discovered schema still governs writable controls.
         selected = None
     selected_key = selected["preset_id"] if selected else None
-    definitions = PRESETS[selected_key]["definitions"] if selected_key else []
+    # A strong signature match may annotate observed DPS from the reference
+    # catalog without activating the preset. Writes and dynamic entities still
+    # require explicit owner selection (or a confirmed product category).
+    reference_key = selected_key or (top["preset_id"] if top and top.get("eligible") else None)
+    definitions = PRESETS[reference_key]["definitions"] if reference_key else []
     schema_by_id = {dp_id: code for code, dp_id in schema.items()}
     observed = []
     for dp_id in sorted(available):
@@ -223,14 +238,14 @@ def analyze_device(device: dict[str, Any], status: list[dict[str, Any]] | None =
             known = {"semantic_code": "child_lock", "display_name": "Child lock",
                      "data_type": "boolean", "unit": None, "scale": None,
                      "confidence": "CONFIRMED", "source": _OWNER_NOTES}
-        if selected_key == "six_channel_hybrid" and dp_id == 13:
+        if reference_key == "six_channel_hybrid" and dp_id == 13:
             known = {"semantic_code": "master_switch", "display_name": "Master switch",
                      "data_type": "boolean", "unit": None, "scale": None,
-                     "confidence": "INFERRED", "source": _OWNER_NOTES}
-        if selected_key == "six_channel_hybrid" and dp_id == 14:
-            known = {"semantic_code": "unknown", "display_name": "Relay/power-on configuration",
-                     "data_type": "unknown", "unit": None, "scale": None,
-                     "confidence": "UNKNOWN", "source": _OWNER_NOTES}
+                     "confidence": "DOCUMENTED", "source": _OFFICIAL_SWITCH}
+        if reference_key == "six_channel_hybrid" and dp_id == 14:
+            known = {"semantic_code": "power_on_state", "display_name": "Power-on behavior after outage",
+                     "data_type": "enum", "unit": None, "scale": None,
+                     "confidence": "DOCUMENTED", "source": _OFFICIAL_SWITCH}
         if selected_key == "six_channel_hybrid" and dp_id == 118:
             known = {"semantic_code": "equipment_identifier", "display_name": "Equipment identifier",
                      "data_type": "integer", "unit": None, "scale": None,
@@ -270,7 +285,7 @@ def analyze_device(device: dict[str, Any], status: list[dict[str, Any]] | None =
             "preset_label": PRESETS[selected_key]["label"] if selected_key else None,
             "preset_scope": PRESETS[selected_key]["scope"] if selected_key else None,
             "confidence": "CONFIRMED" if selected_key and category == "qccdz" else "OWNER_CONFIRMED" if selected_key else "SUGGESTED" if top and top.get("eligible") else "UNKNOWN",
-            "selection_source": "confirmed_category" if category == "qccdz" else "owner_selected" if selected_key else "signature_suggestion" if top and top.get("eligible") else "none",
+            "selection_source": "confirmed_category" if category == "qccdz" else "kg_category_and_six_channels" if kg_six_channel_signature and selected_key == "six_channel_hybrid" else "owner_selected" if selected_key else "signature_suggestion" if top and top.get("eligible") else "none",
             "write_authorized": False, "scores": scores, "dps": observed,
             "dynamic_entities": dynamic_entities,
             "raw_dps": {str(key): value for key, value in sorted(raw.items())},

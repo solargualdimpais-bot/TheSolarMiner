@@ -1,4 +1,4 @@
-const CACHE_NAME = "the-solar-miner-static-v0.5.84-tuya-six-channel-mapping";
+const CACHE_NAME = "the-solar-miner-static-v0.5.85-kg-hybrid-pair-menu";
 const STATIC_ASSETS = [
   "./", "./index.html", "./styles.css", "./app.js", "./gateway-connection.js", "./qrcode-generator.js",
   "./gateway-auth.js", "./favorite-list.js", "./app-core.js", "./workspace-ui.js", "./demo-mode.js", "./photo-format.js",

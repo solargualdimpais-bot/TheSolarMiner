@@ -175,6 +175,17 @@ test("Tuya editor persists an explicit DPS profile and keeps automatic matches a
   assert.match(app, /O esquema oficial deste produto e os códigos DPS explícitos prevalecem/);
 });
 
+test("KG six-channel quick controls expose per-pair modes and separate Settings without showing DPS ids", () => {
+  assert.match(app, /function tuyaIsKgHybrid\(device\)/);
+  assert.match(app, /function tuyaKgPairModeSpecs\(device\)/);
+  assert.match(app, /data-tuya-pair-mode=/);
+  assert.match(app, /Switch mode/);
+  assert.match(app, /Curtain mode/);
+  assert.match(app, /data-tuya-quick-settings/);
+  assert.match(app, /Comando de cortina não declarado/);
+  assert.match(app, /data-tuya-channel-label=/);
+});
+
 test("Tuya profiles can be inferred or overridden and breakers expose one control", () => {
   const gatewayIntegrations = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/integrations.py", import.meta.url), "utf8");
   assert.match(gatewayIntegrations, /def classify_tuya_device\(/);

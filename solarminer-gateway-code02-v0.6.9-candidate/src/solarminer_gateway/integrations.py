@@ -637,6 +637,12 @@ def _tuya_local_dps(device: dict[str, Any], code: str, *, status: bool = False) 
             dp_id = entry.get("dp_id", entry.get("dpId"))
             if isinstance(dp_id, int) and not isinstance(dp_id, bool) and dp_id > 0:
                 return str(dp_id)
+    if category_key == "kg" and code == "switch_all":
+        declared = {str(entry.get("code")) for entry in device.get("functions", [])
+                    if isinstance(entry, dict) and
+                    str(entry.get("type", "")).casefold() in {"bool", "boolean"}}
+        if {f"switch_{index}" for index in range(1, 7)}.issubset(declared):
+            return "13"
     if code == "switch":
         return "1"
     match = re.fullmatch(r"switch_(\d+)", code)
@@ -1093,8 +1099,6 @@ def control_tuya_setting(config: dict[str, Any], device_id: str, code: str, valu
     if schema is None:
         raise ValueError("tuya_setting_not_declared")
     semantic = " ".join(str(schema.get(key, "")) for key in ("code", "name", "desc")).lower()
-    if not re.search(r"count.?down|child.?lock|maintenance.?lock|light.?mode|relay.?status|alarm|over.?power|under.?power|over.?current|under.?current|over.?voltage|under.?voltage|trip", semantic):
-        raise ValueError("tuya_setting_not_supported")
     type_name = str(schema.get("type", "")).lower()
     raw_values = schema.get("values", {})
     if isinstance(raw_values, str):
@@ -1103,6 +1107,24 @@ def control_tuya_setting(config: dict[str, Any], device_id: str, code: str, valu
         except json.JSONDecodeError:
             raw_values = {}
     values = raw_values if isinstance(raw_values, dict) else {}
+    category_key = "".join(char for char in str(device.get("category") or "").casefold() if char.isalnum())
+    allowed_by_semantic = bool(re.search(
+        r"count.?down|child.?lock|maintenance.?lock|light.?mode|relay.?status|power.?on.?state|alarm|over.?power|under.?power|over.?current|under.?current|over.?voltage|under.?voltage|trip",
+        semantic)) or (category_key == "kg" and bool(re.search(r"switch.?type|io.?set|scene|number", semantic)))
+    dps_id = _tuya_local_dps(device, code)
+    try:
+        dps_number = int(dps_id)
+    except (TypeError, ValueError):
+        dps_number = None
+    range_values = values.get("range") if isinstance(values.get("range"), list) else []
+    kg_global_setting = (category_key == "kg" and type_name == "enum" and
+                         ((dps_number == 14 and {"off", "on", "memory"}.issubset(range_values)) or
+                          (dps_number == 107 and bool(range_values))))
+    kg_pair_mode = (category_key == "kg" and type_name == "enum" and
+                    dps_number in {113, 114, 115} and
+                    "switch" in range_values and "curtain" in range_values)
+    if not allowed_by_semantic and not kg_pair_mode and not kg_global_setting:
+        raise ValueError("tuya_setting_not_supported")
     if type_name in {"bool", "boolean"}:
         if not isinstance(value, bool):
             raise ValueError("tuya_setting_value_must_be_boolean")
@@ -1120,7 +1142,7 @@ def control_tuya_setting(config: dict[str, Any], device_id: str, code: str, valu
             raise ValueError("tuya_setting_value_not_in_declared_options")
     else:
         raise ValueError("tuya_setting_type_not_supported")
-    dps = _tuya_local_dps(device, code)
+    dps = dps_id
     client = _tuya_lan_client(device)
     response = client.set_value(int(dps), value)
     if not isinstance(response, dict) or (response.get("Error") and not response.get("dps")):

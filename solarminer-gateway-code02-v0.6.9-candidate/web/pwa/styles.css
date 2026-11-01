@@ -568,7 +568,26 @@ html[data-font="small"]{--font-ui-scale:.9;}html[data-font="normal"]{--font-ui-s
 .tuya-quick-channel{display:flex;align-items:center;gap:10px;min-width:0;padding:10px;border:1px solid var(--line);border-radius:13px;background:var(--panel-2,#141413);}
 .tuya-quick-channel>span{min-width:0;overflow-wrap:anywhere;cursor:text;}
 .tuya-quick-channel strong{font-size:13px;font-weight:550;}
+.tuya-kg-pair{display:grid;gap:10px;padding:13px;border:1px solid var(--line);border-radius:15px;background:var(--panel-2,#141413)}
+.tuya-kg-pair h3{margin:0;font-size:14px}
+.tuya-kg-channel-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.tuya-kg-channel-tile{display:grid;justify-items:center;gap:7px;min-width:0;text-align:center}
+.tuya-kg-channel-tile>span{display:grid;gap:4px;cursor:text;overflow-wrap:anywhere}
+.tuya-kg-channel-tile strong{font-size:13px;font-weight:550}
+.tuya-kg-channel-tile small{color:var(--muted);font-size:11px}
+.tuya-kg-channel-control{display:grid;place-items:center;width:100%;min-height:76px;border:1px solid transparent;border-radius:13px;background:var(--panel-2,#141413);color:#8a8272;cursor:pointer}
+.tuya-kg-channel-control svg{width:29px;height:29px;fill:none;stroke:currentColor;stroke-width:2.1;stroke-linecap:round;stroke-linejoin:round}
+.tuya-kg-channel-control.on{background:rgba(220,201,156,.18);border-color:var(--gold,#dcc99c);color:var(--gold,#dcc99c)}
+.tuya-kg-channel-control.unknown,.tuya-kg-channel-control:disabled{opacity:.55;cursor:not-allowed}
+.tuya-pair-mode{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px;border-radius:999px;background:var(--panel,#222)}
+.tuya-pair-mode button{min-height:42px;border:0;border-radius:999px;background:transparent;color:var(--muted);font-weight:650}
+.tuya-pair-mode button[aria-pressed="true"]{background:var(--gold-2,#e2d0a4);color:#211f1b}
+.tuya-pair-mode button:disabled{opacity:.48}
+.tuya-curtain-channel{min-height:64px}
+.tuya-curtain-channel span{display:grid;gap:5px;cursor:text}
+.tuya-curtain-channel small{color:var(--muted);font-size:11px}
+.tuya-kg-settings-button{width:100%;min-height:48px}
 .tuya-countdown-picker{display:grid;grid-template-columns:44px minmax(90px,1fr) 44px;gap:8px;align-items:center;}
 .tuya-countdown-picker button{height:48px;border:1px solid var(--line);border-radius:12px;background:var(--panel-2,#141413);color:var(--gold-2,#e2d0a4);font-size:24px;}
 .tuya-countdown-picker input{min-width:0;min-height:48px;text-align:center;font-size:18px;}
-@media(max-width:420px){.tuya-quick-channel-list{grid-template-columns:1fr}.home-favorites .favorite-device{padding:11px}.home-favorites .favorite-device>.favorite-device-icon{top:10px;left:10px}.home-favorites .favorite-device-actions .favorite-state-symbol{top:9px;right:9px}.home-favorites .favorite-device-info{left:11px;bottom:11px;right:54px}.favorite-expand{right:9px;bottom:9px;width:34px;height:34px}}
+@media(max-width:420px){.tuya-quick-channel-list{grid-template-columns:1fr}.tuya-kg-channel-grid{gap:9px}.tuya-kg-channel-control{min-height:70px}.home-favorites .favorite-device{padding:11px}.home-favorites .favorite-device>.favorite-device-icon{top:10px;left:10px}.home-favorites .favorite-device-actions .favorite-state-symbol{top:9px;right:9px}.home-favorites .favorite-device-info{left:11px;bottom:11px;right:54px}.favorite-expand{right:9px;bottom:9px;width:34px;height:34px}}

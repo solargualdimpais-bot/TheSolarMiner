@@ -69,10 +69,21 @@ def test_tuya_dps_registry_keeps_dp18_scoped_and_unknown_read_only():
 def test_tuya_dps_registry_suggests_hybrid_entities_without_writes():
     status = [{"dps_id": dp, "code": f"dps_{dp}", "value": value}
               for dp, value in [(1, False), (2, False), (3, False), (4, False), (5, False), (6, False),
-                                (107, "rturn"), (113, "switch"), (114, "curtain"), (115, "curtain")]]
+                                (13, False), (14, "memory"), (107, "rturn"),
+                                (113, "switch"), (114, "curtain"), (115, "curtain")]]
     suggestion = tuya_dps_registry.analyze_device({"category": "kg", "current_status": status})
-    assert suggestion["preset_id"] is None
-    result = tuya_dps_registry.analyze_device({"category": "kg", "dps_preset_id": "six_channel_hybrid", "current_status": status})
+    assert suggestion["preset_id"] == "six_channel_hybrid"
+    assert suggestion["selection_source"] == "kg_category_and_six_channels"
+    suggested_dps = {row["dps_id"]: row for row in suggestion["dps"]}
+    assert suggested_dps[13]["semantic_code"] == "master_switch"
+    assert suggested_dps[13]["data_type"] == "boolean"
+    assert suggested_dps[13]["confidence"] == "DOCUMENTED"
+    assert suggested_dps[14]["semantic_code"] == "power_on_state"
+    assert suggested_dps[14]["data_type"] == "enum"
+    assert suggested_dps[14]["confidence"] == "DOCUMENTED"
+    assert suggestion["write_authorized"] is False
+    assert all(row["write_supported"] is False for row in suggested_dps.values())
+    result = suggestion
     assert result["preset_id"] == "six_channel_hybrid"
     assert result["write_authorized"] is False
     assert result["dynamic_entities"] == [
@@ -83,6 +94,41 @@ def test_tuya_dps_registry_suggests_hybrid_entities_without_writes():
         {"entity_type": "cover", "pair": 3, "source_dps": [5, 6], "supported_controls": [],
          "note": "Cortina detetada; posição e comandos não inferidos."},
     ]
+
+
+def test_tuya_kg_six_channel_category_selects_read_only_profile_without_pair_modes():
+    status = [{"dps_id": dp, "code": f"dps_{dp}", "value": False}
+              for dp in range(1, 7)]
+    result = tuya_dps_registry.analyze_device({"category": "KG", "channel_count": 6,
+                                                "current_status": status})
+    assert result["preset_id"] == "six_channel_hybrid"
+    assert result["selection_source"] == "kg_category_and_six_channels"
+    assert result["write_authorized"] is False
+    assert result["dynamic_entities"] == []
+
+
+def test_tuya_kg_pair_mode_setting_is_only_sent_for_declared_switch_curtain_enum(monkeypatch):
+    calls = []
+    class LocalDevice:
+        def set_socketTimeout(self, value): pass
+        def set_retry(self, value): pass
+        def status(self): pytest.fail("pair-mode command must not read DPS")
+        def set_value(self, dps, value):
+            calls.append((dps, value))
+            return {"dps": {str(dps): value}}
+    monkeypatch.setattr(integrations, "_tuya_lan_client", lambda device: LocalDevice())
+    device = {"device_id": "kg-six", "category": "kg", "local_ip": "192.168.1.20",
+              "local_key": "local-key-123", "functions": [
+                  {"code": "pair_1_mode", "type": "Enum", "dp_id": 113,
+                   "values": {"range": ["switch", "curtain"]}},
+              ]}
+    result = integrations.control_tuya_setting({"devices": [device]}, "kg-six", "pair_1_mode", "curtain")
+    assert calls == [(113, "curtain")]
+    assert result["state_confirmed"] is False
+    device["functions"][0]["values"]["range"] = ["switch", "blind"]
+    with pytest.raises(ValueError, match="tuya_setting_not_supported"):
+        integrations.control_tuya_setting({"devices": [device]}, "kg-six", "pair_1_mode", "blind")
+    assert calls == [(113, "curtain")]
 
 
 def test_qccdz_ev_charger_uses_its_dps_18_switch_profile():
