@@ -98,6 +98,7 @@ test("Devices inventory uses the latest Gateway reading instead of stale LAN pro
   assert.doesNotMatch(app, /tuyaReadingsFromConfig\(devices\)\{[^}]*lan_probe/);
   assert.match(app, /tuyaReadings=tuyaReadingsFromConfig\(state\.tuyaDevices\)/);
   assert.match(app, /const changed=changedIds\.length>0/);
+  assert.match(app, /function tuyaDeviceState\(device,reading\)\{[\s\S]*?if\(typeof value==="boolean"\)return value\?"Ligado":"Desligado";[\s\S]*?if\(reading\?\.connection_state==="failed"\)/);
   assert.match(app, /current_connection_state===\"local_responded\"&&device\.local_control_state===\"ready\"/);
   assert.match(app, /metrics\.find\(metric=>metric\.label===\"Potência\"\),voltage=metrics\.find\(metric=>metric\.label===\"Tensão\"\)/);
   assert.match(app, /class="inventory-device-metrics"><span>/);
@@ -216,6 +217,6 @@ test("LAN discovery tries the local neighbor cache after broadcast errors", () =
 test("USB release rollback verification includes the installed Gateway release", () => {
   const rollbackLoops = workflow.match(/for VERSION in[^\n]+/g) || [];
   assert.equal(rollbackLoops.length, 2);
-  for (const loop of rollbackLoops) assert.match(loop, /0\.6\.112 0\.6\.113 0\.6\.114 0\.6\.115 0\.6\.116 0\.6\.117 0\.6\.118 0\.6\.119 0\.6\.120 0\.6\.121 0\.6\.122 0\.6\.123 0\.6\.124 0\.6\.125 0\.6\.126; do/);
+  for (const loop of rollbackLoops) assert.match(loop, /0\.6\.112 0\.6\.113 0\.6\.114 0\.6\.115 0\.6\.116 0\.6\.117 0\.6\.118 0\.6\.119 0\.6\.120 0\.6\.121 0\.6\.122 0\.6\.123 0\.6\.124 0\.6\.125 0\.6\.126 0\.6\.127; do/);
 });
 

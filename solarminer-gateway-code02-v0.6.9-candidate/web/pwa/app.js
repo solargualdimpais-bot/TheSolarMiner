@@ -824,13 +824,15 @@ async function testTuyaLanReachability(deviceId){
 }
 function favoriteReadingConfirmed(item){return item?.kind==="tuya"?tuyaReadingConfirmed(item.status):Boolean(item?.reading&&Array.isArray(item.reading.readings)&&item.reading.readings.some(value=>value.value!=null&&Number.isFinite(Number(value.value))));}
 function tuyaDeviceState(device,reading){
-  if(reading?.connection_state==="lan_reachable")return `Resposta LAN · ${Number(reading.latency_ms).toLocaleString("pt-PT")} ms · estado não consultado`;
-  if(reading?.connection_state==="lan_host_responded")return "IP respondeu na LAN · porta Tuya fechada";
   const status=Array.isArray(reading?.status)?reading.status.filter(item=>item&&typeof item==="object"):[],code=device?.switch_code||status.find(item=>typeof item.value==="boolean")?.code;
   const value=status.find(item=>item.code===code)?.value;
+  // A short freshness gap must not erase a known ON/OFF datapoint and make the card flicker.
+  if(typeof value==="boolean")return value?"Ligado":"Desligado";
+  if(reading?.connection_state==="lan_reachable")return `Resposta LAN · ${Number(reading.latency_ms).toLocaleString("pt-PT")} ms · estado não consultado`;
+  if(reading?.connection_state==="lan_host_responded")return "IP respondeu na LAN · porta Tuya fechada";
   if(reading?.connection_state==="failed")return device?.online===false?"Offline segundo a Tuya":"ON/OFF por confirmar";
   if(reading?.connection_state==="stored_status")return device?.online===false?"Offline segundo a Tuya":"ON/OFF por confirmar";
-  return value===true?"Ligado":value===false?"Desligado":tuyaReadingConfirmed(reading)?"Online · sem estado ON/OFF":"Por confirmar";
+  return tuyaReadingConfirmed(reading)?"Online · sem estado ON/OFF":"Por confirmar";
 }
 function tuyaFault(device,reading){
   const specs=[...(Array.isArray(device?.status_spec)?device.status_spec:[]),...(Array.isArray(device?.functions)?device.functions:[])].filter(item=>item&&typeof item==="object"),labels=device?.capability_labels&&typeof device.capability_labels==="object"?device.capability_labels:{};
