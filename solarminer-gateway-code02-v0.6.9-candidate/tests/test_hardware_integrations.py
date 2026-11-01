@@ -97,7 +97,7 @@ def test_tuya_local_status_does_not_guess_when_schema_codes_conflict_for_same_dp
     reading = integrations._tuya_local_status(device)
     assert reading["status"] == [
         {"code": "dps_1", "dps_id": 1, "value": True},
-        {"code": "switch_2", "dps_id": 2, "value": False},
+        {"code": "dps_2", "dps_id": 2, "value": False},
     ]
     knowledge = tuya_dps_registry.analyze_device({**device, "current_status": reading["status"]})
     assert knowledge["mapping_conflicts"] == [{"dps_id": 1, "codes": ["switch_1", "switch_2"]}]
