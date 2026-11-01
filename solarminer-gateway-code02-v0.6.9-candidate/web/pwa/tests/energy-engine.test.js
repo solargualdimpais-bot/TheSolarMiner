@@ -16,6 +16,8 @@ test("Owner PWA reads Gateway engine history and stores battery settings on Gate
   assert.match(auth, /params\.set\("history_until", historyUntil\)/);
   assert.match(auth, /\/api\/v1\/energy\/engine\/config/);
   assert.match(app, /SOC da bateria/);
+  assert.match(app, /reportedSocOnly\?`Reportado pelo inversor/);
+  assert.match(app, /não usado nos cálculos de energia/);
   assert.match(app, /Energia acima do SOC mínimo/);
   assert.match(app, /Autonomia até ao corte · sem solar/);
   assert.match(app, /perfil \$\{esc\(autonomy\.history_days_used\?\?0\)\} dias \+ consumo atual/);

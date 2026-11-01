@@ -2761,6 +2761,11 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
             return False
         stamp = _parse_utc(item.get("observed_at"))
         return stamp is not None and 0 <= (datetime.now(timezone.utc)-stamp).total_seconds() <= 120
+    reported_soc_item = battery_readings.get("battery_soc_percent")
+    reported_soc = _number(battery_readings, "battery_soc_percent")
+    if (reported_soc is None or not 0 <= reported_soc <= 100 or not fresh_local(reported_soc_item)
+            or str((reported_soc_item or {}).get("unit", "")).strip().casefold() not in {"%", "percent", "percentage"}):
+        reported_soc = None
     voltage_plateau = (_battery_full_voltage_plateau(
         battery_voltage_history, battery_power_history, battery_voltage, battery_charge_power)
         if fresh_local(voltage_item) and fresh_local(charge_item) else None)
@@ -3001,7 +3006,9 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
                         "battery_soc_integrated_percent": soc,
                         "battery_soc_source": displayed_soc_source,
                         "battery_soc_estimate": soc_estimate,
-                        "battery_inverter_reported_soc_percent": None,
+                        "battery_inverter_reported_soc_percent": reported_soc,
+                        "battery_inverter_reported_soc_observed_at": (reported_soc_item or {}).get("observed_at") if reported_soc is not None else None,
+                        "battery_inverter_reported_soc_trust": (reported_soc_item or {}).get("trust") if reported_soc is not None else None,
                         "battery_voltage_max_30d_v": soc_estimate.get("voltage_max_30d_v") if soc_estimate else None,
                         "battery_energy_estimate_state": soc_estimate.get("state", "UNAVAILABLE") if soc_estimate else "UNAVAILABLE",
                         "battery_voltage_v": battery_voltage,

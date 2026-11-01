@@ -286,7 +286,8 @@ def test_fresh_deye_soc_and_pack_ceiling_confirm_full_battery_without_dispatch_e
     assert result["current"]["battery_soc_percent"] is None
     assert result["current"]["battery_soc_integrated_percent"] is None
     assert result["current"]["battery_soc_source"] == "unavailable"
-    assert result["current"]["battery_inverter_reported_soc_percent"] is None
+    assert result["current"]["battery_inverter_reported_soc_percent"] == 100
+    assert result["current"]["battery_inverter_reported_soc_trust"] == "LIVE_UNVERIFIED"
     assert result["current"]["battery_energy_available_kwh_above_minimum"] is None
     assert energy_engine.build_dispatch_plan(
         {**result["current"], "pv_power_w": 1800, "load_power_w": 1700},
