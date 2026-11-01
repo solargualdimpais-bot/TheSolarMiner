@@ -207,7 +207,7 @@ def test_tuya_community_catalog_is_exact_product_scoped_and_never_authorizes_wri
     assert dp18["write_supported"] is False
     assert ev_profile["write_authorized"] is False
     by_id = {row["dps_id"]: row for row in ev_profile["dps"]}
-    assert by_id[3]["display_name"] == "Charger state"
+    assert by_id[3]["display_name"] == "charger state"
     assert by_id[14]["display_name"] == "charging_mode"
     assert by_id[106]["semantic_code"] == "current_x"
     assert all(row["write_supported"] is False for row in by_id.values())

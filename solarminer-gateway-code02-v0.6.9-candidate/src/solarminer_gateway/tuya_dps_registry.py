@@ -559,6 +559,17 @@ def analyze_device(device: dict[str, Any], status: list[dict[str, Any]] | None =
                          "source": f"{community_reference.get('repository')} · {community_reference.get('config')}"}
         if dp_id in mapping_conflicts:
             known = None
+        # Every semantic row is serialized with a stable shape. Category and
+        # community references may omit scaling metadata, but the UI should
+        # still be able to render their live raw value safely.
+        if isinstance(known, dict):
+            known.setdefault("unit", None)
+            known.setdefault("scale", None)
+            known.setdefault("data_type", "unknown")
+            known.setdefault("semantic_code", "unknown")
+            known.setdefault("display_name", f"DPS {dp_id}")
+            known.setdefault("confidence", "UNKNOWN")
+            known.setdefault("source", "")
         # Owner-edited DPS descriptions are presentation metadata scoped to the
         # exact Product ID. They never change semantic routing or write rights.
         custom_overrides = device.get("product_dps_overrides", {})
