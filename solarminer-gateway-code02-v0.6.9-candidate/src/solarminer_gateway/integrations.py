@@ -1091,6 +1091,14 @@ def control_tuya_switch(config: dict[str, Any], device_id: str, on: bool, code: 
     allowed_codes = {entry.get("code") for entry in device.get("functions", []) if isinstance(entry, dict) and str(entry.get("type", "")).lower() in {"bool", "boolean"}}
     if device.get("switch_code"):
         allowed_codes.add(device["switch_code"])
+    category_key = "".join(char for char in str(device.get("category") or "").casefold() if char.isalnum())
+    kg_six_channel_profile = (category_key == "kg" and
+                              {f"switch_{index}" for index in range(1, 7)}.issubset(allowed_codes))
+    if code == "switch_all" and kg_six_channel_profile:
+        # Some Tuya schemas expose the six relays but omit the writable master
+        # function. For this exact KG profile, DPS 13 is the documented group
+        # control and _tuya_local_dps validates the same complete channel set.
+        allowed_codes.add("switch_all")
     if code not in allowed_codes:
         raise ValueError("tuya_switch_function_code_not_configured")
     if not isinstance(code, str) or not code or not code.replace("_", "").replace("-", "").isalnum() or len(code) > 64:

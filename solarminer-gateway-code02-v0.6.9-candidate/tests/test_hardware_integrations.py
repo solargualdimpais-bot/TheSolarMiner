@@ -1144,6 +1144,38 @@ def test_tuya_switch_command_uses_saved_protocol_without_reading_status(monkeypa
     assert result["state_confirmed"] is False
 
 
+def test_kg_six_channel_switch_all_uses_dps_13_when_schema_omits_master_function(monkeypatch):
+    calls = []
+    class LocalDevice:
+        def set_socketTimeout(self, _value): pass
+        def set_retry(self, _value): pass
+        def status(self): pytest.fail("switch-all command must not read DPS")
+        def set_status(self, on, switch=1):
+            calls.append((on, switch))
+            return {"dps": {str(switch): on}}
+    functions = [{"code": f"switch_{index}", "type": "Boolean", "dp_id": index}
+                 for index in range(1, 7)]
+    device = {"device_id": "kg-six", "category": "kg", "functions": functions,
+              "local_key": "local-key-123", "local_ip": "192.168.8.44", "local_protocol": "3.3"}
+    monkeypatch.setattr(integrations, "_tuya_lan_client", lambda _device: LocalDevice())
+    result = integrations.control_tuya_switch({"devices": [device]}, "kg-six", True, "switch_all")
+    assert calls == [(True, 13)]
+    assert result["switch_code"] == "switch_all"
+    assert result["command_accepted"] is True
+
+
+def test_tuya_switch_all_inference_is_not_allowed_for_non_kg_devices(monkeypatch):
+    calls = []
+    device = {"device_id": "other-six", "category": "other",
+              "functions": [{"code": f"switch_{index}", "type": "Boolean", "dp_id": index}
+                            for index in range(1, 7)],
+              "local_key": "local-key-123", "local_ip": "192.168.8.44"}
+    monkeypatch.setattr(integrations, "_tuya_lan_client", lambda _device: calls.append("client"))
+    with pytest.raises(ValueError, match="tuya_switch_function_code_not_configured"):
+        integrations.control_tuya_switch({"devices": [device]}, "other-six", True, "switch_all")
+    assert calls == []
+
+
 def test_tuya_switch_control_rejects_unconfigured_device_without_request(monkeypatch):
     calls = []
     monkeypatch.setattr(integrations, "_tuya_request", lambda *a, **k: calls.append((a, k)))
