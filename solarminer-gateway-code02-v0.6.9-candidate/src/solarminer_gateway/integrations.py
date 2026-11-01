@@ -1023,7 +1023,7 @@ def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Eve
 
 
 def control_tuya_switch(config: dict[str, Any], device_id: str, on: bool, code: str | None = None) -> dict[str, Any]:
-    """Toggle only a switch datapoint explicitly assigned in Owner config."""
+    """Send an explicit ON/OFF value to a configured datapoint, without reading status."""
     if not isinstance(on, bool):
         raise ValueError("tuya_switch_state_must_be_boolean")
     if not isinstance(config, dict):
@@ -1041,8 +1041,9 @@ def control_tuya_switch(config: dict[str, Any], device_id: str, on: bool, code: 
     if not isinstance(code, str) or not code or not code.replace("_", "").replace("-", "").isalnum() or len(code) > 64:
         raise ValueError("tuya_switch_function_code_not_configured")
     dps = _tuya_local_dps(device, code)
-    client, _initial_status, protocol = _tuya_probe_local_status(device)
-    _persist_tuya_protocols({device_id: protocol}, {device_id: device["local_ip"]})
+    # Commands use the protocol already stored by the independent read engine.
+    # Do not issue a status/DPS probe as part of a user command.
+    client = _tuya_lan_client(device)
     response = client.set_status(on, switch=int(dps))
     if not isinstance(response, dict) or (response.get("Error") and not response.get("dps")):
         raise RuntimeError("tuya_lan_command_rejected")
@@ -1053,7 +1054,7 @@ def control_tuya_switch(config: dict[str, Any], device_id: str, on: bool, code: 
 
 
 def control_tuya_level(config: dict[str, Any], device_id: str, percent: int) -> dict[str, Any]:
-    """Set a configured Tuya dimmer/cover datapoint from 0–100 percent."""
+    """Send a level command; state confirmation belongs to the independent reader."""
     if isinstance(percent, bool) or not isinstance(percent, int) or not 0 <= percent <= 100:
         raise ValueError("tuya_level_percent_out_of_range")
     if not isinstance(config, dict):
@@ -1067,24 +1068,18 @@ def control_tuya_level(config: dict[str, Any], device_id: str, percent: int) -> 
         raise ValueError("tuya_level_function_not_configured")
     target = round(low + (high - low) * percent / 100)
     dps = _tuya_local_dps(device, code)
-    client, _initial_status, protocol = _tuya_probe_local_status(device)
-    _persist_tuya_protocols({device_id: protocol}, {device_id: device["local_ip"]})
+    client = _tuya_lan_client(device)
     response = client.set_value(int(dps), target)
     if not isinstance(response, dict) or (response.get("Error") and not response.get("dps")):
         raise RuntimeError("tuya_lan_command_rejected")
-    try:
-        rows = _tuya_local_status(device).get("status", [])
-        observed = next((item.get("value") for item in rows if item.get("code") == code), None)
-    except (RuntimeError, ValueError, OSError):
-        observed = None
     return {"device_id": device_id, "level_code": code, "requested_percent": percent, "requested_value": target,
-            "command_accepted": True, "control_command_sent": True, "state_confirmed": observed == target,
-            "observed_value": observed, "connection_state": "control_confirmed" if observed == target else "command_accepted_state_unconfirmed",
+            "command_accepted": True, "control_command_sent": True, "state_confirmed": False,
+            "observed_value": None, "connection_state": "command_accepted_awaiting_independent_scan",
             "source": "TUYA_LAN"}
 
 
 def control_tuya_setting(config: dict[str, Any], device_id: str, code: str, value: Any) -> dict[str, Any]:
-    """Write a schema-declared Tuya setting (timer, lock, light mode or alarm threshold)."""
+    """Write a declared setting without a status read; report acceptance only."""
     if not isinstance(config, dict):
         raise RuntimeError("tuya_config_unavailable")
     device = next((item for item in config.get("devices", [])
@@ -1126,19 +1121,13 @@ def control_tuya_setting(config: dict[str, Any], device_id: str, code: str, valu
     else:
         raise ValueError("tuya_setting_type_not_supported")
     dps = _tuya_local_dps(device, code)
-    client, _initial_status, protocol = _tuya_probe_local_status(device)
-    _persist_tuya_protocols({device_id: protocol}, {device_id: device["local_ip"]})
+    client = _tuya_lan_client(device)
     response = client.set_value(int(dps), value)
     if not isinstance(response, dict) or (response.get("Error") and not response.get("dps")):
         raise RuntimeError("tuya_lan_command_rejected")
-    try:
-        rows = _tuya_local_status(device).get("status", [])
-        observed = next((item.get("value") for item in rows if item.get("code") == code), None)
-    except (RuntimeError, ValueError, OSError):
-        observed = None
     return {"device_id": device_id, "setting_code": code, "requested_value": value,
-            "observed_value": observed, "command_accepted": True, "state_confirmed": observed == value,
-            "connection_state": "control_confirmed" if observed == value else "command_accepted_state_unconfirmed",
+            "observed_value": None, "command_accepted": True, "state_confirmed": False,
+            "connection_state": "command_accepted_awaiting_independent_scan",
             "control_command_sent": True, "source": "TUYA_LAN"}
 
 

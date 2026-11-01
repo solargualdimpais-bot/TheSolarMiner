@@ -960,7 +960,7 @@ def test_tuya_switch_control_posts_only_configured_switch_without_immediate_read
     class LocalDevice:
         def set_socketTimeout(self, value): pass
         def set_retry(self, value): pass
-        def status(self): return {"dps": {"1": False}}
+        def status(self): pytest.fail("switch command must not read DPS")
         def set_status(self, on, switch=1):
             calls.append(("set_status", on, switch))
             return {"dps": {str(switch): on}}
@@ -980,16 +980,11 @@ def test_tuya_switch_control_posts_only_configured_switch_without_immediate_read
     assert result["source"] == "TUYA_LAN"
 
 
-def test_tuya_control_falls_back_to_protocol_before_sending_one_command(monkeypatch):
-    attempted = []
+def test_tuya_switch_command_uses_saved_protocol_without_reading_status(monkeypatch):
     commands = []
     class LocalDevice:
         def __init__(self, protocol): self.protocol = protocol
-        def status(self):
-            attempted.append(self.protocol)
-            if self.protocol == "3.3":
-                raise TimeoutError("protocol mismatch")
-            return {"dps": {"1": False}}
+        def status(self): pytest.fail("switch command must not read DPS")
         def set_socketTimeout(self, _value): pass
         def set_retry(self, _value): pass
         def set_status(self, on, switch=1):
@@ -1002,9 +997,8 @@ def test_tuya_control_falls_back_to_protocol_before_sending_one_command(monkeypa
     monkeypatch.setattr(integrations, "_persist_tuya_protocols", lambda *_args, **_kwargs: None)
     result = integrations.control_tuya_switch({"devices": [{
         "device_id": "relay-1", "name": "Relay", "switch_code": "switch_1",
-        "local_key": "local-key-123", "local_ip": "192.168.8.44",
+        "local_key": "local-key-123", "local_ip": "192.168.8.44", "local_protocol": "3.4",
     }]}, "relay-1", True)
-    assert attempted == ["3.3", "3.4"]
     assert commands == [("3.4", True, 1)]
     assert result["state_confirmed"] is False
 
@@ -1018,17 +1012,17 @@ def test_tuya_switch_control_rejects_unconfigured_device_without_request(monkeyp
     assert calls == []
 
 
-def test_tuya_level_control_maps_percent_to_configured_range_and_reads_back(monkeypatch):
+def test_tuya_level_control_sends_percent_without_reading_back(monkeypatch):
     calls = []
     class LocalDevice:
         def set_socketTimeout(self, value): pass
         def set_retry(self, value): pass
-        def status(self): return {"dps": {"2": 510}}
+        def status(self): pytest.fail("level command must not read DPS")
         def set_value(self, dps, value):
             calls.append(("set_value", dps, value))
             return {"dps": {str(dps): value}}
     monkeypatch.setattr(integrations, "_tuya_lan_client", lambda device: LocalDevice())
-    monkeypatch.setattr(integrations, "_tuya_local_status", lambda device: {"status": [{"code": "position", "value": 510}]})
+    monkeypatch.setattr(integrations, "_tuya_local_status", lambda device: pytest.fail("level command must not read DPS"))
     monkeypatch.setattr(integrations, "_tuya_request", lambda *args, **kwargs: pytest.fail("Tuya level control used Cloud"))
     result = integrations.control_tuya_level({
         "region": "eu_central",
@@ -1036,7 +1030,8 @@ def test_tuya_level_control_maps_percent_to_configured_range_and_reads_back(monk
     }, "device_123", 50)
     assert calls == [("set_value", 2, 510)]
     assert result["command_accepted"] is True
-    assert result["state_confirmed"] is True
+    assert result["state_confirmed"] is False
+    assert result["observed_value"] is None
     assert result["source"] == "TUYA_LAN"
 
 
@@ -1053,19 +1048,20 @@ def test_tuya_setting_control_writes_only_a_declared_countdown_value(monkeypatch
     class LocalDevice:
         def set_socketTimeout(self, value): pass
         def set_retry(self, value): pass
-        def status(self): return {"dps": {"7": 120}}
+        def status(self): pytest.fail("setting command must not read DPS")
         def set_value(self, dps, value):
             calls.append((dps, value))
             return {"dps": {str(dps): value}}
     monkeypatch.setattr(integrations, "_tuya_lan_client", lambda device: LocalDevice())
-    monkeypatch.setattr(integrations, "_tuya_local_status", lambda device: {"status": [{"code": "countdown_1", "value": 120}]})
+    monkeypatch.setattr(integrations, "_tuya_local_status", lambda device: pytest.fail("setting command must not read DPS"))
     monkeypatch.setattr(integrations, "_tuya_request", lambda *args, **kwargs: pytest.fail("Tuya setting control used Cloud"))
     config = {"devices": [{"device_id": "breaker-1", "local_ip": "192.168.1.10", "local_key": "local-key-123",
                            "local_dps_map": {"countdown_1": "7"},
                            "functions": [{"code": "countdown_1", "name": "Countdown", "type": "Integer", "values": '{"min":0,"max":3600,"step":1}'}]}]}
     result = integrations.control_tuya_setting(config, "breaker-1", "countdown_1", 120)
     assert calls == [(7, 120)]
-    assert result["state_confirmed"] is True
+    assert result["state_confirmed"] is False
+    assert result["observed_value"] is None
     assert result["source"] == "TUYA_LAN"
 
 
