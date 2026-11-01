@@ -149,6 +149,21 @@ def _schema_ids(device: dict[str, Any]) -> dict[str, int]:
     return found
 
 
+def _schema_mapping_conflicts(device: dict[str, Any]) -> dict[int, list[str]]:
+    by_id: dict[int, set[str]] = {}
+    for key in ("functions", "status_spec"):
+        values = device.get(key)
+        if not isinstance(values, list):
+            continue
+        for item in values:
+            if not isinstance(item, dict) or not isinstance(item.get("code"), str):
+                continue
+            dp_id = item.get("dp_id", item.get("dpId"))
+            if isinstance(dp_id, int) and not isinstance(dp_id, bool) and dp_id > 0:
+                by_id.setdefault(dp_id, set()).add(item["code"])
+    return {dp_id: sorted(codes) for dp_id, codes in by_id.items() if len(codes) > 1}
+
+
 def analyze_device(device: dict[str, Any], status: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Describe observed DPS and ranked presets without authorizing controls."""
     raw_rows = status if isinstance(status, list) else device.get("current_status", [])
@@ -167,6 +182,7 @@ def analyze_device(device: dict[str, Any], status: list[dict[str, Any]] | None =
         if dp_id > 0:
             raw[dp_id] = row.get("value")
     schema = _schema_ids(device)
+    mapping_conflicts = _schema_mapping_conflicts(device)
     available = set(raw)
     available.update(schema.values())
     category = "".join(ch for ch in str(device.get("category") or "").casefold() if ch.isalnum())
@@ -262,6 +278,8 @@ def analyze_device(device: dict[str, Any], status: list[dict[str, Any]] | None =
             known = {"semantic_code": "switch", "display_name": "Interruptor do carregador",
                      "data_type": "boolean", "unit": None, "scale": None,
                      "confidence": "CONFIRMED", "source": "Owner-confirmed QCCDZ category mapping"}
+        if dp_id in mapping_conflicts:
+            known = None
         observed.append({"dps_id": dp_id, "semantic_code": known["semantic_code"] if known else "unknown",
                          "display_name": known["display_name"] if known else f"Unknown DPS {dp_id}",
                          "data_type": known["data_type"] if known else "unknown",
@@ -295,6 +313,7 @@ def analyze_device(device: dict[str, Any], status: list[dict[str, Any]] | None =
             "confidence": "CONFIRMED" if selected_key and category == "qccdz" else "OWNER_CONFIRMED" if selected_key else "SUGGESTED" if top and top.get("eligible") else "UNKNOWN",
             "selection_source": "confirmed_category" if category == "qccdz" else "kg_category_and_six_channels" if kg_six_channel_signature and selected_key == "six_channel_hybrid" else "owner_selected" if selected_key else "signature_suggestion" if top and top.get("eligible") else "none",
             "write_authorized": False, "scores": scores, "dps": observed,
+            "mapping_conflicts": [{"dps_id": dp_id, "codes": codes} for dp_id, codes in sorted(mapping_conflicts.items())],
             "dynamic_entities": dynamic_entities,
             "raw_dps": {str(key): value for key, value in sorted(raw.items())},
             "source_connector": "TUYA_LAN" if raw else None,

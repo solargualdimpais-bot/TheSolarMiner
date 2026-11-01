@@ -651,6 +651,7 @@ function tuyaPrimarySwitchCode(device,codes=tuyaSwitchCodes(device)){
   return device?.switch_code&&codes.includes(device.switch_code)?device.switch_code:codes.find(code=>/^switch(?:_\d+|_led|_usb\d+)?$/i.test(code))||codes[0]||"";
 }
 function tuyaSwitchState(device,reading,code){
+  if(!Object.prototype.hasOwnProperty.call(device?.local_dps_map||{},code)&&(device?.dps_knowledge?.mapping_conflicts||[]).some(conflict=>(conflict?.codes||[]).includes(code)))return undefined;
   const status=Array.isArray(reading?.status)?reading.status:[];
   const directItem=status.find(item=>item?.code===code);
   const boolValue=value=>typeof value==="boolean"?value:typeof value==="number"&&(value===0||value===1)?Boolean(value):typeof value==="string"&&/^(true|false|0|1)$/i.test(value)?value.toLowerCase()==="true"||value==="1":undefined;
@@ -668,6 +669,7 @@ function tuyaSwitchState(device,reading,code){
 }
 function tuyaSwitchCodeHasLocalMapping(device,code){
   if(device?.local_dps_map&&Object.prototype.hasOwnProperty.call(device.local_dps_map,code))return true;
+  if((device?.dps_knowledge?.mapping_conflicts||[]).some(conflict=>(conflict?.codes||[]).includes(code)))return false;
   const spec=(device?.functions||[]).find(item=>item?.code===code);
   if(Number.isInteger(spec?.dp_id)||Number.isInteger(spec?.dpId))return true;
   if(tuyaIsKgHybrid(device)&&code==="switch_all")return true;
@@ -683,6 +685,7 @@ function tuyaIsKgHybrid(device){
 function tuyaSpecDpsId(device,spec){
   const mapped=device?.local_dps_map?.[spec?.code];
   if(Number.isInteger(Number(mapped))&&Number(mapped)>0)return Number(mapped);
+  if((device?.dps_knowledge?.mapping_conflicts||[]).some(conflict=>(conflict?.codes||[]).includes(spec?.code)))return null;
   const direct=spec?.dp_id??spec?.dpId;
   if(Number.isInteger(Number(direct))&&Number(direct)>0)return Number(direct);
   const catalog=[...(device?.product_profile?.dps||[]),...(device?.dps_knowledge?.dps||[])];

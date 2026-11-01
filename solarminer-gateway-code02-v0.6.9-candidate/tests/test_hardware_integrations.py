@@ -77,8 +77,33 @@ def test_tuya_product_catalog_keys_profile_by_product_and_channel_count_without_
         "product_schemas": bounded,
     }})["tuya"]
     assert public["devices"][0]["dps_knowledge"]["channel_count"] == 6
+    assert public["devices"][0]["product_profile"]["product_id"] == "kg-six-product"
     assert public["product_catalog"]["kg-six-product"]["dps_profile"]["category"] == "kg"
     assert "must-not-leak" not in json.dumps(public)
+
+
+def test_tuya_local_status_does_not_guess_when_schema_codes_conflict_for_same_dps(monkeypatch):
+    monkeypatch.setattr(integrations, "_tuya_probe_local_status", lambda _device: (
+        None, {"dps": {"1": True, "2": False}}, "3.3"))
+    device = {
+        "device_id": "kg-conflict",
+        "category": "kg",
+        "functions": [
+            {"code": "switch_1", "type": "Boolean", "dp_id": 1},
+            {"code": "switch_2", "type": "Boolean", "dp_id": 1},
+        ],
+        "status_spec": [{"code": "switch_2", "type": "Boolean", "dp_id": 2}],
+    }
+    reading = integrations._tuya_local_status(device)
+    assert reading["status"] == [
+        {"code": "dps_1", "dps_id": 1, "value": True},
+        {"code": "switch_2", "dps_id": 2, "value": False},
+    ]
+    knowledge = tuya_dps_registry.analyze_device({**device, "current_status": reading["status"]})
+    assert knowledge["mapping_conflicts"] == [{"dps_id": 1, "codes": ["switch_1", "switch_2"]}]
+    assert next(row for row in knowledge["dps"] if row["dps_id"] == 1)["semantic_code"] == "unknown"
+    with pytest.raises(ValueError, match="tuya_local_datapoint_mapping_required"):
+        integrations._tuya_local_dps(device, "switch_1")
 
 
 def test_tuya_command_rejection_reports_target_dps_and_sanitized_device_hint(monkeypatch):
