@@ -67,7 +67,8 @@ def test_tuya_product_catalog_keys_profile_by_product_and_channel_count_without_
     assert next(row for row in profile["dps"] if row["dps_id"] == 1)["semantic_code"] == "switch_1"
     assert all("raw_value" not in row for row in profile["dps"])
     bounded = integrations._bounded_tuya_product_schemas({"kg-six-product": {
-        **profile, "functions": device["functions"], "status_spec": device["status_spec"], "cached_at": 10,
+        **profile, "dps_profile": profile, "functions": device["functions"],
+        "status_spec": device["status_spec"], "cached_at": 10,
     }})
     assert bounded["kg-six-product"]["channel_count"] == 6
     assert bounded["kg-six-product"]["dps_profile"]["product_id"] == "kg-six-product"
