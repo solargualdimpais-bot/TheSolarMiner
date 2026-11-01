@@ -327,8 +327,9 @@ function tuyaCachedReadings(devices){
   });
 }
 function tuyaReadingsFromConfig(devices){
-  const probes=new Map((Array.isArray(state.tuyaReadings)?state.tuyaReadings:[]).map(normalizeTuyaReading).filter(reading=>reading?.lan_probe===true).map(reading=>[reading.device_id,reading]));
-  return tuyaCachedReadings(devices).map(reading=>probes.get(reading.device_id)||reading);
+  // The Gateway's periodic DPS observation is authoritative for switch state.
+  // A previous TCP-only probe (or manual diagnostic) must never shadow newer engine data.
+  return tuyaCachedReadings(devices);
 }
 async function refreshTuyaInventoryStatus(){
   if(!["devices","inicio"].includes(state.page)||document.visibilityState!=="visible"||!sessionInfo().authenticated||sessionInfo().user?.role!=="owner"||state.tuyaInventoryRefreshing)return;
