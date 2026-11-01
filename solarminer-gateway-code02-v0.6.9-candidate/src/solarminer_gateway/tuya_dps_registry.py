@@ -193,8 +193,11 @@ def analyze_device(device: dict[str, Any], status: list[dict[str, Any]] | None =
                          re.fullmatch(r"switch_[1-6]", str(item.get("code", ""))) and
                          str(item.get("type", "")).casefold() in {"bool", "boolean"}}
     reported_switches = {str(item) for item in device.get("switch_channels", []) if isinstance(item, str)}
+    observed_switches = {dp_id for dp_id, value in raw.items()
+                         if 1 <= dp_id <= 6 and isinstance(value, bool)}
     kg_six_channel_signature = (category == "kg" and
                                 (len(declared_switches) >= 6 or len(reported_switches) >= 6 or
+                                 len(observed_switches) >= 6 or
                                  isinstance(device.get("channel_count"), int) and device["channel_count"] >= 6))
     if category == "qccdz":
         selected = next((item for item in scores if item["preset_id"] == "qccdz_ev_charger"), None)

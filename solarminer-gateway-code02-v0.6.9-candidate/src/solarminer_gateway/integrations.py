@@ -1111,7 +1111,15 @@ def control_tuya_setting(config: dict[str, Any], device_id: str, code: str, valu
     allowed_by_semantic = bool(re.search(
         r"count.?down|child.?lock|maintenance.?lock|light.?mode|relay.?status|power.?on.?state|alarm|over.?power|under.?power|over.?current|under.?current|over.?voltage|under.?voltage|trip",
         semantic)) or (category_key == "kg" and bool(re.search(r"switch.?type|io.?set|scene|number", semantic)))
-    dps_id = _tuya_local_dps(device, code)
+    # Validate the requested value before requiring a local datapoint mapping.
+    # This keeps a bad value from being misreported as a missing DPS mapping.
+    dps_id = None
+    try:
+        dps_id = _tuya_local_dps(device, code)
+    except ValueError:
+        schema_dp_id = schema.get("dp_id", schema.get("dpId"))
+        if isinstance(schema_dp_id, int) and not isinstance(schema_dp_id, bool) and schema_dp_id > 0:
+            dps_id = str(schema_dp_id)
     try:
         dps_number = int(dps_id)
     except (TypeError, ValueError):
@@ -1142,6 +1150,8 @@ def control_tuya_setting(config: dict[str, Any], device_id: str, code: str, valu
             raise ValueError("tuya_setting_value_not_in_declared_options")
     else:
         raise ValueError("tuya_setting_type_not_supported")
+    if dps_id is None:
+        raise ValueError("tuya_local_datapoint_mapping_required")
     dps = dps_id
     client = _tuya_lan_client(device)
     response = client.set_value(int(dps), value)
