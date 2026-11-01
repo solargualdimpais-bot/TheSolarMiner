@@ -96,7 +96,7 @@ test("Devices inventory preserves explicit LAN readings across cache refreshes a
   assert.match(app, /function tuyaCachedReadings\(devices\)/);
   assert.match(app, /function tuyaReadingsFromConfig\(devices\)[\s\S]*?lan_probe===true/);
   assert.match(app, /tuyaReadings=tuyaReadingsFromConfig\(state\.tuyaDevices\)/);
-  assert.match(app, /const changed=signature!==state\.tuyaInventorySignature/);
+  assert.match(app, /const changed=changedIds\.length>0/);
   assert.match(app, /current_connection_state===\"local_responded\"&&device\.local_control_state===\"ready\"/);
   assert.match(app, /metrics\.find\(metric=>metric\.label===\"Potência\"\),voltage=metrics\.find\(metric=>metric\.label===\"Tensão\"\)/);
   assert.match(app, /class="inventory-device-metrics"><span>/);
@@ -118,11 +118,13 @@ test("PV string and AQS dialogs intercept native form submits before the browser
   assert.doesNotMatch(app, /e\.target\.id === "aqs-form"/);
 });
 
-test("Devices navigation is immediate and background inventory refreshes do not redraw another page", () => {
+test("Devices navigation is immediate and background inventory refreshes patch only changed device cards", () => {
   assert.match(app, /enteringDevices=page==="devices"&&state\.page!=="devices"/);
   assert.match(app, /if\(enteringDevices&&sessionInfo\(\)\.user\?\.role==="owner"\)void refreshTuyaInventoryStatus\(\)/);
   assert.match(app, /window\.scrollTo\(\{top:0,behavior:"auto"\}\)/);
-  assert.match(app, /if\(changed&&\["devices","inicio"\]\.includes\(state\.page\)\)renderAfterLiveRefresh\(\)/);
+  assert.match(app, /if\(changed&&\["devices","inicio"\]\.includes\(state\.page\)\)changedIds\.forEach\(updateVisibleTuyaCard\)/);
+  assert.match(app, /current\.replaceWith\(updated\)/);
+  assert.match(app, /favoriteControlPending\.delete\(deviceId\);updateVisibleTuyaCard\(deviceId\)/);
   assert.doesNotMatch(app, /state\.page==="energia"\s*\|\|\s*!Number\.isFinite\(lastRefresh\)/);
   assert.match(app, /const readingByDevice=new Map\(readings\.map\(reading=>\[reading\.device_id,reading\]\)\)/);
   assert.match(app, /catch \(error\) \{\s*console\.error\(`Could not render SolarMiner page: \$\{state\.page\}`/);
@@ -213,6 +215,6 @@ test("LAN discovery tries the local neighbor cache after broadcast errors", () =
 test("USB release rollback verification includes the installed Gateway release", () => {
   const rollbackLoops = workflow.match(/for VERSION in[^\n]+/g) || [];
   assert.equal(rollbackLoops.length, 2);
-  for (const loop of rollbackLoops) assert.match(loop, /0\.6\.112 0\.6\.113 0\.6\.114 0\.6\.115 0\.6\.116 0\.6\.117 0\.6\.118 0\.6\.119 0\.6\.120 0\.6\.121 0\.6\.122 0\.6\.123 0\.6\.124; do/);
+  for (const loop of rollbackLoops) assert.match(loop, /0\.6\.112 0\.6\.113 0\.6\.114 0\.6\.115 0\.6\.116 0\.6\.117 0\.6\.118 0\.6\.119 0\.6\.120 0\.6\.121 0\.6\.122 0\.6\.123 0\.6\.124 0\.6\.125; do/);
 });
 

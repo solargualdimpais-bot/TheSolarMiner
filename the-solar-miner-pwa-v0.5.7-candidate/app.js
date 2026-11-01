@@ -338,14 +338,34 @@ async function refreshTuyaInventoryStatus(){
     // Navigation may change while the request is in flight; background polls
     // must not redraw a different page when they complete.
     const devices=normalizeTuyaInventory(hardware.tuya?.devices);
-    const signature=JSON.stringify(devices.map(device=>[device.device_id,device.current_connection_state,device.local_control_state,device.current_status_reason,device.current_status]));
-    const changed=signature!==state.tuyaInventorySignature;
-    state.tuyaInventorySignature=signature;
+    const signatureRows=devices.map(device=>[device.device_id,device.current_connection_state,device.local_control_state,device.current_status_reason,device.current_status]);
+    let previousRows=[];try{previousRows=JSON.parse(state.tuyaInventorySignature||"[]");}catch{}
+    const previousById=new Map(previousRows.map(row=>[row[0],JSON.stringify(row.slice(1))]));
+    const changedIds=signatureRows.filter(row=>previousById.get(row[0])!==JSON.stringify(row.slice(1))).map(row=>row[0]);
+    const changed=changedIds.length>0;
+    state.tuyaInventorySignature=JSON.stringify(signatureRows);
     state.tuyaDevices=devices;
     state.tuyaReadings=tuyaReadingsFromConfig(state.tuyaDevices);
-    if(changed&&["devices","inicio"].includes(state.page))renderAfterLiveRefresh();
+    if(changed&&["devices","inicio"].includes(state.page))changedIds.forEach(updateVisibleTuyaCard);
   }catch{/* Keep the last confirmed state and its timestamp visible if this poll fails. */}
   finally{state.tuyaInventoryRefreshing=false;}
+}
+function updateVisibleTuyaCard(deviceId){
+  if(state.page==="inicio"){
+    const current=document.querySelector(`.home-favorites .favorite-device[data-favorite-device="${CSS.escape(deviceId)}"]`);
+    if(!current)return;
+    const template=document.createElement("template");template.innerHTML=favoriteDeviceCards();
+    const updated=[...template.content.querySelectorAll(".favorite-device[data-favorite-device]")].find(card=>card.dataset.favoriteDevice===deviceId);
+    if(updated)current.replaceWith(updated);
+    return;
+  }
+  if(state.page==="devices"){
+    const current=[...document.querySelectorAll(".device-inventory-content [data-inventory-device]")].find(card=>card.dataset.inventoryDevice===deviceId);
+    if(!current)return;
+    const template=document.createElement("template");template.innerHTML=renderDeviceInventoryPage();
+    const updated=[...template.content.querySelectorAll("[data-inventory-device]")].find(card=>card.dataset.inventoryDevice===deviceId);
+    if(updated)current.replaceWith(updated);
+  }
 }
 function resetToDemoAfterLogout() {
   state.mode = "DISCONNECTED"; state.dataStatus = "UNAVAILABLE"; state.dataError = null; state.energyEngine = null;
@@ -1475,7 +1495,7 @@ $('#page-content').addEventListener('click',async e=>{
       await sendTuyaSwitchCommand(device,code,!current);
       showFeatureNotice("Ordem enviada. O estado será atualizado pelo próximo varrimento LAN.");
     }catch(error){showFeatureNotice(`Falha no controlo LAN: ${error.message}`);}
-    finally{favoriteControlPending.delete(deviceId);render();}
+    finally{favoriteControlPending.delete(deviceId);updateVisibleTuyaCard(deviceId);}
     return;
   }
   const remove=e.target.closest('[data-favorite-remove]');if(remove){workspace.prefs.favoriteDeviceIds=(workspace.prefs.favoriteDeviceIds||[]).filter(id=>id!==remove.dataset.favoriteRemove);saveDemoWorkspace();render();return;}
