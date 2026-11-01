@@ -955,7 +955,7 @@ def test_tuya_mac_only_configuration_resolves_private_ip_from_lan_scan(monkeypat
     assert integrations._tuya_resolve_local_ip({"local_mac": "aa-bb-cc-dd-ee-ff"}) == "192.168.8.44"
 
 
-def test_tuya_switch_control_posts_only_configured_switch_and_reads_back(monkeypatch):
+def test_tuya_switch_control_posts_only_configured_switch_without_immediate_readback(monkeypatch):
     calls = []
     class LocalDevice:
         def set_socketTimeout(self, value): pass
@@ -966,7 +966,7 @@ def test_tuya_switch_control_posts_only_configured_switch_and_reads_back(monkeyp
             return {"dps": {str(switch): on}}
     monkeypatch.setattr(integrations, "_tuya_lan_client", lambda device: LocalDevice())
     monkeypatch.setattr(integrations, "_persist_tuya_protocols", lambda *args, **kwargs: None)
-    monkeypatch.setattr(integrations, "_tuya_local_status", lambda device: {"status": [{"code": "switch_1", "value": True}]})
+    monkeypatch.setattr(integrations, "_tuya_local_status", lambda device: pytest.fail("switch command must not trigger an immediate status read"))
     monkeypatch.setattr(integrations, "_tuya_request", lambda *args, **kwargs: pytest.fail("Tuya control used Cloud"))
     result = integrations.control_tuya_switch({
         "region": "eu_central",
@@ -974,7 +974,9 @@ def test_tuya_switch_control_posts_only_configured_switch_and_reads_back(monkeyp
                       "local_key": "local-key-123", "local_ip": "192.168.8.44"}],
     }, "device_123", True)
     assert calls == [("set_status", True, 1)]
-    assert result["state_confirmed"] is True
+    assert result["state_confirmed"] is False
+    assert result["observed_on"] is None
+    assert result["connection_state"] == "command_accepted_awaiting_independent_scan"
     assert result["source"] == "TUYA_LAN"
 
 
@@ -996,7 +998,7 @@ def test_tuya_control_falls_back_to_protocol_before_sending_one_command(monkeypa
     monkeypatch.setattr(integrations, "_tuya_lan_client",
                         lambda device: LocalDevice(device["local_protocol"]))
     monkeypatch.setattr(integrations, "_tuya_local_status",
-                        lambda _device: {"status": [{"code": "switch_1", "value": True}]})
+                        lambda _device: pytest.fail("switch command must not trigger an immediate status read"))
     monkeypatch.setattr(integrations, "_persist_tuya_protocols", lambda *_args, **_kwargs: None)
     result = integrations.control_tuya_switch({"devices": [{
         "device_id": "relay-1", "name": "Relay", "switch_code": "switch_1",
@@ -1004,7 +1006,7 @@ def test_tuya_control_falls_back_to_protocol_before_sending_one_command(monkeypa
     }]}, "relay-1", True)
     assert attempted == ["3.3", "3.4"]
     assert commands == [("3.4", True, 1)]
-    assert result["state_confirmed"] is True
+    assert result["state_confirmed"] is False
 
 
 def test_tuya_switch_control_rejects_unconfigured_device_without_request(monkeypatch):

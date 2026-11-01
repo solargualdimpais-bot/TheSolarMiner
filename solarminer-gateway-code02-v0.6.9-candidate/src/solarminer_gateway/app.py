@@ -50,7 +50,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.123"
+PACKAGE_VERSION = "0.6.124"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -754,24 +754,32 @@ def _collect_tuya_device_events_once() -> int:
     return recorded
 
 
-def _tuya_event_poll_interval_seconds() -> int:
+def _tuya_event_poll_interval_seconds() -> float:
     try:
-        return max(1, min(3600, int(os.environ.get("SOLARMINER_TUYA_EVENT_POLL_SECONDS", "1"))))
+        return max(0.5, min(3600.0, float(os.environ.get("SOLARMINER_TUYA_EVENT_POLL_SECONDS", "1.5"))))
     except (TypeError, ValueError):
-        return 1
+        return 1.5
 
 
 async def _tuya_device_event_loop() -> None:
-    """Continuously observe Tuya LAN state for the per-device event history."""
+    """Observe all configured Tuya LAN states on a 1.5-second start cadence.
+
+    Sweeps are deliberately sequential: if a full sweep takes longer than the
+    interval, the next sweep starts immediately after it, without overlapping
+    requests that could race and overwrite fresher device state.
+    """
     interval = _tuya_event_poll_interval_seconds()
     while True:
+        started = asyncio.get_running_loop().time()
         try:
             await asyncio.to_thread(_collect_tuya_device_events_once)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             LOG.warning("Periodic Tuya LAN observation failed (%s)", type(exc).__name__)
-        await asyncio.sleep(interval)
+        remaining = interval - (asyncio.get_running_loop().time() - started)
+        if remaining > 0:
+            await asyncio.sleep(remaining)
 
 
 @asynccontextmanager
@@ -3404,7 +3412,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.123"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.124"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

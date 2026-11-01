@@ -182,6 +182,17 @@ def test_tuya_event_collector_polls_devices_even_without_a_pwa_request(tmp_path,
         ("availability", "true"), ("switch_state", "true")]
 
 
+def test_tuya_event_poll_interval_defaults_to_one_and_a_half_seconds_and_honors_override(monkeypatch):
+    monkeypatch.delenv("SOLARMINER_TUYA_EVENT_POLL_SECONDS", raising=False)
+    assert gateway._tuya_event_poll_interval_seconds() == 1.5
+    monkeypatch.setenv("SOLARMINER_TUYA_EVENT_POLL_SECONDS", "5")
+    assert gateway._tuya_event_poll_interval_seconds() == 5.0
+    monkeypatch.setenv("SOLARMINER_TUYA_EVENT_POLL_SECONDS", "1.5")
+    assert gateway._tuya_event_poll_interval_seconds() == 1.5
+    monkeypatch.setenv("SOLARMINER_TUYA_EVENT_POLL_SECONDS", "invalid")
+    assert gateway._tuya_event_poll_interval_seconds() == 1.5
+
+
 def test_password_login_rejects_wrong_password_without_registering_device(client):
     create_owner(client)
     private, public = keypair()

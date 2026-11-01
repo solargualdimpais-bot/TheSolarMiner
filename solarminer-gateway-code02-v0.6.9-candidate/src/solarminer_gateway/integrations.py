@@ -1046,16 +1046,9 @@ def control_tuya_switch(config: dict[str, Any], device_id: str, on: bool, code: 
     response = client.set_status(on, switch=int(dps))
     if not isinstance(response, dict) or (response.get("Error") and not response.get("dps")):
         raise RuntimeError("tuya_lan_command_rejected")
-    observed = None
-    try:
-        rows = _tuya_local_status(device).get("status", [])
-        observed = next((item.get("value") for item in rows if item.get("code") == code), None)
-    except (RuntimeError, ValueError, OSError):
-        pass
-    state = observed if isinstance(observed, bool) else None
     return {"device_id": device_id, "switch_code": code, "requested_on": on,
-            "command_accepted": True, "observed_on": state,
-            "state_confirmed": state is on, "connection_state": "control_confirmed" if state is on else "command_accepted_state_unconfirmed",
+            "command_accepted": True, "observed_on": None,
+            "state_confirmed": False, "connection_state": "command_accepted_awaiting_independent_scan",
             "control_command_sent": True, "source": "TUYA_LAN"}
 
 
