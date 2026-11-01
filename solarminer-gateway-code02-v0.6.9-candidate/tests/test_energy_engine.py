@@ -75,6 +75,26 @@ def test_tuya_confirmed_energy_preset_scales_dps_but_preserves_raw_values_and_tr
     assert "energy" not in telemetry["metrics"]
 
 
+def test_owner_product_dps_mapping_drives_future_live_measurements():
+    conn = database()
+    observed = datetime.now(timezone.utc).isoformat()
+    status = [{"code": f"dps_{dp}", "dps_id": dp, "value": value}
+              for dp, value in ((71, 2310), (72, 145), (73, 850))]
+    devices = [{"device_id": "breaker-a", "product_id": "breaker-pid", "functions": [], "status_spec": []}]
+    product_schemas = {"breaker-pid": {"custom_dps_overrides": {
+        "71": {"label": "Tensão", "semantic_code": "voltage", "unit": "V", "scale": 10},
+        "72": {"label": "Corrente", "semantic_code": "current", "unit": "A", "scale": 100},
+        "73": {"label": "Potência", "semantic_code": "power", "unit": "W", "scale": 10},
+    }}}
+    count = energy_engine.persist_tuya_telemetry(conn, [{"device_id": "breaker-a", "name": "Disjuntor",
+        "connection_state": "local_responded", "observed_at": observed, "status": status}], devices, product_schemas)
+    telemetry = energy_engine.read_tuya_telemetry(conn)["breaker-a"]
+    assert count == 3
+    assert telemetry["metrics"]["voltage"]["value"] == 231.0
+    assert telemetry["metrics"]["current"]["value"] == 1.45
+    assert telemetry["metrics"]["power"]["value"] == 85.0
+
+
 def test_solar_day_forecast_reports_missing_pv_capacity_as_a_setup_action():
     conn = database()
     result = energy_engine._solar_day_forecast(

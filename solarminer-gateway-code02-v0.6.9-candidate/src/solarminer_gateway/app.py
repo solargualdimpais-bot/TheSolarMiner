@@ -50,7 +50,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.137"
+PACKAGE_VERSION = "0.6.138"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -543,7 +543,7 @@ def _run_automatic_dispatch() -> dict[str, Any]:
             if any(action.get("control_type") in {"tuya_smart", "tuya_breaker"} for action in plan.get("actions", [])):
                 tuya_readings = hardware_integrations.read_tuya(tuya_config)
                 _persist_tuya_device_events(conn, tuya_readings)
-                energy_engine.persist_tuya_telemetry(conn, tuya_readings, tuya_config.get("devices", []))
+                energy_engine.persist_tuya_telemetry(conn, tuya_readings, tuya_config.get("devices", []), tuya_config.get("product_schemas", {}))
                 _update_tuya_device_records(integration_config, tuya_readings)
                 hardware_integrations.save_config(integration_config)
                 tuya_states = {item.get("device_id"): item for item in tuya_readings}
@@ -749,7 +749,7 @@ def _collect_tuya_device_events_once() -> int:
     readings = hardware_integrations.read_tuya({**config, "devices": devices})
     with db() as conn:
         recorded = _persist_tuya_device_events(conn, readings)
-        energy_engine.persist_tuya_telemetry(conn, readings, devices)
+        energy_engine.persist_tuya_telemetry(conn, readings, devices, config.get("product_schemas", {}))
         conn.commit()
     return recorded
 
@@ -2199,7 +2199,7 @@ def hardware_provider_read(provider: str, payload: dict[str, Any] | None = None,
                     tuya_config = {**item, "devices": [d for d in item["devices"] if d.get("device_id") == device_id]}
                 result = {"tuya": hardware_integrations.read_tuya(tuya_config)}
                 _persist_tuya_device_events(conn, result["tuya"])
-                energy_engine.persist_tuya_telemetry(conn, result["tuya"], item.get("devices", []))
+                energy_engine.persist_tuya_telemetry(conn, result["tuya"], item.get("devices", []), item.get("product_schemas", {}))
                 _update_tuya_device_records(config, result["tuya"])
                 hardware_integrations.save_config(config)
             result["provider"] = provider
@@ -2425,6 +2425,120 @@ def tuya_setting_control(payload: dict[str, Any], session: dict[str, Any] = Depe
             LOG.error("Tuya setting control failed (%s)", type(exc).__name__)
             audit(conn, session["user_id"], "hardware.tuya.setting", device_id, "failed", {"reason": type(exc).__name__, "control_command_sent": False})
             raise HTTPException(502, "tuya_setting_control_failed") from exc
+
+
+@app.post("/api/v1/integrations/tuya/product-dps-description")
+def tuya_product_dps_description(payload: dict[str, Any], session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Save a trusted, owner-edited DPS meaning for every device sharing one exact Product ID."""
+    with db() as conn:
+        _require_owner(session, conn)
+        if not isinstance(payload, dict) or set(payload) != {"device_id", "dps_id", "description"}:
+            raise HTTPException(422, "tuya_dps_description_payload_invalid")
+        device_id, dps_id, description = payload.get("device_id"), payload.get("dps_id"), payload.get("description")
+        if (not isinstance(device_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", device_id)
+                or isinstance(dps_id, bool) or not isinstance(dps_id, int) or not 1 <= dps_id <= 65535
+                or not isinstance(description, str) or not 1 <= len(description.strip()) <= 80):
+            raise HTTPException(422, "tuya_dps_description_payload_invalid")
+        config = hardware_integrations.load_config()
+        tuya = config.get("tuya") if isinstance(config.get("tuya"), dict) else {}
+        device = next((item for item in tuya.get("devices", []) if isinstance(item, dict) and item.get("device_id") == device_id), None)
+        if not device:
+            raise HTTPException(404, "tuya_device_not_configured")
+        product_id = str(device.get("product_id") or "")
+        if not product_id:
+            raise HTTPException(422, "tuya_product_id_required_for_shared_dps_description")
+        profiles = hardware_integrations._bounded_tuya_product_schemas(tuya.get("product_schemas"))
+        product = profiles.get(product_id)
+        if not isinstance(product, dict):
+            product = {"category": str(device.get("category") or "")[:64],
+                       "product_name": str(device.get("product_name") or "")[:120],
+                       "device_kind": str(device.get("device_kind") or "unknown")[:32],
+                       "channel_count": int(device.get("channel_count") or 0),
+                       "schema_source": str(device.get("schema_source") or "TUYA_DEVICE_SPEC")[:48],
+                       "functions": device.get("functions", []) if isinstance(device.get("functions"), list) else [],
+                       "status_spec": device.get("status_spec", []) if isinstance(device.get("status_spec"), list) else [],
+                       "dps_profile": tuya_dps_registry.product_profile(device), "custom_dps_overrides": {},
+                       "cached_at": int(time.time())}
+        recognized: set[int] = set()
+        for rows in (device.get("current_status"), device.get("functions"), device.get("status_spec"),
+                     product.get("functions"), product.get("status_spec")):
+            for row in rows if isinstance(rows, list) else []:
+                if not isinstance(row, dict):
+                    continue
+                value = row.get("dps_id", row.get("dp_id", row.get("dpId")))
+                if value is None and isinstance(row.get("code"), str) and re.fullmatch(r"dps_\d+", row["code"]):
+                    value = row["code"][4:]
+                try:
+                    parsed = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if parsed > 0:
+                    recognized.add(parsed)
+        profile = product.get("dps_profile") if isinstance(product.get("dps_profile"), dict) else {}
+        profile_dps = profile.get("dps") if isinstance(profile.get("dps"), list) else []
+        reference = next((row for row in profile_dps if isinstance(row, dict) and row.get("dps_id") == dps_id), None)
+        if reference:
+            recognized.add(dps_id)
+        if dps_id not in recognized:
+            raise HTTPException(422, "tuya_dps_not_in_product_schema")
+
+        label = description.strip()
+        folded = re.sub(r"[^a-z0-9]+", " ", label.casefold().replace("ç", "c").replace("ã", "a").replace("õ", "o").replace("á", "a").replace("é", "e").replace("ê", "e").replace("í", "i").replace("ó", "o").replace("ú", "u" )).strip()
+        aliases = {
+            "switch": ({"switch", "interruptor", "relay", "rele", "on off", "on off switch"}, ""),
+            "voltage": ({"voltage", "volt", "volts", "tensao", "tensao eletrica", "voltagem"}, "V"),
+            "current": ({"current", "corrente", "corrente eletrica", "amperagem", "ampere", "amperes"}, "A"),
+            "power": ({"power", "potencia", "potencia atual", "potencia ativa", "watt", "watts"}, "W"),
+            "total_energy": ({"energia total", "energia acumulada", "total energy", "accumulated energy", "energy total"}, "kWh"),
+            "daily_accumulated_energy": ({"energia diaria", "consumo diario", "daily energy", "today energy"}, "kWh"),
+            "countdown": ({"countdown", "temporizador", "contagem decrescente"}, "s"),
+            "child_lock": ({"child lock", "maintenance lock", "bloqueio infantil", "bloqueio de manutencao"}, ""),
+            "light_mode": ({"light mode", "modo de iluminacao"}, ""),
+            "relay_status": ({"relay status", "estado do rele"}, ""),
+            "power_on_state": ({"power on state", "comportamento apos falha de energia"}, ""),
+        }
+        semantic, unit = next(((key, value[1]) for key, value in aliases.items() if folded in value[0]), ("custom_label", ""))
+        data_type = "boolean" if semantic in {"switch", "child_lock"} else "integer" if semantic == "countdown" else "enum" if semantic in {"light_mode", "relay_status", "power_on_state"} else "number" if semantic != "custom_label" else "unknown"
+        scale = reference.get("scale") if isinstance(reference, dict) and isinstance(reference.get("scale"), (int, float)) and not isinstance(reference.get("scale"), bool) else None
+        if scale is None:
+            schema_rows = [*(device.get("functions", []) if isinstance(device.get("functions"), list) else []),
+                           *(device.get("status_spec", []) if isinstance(device.get("status_spec"), list) else [])]
+            spec = next((row for row in schema_rows if isinstance(row, dict) and row.get("dp_id", row.get("dpId")) == dps_id), None)
+            values = spec.get("values", {}) if isinstance(spec, dict) else {}
+            if isinstance(values, str):
+                try: values = json.loads(values)
+                except json.JSONDecodeError: values = {}
+            if isinstance(values, dict) and isinstance(values.get("scale"), int) and not isinstance(values.get("scale"), bool) and 0 <= values["scale"] <= 9:
+                scale = 10 ** values["scale"]
+        product.setdefault("custom_dps_overrides", {})[str(dps_id)] = {
+            "label": label, "semantic_code": semantic, "unit": unit or None,
+            "data_type": data_type, "scale": scale,
+            "write_enabled": semantic in {"switch", "countdown", "child_lock", "light_mode", "relay_status", "power_on_state"},
+        }
+        if reference is None:
+            reference = {"dps_id": dps_id, "confidence": "OWNER_CUSTOM", "source": "Gateway Product ID mapping"}
+            if not isinstance(profile.get("dps"), list):
+                profile["dps"] = []
+            profile["dps"].append(reference)
+        reference.update({"display_name": label, "semantic_code": semantic,
+                          "unit": unit or reference.get("unit"), "data_type": data_type,
+                          "scale": scale if scale is not None else reference.get("scale"),
+                          "confidence": "OWNER_CUSTOM", "source": "Gateway Product ID mapping",
+                          "write_supported": semantic in {"switch", "countdown", "child_lock", "light_mode", "relay_status", "power_on_state"}})
+        product["dps_profile"] = profile
+        tuya["product_schemas"] = profiles
+        config["tuya"] = tuya
+        try:
+            saved = hardware_integrations.save_config(config)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(500, "tuya_product_dps_description_save_failed") from exc
+        audit(conn, session["user_id"], "hardware.tuya.dps_description", f"{product_id}:{dps_id}", "success",
+              {"device_id": device_id, "product_id": product_id, "dps_id": dps_id, "semantic_code": semantic})
+        return {"saved": True, "product_id": product_id, "dps_id": dps_id,
+                "description": label, "semantic_code": semantic,
+                "unit": unit or None, "scale": scale,
+                "affected_device_count": sum(1 for item in tuya.get("devices", []) if isinstance(item, dict) and str(item.get("product_id") or "") == product_id),
+                "product_profile": saved.get("tuya", {}).get("product_catalog", {}).get(product_id, {}).get("dps_profile", {})}
 
 
 def _require_owner(session: dict[str, Any], conn) -> None:
@@ -3412,7 +3526,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.137"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.138"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

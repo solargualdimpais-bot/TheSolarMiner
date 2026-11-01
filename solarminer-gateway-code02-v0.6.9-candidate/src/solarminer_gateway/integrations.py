@@ -189,6 +189,16 @@ def public_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
     deye_cloud = config.get("deye_cloud", {}) if isinstance(config.get("deye_cloud", {}), dict) else {}
     product_catalog = _bounded_tuya_product_schemas(tuya.get("product_schemas"))
     category_catalog = _bounded_tuya_product_schemas(tuya.get("category_schemas"))
+    public_devices = []
+    for item in tuya.get("devices", []):
+        if not isinstance(item, dict):
+            continue
+        item = _tuya_apply_product_dps_overrides(item, tuya.get("product_schemas"))
+        product_id = str(item.get("product_id") or "")
+        product_schema = product_catalog.get(product_id, {})
+        custom_overrides = product_schema.get("custom_dps_overrides", {})
+        knowledge_device = {**item, "product_dps_overrides": custom_overrides}
+        public_devices.append({"device_id": item.get("device_id"), "name": item.get("name"), "room": item.get("room", ""), "floor": item.get("floor", ""), "name_source": item.get("name_source", "cloud"), "switch_code": item.get("switch_code"), "switch_channels": [entry.get("code") for entry in item.get("functions", []) if isinstance(entry, dict) and str(entry.get("type", "")).lower() in {"bool", "boolean"}], "channel_count": item.get("channel_count", 0), "device_kind": item.get("device_kind", "unknown"), "device_kind_label": item.get("device_kind_label", TUYA_DEVICE_KINDS["unknown"]), "device_kind_confidence": item.get("device_kind_confidence", "low"), "device_kind_override": item.get("device_kind_override"), "channel_labels": item.get("channel_labels", {}), "capability_labels": item.get("capability_labels", {}), "level_code": item.get("level_code"), "level_min": item.get("level_min", 0), "level_max": item.get("level_max", 100), "category": item.get("category"), "product_id": product_id or None, "product_name": item.get("product_name"), "schema_source": item.get("schema_source", "TUYA_DEVICE"), "online": item.get("online"), "ip": item.get("local_ip", ""), "local_ip": item.get("local_ip", ""), "local_mac": item.get("local_mac", ""), "local_protocol": item.get("local_protocol", "3.3"), "local_dps_map": item.get("local_dps_map", {}), "dps_preset_id": item.get("dps_preset_id"), "product_profile": product_schema.get("dps_profile"), "dps_knowledge": tuya_dps_registry.analyze_device(knowledge_device), "local_control_state": item.get("local_control_state", "not_tested"), "local_verified": bool(item.get("local_verified", False)), "cloud_source": item.get("cloud_source"), "cloud_missing": item.get("cloud_missing", False), "local_key_available": bool(item.get("local_key")), "functions": item.get("functions", []), "status_spec": item.get("status_spec", []), "category_functions": item.get("category_functions", []), "category_status_spec": item.get("category_status_spec", []), "category_schema_source": item.get("category_schema_source"), "current_status": item.get("current_status", []), "last_status_at": item.get("last_status_at")})
     return {
         "deye": {k: config.get("deye", {}).get(k) for k in ("host", "port", "unit_id", "model") if config.get("deye", {}).get(k) is not None},
         "antminer": {k: config.get("antminer", {}).get(k) for k in ("host", "port", "rest_port", "model") if config.get("antminer", {}).get(k) is not None},
@@ -199,7 +209,7 @@ def public_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
         "deye_cloud": {"data_center": deye_cloud.get("data_center", "eu"), "app_id": deye_cloud.get("app_id"),
                        "email": deye_cloud.get("email"), "configured": bool(deye_cloud.get("app_id") and deye_cloud.get("app_secret") and deye_cloud.get("email") and deye_cloud.get("password")),
                        "secrets_returned": False},
-        "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "uid": tuya.get("uid"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": [{"device_id": x.get("device_id"), "name": x.get("name"), "room": x.get("room", ""), "floor": x.get("floor", ""), "name_source": x.get("name_source", "cloud"), "switch_code": x.get("switch_code"), "switch_channels": [item.get("code") for item in x.get("functions", []) if isinstance(item, dict) and str(item.get("type", "")).lower() in {"bool", "boolean"}], "channel_count": x.get("channel_count", 0), "device_kind": x.get("device_kind", "unknown"), "device_kind_label": x.get("device_kind_label", TUYA_DEVICE_KINDS["unknown"]), "device_kind_confidence": x.get("device_kind_confidence", "low"), "device_kind_override": x.get("device_kind_override"), "channel_labels": x.get("channel_labels", {}), "capability_labels": x.get("capability_labels", {}), "level_code": x.get("level_code"), "level_min": x.get("level_min", 0), "level_max": x.get("level_max", 100), "category": x.get("category"), "product_id": x.get("product_id"), "product_name": x.get("product_name"), "schema_source": x.get("schema_source", "TUYA_DEVICE"), "online": x.get("online"), "ip": x.get("local_ip", ""), "local_ip": x.get("local_ip", ""), "local_mac": x.get("local_mac", ""), "local_protocol": x.get("local_protocol", "3.3"), "local_dps_map": x.get("local_dps_map", {}), "dps_preset_id": x.get("dps_preset_id"), "product_profile": product_catalog.get(str(x.get("product_id") or ""), {}).get("dps_profile"), "dps_knowledge": tuya_dps_registry.analyze_device(x), "local_control_state": x.get("local_control_state", "not_tested"), "local_verified": bool(x.get("local_verified", False)), "cloud_source": x.get("cloud_source"), "cloud_missing": x.get("cloud_missing", False), "local_key_available": bool(x.get("local_key")), "functions": x.get("functions", []), "status_spec": x.get("status_spec", []), "category_functions": x.get("category_functions", []), "category_status_spec": x.get("category_status_spec", []), "category_schema_source": x.get("category_schema_source"), "current_status": x.get("current_status", []), "last_status_at": x.get("last_status_at")} for x in tuya.get("devices", []) if isinstance(x, dict)], "product_catalog": product_catalog, "category_catalog": category_catalog, "product_schema_count": len(product_catalog), "category_schema_count": len(category_catalog), "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
+        "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "uid": tuya.get("uid"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": public_devices, "product_catalog": product_catalog, "category_catalog": category_catalog, "product_schema_count": len(product_catalog), "category_schema_count": len(category_catalog), "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
         "secrets_returned": False,
     }
 
@@ -832,7 +842,9 @@ def _bounded_tuya_product_schemas(value: Any) -> dict[str, dict[str, Any]]:
         if not isinstance(product_id, str) or not 1 <= len(product_id) <= 128 or not isinstance(profile, dict):
             continue
         functions, statuses = _tuya_schema_entries(profile.get("functions")), _tuya_schema_entries(profile.get("status_spec"))
-        if not functions and not statuses:
+        custom_overrides = profile.get("custom_dps_overrides") if isinstance(profile.get("custom_dps_overrides"), dict) else {}
+        profile_dps = profile.get("dps_profile") if isinstance(profile.get("dps_profile"), dict) else {}
+        if not functions and not statuses and not custom_overrides and not profile_dps.get("dps"):
             continue
         clean[product_id] = {"category": str(profile.get("category") or "")[:64],
                              "product_name": str(profile.get("product_name") or "")[:120],
@@ -842,6 +854,7 @@ def _bounded_tuya_product_schemas(value: Any) -> dict[str, dict[str, Any]]:
                              "schema_source": str(profile.get("schema_source") or "TUYA_DEVICE_SPEC")[:48],
                              "functions": functions, "status_spec": statuses,
                              "dps_profile": profile.get("dps_profile") if isinstance(profile.get("dps_profile"), dict) else {},
+                             "custom_dps_overrides": {str(key): {"label": str(value.get("label") or "").strip()[:80], "semantic_code": str(value.get("semantic_code") or "custom_label")[:48], "unit": str(value.get("unit") or "")[:16] or None, "data_type": str(value.get("data_type") or "number")[:24], "scale": value.get("scale") if isinstance(value.get("scale"), (int, float)) and not isinstance(value.get("scale"), bool) else None, "write_enabled": bool(value.get("write_enabled")) and str(value.get("semantic_code")) in {"switch", "countdown", "child_lock", "light_mode", "relay_status", "power_on_state"}} for key, value in profile.get("custom_dps_overrides", {}).items() if isinstance(key, str) and key.isdigit() and 1 <= int(key) <= 65535 and isinstance(value, dict) and isinstance(value.get("label"), str) and value["label"].strip()} if isinstance(profile.get("custom_dps_overrides"), dict) else {},
                              "cached_at": int(profile.get("cached_at") or 0)}
     ordered = sorted(clean.items(), key=lambda pair: pair[1]["cached_at"], reverse=True)[:MAX_TUYA_PRODUCT_SCHEMAS]
     result = dict(ordered)
@@ -856,6 +869,56 @@ def _safe_channel_count(value: Any) -> int:
         return int(value or 0)
     except (TypeError, ValueError, OverflowError):
         return 0
+
+
+def _tuya_apply_product_dps_overrides(device: dict[str, Any], product_schemas: Any) -> dict[str, Any]:
+    """Apply owner-approved semantic DPS mappings for the exact Product ID."""
+    if not isinstance(device, dict):
+        return {}
+    product_id = str(device.get("product_id") or "")
+    product = product_schemas.get(product_id) if isinstance(product_schemas, dict) else None
+    overrides = product.get("custom_dps_overrides", {}) if isinstance(product, dict) else {}
+    if not isinstance(overrides, dict) or not overrides:
+        return dict(device)
+    result = dict(device)
+    functions = [dict(item) for item in device.get("functions", []) if isinstance(item, dict)]
+    local_map = dict(device.get("local_dps_map", {})) if isinstance(device.get("local_dps_map"), dict) else {}
+    enabled_codes: list[str] = []
+    for dp_text, override in overrides.items():
+        if not isinstance(override, dict) or override.get("semantic_code") not in {"switch", "countdown", "child_lock", "light_mode", "relay_status", "power_on_state"} or not override.get("write_enabled"):
+            continue
+        try:
+            dp_id = int(dp_text)
+        except (TypeError, ValueError):
+            continue
+        # A manual meaning can unlock a command only when the exact datapoint
+        # is declared boolean for writing or the live LAN read observed a bool.
+        semantic = override.get("semantic_code")
+        expected_types = {"switch": {"bool", "boolean"}, "child_lock": {"bool", "boolean"}, "countdown": {"integer", "int", "number"}, "light_mode": {"enum"}, "relay_status": {"enum"}, "power_on_state": {"enum"}}
+        declared = next((entry for entry in functions if entry.get("dp_id", entry.get("dpId")) == dp_id and
+                         str(entry.get("type", "")).casefold() in expected_types.get(semantic, set())), None)
+        observed_bool = any(isinstance(row, dict) and
+                            row.get("dps_id", row.get("dp_id", row.get("dpId"))) == dp_id and
+                            isinstance(row.get("value"), bool)
+                            for row in device.get("current_status", []) if isinstance(device.get("current_status"), list))
+        if not declared and not (semantic in {"switch", "child_lock"} and observed_bool):
+            continue
+        code = str(declared.get("code")) if declared and isinstance(declared.get("code"), str) else f"switch_{dp_id}" if semantic == "switch" else f"{semantic}_{dp_id}"
+        if declared is None:
+            synthetic_type = "boolean" if semantic in {"switch", "child_lock"} else "integer"
+            functions.append({"code": code, "name": str(override.get("label") or f"{semantic} {dp_id}")[:80],
+                              "type": synthetic_type, "dp_id": dp_id, "values": {"write": True},
+                              "owner_product_mapping": True})
+        local_map[code] = str(dp_id)
+        enabled_codes.append(code)
+    if enabled_codes:
+        result["functions"] = functions
+        result["local_dps_map"] = local_map
+        switch_codes = [code for code in enabled_codes if code.startswith("switch_")]
+        if len(switch_codes) == 1 and not result.get("switch_code"):
+            result["switch_code"] = switch_codes[0]
+        result["switch_channels"] = list(dict.fromkeys([*(device.get("switch_channels", []) if isinstance(device.get("switch_channels"), list) else []), *enabled_codes]))
+    return result
 
 
 def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Event | None = None) -> dict[str, Any]:
@@ -988,12 +1051,14 @@ def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Eve
                 if item["functions"] or item["status_spec"]:
                     item["schema_source"] = "TUYA_DEVICE_SPEC"
                     if item.get("product_id"):
+                        previous_profile = product_schemas.get(item["product_id"], {})
                         product_schemas[item["product_id"]] = {
                             "category": item.get("category", ""),
                             "product_name": item.get("product_name", ""),
                             "schema_source": "TUYA_DEVICE_SPEC",
                             "functions": item["functions"],
                             "status_spec": item["status_spec"],
+                            "custom_dps_overrides": previous_profile.get("custom_dps_overrides", {}) if isinstance(previous_profile, dict) else {},
                             "cached_at": int(time.time()),
                         }
         except (RuntimeError, ValueError):
@@ -1048,6 +1113,9 @@ def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Eve
             # Build the reusable catalog entry from this exact product ID.
             # Category schemas remain reference-only; they are never copied
             # into a product entry as if they were the device's own schema.
+            previous_profile = product_schemas.get(item["product_id"], {})
+            product_dps_overrides = previous_profile.get("custom_dps_overrides", {}) if isinstance(previous_profile, dict) else {}
+            profile_device = {**item, "product_dps_overrides": product_dps_overrides}
             product_schemas[item["product_id"]] = {
                 "category": item.get("category", ""),
                 "product_name": item.get("product_name", ""),
@@ -1057,7 +1125,8 @@ def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Eve
                 "schema_source": item.get("schema_source", "TUYA_DEVICE_SPEC"),
                 "functions": item.get("functions", []),
                 "status_spec": item.get("status_spec", []),
-                "dps_profile": tuya_dps_registry.product_profile(item),
+                "dps_profile": tuya_dps_registry.product_profile(profile_device),
+                "custom_dps_overrides": product_dps_overrides,
                 "cached_at": int(time.time()),
             }
         if profile["device_kind"] == "breaker" and bool_functions and not item.get("switch_code"):
@@ -1089,6 +1158,7 @@ def control_tuya_switch(config: dict[str, Any], device_id: str, on: bool, code: 
                    if isinstance(item, dict) and item.get("device_id") == device_id), None)
     if device is None:
         raise ValueError("tuya_device_not_configured")
+    device = _tuya_apply_product_dps_overrides(device, config.get("product_schemas"))
     code = code or device.get("switch_code")
     allowed_codes = {entry.get("code") for entry in device.get("functions", []) if isinstance(entry, dict) and str(entry.get("type", "")).lower() in {"bool", "boolean"}}
     if device.get("switch_code"):
@@ -1151,6 +1221,7 @@ def control_tuya_setting(config: dict[str, Any], device_id: str, code: str, valu
                    if isinstance(item, dict) and item.get("device_id") == device_id), None)
     if device is None:
         raise ValueError("tuya_device_not_configured")
+    device = _tuya_apply_product_dps_overrides(device, config.get("product_schemas"))
     if not isinstance(code, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", code):
         raise ValueError("tuya_setting_code_invalid")
     schema = next((item for item in device.get("functions", [])

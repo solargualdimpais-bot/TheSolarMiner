@@ -145,6 +145,56 @@ def test_tuya_dps_registry_keeps_dp18_scoped_and_unknown_read_only():
     assert unknown["raw_dps"]["250"] == {"x": 1}
 
 
+def test_owner_product_dps_override_changes_meaning_and_only_enables_type_safe_switches():
+    profile = {
+        "product-a": {"custom_dps_overrides": {
+            "7": {"label": "Tensão", "semantic_code": "voltage", "unit": "V", "data_type": "number", "scale": 10},
+            "8": {"label": "Corrente", "semantic_code": "current", "unit": "A", "data_type": "number", "scale": 100},
+            "9": {"label": "Interruptor", "semantic_code": "switch", "data_type": "boolean", "write_enabled": True},
+        }},
+        "product-b": {"custom_dps_overrides": {"7": {"label": "Tensão antiga", "semantic_code": "voltage", "unit": "V"}}},
+    }
+    device = {"device_id": "device-a", "product_id": "product-a", "functions": [],
+              "current_status": [{"dps_id": 7, "code": "dps_7", "value": 2310},
+                                 {"dps_id": 8, "code": "dps_8", "value": 145},
+                                 {"dps_id": 9, "code": "dps_9", "value": False}]}
+    enriched = integrations._tuya_apply_product_dps_overrides(device, profile)
+    assert enriched["switch_code"] == "switch_9"
+    assert enriched["local_dps_map"]["switch_9"] == "9"
+    assert tuya_dps_registry.analyze_device({**device, "product_dps_overrides": profile["product-a"]["custom_dps_overrides"]})["dps"][0]["display_name"] == "Tensão"
+    other = integrations._tuya_apply_product_dps_overrides({**device, "product_id": "product-b"}, profile)
+    assert not other.get("switch_code")
+
+
+def test_owner_product_switch_mapping_routes_command_to_observed_boolean_dp(monkeypatch):
+    sent = {}
+    class LocalDevice:
+        def set_status(self, value, switch):
+            sent.update(value=value, dps=switch)
+            return {"dps": {str(switch): value}}
+    monkeypatch.setattr(integrations, "_tuya_lan_client", lambda _device: LocalDevice())
+    config = {
+        "devices": [{"device_id": "switch-unit", "product_id": "product-switch", "local_key": "secret",
+                     "local_ip": "192.168.1.30", "local_protocol": "3.3",
+                     "current_status": [{"dps_id": 9, "code": "dps_9", "value": False}],
+                     "functions": [], "status_spec": []}],
+        "product_schemas": {"product-switch": {"custom_dps_overrides": {
+            "9": {"label": "Interruptor", "semantic_code": "switch", "data_type": "boolean", "write_enabled": True}
+        }}},
+    }
+    result = integrations.control_tuya_switch(config, "switch-unit", True)
+    assert result["switch_code"] == "switch_9"
+    assert sent == {"value": True, "dps": 9}
+
+
+def test_bounded_product_catalog_preserves_owner_dps_overrides():
+    bounded = integrations._bounded_tuya_product_schemas({"pid": {
+        "dps_profile": {"product_id": "pid", "dps": [{"dps_id": 18}]},
+        "custom_dps_overrides": {"18": {"label": "Interruptor", "semantic_code": "switch", "write_enabled": True}},
+    }})
+    assert bounded["pid"]["custom_dps_overrides"]["18"]["label"] == "Interruptor"
+
+
 def test_tuya_community_catalog_is_exact_product_scoped_and_never_authorizes_writes():
     ev_profile = tuya_dps_registry.analyze_device({
         "category": "qccdz", "product_id": "tj9l3ghsjnbdjom6",

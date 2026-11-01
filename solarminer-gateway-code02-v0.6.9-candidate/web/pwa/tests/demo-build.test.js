@@ -6,17 +6,12 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const read = name => readFileSync(join(root, name), 'utf8');
 
-test('v0.5.1 includes read-only Gateway diagnostics but no authentication or pairing client', () => {
-  assert.equal(existsSync(join(root, 'api-client.js')), false);
-  assert.equal(existsSync(join(root, 'auth-client.js')), false);
-  assert.equal(read('demo-mode.js').includes('WebSocket'), false, 'demo mode must not expose live terminal access');
-  const runtime = ['index.html','app.js','app-core.js','demo-mode.js','gateway-connection.js'].map(read).join('\n');
-  for (const forbidden of ['GatewayApiClient','IndexedDbIdentityStore','pairDevice(','loginDevice(','issuePairingCode(','logoutDevice(','XMLHttpRequest','writeRegister','writeCoil']) {
-    assert.equal(runtime.includes(forbidden), false, `unexpected auth/physical primitive: ${forbidden}`);
-  }
-  assert.match(runtime, /\/api\/v1\/health/);
-  assert.match(runtime, /redirect: \"error\"/);
-  assert.match(runtime, /identityValidated: false/);
+test('demo runtime stays isolated from authentication, networking and physical commands', () => {
+  assert.doesNotMatch(read('demo-mode.js'), /new\s+WebSocket\s*\(/, 'demo mode must not expose live terminal access');
+  const demoRuntime = read('demo-mode.js');
+  assert.doesNotMatch(demoRuntime, /^\s*import\s/m, 'demo state has no runtime dependencies');
+  for (const forbidden of ['fetch(', 'gatewayApi(', '/api/v1/', 'new WebSocket(', 'writeRegister(', 'writeCoil('])
+    assert.equal(demoRuntime.includes(forbidden), false, `unexpected network/physical primitive: ${forbidden}`);
 });
 
 test('all six areas remain navigable in desktop and mobile navigation', () => {

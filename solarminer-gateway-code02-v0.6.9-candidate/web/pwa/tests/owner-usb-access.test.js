@@ -85,21 +85,21 @@ test("Owner recovery file parser accepts a generated key and rejects malformed/o
 });
 
 test("new PWA static cache version is changed and USB limitations are documented", () => {
-assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.91-kg-hybrid-pair-menu/);
+assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.92-product-dps-profile/);
   assert.match(serviceWorker, /\.\/favorite-list\.js/);
-assert.match(manifest, /v0\.5\.91/);
-  assert.equal(packageJson.version, "0.5.91");
+assert.match(manifest, /v0\.5\.92/);
+  assert.equal(packageJson.version, "0.5.92");
   assert.doesNotMatch(html, /gateway-update-refresh|Atualizar estado/);
   assert.doesNotMatch(app, /gateway-update-refresh/);
-  const docs = read("OWNER_USB_AND_ACCESS.md");
-  assert.match(docs, /texto simples/);
-  assert.match(docs, /não valida certificados TLS/);
-  assert.match(docs, /chave privada de assinatura nunca deve ser incluída/);
-  assert.match(docs, /edição manual do SQLite.*não é suportada/s);
+  const docs = readFileSync(new URL("../../../docs/OWNER_USB_AND_ACCESS.md", import.meta.url), "utf8");
+  assert.match(docs, /The file is plaintext/);
+  assert.match(docs, /does not validate TLS certificates/);
+  assert.match(docs, /not the Ed25519 release-signing private key/);
+  assert.match(docs, /Do not edit the live SQLite database directly/);
 });
 
 test("the Gateway-embedded PWA contains the Owner access controls and the package is version-aligned", () => {
-  const embedded = name => readFileSync(new URL(`../../solarminer-gateway-code02-v0.6.9-candidate/web/pwa/${name}`, import.meta.url), "utf8");
+  const embedded = name => read(name);
   const embeddedHtml = embedded("index.html");
   const embeddedApp = embedded("app.js");
   const embeddedAuth = embedded("gateway-auth.js");
@@ -107,8 +107,8 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   const embeddedCss = embedded("styles.css");
   const embeddedManifest = embedded("manifest.webmanifest");
   const embeddedPhotoFormat = embedded("photo-format.js");
-  const control = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/packaging/control", import.meta.url), "utf8");
-  const installer = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/packaging/install-from-usb.sh", import.meta.url), "utf8");
+  const control = readFileSync(new URL("../../../packaging/control", import.meta.url), "utf8");
+  const installer = readFileSync(new URL("../../../packaging/install-from-usb.sh", import.meta.url), "utf8");
   assert.match(embeddedHtml, /gateway-user-management/);
   assert.match(embeddedHtml, /gateway-download-recovery-key/);
   assert.match(embeddedHtml, /gateway-owner-recovery-form/);
@@ -124,7 +124,7 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   assert.match(embeddedApp, /startGatewayTailscale/);
   assert.match(embeddedApp, /liveHomeMetric\("Painéis"/);
   assert.match(embeddedApp, /liveMinerHomeMetric\(\)/);
-  assert.match(embeddedWorker, /static-v0\.5\.91-kg-hybrid-pair-menu/);
+  assert.match(embeddedWorker, /static-v0\.5\.92-product-dps-profile/);
   assert.match(embeddedHtml, /data-owner-tab="gateway"/);
   assert.doesNotMatch(embeddedHtml, /data-owner-panel="console"/);
   assert.match(embeddedHtml, /Carrega em .Atualizar consola. para consultar os dados mais recentes/);
@@ -143,10 +143,10 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   assert.doesNotMatch(embeddedHtml, /gateway-console-update-check/);
   assert.doesNotMatch(embeddedHtml, /gateway-console-command/);
   assert.match(embeddedWorker, /password-device-login/);
-assert.match(embeddedHtml, /OWNER PWA 0\.5\.91/);
+assert.match(embeddedHtml, /OWNER PWA 0\.5\.92/);
   assert.match(embeddedHtml, /gateway-password-login-form/);
-assert.match(control, /^Version: 0\.6\.135$/m);
-assert.match(installer, /solarminer-gateway_0\.6\.135_amd64\.deb/);
+assert.match(control, /^Version: 0\.6\.138$/m);
+assert.match(installer, /solarminer-gateway_0\.6\.138_amd64\.deb/);
   assert.match(embeddedApp, /RECOVERY_BLOCKED/);
   assert.match(embeddedApp, /rollbackFailure/);
   assert.match(installer, /install-tailscale\.sh/);

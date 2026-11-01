@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const gatewayPwa = resolve(root, "../solarminer-gateway-code02-v0.6.9-candidate/web/pwa");
+const gatewayPwa = root;
 const read = (base, file) => readFileSync(resolve(base, file), "utf8");
 
 test("Owner PWA reads Gateway engine history and stores battery settings on Gateway", () => {

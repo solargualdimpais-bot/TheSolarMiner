@@ -524,6 +524,10 @@ export async function controlGatewayTuyaSetting(deviceId, code, value) {
   if (typeof deviceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(deviceId) || typeof code !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(code) || !["boolean", "number", "string"].includes(typeof value) || (typeof value === "number" && !Number.isInteger(value))) throw new Error("Definição Tuya inválida.");
   return gatewayApi("/api/v1/integrations/tuya/setting", { method: "POST", body: { device_id: deviceId, code, value } });
 }
+export async function saveGatewayTuyaProductDpsDescription(deviceId, dpsId, description) {
+  if (typeof deviceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(deviceId) || !Number.isInteger(dpsId) || dpsId < 1 || dpsId > 65535 || typeof description !== "string" || !description.trim() || description.trim().length > 80) throw new Error("Descrição DPS inválida.");
+  return gatewayApi("/api/v1/integrations/tuya/product-dps-description", { method: "POST", body: { device_id: deviceId, dps_id: dpsId, description: description.trim() } });
+}
 export async function readGatewayTuyaDeviceEvents(deviceId, limit = 100) {
   if (typeof deviceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(deviceId) || !Number.isInteger(limit) || limit < 1 || limit > 500) throw new Error("Dispositivo inválido.");
   return gatewayApi(`/api/v1/integrations/tuya/${encodeURIComponent(deviceId)}/events?limit=${limit}`);

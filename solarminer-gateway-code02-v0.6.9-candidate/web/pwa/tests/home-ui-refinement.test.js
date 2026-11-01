@@ -128,7 +128,7 @@ test("Casa floor buttons have a restrained lifted shadow and tactile press state
 });
 
 test("Live house structure is Gateway-backed and editing controls are Owner-only", () => {
-  const gateway = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/app.py", import.meta.url), "utf8");
+  const gateway = readFileSync(new URL("../../../src/solarminer_gateway/app.py", import.meta.url), "utf8");
   assert.match(app, /function renderGatewayHousePage\(\)/);
   assert.match(app, /data-site-action="add-floor"/);
   assert.match(app, /data-site-action="add-room"/);
@@ -175,6 +175,16 @@ test("Tuya editor persists an explicit DPS profile and keeps automatic matches a
   assert.match(app, /O esquema oficial deste produto e os códigos DPS explícitos prevalecem/);
 });
 
+test("Tuya DPS troubleshooting reads on tab open and saves Product ID semantic corrections", () => {
+  assert.match(app, /<h3>Lista DPS<\/h3>/);
+  assert.match(app, /runGatewayTuyaLanDiagnostics\(1,device\.device_id\)/);
+  assert.match(app, /saveGatewayTuyaProductDpsDescription/);
+  assert.match(app, /toque duplo para editar/);
+  assert.match(app, /data-breaker-live-metric=/);
+  assert.match(app, /data-breaker-live-state/);
+  assert.match(app, /setInterval\(\(\) => \{ void refreshTuyaInventoryStatus\(\); \},1_500\)/);
+});
+
 test("KG six-channel quick controls expose per-pair modes and separate Settings without showing DPS ids", () => {
   assert.match(app, /function tuyaIsKgHybrid\(device\)/);
   assert.match(app, /function tuyaKgPairModeSpecs\(device\)/);
@@ -187,7 +197,7 @@ test("KG six-channel quick controls expose per-pair modes and separate Settings 
 });
 
 test("Tuya profiles can be inferred or overridden and breakers expose one control", () => {
-  const gatewayIntegrations = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/integrations.py", import.meta.url), "utf8");
+  const gatewayIntegrations = readFileSync(new URL("../../../src/solarminer_gateway/integrations.py", import.meta.url), "utf8");
   assert.match(gatewayIntegrations, /def classify_tuya_device\(/);
   assert.match(gatewayIntegrations, /断路器/);
   assert.match(gatewayIntegrations, /device_kind_override/);

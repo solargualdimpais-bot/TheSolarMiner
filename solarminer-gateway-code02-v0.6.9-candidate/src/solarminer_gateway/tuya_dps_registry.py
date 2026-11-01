@@ -559,6 +559,29 @@ def analyze_device(device: dict[str, Any], status: list[dict[str, Any]] | None =
                          "source": f"{community_reference.get('repository')} · {community_reference.get('config')}"}
         if dp_id in mapping_conflicts:
             known = None
+        # Owner-edited DPS descriptions are presentation metadata scoped to the
+        # exact Product ID. They never change semantic routing or write rights.
+        custom_overrides = device.get("product_dps_overrides", {})
+        custom = custom_overrides.get(str(dp_id)) if isinstance(custom_overrides, dict) else None
+        custom_semantic = custom.get("semantic_code") if isinstance(custom, dict) else None
+        expected_types = {"switch": {"bool", "boolean"}, "child_lock": {"bool", "boolean"},
+                          "countdown": {"integer", "int", "number"},
+                          "light_mode": {"enum"}, "relay_status": {"enum"}, "power_on_state": {"enum"}}
+        writable_schema_types = {str(entry.get("type", "")).casefold() for entry in device.get("functions", [])
+                                 if isinstance(entry, dict) and entry.get("dp_id", entry.get("dpId")) == dp_id}
+        custom_switch_writable = bool(isinstance(custom, dict) and custom.get("write_enabled") and
+                                      custom_semantic in expected_types and
+                                      (bool(writable_schema_types.intersection(expected_types[custom_semantic])) or
+                                       (custom_semantic in {"switch", "child_lock"} and isinstance(raw.get(dp_id), bool))))
+        if isinstance(custom, dict) and isinstance(custom.get("label"), str) and custom["label"].strip():
+            known = {**(known or {}), "display_name": custom["label"].strip()[:80],
+                     "confidence": "OWNER_CUSTOM", "source": "Gateway Product ID mapping"}
+            if isinstance(custom.get("semantic_code"), str) and custom["semantic_code"]:
+                known["semantic_code"] = custom["semantic_code"]
+                known["unit"] = custom.get("unit")
+                known["data_type"] = custom.get("data_type") or known.get("data_type", "number")
+                if isinstance(custom.get("scale"), (int, float)) and not isinstance(custom.get("scale"), bool):
+                    known["scale"] = custom["scale"]
         observed.append({"dps_id": dp_id, "semantic_code": known["semantic_code"] if known else "unknown",
                          "display_name": known["display_name"] if known else f"Unknown DPS {dp_id}",
                          "data_type": known["data_type"] if known else "unknown",
@@ -568,7 +591,7 @@ def analyze_device(device: dict[str, Any], status: list[dict[str, Any]] | None =
                          "validation_status": "suggestion_only" if known else "unmapped",
                          "function_code": schema_by_id.get(dp_id), "raw_value": raw.get(dp_id),
                          "read_supported": bool(dp_id in raw or schema_by_id.get(dp_id)),
-                         "write_supported": False,
+                         "write_supported": custom_switch_writable,
                          "community_reference": community_reference if known and community_reference else None})
     dynamic_entities = []
     if selected_key == "six_channel_hybrid":

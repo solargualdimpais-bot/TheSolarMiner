@@ -97,7 +97,7 @@ def get_config(conn: sqlite3.Connection) -> dict[str, Any]:
 
 
 def persist_tuya_telemetry(conn: sqlite3.Connection, readings: list[dict[str, Any]],
-                           devices: list[dict[str, Any]]) -> int:
+                           devices: list[dict[str, Any]], product_schemas: dict[str, Any] | None = None) -> int:
     """Keep the latest verified LAN status and recognized SI measurements per Tuya device."""
     row = conn.execute("SELECT value FROM system_state WHERE key=?", (TUYA_TELEMETRY_KEY,)).fetchone()
     try:
@@ -106,7 +106,14 @@ def persist_tuya_telemetry(conn: sqlite3.Connection, readings: list[dict[str, An
         saved = {}
     if not isinstance(saved, dict):
         saved = {}
-    by_id = {item.get("device_id"): item for item in devices if isinstance(item, dict)}
+    product_schemas = product_schemas if isinstance(product_schemas, dict) else {}
+    by_id = {}
+    for item in devices:
+        if not isinstance(item, dict):
+            continue
+        product = product_schemas.get(str(item.get("product_id") or ""), {})
+        overrides = product.get("custom_dps_overrides", {}) if isinstance(product, dict) else {}
+        by_id[item.get("device_id")] = {**item, "product_dps_overrides": overrides if isinstance(overrides, dict) else {}}
     count = 0
     for reading in readings:
         device_id = reading.get("device_id")
@@ -127,10 +134,11 @@ def persist_tuya_telemetry(conn: sqlite3.Connection, readings: list[dict[str, An
             labels = device.get("capability_labels") if isinstance(device.get("capability_labels"), dict) else {}
             dps_knowledge = tuya_dps_registry.analyze_device(device, reading["status"])
             confirmed_semantics = {item["dps_id"]: item for item in dps_knowledge.get("dps", [])
-                                   if item.get("confidence") == "CONFIRMED"}
+                                   if item.get("confidence") == "CONFIRMED" or
+                                   item.get("confidence") == "OWNER_CUSTOM" and item.get("semantic_code") in {"current", "voltage", "power", "daily_accumulated_energy"}}
             metrics: dict[str, dict[str, Any]] = {}
             raw_status = []
-            registry_metric_fields = {"current": "current", "active_power": "power",
+            registry_metric_fields = {"current": "current", "active_power": "power", "power": "power",
                                       "voltage": "voltage", "daily_accumulated_energy": "energy"}
             patterns = {
                 "voltage": (r"(^|_)(cur_)?voltage($|_)", r"voltage|tension|tensao"),
@@ -168,9 +176,13 @@ def persist_tuya_telemetry(conn: sqlite3.Connection, readings: list[dict[str, An
                     canonical_unit = {"voltage": "V", "current": "A", "power": "W", "energy": "kWh"}[field]
                     metrics[field] = {"code": code, "dps_id": dp_id, "value": round(numeric, 6),
                                       "unit": canonical_unit, "observed_at": observed_at,
-                                      "trust": "LIVE_UNVERIFIED", "mapping_confidence": "CONFIRMED",
+                                      "trust": "LIVE_UNVERIFIED", "mapping_confidence": definition.get("confidence", "CONFIRMED"),
                                       "mapping_source": definition.get("source")}
                     count += 1
+                    continue
+                if definition and definition.get("confidence") == "OWNER_CUSTOM" and field:
+                    # A corrected meaning without an established scale is not
+                    # safe to reinterpret through the old schema/code label.
                     continue
                 spec = next((candidate for candidate in specs if candidate.get("code") == code), {})
                 meta = spec.get("values", {})
