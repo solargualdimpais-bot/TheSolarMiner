@@ -697,7 +697,10 @@ def _tuya_probe_local_status(device: dict[str, Any]):
     host = _tuya_resolve_local_ip(device)
     device["local_ip"] = host
     failures = []
-    for protocol in _TUYA_PROTOCOL_FALLBACKS:
+    preferred = str(device.get("local_protocol") or "")
+    protocols = ((preferred,) + tuple(protocol for protocol in _TUYA_PROTOCOL_FALLBACKS if protocol != preferred)
+                 if preferred in _TUYA_PROTOCOL_FALLBACKS else _TUYA_PROTOCOL_FALLBACKS)
+    for protocol in protocols:
         candidate = {**device, "local_ip": host, "local_protocol": protocol}
         try:
             client = _tuya_lan_client(candidate)

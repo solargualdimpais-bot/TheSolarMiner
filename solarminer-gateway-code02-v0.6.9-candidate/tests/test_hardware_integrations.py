@@ -1040,6 +1040,23 @@ def test_tuya_local_protocol_fallback_probes_33_then_34_then_35_and_remembers_ma
     assert result["status"] == [{"code": "dps_1", "dps_id": 1, "value": True}]
 
 
+def test_tuya_local_protocol_reuses_confirmed_protocol_before_fallbacks(monkeypatch):
+    attempted = []
+    class LocalDevice:
+        def __init__(self, protocol): self.protocol = protocol
+        def status(self):
+            attempted.append(self.protocol)
+            return {"dps": {"1": False}}
+    monkeypatch.setattr(integrations, "_tuya_lan_client",
+                        lambda device: LocalDevice(device["local_protocol"]))
+    device = {"device_id": "relay-known-protocol", "local_key": "local-key-123",
+              "local_ip": "192.168.8.44", "local_protocol": "3.5"}
+    result = integrations._tuya_local_status(device)
+    assert attempted == ["3.5"]
+    assert result["local_protocol"] == "3.5"
+    assert result["status"] == [{"code": "dps_1", "dps_id": 1, "value": False}]
+
+
 def test_tuya_local_protocol_fallback_reports_all_attempts_without_cloud(monkeypatch):
     attempted = []
     class LocalDevice:

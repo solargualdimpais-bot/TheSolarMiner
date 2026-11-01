@@ -68,7 +68,7 @@ test("Home favorite controls use a centered plus-only add button and the open-ri
   assert.match(css, /\.home-favorites \.favorite-add-button\{display:grid;place-items:center;width:40px;height:40px;padding:0;border:0;border-radius:0/);
   assert.match(app, /const powerGlyph=`<svg viewBox="0 0 28 28"[^`]*M19\.25 4\.9a10\.5 10\.5 0 1 1-10\.5 0/);
   assert.match(css, /\.home-favorites \.favorite-state-symbol\.on\{border:0;background:transparent;color:var\(--gold\)/);
-  assert.match(css, /\.home-favorites \.favorite-state-symbol\{width:40px;height:40px;flex-basis:40px;border:0;border-radius:0/);
+  assert.match(css, /\.home-favorites \.favorite-state-symbol\{position:relative;width:44px;height:44px;flex-basis:44px;border:0;border-radius:0/);
 });
 
 test("Casa reuses the exact shared property photo hero used by every operational menu", () => {

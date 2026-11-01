@@ -96,8 +96,8 @@ test("Devices inventory uses the latest Gateway reading instead of stale LAN pro
   assert.match(app, /function tuyaCachedReadings\(devices\)/);
   assert.match(app, /function tuyaReadingsFromConfig\(devices\)\{[\s\S]*?return tuyaCachedReadings\(devices\);/);
   assert.doesNotMatch(app, /tuyaReadingsFromConfig\(devices\)\{[^}]*lan_probe/);
-  assert.match(app, /tuyaReadings=tuyaReadingsFromConfig\(state\.tuyaDevices\)/);
-  assert.match(app, /const changed=changedIds\.length>0/);
+  assert.match(app, /state\.tuyaReadings=readings/);
+  assert.match(app, /const changed=changedSet\.size>0/);
   assert.match(app, /function tuyaDeviceState\(device,reading\)\{[\s\S]*?if\(typeof value==="boolean"\)return value\?"Ligado":"Desligado";[\s\S]*?if\(reading\?\.connection_state==="failed"\)/);
   assert.match(app, /current_connection_state===\"local_responded\"&&device\.local_control_state===\"ready\"/);
   assert.match(app, /metrics\.find\(metric=>metric\.label===\"Potência\"\),voltage=metrics\.find\(metric=>metric\.label===\"Tensão\"\)/);
@@ -124,7 +124,7 @@ test("Devices navigation is immediate and background inventory refreshes patch o
   assert.match(app, /enteringDevices=page==="devices"&&state\.page!=="devices"/);
   assert.match(app, /if\(enteringDevices&&sessionInfo\(\)\.user\?\.role==="owner"\)void refreshTuyaInventoryStatus\(\)/);
   assert.match(app, /window\.scrollTo\(\{top:0,behavior:"auto"\}\)/);
-  assert.match(app, /if\(changed&&\["devices","inicio"\]\.includes\(state\.page\)\)changedIds\.forEach\(updateVisibleTuyaCard\)/);
+  assert.match(app, /if\(changed&&\["devices","inicio"\]\.includes\(state\.page\)\)changedSet\.forEach\(deviceId=>\{updateVisibleTuyaCard\(deviceId\);updateOpenTuyaDeviceDialog\(deviceId\);\}\)/);
   assert.match(app, /current\.replaceWith\(updated\)/);
   assert.match(app, /favoriteControlPending\.delete\(deviceId\);updateVisibleTuyaCard\(deviceId\)/);
   assert.doesNotMatch(app, /state\.page==="energia"\s*\|\|\s*!Number\.isFinite\(lastRefresh\)/);
@@ -191,6 +191,17 @@ test("Tuya state uses the product DPS catalog and breaker menu tolerates optiona
   assert.match(app, /data-inventory-expand/);
 });
 
+test("Tuya engine readings update open device popups without a page refresh", () => {
+  assert.match(app, /changedSet\.forEach\(deviceId=>\{updateVisibleTuyaCard\(deviceId\);updateOpenTuyaDeviceDialog\(deviceId\);\}\)/);
+  assert.match(app, /function updateOpenTuyaDeviceDialog\(deviceId\)[\s\S]*?tuyaSwitchState\(device,reading,code\)/);
+  assert.match(app, /dialog\.dataset\.tuyaDeviceId=device\.device_id/);
+  assert.match(app, /currentReading=state\.tuyaReadings\.find\(item=>item\.device_id===device\.device_id\)/);
+  assert.match(app, /pendingTuyaSwitchStates\.set\(/);
+  assert.match(app, /function settlePendingTuyaSwitchStates\(devices,readings\)/);
+  assert.match(app, /typeof observed==="boolean"&&observed===pending\.value/);
+  assert.match(app, /tuyaSwitchState\(device,reading,code\)[\s\S]*?if\(pending\)return pending\.value/);
+});
+
 test("Devices inventory tolerates missing optional Tuya arrays", () => {
   assert.match(app, /function normalizeTuyaInventoryDevice\(device\)/);
   assert.match(app, /function normalizeTuyaInventory\(devices\)/);
@@ -207,8 +218,8 @@ test("Devices inventory tolerates missing optional Tuya arrays", () => {
 });
 
 test("Tuya commands do not trigger reads before or after writing", () => {
-  assert.match(app, /const result = await controlGatewayTuyaSwitch\(deviceId, on\);[\s\S]*?if\(!result\.command_accepted\)/);
-  assert.doesNotMatch(app, /const result = await controlGatewayTuyaSwitch\(deviceId, on\);[\s\S]*?testTuyaLanDevice\(deviceId\)/);
+  assert.match(app, /async function sendTuyaSwitchCommand\(device,code,desired\)\{[\s\S]*?controlGatewayTuyaSwitch\(device\.device_id,desired,code\)/);
+  assert.doesNotMatch(app, /async function sendTuyaSwitchCommand\(device,code,desired\)\{[^}]*testTuyaLanDevice/);
   assert.match(app, /inventoryToggle[\s\S]*?live=state\.tuyaReadings\.find\(item=>item\.device_id===device\.device_id\)[\s\S]*?sendTuyaSwitchCommand\(device,code,!observed\)/);
   assert.doesNotMatch(app, /inventoryToggle[\s\S]*?testTuyaLanDevice\(device\.device_id\)/);
   assert.match(app, /Ordem enviada\. O estado será atualizado pelo próximo varrimento LAN\./);
@@ -224,6 +235,6 @@ test("LAN discovery tries the local neighbor cache after broadcast errors", () =
 test("USB release rollback verification includes the installed Gateway release", () => {
   const rollbackLoops = workflow.match(/for VERSION in[^\n]+/g) || [];
   assert.equal(rollbackLoops.length, 2);
-  for (const loop of rollbackLoops) assert.match(loop, /0\.6\.112 0\.6\.113 0\.6\.114 0\.6\.115 0\.6\.116 0\.6\.117 0\.6\.118 0\.6\.119 0\.6\.120 0\.6\.121 0\.6\.122 0\.6\.123 0\.6\.124 0\.6\.125 0\.6\.126 0\.6\.127 0\.6\.128 0\.6\.129 0\.6\.130 0\.6\.131; do/);
+for (const loop of rollbackLoops) assert.match(loop, /0\.6\.112 0\.6\.113 0\.6\.114 0\.6\.115 0\.6\.116 0\.6\.117 0\.6\.118 0\.6\.119 0\.6\.120 0\.6\.121 0\.6\.122 0\.6\.123 0\.6\.124 0\.6\.125 0\.6\.126 0\.6\.127 0\.6\.128 0\.6\.129 0\.6\.130 0\.6\.131 0\.6\.132; do/);
 });
 

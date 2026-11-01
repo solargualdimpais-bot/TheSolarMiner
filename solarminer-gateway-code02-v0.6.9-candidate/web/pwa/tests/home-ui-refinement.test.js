@@ -68,7 +68,7 @@ test("Home favorite controls use a centered plus-only add button and the open-ri
   assert.match(css, /\.home-favorites \.favorite-add-button\{display:grid;place-items:center;width:40px;height:40px;padding:0;border:0;border-radius:0/);
   assert.match(app, /const powerGlyph=`<svg viewBox="0 0 28 28"[^`]*M19\.25 4\.9a10\.5 10\.5 0 1 1-10\.5 0/);
   assert.match(css, /\.home-favorites \.favorite-state-symbol\.on\{border:0;background:transparent;color:var\(--gold\)/);
-  assert.match(css, /\.home-favorites \.favorite-state-symbol\{width:40px;height:40px;flex-basis:40px;border:0;border-radius:0/);
+  assert.match(css, /\.home-favorites \.favorite-state-symbol\{position:relative;width:44px;height:44px;flex-basis:44px;border:0;border-radius:0/);
 });
 
 test("Casa reuses the exact shared property photo hero used by every operational menu", () => {
@@ -175,6 +175,17 @@ test("Tuya editor persists an explicit DPS profile and keeps automatic matches a
   assert.match(app, /O esquema oficial deste produto e os códigos DPS explícitos prevalecem/);
 });
 
+test("KG six-channel quick controls expose per-pair modes and separate Settings without showing DPS ids", () => {
+  assert.match(app, /function tuyaIsKgHybrid\(device\)/);
+  assert.match(app, /function tuyaKgPairModeSpecs\(device\)/);
+  assert.match(app, /data-tuya-pair-mode=/);
+  assert.match(app, /Switch mode/);
+  assert.match(app, /Curtain mode/);
+  assert.match(app, /data-tuya-quick-settings/);
+  assert.match(app, /Comando de cortina não declarado/);
+  assert.match(app, /data-tuya-channel-label=/);
+});
+
 test("Tuya profiles can be inferred or overridden and breakers expose one control", () => {
   const gatewayIntegrations = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/integrations.py", import.meta.url), "utf8");
   assert.match(gatewayIntegrations, /def classify_tuya_device\(/);
@@ -186,6 +197,18 @@ test("Tuya profiles can be inferred or overridden and breakers expose one contro
   assert.match(app, /Outras leituras DPS recebidas/);
   assert.match(app, /Disjuntor · um botão ON\/OFF/);
   assert.match(app, /if\(\(device\.device_kind_override\|\|device\.device_kind\)==="breaker"\)codes=\[/);
+});
+
+test("Breaker name details show measured values and Settings; arrow opens only three compact icon tabs", () => {
+  assert.match(app, /function tuyaIsBreaker\(device\)/);
+  assert.match(app, /data-breaker-detail-settings/);
+  assert.match(app, /breaker-detail-metrics/);
+  assert.match(app, /data-breaker-tab="switch"/);
+  assert.match(app, /data-breaker-tab="countdown"/);
+  assert.match(app, /data-breaker-tab="lock"/);
+  assert.match(app, /data-breaker-countdown-save/);
+  assert.match(app, /data-breaker-lock-code/);
+  assert.match(app, /breaker\?breakerMenu/);
 });
 
 test("Energy page shows Gateway daily solar estimate and battery energy above cut-off", () => {
