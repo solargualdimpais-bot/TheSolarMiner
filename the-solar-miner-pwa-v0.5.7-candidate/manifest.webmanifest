@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.99: associação de disjuntores Tuya e potência medida das mineradoras.",
+  "description": "The Solar Miner PWA v0.5.100: navegação Energy simplificada e gestão de excedentes organizada por tarefa.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",

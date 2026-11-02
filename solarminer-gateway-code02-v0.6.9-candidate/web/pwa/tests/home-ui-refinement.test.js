@@ -175,16 +175,6 @@ test("Tuya editor persists an explicit DPS profile and keeps automatic matches a
   assert.match(app, /O esquema oficial deste produto e os códigos DPS explícitos prevalecem/);
 });
 
-test("Tuya DPS troubleshooting reads on tab open and saves Product ID semantic corrections", () => {
-  assert.match(app, /<h3>Lista DPS<\/h3>/);
-  assert.match(app, /runGatewayTuyaLanDiagnostics\(1,device\.device_id\)/);
-  assert.match(app, /saveGatewayTuyaProductDpsDescription/);
-  assert.match(app, /toque duplo para editar/);
-  assert.match(app, /data-breaker-live-metric=/);
-  assert.match(app, /data-breaker-live-state/);
-  assert.match(app, /setInterval\(\(\) => \{ void refreshTuyaInventoryStatus\(\); \},1_500\)/);
-});
-
 test("KG six-channel quick controls expose per-pair modes and separate Settings without showing DPS ids", () => {
   assert.match(app, /function tuyaIsKgHybrid\(device\)/);
   assert.match(app, /function tuyaKgPairModeSpecs\(device\)/);

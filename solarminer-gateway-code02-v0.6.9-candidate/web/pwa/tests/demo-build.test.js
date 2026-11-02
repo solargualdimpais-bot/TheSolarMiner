@@ -6,12 +6,11 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const read = name => readFileSync(join(root, name), 'utf8');
 
-test('demo runtime stays isolated from authentication, networking and physical commands', () => {
-  assert.doesNotMatch(read('demo-mode.js'), /new\s+WebSocket\s*\(/, 'demo mode must not expose live terminal access');
-  const demoRuntime = read('demo-mode.js');
-  assert.doesNotMatch(demoRuntime, /^\s*import\s/m, 'demo state has no runtime dependencies');
-  for (const forbidden of ['fetch(', 'gatewayApi(', '/api/v1/', 'new WebSocket(', 'writeRegister(', 'writeCoil('])
-    assert.equal(demoRuntime.includes(forbidden), false, `unexpected network/physical primitive: ${forbidden}`);
+test('demo controls are local-only and cannot send physical commands', () => {
+  const demo = read('demo-mode.js');
+  assert.doesNotMatch(demo, /fetch\(|gatewayApi\(|\/api\/v1\/|new WebSocket\(|writeRegister\(|writeCoil\(/);
+  assert.match(read('app.js'), /DEMO · NÃO É UM COMANDO REAL/);
+  assert.match(read('app.js'), /DEMO · ALTERAÇÃO LOCAL · NENHUM COMANDO ENVIADO/);
 });
 
 test('all six areas remain navigable in desktop and mobile navigation', () => {

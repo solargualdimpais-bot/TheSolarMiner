@@ -1,14 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const gatewayPwa = resolve(root, "../solarminer-gateway-code02-v0.6.9-candidate/web/pwa");
+const gatewayPwa = existsSync(resolve(root, "../../src/solarminer_gateway/app.py"))
+  ? resolve(root, "../../../the-solar-miner-pwa-v0.5.7-candidate")
+  : resolve(root, "../solarminer-gateway-code02-v0.6.9-candidate/web/pwa");
 const read = (base, file) => readFileSync(resolve(base, file), "utf8");
 
-test("Owner PWA reads Gateway engine history and stores battery settings on Gateway", () => {
+test("Owner PWA uses Gateway readings and keeps equipment associations available", () => {
   const auth = read(root, "gateway-auth.js");
   const app = read(root, "app.js");
   assert.match(auth, /readGatewayEnergy\(historyHours = 24, historyUntil = null\)/);
@@ -41,16 +43,25 @@ test("Owner PWA reads Gateway engine history and stores battery settings on Gate
   assert.match(app, /Potência FV estimada \+1 h/);
   assert.match(app, /Consumo estimado \+1 h/);
   assert.match(app, /SOC estimado \+1 h/);
-  assert.match(app, /Guardar bateria/);
   assert.match(app, /LIVE_UNVERIFIED/);
-  assert.match(app, /CARGAS FLEXÍVEIS/);
-  assert.match(app, /underfloor_heating/);
-  assert.match(app, /engine-load-tuya-device/);
-  assert.match(app, /data-miner-breaker-save/);
   assert.match(app, /Disjuntor Tuya da mineradora/);
+  assert.match(app, /data-miner-breaker-save/);
+  assert.match(app, /renderSurplusManager\(\)/);
   assert.match(app, /Consumo estimado/);
   assert.match(auth, /controlGatewayTuyaSwitch/);
   assert.match(auth, /\/api\/v1\/integrations\/tuya\/switch/);
+});
+
+test("Energy Engine is focused on measurement, readings and history", () => {
+  const app = read(root, "app.js");
+  for (const tab of ["summary", "readings", "history"]) {
+    assert.match(app, new RegExp(`data-engine-tab="${tab}"`));
+    assert.match(app, new RegExp(`data-engine-tab-panel="${tab}"`));
+  }
+  assert.doesNotMatch(app, /data-engine-tab="(?:loads|system)"/);
+  assert.match(app, /const engineTab=e\.target\.closest\("\[data-engine-tab\]"\)/);
+  assert.match(app, /enginePanels\.forEach\(panel=>\{panel\.hidden=panel\.dataset\.engineTabPanel!==energyEngineActiveTab;\}\)/);
+  assert.match(app, /function renderSurplusManager\(\)/);
 });
 
 test("Gateway-served PWA assets match the GitHub Pages PWA", () => {

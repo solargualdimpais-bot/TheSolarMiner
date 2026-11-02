@@ -8,15 +8,23 @@ const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
 test("Energy exposes the surplus manager as a navigable submenu and standalone demo", () => {
   assert.match(app, /gestao-excedentes/);
   assert.match(app, /function renderSurplusManager\(\)/);
-  assert.match(app, /DEMO · SEM GATEWAY/);
+  assert.match(app, /DEMO · SEM COMANDOS/);
   assert.match(app, /surplus-demo-run/);
-  assert.match(app, /Esta demonstração não envia comandos a equipamentos/);
+  assert.match(app, /A demonstração não comunica com equipamentos/);
   assert.match(html, /data-page="energia"/);
 });
 
 test("surplus manager saves Owner policy and states physical integration limits", () => {
   assert.match(app, /saveGatewayEnergyEngineConfig\(\{surplus_manager:manager,automation\}\)/);
   assert.match(app, /manual_override:resume\?false:Boolean\(oldManager\.manual_override\)/);
-  assert.match(app, /telemetria real e dispositivos configurados continuam a limitar o comando/);
-  assert.match(app, /API Tesla configurada neste software ainda é só de leitura/);
+  assert.match(app, /Tesla ainda sem controlo de carregamento/);
+});
+
+test("surplus manager separates state, existing loads, device links, priorities and rules", () => {
+  assert.match(app, /const tabs=\[\["status","Estado"\],\["loads","Cargas"\],\["links","Ligações e mapas"\],\["priority","Prioridades"\],\["rules","Regras"\]\]/);
+  assert.match(app, /data-surplus-tab="\$\{id\}"/);
+  assert.match(app, /loads=\(config\.loads\|\|\[\]\)\.filter/);
+  assert.match(app, /data-surplus-panel="links"/);
+  assert.match(app, /PROTOCOLOS E MAPAS/);
+  assert.match(app, /ORDEM APLICADA PELO GATEWAY/);
 });

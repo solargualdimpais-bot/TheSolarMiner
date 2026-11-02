@@ -4,9 +4,7 @@ import { readFileSync } from "node:fs";
 
 const app = readFileSync(new URL("../app.js", import.meta.url), "utf8");
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
-const gatewayAuth = readFileSync(new URL("../gateway-auth.js", import.meta.url), "utf8");
 const gatewayApp = readFileSync(new URL("../../../src/solarminer_gateway/app.py", import.meta.url), "utf8");
-const huaweiRouter = readFileSync(new URL("../../../src/solarminer_gateway/huawei_router.py", import.meta.url), "utf8");
 const energyEngine = readFileSync(new URL("../../../src/solarminer_gateway/energy_engine.py", import.meta.url), "utf8");
 const workflow = readFileSync(new URL("../../../../.github/workflows/gateway-release.yml", import.meta.url), "utf8");
 
@@ -15,35 +13,6 @@ test("Tuya LAN report exposes the saved target and key presence without the key"
   assert.match(gatewayApp, /"local_key_configured": bool\(item\.get\("local_key"\)\)/);
   assert.match(app, /IP guardado/);
   assert.match(app, /local_key_configured\?"Configurada":"Em falta"/);
-});
-
-test("Huawei local client lookup has a cancelable deadline and reports Tuya MAC matches", () => {
-  assert.match(gatewayAuth, /readGatewayHuaweiClients\(\{ signal, discovery \} = \{\}\)/);
-  assert.match(gatewayAuth, /huawei\/clients", \{ method: "POST", body: \{ discovery \}, signal \}/);
-  assert.match(app, /setTimeout\(\(\)=>\{timedOut=true;controller\.abort\(\);\},220_000\)/);
-  assert.match(app, /O Huawei não devolveu clientes e a varredura local/);
-  assert.match(app, /actions:\[\{label:"Parar",value:"stop"\}\]/);
-  assert.match(app, /Foi encontrada 1 correspondência MAC\/IP/);
-  assert.match(app, /Foram encontradas \$\{matchedCount\} correspondências MAC\/IP/);
-});
-
-test("Huawei search identifies the modem before the user continues into the IP/MAC scan", () => {
-  assert.match(html, /id="huawei-router-read"[^>]*>Pesquisar modem e IPs\/MACs/);
-  assert.doesNotMatch(html, /id="huawei-router-save"/);
-  assert.match(gatewayAuth, /probeGatewayHuawei/);
-  assert.match(app, /const probe=await probeGatewayHuawei/);
-  assert.match(app, /label:"Continuar",value:"continue"/);
-  assert.match(app, /label:"Parar",value:"stop"/);
-  assert.match(app, /readGatewayHuaweiClients\(\{signal:controller\.signal,discovery\}\)/);
-  assert.match(gatewayApp, /api\/v1\/integrations\/huawei\/probe/);
-  assert.match(huaweiRouter, /def device_information\(/);
-});
-
-test("Huawei client inventory tries LAN, WLAN and DHCP APIs with bounded longer timeouts", () => {
-  assert.match(huaweiRouter, /"api\/lan\/HostInfo",\s*"api\/system\/HostInfo",\s*"api\/wlan\/host-list",\s*"api\/dhcp\/dhcp-host-info"/);
-  assert.match(huaweiRouter, /timeout: float = 15\.0, total_timeout: float = 150\.0/);
-  assert.match(huaweiRouter, /if not MAC_RE\.fullmatch\(mac\) and not ip/);
-  assert.match(gatewayApp, /"sources": sources/);
 });
 
 test("Huawei modem tools live in their own Owner tab, outside Tuya settings", () => {

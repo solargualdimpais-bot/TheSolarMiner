@@ -159,6 +159,17 @@ test("Huawei router credentials allow choosing the account required by the local
   assert.match(app, /username=\$\("#huawei-router-username"\)\.value\.trim\(\)/);
 });
 
+test("Huawei LAN results cross-check known MACs and save Owner labels for new devices", () => {
+  const app = read("../app.js");
+  const auth = read("../gateway-auth.js");
+  const gateway = read("../../../src/solarminer_gateway/app.py");
+  assert.match(app, /item\.display_name/);
+  assert.match(app, /data-network-save/);
+  assert.match(auth, /integrations\/huawei\/client-label/);
+  assert.match(gateway, /network_inventory_devices/);
+  assert.match(gateway, /known_device_name/);
+});
+
 test("Deye Cloud import explains HTTP 504 as a Gateway or proxy timeout", () => {
   const app = read("../app.js");
   const auth = read("../gateway-auth.js");
