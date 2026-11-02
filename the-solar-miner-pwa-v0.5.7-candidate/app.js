@@ -471,7 +471,8 @@ function renderLiveEnergyEngine() {
   const socAnchorLabel=current.battery_soc_estimate?.anchor_source==="DEYE_CLOUD_HISTORY_VOLTAGE_AND_SIGNED_POWER"?"Âncora obtida por tensão e potência do histórico; percentagem Deye ignorada.":"Âncora de carga confirmada pelo Gateway.";
   const readingTile=(field,label)=>{const item=readings[field];return `<div class="detail-item"><small>${esc(label)}</small><strong>${item?`${esc(item.value)} ${esc(item.unit||"")}`:"—"}</strong><small>${item?`${esc(item.trust)} · ${esc(timeLabel(item.observed_at))}`:"Sem leitura"}</small></div>`;};
   const dispatchRows=(data.dispatch?.actions||[]).map(action=>`<div class="detail-item"><small>${esc(action.name||action.load_id)}</small><strong>${esc(action.state)}</strong><small>${Number.isFinite(action.target_power_w)?`${esc(action.target_power_w)} W · `:""}${esc(action.control_type||"")}</small></div>`).join("");
-  const meterRows=Object.entries(current.tuya_load_telemetry||{}).map(([id,meter])=>{const metrics=meter.metrics||{},measurements=[ ["Potência",metrics.power,"W"],["Tensão",metrics.voltage,"V"],["Corrente",metrics.current,"A"],["Consumo",metrics.energy,"kWh"] ].filter(([,item])=>item&&Number.isFinite(Number(item.value))).map(([label,item,unit])=>`<span>${label}: ${new Intl.NumberFormat("pt-PT",{maximumFractionDigits:2}).format(item.value)} ${unit}</span>`).join(" · ");return `<div class="detail-item"><small>${esc(meter.name||id)}</small><strong>${meter.fresh?"Leitura recente":meter.verified?"Sem leitura recente":"Por confirmar"}</strong><small>${measurements||"Sem medições DPS reconhecidas com unidade validada"}${meter.observed_at?` · ${esc(timeLabel(meter.observed_at))}`:""}</small></div>`;}).join("");
+  const meterEntries=Object.entries(current.tuya_load_telemetry||{}),meterUseCounts=meterEntries.reduce((counts,[,meter])=>{if(meter.device_id)counts[meter.device_id]=(counts[meter.device_id]||0)+1;return counts;},{}),seenMeters=new Set();
+  const meterRows=meterEntries.filter(([,meter])=>{const key=meter.device_id||meter.name;if(!key)return true;if(seenMeters.has(key))return false;seenMeters.add(key);return true;}).map(([id,meter])=>{const metrics=meter.metrics||{},measurements=[ ["Potência",metrics.power,"W"],["Tensão",metrics.voltage,"V"],["Corrente",metrics.current,"A"],["Consumo",metrics.energy,"kWh"] ].filter(([,item])=>item&&Number.isFinite(Number(item.value))).map(([label,item,unit])=>`<span>${label}: ${new Intl.NumberFormat("pt-PT",{maximumFractionDigits:2}).format(item.value)} ${unit}</span>`).join(" · "),switchState=typeof meter.switch_on==="boolean"?`Disjuntor ${meter.switch_on?"ligado":"desligado"}`:"Estado do disjuntor sem leitura",shared=meter.device_id&&meterUseCounts[meter.device_id]>1?` · Medição partilhada por ${meterUseCounts[meter.device_id]} cargas`:"";return `<div class="detail-item"><small>${esc(meter.name||id)}</small><strong>${meter.fresh?"Leitura recente":meter.verified?"Sem leitura recente":"Por confirmar"}</strong><small>${switchState}${measurements?` · ${measurements}`:" · Sem medições DPS reconhecidas com unidade validada"}${shared}${meter.observed_at?` · ${esc(timeLabel(meter.observed_at))}`:""}</small></div>`;}).join("");
   const execution=data.dispatch_execution;
   const solarSiteConfig="";
   const solarDay=data.forecast?.solar_day||{};
@@ -500,8 +501,9 @@ function renderLoadBuilder() {
     return primary?[{device,code:primary.code}]:[];
   });
   const loads = state.energyEngine?.configuration?.loads || [];
-  const relays = loads.filter(load => load.enabled && load.automatic && ["tuya_smart", "tuya_breaker"].includes(load.control_type));
-  return `<section class="panel"><h3>Adicionar equipamento</h3><div class="ws-config-grid"><label class="feature-field">Nome<input id="engine-load-name" maxlength="120" placeholder="Ex.: AQS 2"></label><label class="feature-field">Tipo<select id="engine-load-kind"><option value="water_heater">AQS</option><option value="underfloor_heating">Soalho radiante / toalheiro</option><option value="miner">Mineradora</option><option value="ev_charger">Carregador EV</option><option value="generic">Outra carga</option></select></label><label class="feature-field">Comando<select id="engine-load-control"><option value="tuya_smart">Interruptor smart Tuya</option><option value="tuya_breaker">Disjuntor Tuya</option><option value="antminer_braiins">Braiins OS</option><option value="manual">Manual</option><option value="tesla_fleet">Tesla Fleet (leitura apenas)</option></select></label><label class="feature-field">Potência nominal (W)<input id="engine-load-rated" type="number" min="1" max="100000" step="1" value="1500"></label><label class="feature-field">Potência mínima (W, mineradora)<input id="engine-load-minimum" type="number" min="1" max="2900" step="1" value="800"></label><label class="feature-field">Potência máxima (W, mineradora)<input id="engine-load-maximum" type="number" min="1" max="2900" step="1" value="2500"></label><label class="feature-field">Prioridade (menor número primeiro)<input id="engine-load-priority" type="number" min="1" max="100" value="10"></label><label class="feature-field">Disjuntor Tuya associado<select id="engine-load-tuya-device"><option value="">${devices.length ? "Escolher dispositivo pelo nome" : "Sincroniza os interruptores Tuya no Owner primeiro"}</option>${devices.map(item=>`<option value="${esc(item.device.device_id)}" data-code="${esc(item.code)}">${esc(item.device.name)}</option>`).join("")}</select><small>O Gateway usa o canal principal e associa automaticamente os DPS de medição com unidade reconhecida.</small></label><label class="feature-field">Relé de alimentação mineradora<select id="engine-load-miner-relay"><option value="">Escolhe uma carga Tuya automática</option>${relays.map(load=>`<option value="${esc(load.id)}">${esc(load.name)}</option>`).join("")}</select></label><label class="feature-field"><input id="engine-load-automatic" type="checkbox"> Elegível para automatização</label></div><div class="ws-actions"><button class="button secondary" id="engine-add-load" type="button">Adicionar à lista</button><span class="ws-inline-note">O equipamento só é guardado quando carregares em “Guardar cargas e automatização”.</span></div></section>`;
+  const miners=loads.filter(load=>load.kind==="miner"&&load.control_type==="antminer_braiins");
+  const associations=miners.length?`<section class="panel"><h3>Disjuntor Tuya da mineradora</h3><p>Associa um disjuntor a cada mineradora. O mesmo dispositivo é a referência do estado elétrico e da potência medida; só se mostra como medição real quando houver uma leitura recente e DPS de potência reconhecido.</p>${miners.map(miner=>`<div class="ws-config-grid miner-breaker-binding" data-miner-binding="${esc(miner.id)}"><strong>${esc(miner.name)}</strong><label class="feature-field">Disjuntor<select data-miner-breaker-device><option value="">${devices.length?"Escolher disjuntor Tuya":"Sincroniza os dispositivos Tuya no Owner primeiro"}</option>${devices.map(item=>`<option value="${esc(item.device.device_id)}" data-code="${esc(item.code)}" ${item.device.device_id===miner.tuya_device_id?"selected":""}>${esc(item.device.name)}</option>`).join("")}</select></label><button type="button" class="button secondary" data-miner-breaker-save="${esc(miner.id)}">Guardar associação</button></div>`).join("")}<p class="ws-inline-note" id="engine-miner-breaker-status" role="status"></p></section>`:"";
+  return `${associations}<section class="panel"><h3>Adicionar equipamento</h3><div class="ws-config-grid"><label class="feature-field">Nome<input id="engine-load-name" maxlength="120" placeholder="Ex.: AQS 2"></label><label class="feature-field">Tipo<select id="engine-load-kind"><option value="water_heater">AQS</option><option value="underfloor_heating">Soalho radiante / toalheiro</option><option value="miner">Mineradora</option><option value="ev_charger">Carregador EV</option><option value="generic">Outra carga</option></select></label><label class="feature-field">Comando<select id="engine-load-control"><option value="tuya_smart">Interruptor smart Tuya</option><option value="tuya_breaker">Disjuntor Tuya</option><option value="antminer_braiins">Braiins OS</option><option value="manual">Manual</option><option value="tesla_fleet">Tesla Fleet (leitura apenas)</option></select></label><label class="feature-field">Potência nominal (W)<input id="engine-load-rated" type="number" min="1" max="100000" step="1" value="1500"></label><label class="feature-field">Potência mínima (W, mineradora)<input id="engine-load-minimum" type="number" min="1" max="2900" step="1" value="800"></label><label class="feature-field">Potência máxima (W, mineradora)<input id="engine-load-maximum" type="number" min="1" max="2900" step="1" value="2500"></label><label class="feature-field">Prioridade (menor número primeiro)<input id="engine-load-priority" type="number" min="1" max="100" value="10"></label><label class="feature-field">Disjuntor Tuya associado<select id="engine-load-tuya-device"><option value="">${devices.length ? "Escolher dispositivo pelo nome" : "Sincroniza os dispositivos Tuya no Owner primeiro"}</option>${devices.map(item=>`<option value="${esc(item.device.device_id)}" data-code="${esc(item.code)}">${esc(item.device.name)}</option>`).join("")}</select><small>Na mineradora, este mesmo disjuntor é associado ao controlo elétrico e à leitura real de potência. O Gateway só usa DPS de medição com unidade reconhecida.</small></label><label class="feature-field"><input id="engine-load-automatic" type="checkbox"> Elegível para automatização</label></div><div class="ws-actions"><button class="button secondary" id="engine-add-load" type="button">Adicionar à lista</button><span class="ws-inline-note">O equipamento só é guardado quando carregares em “Guardar cargas e automatização”.</span></div></section>`;
 }
 function card(item) {
   const category = CATEGORIES.find(c => c.id === item.category) || { icon: "•", label: item.category };
@@ -569,10 +571,24 @@ function liveMinerHomeMetric() {
   const currentHash = liveMetricReading(equipment, "miner_hashrate_5s_ghs") || liveMetricReading(equipment, "miner_hashrate_avg_ghs");
   const hashThs = typeof currentHash?.value === "number" ? currentHash.value / 1000 : null;
   const hashUnit = hashThs === null ? "" : "TH/s";
-  const minerPower = liveMetricReading(equipment, "miner_power_w");
+  const energyCurrent=state.energyEngine?.current||{},minerLoads=(state.energyEngine?.configuration?.loads||[]).filter(item=>item.kind==="miner"&&item.control_type==="antminer_braiins"),meterGroups=new Map();
+  let completeMinerMeterSet=minerLoads.length>0;
+  for(const load of minerLoads){
+    const deviceId=load.tuya_device_id||energyCurrent.tuya_load_telemetry?.[load.id]?.device_id;
+    if(!deviceId){completeMinerMeterSet=false;continue;}
+    const group=meterGroups.get(deviceId)||{count:0,power:null};group.count++;
+    const meter=energyCurrent.tuya_load_telemetry?.[load.id]||Object.values(energyCurrent.tuya_load_telemetry||{}).find(item=>item.device_id===deviceId);
+    const value=meter?.fresh&&meter.metrics?.power?.unit==="W"&&Number.isFinite(Number(meter.metrics.power.value))?Number(meter.metrics.power.value):null;
+    if(value===null)completeMinerMeterSet=false;else if(group.power===null)group.power=value;
+    meterGroups.set(deviceId,group);
+  }
+  const measuredPower=completeMinerMeterSet&&meterGroups.size?Array.from(meterGroups.values()).every(group=>group.power!==null)?Array.from(meterGroups.values()).reduce((sum,group)=>sum+group.power,0):null:null;
+  const sharedMinerMeterCount=Math.max(0,...Array.from(meterGroups.values(),group=>group.count));
+  const estimatedMinerPower=liveMetricReading(equipment, "miner_power_w");
+  const minerPower=measuredPower!==null?{value:measuredPower,trust:"Leitura real do disjuntor Tuya"}:estimatedMinerPower;
   const powerLimit = liveMetricReading(equipment, "miner_power_limit_w");
   const sub = [
-    minerPower ? `Consumo ${new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 0 }).format(minerPower.value)} W` : null,
+    minerPower ? `${measuredPower!==null?(sharedMinerMeterCount>1?`Potência medida partilhada (${sharedMinerMeterCount} mineradoras)`:"Consumo medido"):"Consumo estimado"} ${new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 0 }).format(minerPower.value)} W` : null,
     powerLimit ? `Limite reportado ${new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 0 }).format(powerLimit.value)} W` : null,
     !currentHash && equipment?.connection_state === "CONNECTED" ? "API ligada · hashrate indisponível" : null,
     !equipment ? "Sem leitura da Antminer" : null,
@@ -1834,6 +1850,24 @@ $("#page-content").addEventListener("click", async e => {
     finally{const current=$("#area-battery-save");if(current)current.disabled=false;}
     return;
   }
+  const bindMinerBreaker=e.target.closest("[data-miner-breaker-save]");
+  if(bindMinerBreaker){
+    const status=$("#engine-miner-breaker-status"),row=bindMinerBreaker.closest("[data-miner-binding]"),loadId=bindMinerBreaker.dataset.minerBreakerSave;
+    bindMinerBreaker.disabled=true;if(status)status.textContent="A guardar a associação no Gateway…";
+    try{
+      const loads=JSON.parse($("#engine-loads-json")?.value||"[]"),load=loads.find(item=>item.id===loadId),option=row?.querySelector("[data-miner-breaker-device]")?.selectedOptions?.[0],deviceId=option?.value,switchCode=option?.dataset.code;
+      if(!load||load.kind!=="miner"||load.control_type!=="antminer_braiins")throw new Error("Esta mineradora já não está na configuração atual.");
+      if(!deviceId||!switchCode)throw new Error("Escolhe um disjuntor Tuya com canal de controlo disponível.");
+      const breaker=state.tuyaDevices.find(item=>item.device_id===deviceId);if(!breaker)throw new Error("Sincroniza novamente os dispositivos Tuya e tenta outra vez.");
+      load.tuya_device_id=deviceId;load.tuya_switch_code=switchCode;load.tuya_measurement_codes=tuyaMeasurementCodes(breaker);delete load.requires_load_id;
+      await saveGatewayEnergyEngineConfig({loads});
+      const saved=await readGatewayEnergyEngineConfig(),persisted=saved?.loads?.find(item=>item.id===loadId);
+      if(!persisted||persisted.tuya_device_id!==deviceId||persisted.tuya_switch_code!==switchCode)throw new Error("O Gateway não confirmou a associação. Atualiza e tenta novamente.");
+      state.energyEngine={...(state.energyEngine||{}),configuration:saved};$("#engine-loads-json").value=JSON.stringify(saved.loads||loads,null,2);if(status)status.textContent=`${load.name}: disjuntor associado para estado e leitura de potência.`;await refreshGatewayReadings();
+    }catch(error){if(status)status.textContent=`Não foi possível associar: ${error.message}`;}
+    finally{bindMinerBreaker.disabled=false;}
+    return;
+  }
   if(e.target.closest("#engine-add-load")){
     const status=$("#engine-equipment-config-status");
     try{
@@ -1853,7 +1887,10 @@ $("#page-content").addEventListener("click", async e => {
         const minimum=Number($("#engine-load-minimum").value),maximum=Number($("#engine-load-maximum").value);
         if(!Number.isInteger(minimum)||!Number.isInteger(maximum)||minimum<1||maximum>2900||minimum>maximum)throw new Error("Define mínimo e máximo da mineradora entre 1 e 2900 W.");
         load.minimum_power_w=minimum;load.maximum_power_w=maximum;
-        if(load.automatic){const dependency=$("#engine-load-miner-relay").value;if(!dependency)throw new Error("Escolhe primeiro um relé Tuya automático para alimentar a mineradora.");load.requires_load_id=dependency;}
+        const option=$("#engine-load-tuya-device").selectedOptions[0],device_id=option?.value,switch_code=option?.dataset.code;
+        if(!device_id||!switch_code)throw new Error("Seleciona o disjuntor Tuya associado à mineradora.");
+        const breaker=state.tuyaDevices.find(item=>item.device_id===device_id);
+        load.tuya_device_id=device_id;load.tuya_switch_code=switch_code;load.tuya_measurement_codes=breaker?tuyaMeasurementCodes(breaker):{};
       }
       $("#engine-loads-json").value=JSON.stringify([...loads,load],null,2);
       $("#engine-load-name").value="";

@@ -819,6 +819,46 @@ def test_automatic_miner_can_be_controlled_directly_without_a_tuya_relay():
     assert config["loads"][0]["requires_load_id"] is None
 
 
+def test_antminer_can_store_its_associated_tuya_breaker_and_meter_codes():
+    conn = database()
+    config = energy_engine.save_config(conn, {"loads": [{
+        "id": "miner", "name": "Mineradora", "kind": "miner", "control_type": "antminer_braiins",
+        "rated_power_w": 2500, "minimum_power_w": 800, "maximum_power_w": 2500,
+        "tuya_device_id": "breaker-device-1", "tuya_switch_code": "switch",
+        "tuya_measurement_codes": {"power": "cur_power", "voltage": "cur_voltage"},
+    }]})
+    assert config["loads"][0]["tuya_device_id"] == "breaker-device-1"
+    assert config["loads"][0]["tuya_switch_code"] == "switch"
+    assert config["loads"][0]["tuya_measurement_codes"] == {"power": "cur_power", "voltage": "cur_voltage"}
+
+
+def test_shared_tuya_meter_is_not_attributed_as_each_miners_individual_power():
+    config = {
+        "automation": {"enabled": True, "commissioned": True, "deye_map_verified": True,
+                       "surplus_margin_w": 100, "decision_interval_seconds": 300},
+        "loads": [
+            {"id": "miner-1", "name": "Mineradora 1", "kind": "miner", "control_type": "antminer_braiins",
+             "rated_power_w": 2500, "minimum_power_w": 800, "maximum_power_w": 2500,
+             "priority": 1, "enabled": True, "automatic": True, "tuya_device_id": "breaker-shared"},
+            {"id": "miner-2", "name": "Mineradora 2", "kind": "miner", "control_type": "antminer_braiins",
+             "rated_power_w": 2500, "minimum_power_w": 800, "maximum_power_w": 2500,
+             "priority": 2, "enabled": True, "automatic": True, "tuya_device_id": "breaker-shared"},
+        ],
+    }
+    current = {"pv_power_w": 5000, "load_power_w": 1000, "battery_soc_percent": 100,
+               "battery_soc_source": "gateway_energy_integrated",
+               "battery_charge_headroom_kwh_to_maximum": 0, "battery_charge_power_w": 0, "battery_power_w": 0,
+               "tuya_load_telemetry": {
+                   "miner-1": {"device_id": "breaker-shared", "fresh": True,
+                               "metrics": {"power": {"value": 2400, "unit": "W"}}},
+                   "miner-2": {"device_id": "breaker-shared", "fresh": True,
+                               "metrics": {"power": {"value": 2400, "unit": "W"}}},
+               }}
+    result = energy_engine.build_dispatch_plan(current, config, sample_state="LIVE", telemetry_trust="OWNER_COMMISSIONED")
+    assert [item["state"] for item in result["actions"]] == ["BLOCKED_SHARED_METER", "BLOCKED_SHARED_METER"]
+    assert [item["measured_power_w"] for item in result["actions"]] == [2400, 2400]
+
+
 def test_dispatch_plan_starts_relay_before_miner_and_allocates_heaters_after_max():
     config = {
         "automation": {"enabled": True, "commissioned": True, "deye_map_verified": True,

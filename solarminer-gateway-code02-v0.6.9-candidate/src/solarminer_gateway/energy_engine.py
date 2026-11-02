@@ -422,7 +422,8 @@ def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, 
                              if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value)}
         if len(measurement_codes) != len(load.get("tuya_measurement_codes", {})):
             raise ValueError("invalid_tuya_measurement_code")
-        if measurement_codes and control not in {"tuya_smart", "tuya_breaker"}:
+        antminer_meter = control == "antminer_braiins" and kind == "miner" and device_id is not None
+        if measurement_codes and control not in {"tuya_smart", "tuya_breaker"} and not antminer_meter:
             raise ValueError("tuya_measurement_device_required")
         if control in {"tuya_smart", "tuya_breaker"}:
             if not isinstance(device_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", device_id):
@@ -434,6 +435,8 @@ def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, 
                 raise ValueError("invalid_tuya_device_id_for_load")
             if switch_code is not None and (not isinstance(switch_code, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", switch_code)):
                 raise ValueError("invalid_tuya_switch_code_for_load")
+            if control == "antminer_braiins" and kind == "miner" and (device_id is None) != (switch_code is None):
+                raise ValueError("incomplete_miner_tuya_breaker_binding")
         load_ids.add(identifier)
         normalized_loads.append({"id": identifier, "name": name.strip(), "kind": kind, "control_type": control,
                                  "manufacturer": manufacturer.strip(), "volume_l": volume_l,
@@ -2605,6 +2608,18 @@ def build_dispatch_plan(current: dict[str, Any], config: dict[str, Any], *, samp
             meter = current.get("tuya_load_telemetry", {}).get(load.get("id"), {})
             measured = meter.get("metrics", {}).get("power", {}) if meter.get("fresh") else {}
             baseline = max(0, round(float(measured.get("value", 0)))) if measured.get("unit") == "W" else 0
+            meter_device_id = load.get("tuya_device_id") or meter.get("device_id")
+            shared_meter_count = sum(1 for other in ordered_loads
+                                     if other.get("kind") == "miner"
+                                     and other.get("control_type") == "antminer_braiins"
+                                     and meter_device_id and other.get("tuya_device_id") == meter_device_id)
+            if shared_meter_count > 1:
+                action = {"load_id": load["id"], "name": load["name"], "state": "BLOCKED_SHARED_METER",
+                          "target_power_w": 0, "control_type": control, "measured_power_w": baseline if meter.get("fresh") else None,
+                          "shared_meter_miner_count": shared_meter_count,
+                          "reason": "O disjuntor mede o consumo agregado; o Gateway não consegue repartir a potência por mineradora."}
+                actions.append(action); actions_by_id[load["id"]] = action
+                continue
             target = min(load.get("maximum_power_w", 2900), baseline + available)
             target = target if target >= minimum else 0
             if target and dependency_id and actions_by_id.get(dependency_id, {}).get("state") != "ON":
@@ -3048,7 +3063,8 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
         if not isinstance(load_item, dict):
             continue
         meter_load = load_item
-        if load_item.get("control_type") == "antminer_braiins" and load_item.get("requires_load_id"):
+        if (load_item.get("control_type") == "antminer_braiins" and not load_item.get("tuya_device_id")
+                and load_item.get("requires_load_id")):
             meter_load = loads_by_id.get(load_item.get("requires_load_id"), load_item)
         device_id = meter_load.get("tuya_device_id")
         cached = cached_tuya.get(device_id, {}) if device_id else {}

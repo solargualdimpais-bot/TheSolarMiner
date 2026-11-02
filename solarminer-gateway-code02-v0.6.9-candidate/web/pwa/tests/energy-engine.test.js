@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const gatewayPwa = root;
+const gatewayPwa = resolve(root, "../solarminer-gateway-code02-v0.6.9-candidate/web/pwa");
 const read = (base, file) => readFileSync(resolve(base, file), "utf8");
 
 test("Owner PWA reads Gateway engine history and stores battery settings on Gateway", () => {
@@ -46,7 +46,9 @@ test("Owner PWA reads Gateway engine history and stores battery settings on Gate
   assert.match(app, /CARGAS FLEXÍVEIS/);
   assert.match(app, /underfloor_heating/);
   assert.match(app, /engine-load-tuya-device/);
-  assert.match(app, /Relé de alimentação mineradora/);
+  assert.match(app, /data-miner-breaker-save/);
+  assert.match(app, /Disjuntor Tuya da mineradora/);
+  assert.match(app, /Consumo estimado/);
   assert.match(auth, /controlGatewayTuyaSwitch/);
   assert.match(auth, /\/api\/v1\/integrations\/tuya\/switch/);
 });

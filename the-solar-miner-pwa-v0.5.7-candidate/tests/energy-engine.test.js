@@ -46,7 +46,9 @@ test("Owner PWA reads Gateway engine history and stores battery settings on Gate
   assert.match(app, /CARGAS FLEXÍVEIS/);
   assert.match(app, /underfloor_heating/);
   assert.match(app, /engine-load-tuya-device/);
-  assert.match(app, /Relé de alimentação mineradora/);
+  assert.match(app, /data-miner-breaker-save/);
+  assert.match(app, /Disjuntor Tuya da mineradora/);
+  assert.match(app, /Consumo estimado/);
   assert.match(auth, /controlGatewayTuyaSwitch/);
   assert.match(auth, /\/api\/v1\/integrations\/tuya\/switch/);
 });

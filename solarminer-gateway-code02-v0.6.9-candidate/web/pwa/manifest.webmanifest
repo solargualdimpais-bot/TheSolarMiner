@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.98: diagnóstico claro da sessão e inventário Huawei.",
+  "description": "The Solar Miner PWA v0.5.99: associação de disjuntores Tuya e potência medida das mineradoras.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",
