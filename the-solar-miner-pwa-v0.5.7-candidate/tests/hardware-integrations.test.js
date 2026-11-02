@@ -60,8 +60,8 @@ test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV 
   assert.match(auth, /\/api\/v1\/energy\/ev\/tesla\/read/);
   assert.match(auth, /\/api\/v1\/energy\/ev\/tesla\/presence/);
   assert.match(app, /readGatewayTeslaLocalPresence/);
-  assert.match(app, /username="admin"/);
-  assert.doesNotMatch(app, /huawei-router-username/);
+  assert.match(app, /huawei-router-username/);
+  assert.match(app, /username=\$\("#huawei-router-username"\)\.value\.trim\(\)/);
   assert.doesNotMatch(app, /hardware-tesla-(?:region|client-id|refresh-token|vehicles)/);
   assert.doesNotMatch(auth, /tuya.*localStorage/i);
 });
@@ -147,12 +147,22 @@ test("Gateway terminal waits for server authentication and explains WebSocket fa
   assert.match(app, /appendGatewayTerminalOutput\(`\\r\\n\[Diagnóstico\]/);
 });
 
-test("Huawei password-only CPE flow hides the username field and uses the protocol default", () => {
+test("Huawei router credentials allow choosing the account required by the local firmware", () => {
   const html = read("../index.html");
   const app = read("../app.js");
-  assert.doesNotMatch(html, /id="huawei-router-username"/);
-  assert.match(html, /Este modelo pede apenas a palavra-passe/);
-  assert.match(app, /username="admin"/);
+  assert.match(html, /id="huawei-router-username"/);
+  assert.match(app, /username=\$\("#huawei-router-username"\)\.value\.trim\(\)/);
+});
+
+test("Huawei LAN results cross-check known MACs and save Owner labels for new devices", () => {
+  const app = read("../app.js");
+  const auth = read("../gateway-auth.js");
+  const gateway = read("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/app.py");
+  assert.match(app, /item\.display_name/);
+  assert.match(app, /data-network-save/);
+  assert.match(auth, /integrations\/huawei\/client-label/);
+  assert.match(gateway, /network_inventory_devices/);
+  assert.match(gateway, /known_device_name/);
 });
 
 test("Deye Cloud import explains HTTP 504 as a Gateway or proxy timeout", () => {

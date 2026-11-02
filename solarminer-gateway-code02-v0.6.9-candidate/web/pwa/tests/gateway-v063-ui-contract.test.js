@@ -20,18 +20,18 @@ test("Tuya LAN report exposes the saved target and key presence without the key"
 test("Huawei local client lookup has a cancelable deadline and reports Tuya MAC matches", () => {
   assert.match(gatewayAuth, /readGatewayHuaweiClients\(\{ signal \} = \{\}\)/);
   assert.match(gatewayAuth, /huawei\/clients", \{ method: "POST", body: \{\}, signal \}/);
-  assert.match(app, /setTimeout\(\(\)=>\{timedOut=true;controller\.abort\(\);\},100_000\)/);
-  assert.match(app, /Os endpoints responderam, mas não devolveram registos de clientes/);
+  assert.match(app, /setTimeout\(\(\)=>\{timedOut=true;controller\.abort\(\);\},160_000\)/);
+  assert.match(app, /O Huawei não devolveu clientes e a varredura local/);
   assert.match(app, /actions:\[\{label:"Cancelar",value:"cancel"\}\]/);
   assert.match(app, /Foi encontrada 1 correspondência MAC\/IP/);
   assert.match(app, /Foram encontradas \$\{matchedCount\} correspondências MAC\/IP/);
 });
 
 test("Huawei client inventory tries LAN, WLAN and DHCP APIs with bounded longer timeouts", () => {
-  assert.match(huaweiRouter, /"api\/lan\/HostInfo",\s*"api\/wlan\/host-list",\s*"api\/dhcp\/dhcp-host-info"/);
-  assert.match(huaweiRouter, /timeout: float = 10\.0, total_timeout: float = 75\.0/);
+  assert.match(huaweiRouter, /"api\/lan\/HostInfo",\s*"api\/system\/HostInfo",\s*"api\/wlan\/host-list",\s*"api\/dhcp\/dhcp-host-info"/);
+  assert.match(huaweiRouter, /timeout: float = 15\.0, total_timeout: float = 120\.0/);
   assert.match(huaweiRouter, /if not MAC_RE\.fullmatch\(mac\) and not ip/);
-  assert.match(gatewayApp, /"sources": diagnostics\.get\("endpoints_succeeded"/);
+  assert.match(gatewayApp, /"sources": sources/);
 });
 
 test("Huawei modem tools live in their own Owner tab, outside Tuya settings", () => {

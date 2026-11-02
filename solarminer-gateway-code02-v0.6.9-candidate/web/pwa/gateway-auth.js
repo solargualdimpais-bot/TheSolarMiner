@@ -547,6 +547,14 @@ export async function discoverGatewayTuyaLanDevices() {
 export async function readGatewayHuaweiClients({ signal } = {}) {
   return gatewayApi("/api/v1/integrations/huawei/clients", { method: "POST", body: {}, signal });
 }
+export async function saveGatewayNetworkDeviceLabel({ mac, ip, name }) {
+  if (typeof mac !== "string" || typeof ip !== "string" || typeof name !== "string" || !name.trim()) {
+    throw new Error("Nome ou endereço do dispositivo inválido.");
+  }
+  return gatewayApi("/api/v1/integrations/huawei/client-label", {
+    method: "POST", body: { mac, ip, name: name.trim() }
+  });
+}
 export async function readGatewayTeslaEvConfig() {
   return gatewayApi("/api/v1/energy/ev/tesla");
 }

@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.94: consulta do modem Huawei numa área Owner própria.",
+  "description": "The Solar Miner PWA v0.5.95: descoberta local e nomes de dispositivos por MAC.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",

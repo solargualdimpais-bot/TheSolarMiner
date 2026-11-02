@@ -89,7 +89,7 @@ test("new PWA static cache version is changed and USB limitations are documented
 assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.94-product-dps-profile/);
   assert.match(serviceWorker, /\.\/favorite-list\.js/);
 assert.match(manifest, /v0\.5\.94/);
-  assert.equal(packageJson.version, "0.5.94");
+  assert.equal(packageJson.version, "0.5.95");
   assert.doesNotMatch(html, /gateway-update-refresh|Atualizar estado/);
   assert.doesNotMatch(app, /gateway-update-refresh/);
   const docs = read("OWNER_USB_AND_ACCESS.md");
@@ -100,11 +100,11 @@ assert.match(manifest, /v0\.5\.94/);
 });
 
 test("Huawei inventory checks all supported local host tables and exposes a bounded long timeout", () => {
-  assert.match(huaweiRouter, /"api\/lan\/HostInfo",\s*"api\/wlan\/host-list",\s*"api\/dhcp\/dhcp-host-info"/);
-  assert.match(huaweiRouter, /timeout: float = 10\.0, total_timeout: float = 75\.0/);
+  assert.match(huaweiRouter, /"api\/lan\/HostInfo",\s*"api\/system\/HostInfo",\s*"api\/wlan\/host-list",\s*"api\/dhcp\/dhcp-host-info"/);
+  assert.match(huaweiRouter, /timeout: float = 15\.0, total_timeout: float = 120\.0/);
   assert.match(huaweiRouter, /if not MAC_RE\.fullmatch\(mac\) and not ip/);
-  assert.match(app, /\},100_000\)/);
-  assert.match(app, /Os endpoints responderam, mas não devolveram registos de clientes/);
+  assert.match(app, /\},160_000\)/);
+  assert.match(app, /O Huawei não devolveu clientes e a varredura local/);
   assert.match(app, /O Huawei falhou/);
 });
 
@@ -153,7 +153,7 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   assert.doesNotMatch(embeddedHtml, /gateway-console-update-check/);
   assert.doesNotMatch(embeddedHtml, /gateway-console-command/);
   assert.match(embeddedWorker, /password-device-login/);
-assert.match(embeddedHtml, /OWNER PWA 0\.5\.94/);
+  assert.match(embeddedHtml, /OWNER PWA 0\.5\.95/);
   assert.match(embeddedHtml, /gateway-password-login-form/);
 assert.match(control, /^Version: 0\.6\.141$/m);
 assert.match(installer, /solarminer-gateway_0\.6\.141_amd64\.deb/);

@@ -25,6 +25,10 @@ MAX_RESPONSE_BYTES = 256_000
 class HuaweiRouterError(ValueError):
     """Sanitized error raised by the Huawei read-only adapter."""
 
+    def __init__(self, message: str, diagnostics: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.diagnostics = diagnostics or {}
+
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -35,7 +39,7 @@ class HuaweiHiLinkClient:
     # Huawei firmwares vary considerably. Bound each HTTP call, and also the
     # whole inventory request, so trying alternate read-only APIs cannot hang
     # a Gateway worker indefinitely.
-    def __init__(self, config: dict[str, Any], timeout: float = 10.0, total_timeout: float = 75.0):
+    def __init__(self, config: dict[str, Any], timeout: float = 15.0, total_timeout: float = 120.0):
         try:
             address = ipaddress.ip_address(str(config.get("host", "")))
         except ValueError as exc:
@@ -48,19 +52,48 @@ class HuaweiHiLinkClient:
         self.password = str(config.get("password", ""))
         if not self.username or len(self.username) > 128 or not self.password or len(self.password) > 512:
             raise HuaweiRouterError("huawei_router_credentials_required")
-        self.timeout = max(1.0, min(float(timeout), 12.0))
-        self.deadline = time.monotonic() + max(self.timeout, min(float(total_timeout), 90.0))
+        self.timeout = max(1.0, min(float(timeout), 20.0))
+        self.deadline = time.monotonic() + max(self.timeout, min(float(total_timeout), 150.0))
         self.last_diagnostics: dict[str, Any] = {}
         self.cookies = http.cookiejar.CookieJar()
         self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.cookies), _NoRedirect())
         self.token = ""
         self.session_id = ""
+        self.login_state = "unknown"
+
+    def _refresh_session_headers(self, headers: Any) -> None:
+        """Keep HiLink's rotating session cookie and verification token in sync.
+
+        Some Huawei WebUIs issue a new verification token (and occasionally a
+        new SessionID) after every request. Reusing the token from SesTokInfo
+        for all inventory calls can produce 100003/125003 despite reaching
+        the router successfully.
+        """
+        if headers is None:
+            return
+        get = getattr(headers, "get", lambda *_args, **_kwargs: "")
+        next_token = (get("__RequestVerificationTokenone", "")
+                      or get("__RequestVerificationTokentwo", "")
+                      or get("__RequestVerificationToken", ""))
+        if next_token:
+            self.token = str(next_token).split("#", 1)[0].strip()
+        cookie_header = get("Set-Cookie", "")
+        match = re.search(r"(?:^|[,; ]+)SessionID=([^;, ]+)", str(cookie_header), re.I)
+        if match:
+            self.session_id = match.group(1)
+        try:
+            for cookie in self.cookies:
+                if cookie.name.lower() == "sessionid" and cookie.value:
+                    self.session_id = cookie.value
+                    break
+        except TypeError:
+            pass
 
     def _request(self, path: str, *, body: bytes | None = None, token: bool = False) -> tuple[bytes, Any]:
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise HuaweiRouterError("huawei_router_total_timeout")
-        headers = {"Accept": "application/xml,text/xml", "User-Agent": "SolarMiner-Gateway/0.6.141"}
+        headers = {"Accept": "application/xml,text/xml", "User-Agent": "SolarMiner-Gateway/0.6.142"}
         headers["X-Requested-With"] = "XMLHttpRequest"
         if self.session_id:
             headers["Cookie"] = f"SessionID={self.session_id}"
@@ -74,6 +107,7 @@ class HuaweiHiLinkClient:
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
                 if len(raw) > MAX_RESPONSE_BYTES:
                     raise HuaweiRouterError("huawei_router_response_too_large")
+                self._refresh_session_headers(response.headers)
                 return raw, response.headers
         except HuaweiRouterError:
             raise
@@ -106,12 +140,15 @@ class HuaweiHiLinkClient:
         self.session_id = match.group(1) if match else ""
         if not self.token:
             raise HuaweiRouterError("huawei_router_session_token_missing")
+        self._refresh_session_headers(headers)
 
     def _login(self) -> None:
         self._load_token()
         raw, headers = self._request("api/user/state-login", token=True)
         state = self._xml(raw)
-        if self._text(state, "State") == "0":
+        state_value = self._text(state, "State", "unknown")
+        self.login_state = "authenticated_or_login_disabled" if state_value == "0" else "login_required"
+        if state_value == "0":
             return
         # password_type=4 is the HiLink challenge hash. Older modes transmit
         # a base64-encoded plaintext password; refuse those on HTTP.
@@ -148,23 +185,41 @@ class HuaweiHiLinkClient:
         # source. DHCP host-info exists on some older HiLink firmwares.
         endpoints = (
             "api/lan/HostInfo",
+            "api/system/HostInfo",
             "api/wlan/host-list",
             "api/dhcp/dhcp-host-info",
         )
         combined: dict[tuple[str, str], dict[str, str]] = {}
         succeeded: list[str] = []
         errors: dict[str, str] = {}
+        refreshed_after_no_right = False
         for path in endpoints:
             try:
-                raw, _ = self._request(path, token=True)
+                raw, response_headers = self._request(path, token=True)
                 root = self._xml(raw)
                 error_node = next((node for node in root.iter()
                                    if node.tag.rsplit("}", 1)[-1].lower() == "error"), None)
                 if error_node is not None:
                     code = self._text(error_node, "code", "unknown")
-                    raise HuaweiRouterError(f"huawei_router_api_error_{code}")
+                    if code == "100003" and not refreshed_after_no_right:
+                        # A fresh HiLink session/token can recover routers that
+                        # rotate authentication state between setup and reads.
+                        refreshed_after_no_right = True
+                        self._load_token()
+                        self._login()
+                        raw, response_headers = self._request(path, token=True)
+                        root = self._xml(raw)
+                        error_node = next((node for node in root.iter()
+                                           if node.tag.rsplit("}", 1)[-1].lower() == "error"), None)
+                        if error_node is None:
+                            code = ""
+                        else:
+                            code = self._text(error_node, "code", "unknown")
+                    if error_node is not None:
+                        raise HuaweiRouterError(f"huawei_router_api_error_{code}")
                 succeeded.append(path)
                 for item in self._parse_hosts(root):
+                    item["source"] = path
                     combined[(item["mac"], item["ip"])] = item
             except HuaweiRouterError as exc:
                 errors[path] = str(exc)[:80]
@@ -174,10 +229,15 @@ class HuaweiHiLinkClient:
         self.last_diagnostics = {
             "endpoints_succeeded": succeeded,
             "endpoint_errors": errors,
+            "login_state": self.login_state,
+            "auth_session_id_present": bool(self.session_id),
+            "verification_token_refreshed": bool(self.token),
+            "failure_class": ("authorization_or_session" if errors and all("100003" in value or "12500" in value for value in errors.values()) else "endpoint_or_firmware" if errors and not succeeded else None),
             "elapsed_seconds": round(time.monotonic() - started, 2),
         }
         if not succeeded:
-            raise HuaweiRouterError("huawei_router_hosts_unavailable:" + ",".join(errors.values())[:120])
+            raise HuaweiRouterError("huawei_router_hosts_unavailable:" + ",".join(errors.values())[:120],
+                                    diagnostics=dict(self.last_diagnostics))
         return list(combined.values())
 
     @staticmethod
@@ -242,6 +302,7 @@ def read_huawei_clients_with_diagnostics(config: dict[str, Any]) -> tuple[list[d
 
 def merge_gateway_neighbor_hosts(
     router_hosts: list[dict[str, str]], neighbors_by_mac: dict[str, str],
+    *, source: str = "gateway_neighbour_cache",
 ) -> tuple[list[dict[str, str]], int]:
     """Add private LAN IP/MAC pairs already learned by this Gateway's ARP table."""
     merged = {(str(item.get("mac") or "").upper(), str(item.get("ip") or "")): dict(item)
@@ -258,6 +319,7 @@ def merge_gateway_neighbor_hosts(
             continue
         if address.version != 4 or not address.is_private or address.is_loopback or address.is_link_local:
             continue
-        merged.setdefault((mac, str(address)), {"mac": mac, "ip": str(address), "name": ""})
+        merged.setdefault((mac, str(address)), {
+            "mac": mac, "ip": str(address), "name": "", "source": source})
     return list(merged.values()), len(merged) - before
 

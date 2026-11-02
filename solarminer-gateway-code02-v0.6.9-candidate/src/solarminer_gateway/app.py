@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import math
 import asyncio
 import json
@@ -44,13 +45,14 @@ from . import energy_registry
 from . import energy_engine
 from . import site_profile
 from . import integrations as hardware_integrations
+from . import network_discovery
 from . import update_helper_client
 from . import updates as update_manager
 from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.141"
+PACKAGE_VERSION = "0.6.142"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -171,6 +173,10 @@ CREATE TABLE IF NOT EXISTS update_operations(
  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, details_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_update_operations_updated ON update_operations(updated_at DESC);
+CREATE TABLE IF NOT EXISTS network_inventory_devices(
+ mac TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', last_ip TEXT NOT NULL DEFAULT '',
+ source TEXT NOT NULL DEFAULT 'gateway_active_lan_scan', updated_at TEXT NOT NULL
+);
 """
 
 # Additive presence migration. User/device identity is derived exclusively from
@@ -997,6 +1003,13 @@ class DeviceDiscoveryRequest(BaseModel):
     cidr: StrictStr = Field(min_length=9, max_length=43)
     ports: list[int] = Field(min_length=1, max_length=16)
     timeout_seconds: float = Field(default=0.25, ge=0.05, le=1.0)
+
+
+class NetworkDeviceLabelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    mac: StrictStr = Field(min_length=17, max_length=17)
+    ip: StrictStr = Field(min_length=7, max_length=45)
+    name: StrictStr = Field(min_length=1, max_length=120)
 
 
 def load_public_key(pem: str) -> Ed25519PublicKey:
@@ -1993,20 +2006,37 @@ def huawei_router_clients(session: dict[str, Any] = Depends(require_permission("
             raise HTTPException(409, "huawei_router_not_configured")
         router_error = None
         arp_neighbors = local_arp_entries()
+        lan_scan = network_discovery.discover_private_lan_hosts()
+        active_scan_hosts = lan_scan.get("hosts", {}) if isinstance(lan_scan, dict) else {}
+        arp_neighbors.update(active_scan_hosts)
         try:
             clients, diagnostics = hardware_integrations.huawei_router.read_huawei_clients_with_diagnostics(router)
         except hardware_integrations.huawei_router.HuaweiRouterError as exc:
             router_error = str(exc)[:160]
             clients = []
-            diagnostics = {"endpoints_succeeded": [], "endpoint_errors": {"router": router_error}}
+            diagnostics = getattr(exc, "diagnostics", {}) or {
+                "endpoints_succeeded": [], "endpoint_errors": {"router": router_error}}
             if not arp_neighbors:
                 audit(conn, session["user_id"], "hardware.huawei.clients", "router", "failed", {"reason": router_error})
                 conn.commit()
                 raise HTTPException(502, router_error) from exc
         huawei_client_count = len(clients)
+        # Keep modem-confirmed hosts separate from the kernel neighbour cache.
+        # ARP neighbors can be mesh nodes, access points, or other routers; when
+        # the Huawei API fails they are candidates for display, not proof that
+        # a configured Tuya device is present at that address.
+        huawei_clients = list(clients)
+        known_router_macs = {str(item.get("mac") or "").upper() for item in huawei_clients}
+        scan_only = {mac: ip for mac, ip in active_scan_hosts.items() if mac.upper() not in known_router_macs}
+        clients, active_scan_count = hardware_integrations.huawei_router.merge_gateway_neighbor_hosts(
+            clients, scan_only, source="gateway_active_lan_scan")
         clients, neighbor_cache_count = hardware_integrations.huawei_router.merge_gateway_neighbor_hosts(
-            clients, arp_neighbors)
+            clients, local_arp_entries(), source="gateway_neighbour_cache")
         sources = list(diagnostics.get("endpoints_succeeded", []))
+        if diagnostics.get("failure_class"):
+            sources.append("diagnostic:" + str(diagnostics["failure_class"]))
+        if active_scan_count:
+            sources.append("gateway_active_lan_scan")
         if neighbor_cache_count:
             sources.append("gateway_neighbour_cache")
         tuya = config.get("tuya", {}) if isinstance(config.get("tuya"), dict) else {}
@@ -2017,7 +2047,7 @@ def huawei_router_clients(session: dict[str, Any] = Depends(require_permission("
             return " ".join(str(value or "").strip().casefold().split())
         clients_by_name: dict[str, list[dict[str, str]]] = {}
         devices_by_name: dict[str, list[dict[str, Any]]] = {}
-        for client in clients:
+        for client in huawei_clients:
             key = name_key(client.get("name"))
             if key:
                 clients_by_name.setdefault(key, []).append(client)
@@ -2044,10 +2074,32 @@ def huawei_router_clients(session: dict[str, Any] = Depends(require_permission("
             device["local_mac"] = found["mac"]
             device["local_ip"] = found["ip"]
             matched.append({"device_id": device.get("device_id"), "name": str(device.get("name") or "Tuya device")[:120],
-                            "mac": found["mac"], "ip": found["ip"], "matched_by": matched_by})
+                            "mac": found["mac"], "ip": found["ip"], "matched_by": matched_by,
+                            "source": found.get("source", "huawei_router")})
         if matched:
             config["tuya"] = tuya
             hardware_integrations.save_config(config)
+        tuya_names_by_mac = {str(item.get("local_mac") or "").strip().upper(): str(item.get("name") or "").strip()
+                             for item in devices if item.get("local_mac") and item.get("name")}
+        labels_by_mac = {row["mac"]: row["name"] for row in conn.execute(
+            "SELECT mac,name FROM network_inventory_devices").fetchall()}
+        for client in clients:
+            mac = str(client.get("mac") or "").upper()
+            known_name = tuya_names_by_mac.get(mac, "")
+            stored_name = labels_by_mac.get(mac, "")
+            client["known_device_name"] = known_name
+            client["gateway_name"] = stored_name
+            client["display_name"] = known_name or stored_name or client.get("name") or "Dispositivo desconhecido"
+            client["is_known_device"] = bool(known_name)
+            if mac:
+                conn.execute(
+                    "INSERT INTO network_inventory_devices(mac,name,last_ip,source,updated_at) VALUES(?,?,?,?,?) "
+                    "ON CONFLICT(mac) DO UPDATE SET name=CASE WHEN excluded.name<>'' THEN excluded.name "
+                    "ELSE network_inventory_devices.name END,last_ip=excluded.last_ip,"
+                    "source=excluded.source,updated_at=excluded.updated_at",
+                    (mac, known_name or stored_name, str(client.get("ip") or ""),
+                     str(client.get("source") or "huawei_router"), utcnow()),
+                )
         audit(conn, session["user_id"], "hardware.huawei.clients", "router", "success", {
             "client_count": len(clients), "matched_count": len(matched), "read_only": True,
             "router_error": bool(router_error), "neighbor_cache_count": neighbor_cache_count,
@@ -2055,10 +2107,41 @@ def huawei_router_clients(session: dict[str, Any] = Depends(require_permission("
         conn.commit()
         return {"client_count": len(clients), "matched_count": len(matched), "matched": matched,
                 "clients": clients, "huawei_client_count": huawei_client_count,
-                "neighbor_cache_count": neighbor_cache_count, "sources": sources,
+                "neighbor_cache_count": neighbor_cache_count, "active_scan_count": active_scan_count,
+                "scan_networks": lan_scan.get("networks", []),
+                "scan_scanned_count": lan_scan.get("scanned_count", 0),
+                "scan_truncated": bool(lan_scan.get("truncated", False)), "sources": sources,
                 "endpoint_errors": diagnostics.get("endpoint_errors", {}),
+                "router_failure_class": diagnostics.get("failure_class"),
                 "router_error": router_error,
                 "read_only": True, "cloud_used": False, "commands_sent": False}
+
+
+@app.post("/api/v1/integrations/huawei/client-label")
+def save_huawei_client_label(payload: NetworkDeviceLabelRequest,
+                             session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Save an Owner-provided display name for a discovered LAN MAC address."""
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        mac = normalize_mac(payload.mac)
+        try:
+            address = ipaddress.ip_address(payload.ip)
+        except ValueError as exc:
+            raise HTTPException(422, "invalid_private_ip") from exc
+        if address.version != 4 or not address.is_private or address.is_loopback or address.is_link_local:
+            raise HTTPException(422, "invalid_private_ip")
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(422, "network_device_name_required")
+        conn.execute("INSERT INTO network_inventory_devices(mac,name,last_ip,source,updated_at) VALUES(?,?,?,?,?) "
+                     "ON CONFLICT(mac) DO UPDATE SET name=excluded.name,last_ip=excluded.last_ip,"
+                     "source=excluded.source,updated_at=excluded.updated_at",
+                     (mac, name[:120], str(address), "owner_label", utcnow()))
+        audit(conn, session["user_id"], "hardware.network_device.label", mac, "success", {"ip": str(address)})
+        conn.commit()
+        return {"mac": mac, "ip": str(address), "name": name[:120], "saved": True}
 
 
 @app.post("/api/v1/integrations/tuya/lan-discovery")
@@ -3543,7 +3626,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.141"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.142"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

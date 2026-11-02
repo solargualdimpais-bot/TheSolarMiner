@@ -419,14 +419,27 @@ def test_huawei_session_token_info_parses_cookie_and_token_from_xml():
     assert client.token == "tok-123"
 
 
+def test_huawei_rotating_session_headers_update_token_and_cookie():
+    client = huawei_router.HuaweiHiLinkClient({"host": "192.168.8.1", "password": "router-password"})
+    client.token = "old-token"
+    client.session_id = "old-session"
+    client._refresh_session_headers({
+        "__RequestVerificationTokenone": "new-token#metadata",
+        "Set-Cookie": "SessionID=new-session; Path=/",
+    })
+    assert client.token == "new-token"
+    assert client.session_id == "new-session"
+
+
 def test_huawei_inventory_checks_lan_wifi_and_dhcp_endpoints_and_merges_hosts():
     client = huawei_router.HuaweiHiLinkClient({"host": "192.168.8.1", "password": "router-password"})
     client._login = lambda: None
     calls = []
     responses = {
         "api/lan/HostInfo": b"<response><Hosts><Host><HostName>Wired</HostName><MacAddress>AA:BB:CC:DD:EE:01</MacAddress><IpAddress>192.168.8.20</IpAddress></Host></Hosts></response>",
+        "api/system/HostInfo": b"<response><error><code>100003</code></error></response>",
         "api/wlan/host-list": b"<response><Hosts><Host><HostName>Wifi</HostName><MACAddress>AA:BB:CC:DD:EE:02</MACAddress><IPAddress>192.168.8.21</IPAddress></Host></Hosts></response>",
-        "api/dhcp/dhcp-host-info": b"<response><error><code>100003</code></error></response>",
+        "api/dhcp/dhcp-host-info": b"<response><error><code>100002</code></error></response>",
     }
 
     def request(path, *, body=None, token=False):
@@ -435,13 +448,32 @@ def test_huawei_inventory_checks_lan_wifi_and_dhcp_endpoints_and_merges_hosts():
 
     client._request = request
     hosts = client.clients()
-    assert calls == ["api/lan/HostInfo", "api/wlan/host-list", "api/dhcp/dhcp-host-info"]
+    assert calls == ["api/lan/HostInfo", "api/system/HostInfo", "api/wlan/host-list", "api/dhcp/dhcp-host-info"]
     assert {(host["mac"], host["ip"], host["name"]) for host in hosts} == {
         ("AA:BB:CC:DD:EE:01", "192.168.8.20", "Wired"),
         ("AA:BB:CC:DD:EE:02", "192.168.8.21", "Wifi"),
     }
     assert client.last_diagnostics["endpoints_succeeded"] == ["api/lan/HostInfo", "api/wlan/host-list"]
-    assert client.last_diagnostics["endpoint_errors"]["api/dhcp/dhcp-host-info"] == "huawei_router_api_error_100003"
+    assert client.last_diagnostics["endpoint_errors"]["api/dhcp/dhcp-host-info"] == "huawei_router_api_error_100002"
+
+
+def test_huawei_inventory_refreshes_session_once_after_no_right_response():
+    client = huawei_router.HuaweiHiLinkClient({"host": "192.168.8.1", "password": "router-password"})
+    client._login = lambda: None
+    client._load_token = lambda: None
+    calls = []
+
+    def request(path, *, body=None, token=False):
+        calls.append(path)
+        if path == "api/lan/HostInfo" and calls.count(path) == 1:
+            return b"<response><error><code>100003</code></error></response>", {}
+        return b"<response><Hosts/></response>", {}
+
+    client._request = request
+    assert client.clients() == []
+    assert calls.count("api/lan/HostInfo") == 2
+    assert client.last_diagnostics["endpoints_succeeded"] == [
+        "api/lan/HostInfo", "api/system/HostInfo", "api/wlan/host-list", "api/dhcp/dhcp-host-info"]
 
 
 def test_huawei_inventory_keeps_ip_when_firmware_omits_mac():
@@ -463,6 +495,13 @@ def test_huawei_inventory_merges_gateway_neighbor_cache_without_duplicate_or_pub
     assert added == 1
     assert len(hosts) == 2
     assert {item["ip"] for item in hosts} == {"192.168.8.20", "192.168.8.21"}
+
+
+def test_huawei_inventory_marks_gateway_discoveries_with_their_source():
+    hosts, added = huawei_router.merge_gateway_neighbor_hosts(
+        [], {"AA:BB:CC:DD:EE:22": "192.168.8.22"}, source="gateway_active_lan_scan")
+    assert added == 1
+    assert hosts[0]["source"] == "gateway_active_lan_scan"
 
 
 def test_deye_cloud_config_keeps_credentials_private_and_supports_centers():
