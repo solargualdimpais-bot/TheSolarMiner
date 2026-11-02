@@ -474,13 +474,13 @@ def test_huawei_device_information_retries_after_login_required():
 
 
 def test_huawei_discovered_profile_survives_credential_edits_and_is_public_without_secrets():
-    old = {"huawei_router": {"host": "192.168.8.1", "username": "admin", "password": "secret",
+    old = {"huawei_router": {"host": "192.168.8.1", "username": "admin", "password": "huawei-password-test-value",
                               "discovered_device": {"model": "B636-336", "software_version": "3.0.0.1"}}}
     updated = integrations.validate_config({"huawei_router": {"host": "192.168.8.1", "username": "root"}}, old)
     public = integrations.public_config(updated)
     assert updated["huawei_router"]["discovered_device"]["model"] == "B636-336"
     assert public["huawei_router"]["discovered_device"]["software_version"] == "3.0.0.1"
-    assert "secret" not in json.dumps(public)
+    assert "huawei-password-test-value" not in json.dumps(public)
 
 
 def test_huawei_inventory_checks_lan_wifi_and_dhcp_endpoints_and_merges_hosts():
