@@ -6,6 +6,7 @@ const app = readFileSync(new URL("../app.js", import.meta.url), "utf8");
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const gatewayAuth = readFileSync(new URL("../gateway-auth.js", import.meta.url), "utf8");
 const gatewayApp = readFileSync(new URL("../../../src/solarminer_gateway/app.py", import.meta.url), "utf8");
+const huaweiRouter = readFileSync(new URL("../../../src/solarminer_gateway/huawei_router.py", import.meta.url), "utf8");
 const energyEngine = readFileSync(new URL("../../../src/solarminer_gateway/energy_engine.py", import.meta.url), "utf8");
 const workflow = readFileSync(new URL("../../../../.github/workflows/gateway-release.yml", import.meta.url), "utf8");
 
@@ -19,10 +20,18 @@ test("Tuya LAN report exposes the saved target and key presence without the key"
 test("Huawei local client lookup has a cancelable deadline and reports Tuya MAC matches", () => {
   assert.match(gatewayAuth, /readGatewayHuaweiClients\(\{ signal \} = \{\}\)/);
   assert.match(gatewayAuth, /huawei\/clients", \{ method: "POST", body: \{\}, signal \}/);
-  assert.match(app, /setTimeout\(\(\)=>\{timedOut=true;controller\.abort\(\);\},25_000\)/);
+  assert.match(app, /setTimeout\(\(\)=>\{timedOut=true;controller\.abort\(\);\},100_000\)/);
+  assert.match(app, /Os endpoints responderam, mas não devolveram registos de clientes/);
   assert.match(app, /actions:\[\{label:"Cancelar",value:"cancel"\}\]/);
   assert.match(app, /Foi encontrada 1 correspondência MAC\/IP/);
   assert.match(app, /Foram encontradas \$\{matchedCount\} correspondências MAC\/IP/);
+});
+
+test("Huawei client inventory tries LAN, WLAN and DHCP APIs with bounded longer timeouts", () => {
+  assert.match(huaweiRouter, /"api\/lan\/HostInfo",\s*"api\/wlan\/host-list",\s*"api\/dhcp\/dhcp-host-info"/);
+  assert.match(huaweiRouter, /timeout: float = 10\.0, total_timeout: float = 75\.0/);
+  assert.match(huaweiRouter, /if not MAC_RE\.fullmatch\(mac\) and not ip/);
+  assert.match(gatewayApp, /"sources": diagnostics\.get\("endpoints_succeeded"/);
 });
 
 test("Huawei modem tools live in their own Owner tab, outside Tuya settings", () => {

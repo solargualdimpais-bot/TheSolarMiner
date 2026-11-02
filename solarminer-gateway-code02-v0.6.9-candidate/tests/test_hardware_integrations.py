@@ -419,6 +419,52 @@ def test_huawei_session_token_info_parses_cookie_and_token_from_xml():
     assert client.token == "tok-123"
 
 
+def test_huawei_inventory_checks_lan_wifi_and_dhcp_endpoints_and_merges_hosts():
+    client = huawei_router.HuaweiHiLinkClient({"host": "192.168.8.1", "password": "router-password"})
+    client._login = lambda: None
+    calls = []
+    responses = {
+        "api/lan/HostInfo": b"<response><Hosts><Host><HostName>Wired</HostName><MacAddress>AA:BB:CC:DD:EE:01</MacAddress><IpAddress>192.168.8.20</IpAddress></Host></Hosts></response>",
+        "api/wlan/host-list": b"<response><Hosts><Host><HostName>Wifi</HostName><MACAddress>AA:BB:CC:DD:EE:02</MACAddress><IPAddress>192.168.8.21</IPAddress></Host></Hosts></response>",
+        "api/dhcp/dhcp-host-info": b"<response><error><code>100003</code></error></response>",
+    }
+
+    def request(path, *, body=None, token=False):
+        calls.append(path)
+        return responses[path], {}
+
+    client._request = request
+    hosts = client.clients()
+    assert calls == ["api/lan/HostInfo", "api/wlan/host-list", "api/dhcp/dhcp-host-info"]
+    assert {(host["mac"], host["ip"], host["name"]) for host in hosts} == {
+        ("AA:BB:CC:DD:EE:01", "192.168.8.20", "Wired"),
+        ("AA:BB:CC:DD:EE:02", "192.168.8.21", "Wifi"),
+    }
+    assert client.last_diagnostics["endpoints_succeeded"] == ["api/lan/HostInfo", "api/wlan/host-list"]
+    assert client.last_diagnostics["endpoint_errors"]["api/dhcp/dhcp-host-info"] == "huawei_router_api_error_100003"
+
+
+def test_huawei_inventory_keeps_ip_when_firmware_omits_mac():
+    parsed = huawei_router.HuaweiHiLinkClient._parse_hosts(
+        huawei_router.ET.fromstring(b"<response><Host><HostName>Unknown device</HostName><IpAddress>192.168.8.30</IpAddress></Host></response>")
+    )
+    assert parsed == [{"mac": "", "ip": "192.168.8.30", "name": "Unknown device"}]
+
+
+def test_huawei_inventory_merges_gateway_neighbor_cache_without_duplicate_or_public_hosts():
+    hosts, added = huawei_router.merge_gateway_neighbor_hosts(
+        [{"mac": "AA:BB:CC:DD:EE:01", "ip": "192.168.8.20", "name": "router record"}],
+        {
+            "AA:BB:CC:DD:EE:01": "192.168.8.20",
+            "AA:BB:CC:DD:EE:02": "192.168.8.21",
+            "AA:BB:CC:DD:EE:03": "8.8.8.8",
+        },
+    )
+    assert added == 1
+    assert len(hosts) == 2
+    assert {item["ip"] for item in hosts} == {"192.168.8.20", "192.168.8.21"}
+
+
 def test_deye_cloud_config_keeps_credentials_private_and_supports_centers():
     config = integrations.validate_config({"deye_cloud": {
         "data_center": "india", "app_id": "app-123", "app_secret": "app-secret-123",

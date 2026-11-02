@@ -50,7 +50,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.140"
+PACKAGE_VERSION = "0.6.141"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -1991,15 +1991,27 @@ def huawei_router_clients(session: dict[str, Any] = Depends(require_permission("
         router = config.get("huawei_router", {})
         if not isinstance(router, dict) or not router.get("password"):
             raise HTTPException(409, "huawei_router_not_configured")
+        router_error = None
+        arp_neighbors = local_arp_entries()
         try:
-            clients = hardware_integrations.huawei_router.read_huawei_clients(router)
+            clients, diagnostics = hardware_integrations.huawei_router.read_huawei_clients_with_diagnostics(router)
         except hardware_integrations.huawei_router.HuaweiRouterError as exc:
-            audit(conn, session["user_id"], "hardware.huawei.clients", "router", "failed", {"reason": str(exc)[:80]})
-            conn.commit()
-            raise HTTPException(502, str(exc)) from exc
+            router_error = str(exc)[:160]
+            clients = []
+            diagnostics = {"endpoints_succeeded": [], "endpoint_errors": {"router": router_error}}
+            if not arp_neighbors:
+                audit(conn, session["user_id"], "hardware.huawei.clients", "router", "failed", {"reason": router_error})
+                conn.commit()
+                raise HTTPException(502, router_error) from exc
+        huawei_client_count = len(clients)
+        clients, neighbor_cache_count = hardware_integrations.huawei_router.merge_gateway_neighbor_hosts(
+            clients, arp_neighbors)
+        sources = list(diagnostics.get("endpoints_succeeded", []))
+        if neighbor_cache_count:
+            sources.append("gateway_neighbour_cache")
         tuya = config.get("tuya", {}) if isinstance(config.get("tuya"), dict) else {}
         devices = [item for item in tuya.get("devices", []) if isinstance(item, dict)]
-        by_mac = {item["mac"]: item for item in clients}
+        by_mac = {item["mac"]: item for item in clients if item.get("mac")}
         by_ip = {item["ip"]: item for item in clients}
         def name_key(value: Any) -> str:
             return " ".join(str(value or "").strip().casefold().split())
@@ -2038,10 +2050,15 @@ def huawei_router_clients(session: dict[str, Any] = Depends(require_permission("
             hardware_integrations.save_config(config)
         audit(conn, session["user_id"], "hardware.huawei.clients", "router", "success", {
             "client_count": len(clients), "matched_count": len(matched), "read_only": True,
+            "router_error": bool(router_error), "neighbor_cache_count": neighbor_cache_count,
         })
         conn.commit()
         return {"client_count": len(clients), "matched_count": len(matched), "matched": matched,
-                "clients": clients, "read_only": True, "cloud_used": False, "commands_sent": False}
+                "clients": clients, "huawei_client_count": huawei_client_count,
+                "neighbor_cache_count": neighbor_cache_count, "sources": sources,
+                "endpoint_errors": diagnostics.get("endpoint_errors", {}),
+                "router_error": router_error,
+                "read_only": True, "cloud_used": False, "commands_sent": False}
 
 
 @app.post("/api/v1/integrations/tuya/lan-discovery")
@@ -3526,7 +3543,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.140"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.141"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

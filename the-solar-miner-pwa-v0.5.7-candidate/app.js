@@ -2705,8 +2705,8 @@ $("#huawei-router-read").addEventListener("click", async event => {
   if(!ownerCanManageHardware("#tuya-status"))return;
   button.disabled=true;
   const controller=new AbortController();let cancelled=false,timedOut=false,requestFinished=false;
-  const timeout=window.setTimeout(()=>{timedOut=true;controller.abort();},25_000);
-  const finished=showOperationDialog({title:"Consulta local do Huawei",message:"A ler a lista de clientes do router. Esta operação é apenas de leitura; não altera o Huawei nem envia comandos aos Tuya.",progress:true,actions:[{label:"Cancelar",value:"cancel"}]});
+  const timeout=window.setTimeout(()=>{timedOut=true;controller.abort();},100_000);
+  const finished=showOperationDialog({title:"Consulta local do Huawei",message:"A consultar as listas LAN, Wi-Fi e DHCP do router. Pode demorar até 75 segundos conforme o firmware. Esta operação é apenas de leitura.",progress:true,actions:[{label:"Cancelar",value:"cancel"}]});
   finished.then(result=>{if(!requestFinished&&(result==="cancel"||result==="dismiss")){cancelled=true;controller.abort();}});
   try{
     const host=$("#huawei-router-host").value.trim(),username="admin",password=$("#huawei-router-password").value;
@@ -2717,9 +2717,15 @@ $("#huawei-router-read").addEventListener("click", async event => {
     await refreshHardwareIntegrationConfig({signal:controller.signal});requestFinished=true;window.clearTimeout(timeout);
     const matchedCount=Number(report.matched_count)||0;
     const matchMessage=matchedCount===1?"Foi encontrada 1 correspondência MAC/IP com um dispositivo Tuya.":`Foram encontradas ${matchedCount} correspondências MAC/IP com dispositivos Tuya.`;
-    updateOperationDialog({title:matchedCount?"Correspondência encontrada":"Consulta Huawei concluída",message:`O Huawei devolveu ${report.client_count} cliente(s). ${matchMessage}`,actions:[{label:"Ver lista",value:"report",primary:true}]});
+    const sourceLabels={"api/lan/HostInfo":"LAN (Ethernet + Wi-Fi)","api/wlan/host-list":"Wi-Fi","api/dhcp/dhcp-host-info":"DHCP","gateway_neighbour_cache":"vizinhos locais conhecidos pelo Gateway"};
+    const sources=(report.sources||[]).map(source=>sourceLabels[source]||source);
+    const endpointErrors=Object.entries(report.endpoint_errors||{}).map(([source,reason])=>`${source}: ${reason}`).join("; ");
+    const routerFailure=report.router_error?`O Huawei falhou (${report.router_error}); mostro também os vizinhos que o Gateway já conhece.`:"";
+    const emptyMessage=Number(report.client_count)===0?"Os endpoints responderam, mas não devolveram registos de clientes. Confirma que o Gateway está na mesma LAN do Huawei e que há dispositivos ligados; a lista de clientes pode variar conforme o firmware.":"";
+    const inventorySummary=`Huawei: ${Number(report.huawei_client_count)||0}; cache local do Gateway acrescentou ${Number(report.neighbor_cache_count)||0}; total apresentado: ${Number(report.client_count)||0}.`;
+    updateOperationDialog({title:matchedCount?"Correspondência encontrada":"Consulta Huawei concluída",message:`Foram consultadas as fontes: ${sources.join(", ")||"nenhuma"}. ${inventorySummary} ${routerFailure} ${emptyMessage}${endpointErrors?` Algumas fontes não são suportadas: ${endpointErrors}.`:""} ${matchMessage}`,actions:[{label:"Ver lista",value:"report",primary:true}]});
     await finished;
-    const rows=(report.clients||[]).map(item=>`<tr><td>${esc(item.name||"Sem nome")}</td><td>${esc(item.mac)}</td><td>${esc(item.ip)}</td></tr>`).join("");
+    const rows=(report.clients||[]).map(item=>`<tr><td>${esc(item.name||"Sem nome")}</td><td>${esc(item.mac||"Não fornecido")}</td><td>${esc(item.ip)}</td></tr>`).join("");
     const dialog=document.createElement("dialog");dialog.className="settings-dialog tuya-diagnostic-dialog";
     dialog.innerHTML=`<form method="dialog" class="dialog-header"><div><p class="eyebrow">HUAWEI · CONSULTA LOCAL</p><h2>MACs e IPs encontrados</h2></div><button class="icon-button" value="close" aria-label="Fechar">×</button></form><div class="dialog-body"><p class="field-note">O router devolveu ${esc(report.client_count)} cliente(s). ${esc(matchMessage)} Os restantes podem ser associados manualmente ao editar cada dispositivo.</p><div class="diagnostic-table-wrap"><table class="diagnostic-table"><thead><tr><th>Nome no router</th><th>MAC</th><th>IP privado</th></tr></thead><tbody>${rows||'<tr><td colspan="3">O Huawei não devolveu clientes ligados.</td></tr>'}</tbody></table></div><div class="dialog-actions"><button class="button primary" type="button" data-huawei-close>OK</button></div></div>`;
     dialog.addEventListener("close",()=>dialog.remove());document.body.append(dialog);dialog.querySelector("[data-huawei-close]").addEventListener("click",()=>dialog.close("ok"));dialog.showModal();
@@ -2728,7 +2734,7 @@ $("#huawei-router-read").addEventListener("click", async event => {
     requestFinished=true;
     if(cancelled){status.textContent="Consulta Huawei cancelada.";}
     else{
-      const message=timedOut?"O Gateway não respondeu à consulta Huawei dentro de 25 segundos. Confirma a ligação à rede local e tenta novamente.":error.message||"O Gateway não conseguiu ler os clientes do router.";
+      const message=timedOut?"A consulta excedeu 100 segundos. A resposta do Gateway/modem está demasiado lenta ou não chegou; confirma que ambos estão na mesma rede local.":error.message||"O Gateway não conseguiu ler os clientes do router.";
       updateOperationDialog({title:"Consulta Huawei falhou",message,actions:[{label:"OK",value:"ok",primary:true}]});
       await finished;status.textContent=`Consulta Huawei falhou: ${message}`;
     }
