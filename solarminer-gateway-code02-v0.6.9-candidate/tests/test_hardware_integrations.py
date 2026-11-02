@@ -434,10 +434,11 @@ def test_huawei_rotating_session_headers_update_token_and_cookie():
 def test_huawei_inventory_checks_lan_wifi_and_dhcp_endpoints_and_merges_hosts():
     client = huawei_router.HuaweiHiLinkClient({"host": "192.168.8.1", "password": "router-password"})
     client._login = lambda: None
+    client._load_token = lambda: None
     calls = []
     responses = {
         "api/lan/HostInfo": b"<response><Hosts><Host><HostName>Wired</HostName><MacAddress>AA:BB:CC:DD:EE:01</MacAddress><IpAddress>192.168.8.20</IpAddress></Host></Hosts></response>",
-        "api/system/HostInfo": b"<response><error><code>100003</code></error></response>",
+        "api/system/HostInfo": b"<response><error><code>100002</code></error></response>",
         "api/wlan/host-list": b"<response><Hosts><Host><HostName>Wifi</HostName><MACAddress>AA:BB:CC:DD:EE:02</MACAddress><IPAddress>192.168.8.21</IPAddress></Host></Hosts></response>",
         "api/dhcp/dhcp-host-info": b"<response><error><code>100002</code></error></response>",
     }
