@@ -89,7 +89,7 @@ test("new PWA static cache version is changed and USB limitations are documented
 assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.94-product-dps-profile/);
   assert.match(serviceWorker, /\.\/favorite-list\.js/);
 assert.match(manifest, /v0\.5\.94/);
-  assert.equal(packageJson.version, "0.5.95");
+  assert.equal(packageJson.version, "0.5.96");
   assert.doesNotMatch(html, /gateway-update-refresh|Atualizar estado/);
   assert.doesNotMatch(app, /gateway-update-refresh/);
   const docs = read("OWNER_USB_AND_ACCESS.md");

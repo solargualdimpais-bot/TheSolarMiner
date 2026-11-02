@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.95: descoberta local e nomes de dispositivos por MAC.",
+  "description": "The Solar Miner PWA v0.5.96: descoberta local e nomes de dispositivos por MAC.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",

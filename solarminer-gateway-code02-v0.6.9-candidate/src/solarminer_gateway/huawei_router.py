@@ -93,7 +93,7 @@ class HuaweiHiLinkClient:
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise HuaweiRouterError("huawei_router_total_timeout")
-        headers = {"Accept": "application/xml,text/xml", "User-Agent": "SolarMiner-Gateway/0.6.142"}
+        headers = {"Accept": "application/xml,text/xml", "User-Agent": "SolarMiner-Gateway/0.6.143"}
         headers["X-Requested-With"] = "XMLHttpRequest"
         if self.session_id:
             headers["Cookie"] = f"SessionID={self.session_id}"

@@ -147,6 +147,11 @@ test("Gateway terminal waits for server authentication and explains WebSocket fa
   assert.match(app, /appendGatewayTerminalOutput\(`\\r\\n\[Diagnóstico\]/);
 });
 
+test("Gateway terminal enables its input after authenticated readiness", () => {
+  const app = read("../app.js");
+  assert.match(app, /const socket = await openGatewayTerminalSocket\(\);\s*gatewayTerminalSocket = socket;[\s\S]{0,360}setGatewayTerminalConnected\(true\);\s*status\.textContent = "Terminal ligado ao Gateway\."/);
+});
+
 test("Huawei router credentials allow choosing the account required by the local firmware", () => {
   const html = read("../index.html");
   const app = read("../app.js");
