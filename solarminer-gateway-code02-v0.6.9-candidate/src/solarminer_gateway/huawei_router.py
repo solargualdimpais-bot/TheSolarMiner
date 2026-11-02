@@ -20,6 +20,7 @@ from typing import Any
 MAC_RE = re.compile(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 SESSION_RE = re.compile(r"^SessionID=([A-Za-z0-9+/=_-]{1,512})$")
 MAX_RESPONSE_BYTES = 256_000
+MIN_API_REQUEST_GAP_SECONDS = 2.5
 
 # Read-only inventory variants verified/maintained per Huawei model. Keep an
 # explicit generic fallback; do not infer firmware behavior from version
@@ -58,7 +59,7 @@ class HuaweiHiLinkClient:
     # Huawei firmwares vary considerably. Bound each HTTP call, and also the
     # whole inventory request, so trying alternate read-only APIs cannot hang
     # a Gateway worker indefinitely.
-    def __init__(self, config: dict[str, Any], timeout: float = 15.0, total_timeout: float = 120.0):
+    def __init__(self, config: dict[str, Any], timeout: float = 15.0, total_timeout: float = 150.0):
         try:
             address = ipaddress.ip_address(str(config.get("host", "")))
         except ValueError as exc:
@@ -76,6 +77,7 @@ class HuaweiHiLinkClient:
         self.timeout = max(1.0, min(float(timeout), 20.0))
         self.deadline = time.monotonic() + max(self.timeout, min(float(total_timeout), 150.0))
         self.last_diagnostics: dict[str, Any] = {}
+        self.last_request_completed_at: float | None = None
         self.cookies = http.cookiejar.CookieJar()
         self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.cookies), _NoRedirect())
         self.token = ""
@@ -111,10 +113,11 @@ class HuaweiHiLinkClient:
             pass
 
     def _request(self, path: str, *, body: bytes | None = None, token: bool = False) -> tuple[bytes, Any]:
+        self._wait_for_request_slot()
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise HuaweiRouterError("huawei_router_total_timeout")
-        headers = {"Accept": "application/xml,text/xml", "User-Agent": "SolarMiner-Gateway/0.6.145"}
+        headers = {"Accept": "application/xml,text/xml", "User-Agent": "SolarMiner-Gateway/0.6.146"}
         headers["X-Requested-With"] = "XMLHttpRequest"
         if self.session_id:
             headers["Cookie"] = f"SessionID={self.session_id}"
@@ -136,6 +139,20 @@ class HuaweiHiLinkClient:
             raise HuaweiRouterError(f"huawei_router_http_{exc.code}") from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise HuaweiRouterError("huawei_router_unreachable") from exc
+        finally:
+            self.last_request_completed_at = time.monotonic()
+
+    def _wait_for_request_slot(self) -> None:
+        """Leave a firmware-friendly gap between all HiLink HTTP requests."""
+        if self.last_request_completed_at is None:
+            return
+        wait_seconds = (self.last_request_completed_at + MIN_API_REQUEST_GAP_SECONDS
+                        - time.monotonic())
+        if wait_seconds <= 0:
+            return
+        if time.monotonic() + wait_seconds >= self.deadline:
+            raise HuaweiRouterError("huawei_router_total_timeout")
+        time.sleep(wait_seconds)
 
     @staticmethod
     def _xml(raw: bytes) -> ET.Element:
@@ -195,6 +212,7 @@ class HuaweiHiLinkClient:
             if self._text(result, "response").upper() == "OK":
                 self.token = (headers.get("__RequestVerificationTokenone", "")
                               or headers.get("__RequestVerificationToken", "") or self.token)
+                self.login_state = "authenticated"
                 return
         raise HuaweiRouterError("huawei_router_login_rejected")
 
@@ -316,6 +334,7 @@ class HuaweiHiLinkClient:
                 continue
         self.last_diagnostics = {
             "device_profile": profile_model or "generic_hilink",
+            "software_version": str(self.discovered_device.get("software_version") or "")[:128],
             "endpoints_succeeded": succeeded,
             "endpoint_errors": errors,
             "login_state": self.login_state,
@@ -390,7 +409,7 @@ def read_huawei_clients_with_diagnostics(config: dict[str, Any]) -> tuple[list[d
 
 
 def read_huawei_device_information(config: dict[str, Any]) -> dict[str, Any]:
-    client = HuaweiHiLinkClient(config, timeout=8.0, total_timeout=24.0)
+    client = HuaweiHiLinkClient(config, timeout=8.0, total_timeout=90.0)
     return client.device_information()
 
 

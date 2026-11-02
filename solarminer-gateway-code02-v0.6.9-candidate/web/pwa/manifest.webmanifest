@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.97: identificação Huawei e pesquisa local de IPs/MACs.",
+  "description": "The Solar Miner PWA v0.5.98: diagnóstico claro da sessão e inventário Huawei.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",

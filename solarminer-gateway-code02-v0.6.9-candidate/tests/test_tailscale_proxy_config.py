@@ -40,5 +40,5 @@ def test_nginx_proxies_verify_backend_using_certificate_dns_san():
 def test_huawei_inventory_endpoint_has_timeout_longer_than_full_read_cycle():
     nginx_config = (ROOT / "packaging/solarminer-gateway-nginx.conf").read_text()
     location = nginx_config.split("location = /api/v1/integrations/huawei/clients {", 1)[1].split("}", 1)[0]
-    assert "proxy_read_timeout 100s;" in location
-    assert "proxy_send_timeout 100s;" in location
+    assert "proxy_read_timeout 180s;" in location
+    assert "proxy_send_timeout 180s;" in location

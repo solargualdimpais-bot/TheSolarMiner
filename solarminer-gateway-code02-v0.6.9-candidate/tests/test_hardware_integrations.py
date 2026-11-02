@@ -384,6 +384,7 @@ def test_huawei_password_only_login_uses_admin_hash_without_username_xml():
     ).decode("ascii")
     assert root.findtext("Password") == expected
     assert client.token == "next-token"
+    assert client.login_state == "authenticated"
 
 
 def test_huawei_login_falls_back_to_admin_username_xml_when_password_only_body_is_rejected():
@@ -408,6 +409,37 @@ def test_huawei_login_falls_back_to_admin_username_xml_when_password_only_body_i
     assert bodies[1].findtext("Username") == "admin"
     assert bodies[0].findtext("Password") == bodies[1].findtext("Password")
     assert client.token == "rotated"
+    assert client.login_state == "authenticated"
+
+
+def test_huawei_inventory_diagnostics_distinguish_successful_login_from_denied_host_list():
+    client = huawei_router.HuaweiHiLinkClient({
+        "host": "192.168.8.1", "password": "router-password",
+        "discovered_device": {"model": "B636-336", "software_version": "2.0.0.41"},
+    })
+    client._login = lambda: setattr(client, "login_state", "authenticated")
+    client._load_token = lambda: None
+
+    def request(path, *, body=None, token=False):
+        return b"<response><error><code>100003</code></error></response>", {}
+
+    client._request = request
+    with pytest.raises(huawei_router.HuaweiRouterError, match="huawei_router_hosts_unavailable") as caught:
+        client.clients()
+    assert caught.value.diagnostics["login_state"] == "authenticated"
+    assert caught.value.diagnostics["device_profile"] == "B636-336"
+    assert caught.value.diagnostics["software_version"] == "2.0.0.41"
+    assert caught.value.diagnostics["failure_class"] == "authorization_or_session"
+
+
+def test_huawei_api_requests_wait_two_and_a_half_seconds_between_calls(monkeypatch):
+    client = huawei_router.HuaweiHiLinkClient({"host": "192.168.8.1", "password": "router-password"})
+    sleeps = []
+    monkeypatch.setattr(huawei_router.time, "sleep", sleeps.append)
+    client.last_request_completed_at = huawei_router.time.monotonic()
+    client._wait_for_request_slot()
+    assert len(sleeps) == 1
+    assert 2.0 <= sleeps[0] <= 2.5
 
 
 def test_huawei_session_token_info_parses_cookie_and_token_from_xml():

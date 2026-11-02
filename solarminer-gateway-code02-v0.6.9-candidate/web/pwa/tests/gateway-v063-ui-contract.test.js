@@ -41,7 +41,7 @@ test("Huawei search identifies the modem before the user continues into the IP/M
 
 test("Huawei client inventory tries LAN, WLAN and DHCP APIs with bounded longer timeouts", () => {
   assert.match(huaweiRouter, /"api\/lan\/HostInfo",\s*"api\/system\/HostInfo",\s*"api\/wlan\/host-list",\s*"api\/dhcp\/dhcp-host-info"/);
-  assert.match(huaweiRouter, /timeout: float = 15\.0, total_timeout: float = 120\.0/);
+  assert.match(huaweiRouter, /timeout: float = 15\.0, total_timeout: float = 150\.0/);
   assert.match(huaweiRouter, /if not MAC_RE\.fullmatch\(mac\) and not ip/);
   assert.match(gatewayApp, /"sources": sources/);
 });
