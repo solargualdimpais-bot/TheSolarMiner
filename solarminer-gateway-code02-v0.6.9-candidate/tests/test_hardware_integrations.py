@@ -431,6 +431,58 @@ def test_huawei_rotating_session_headers_update_token_and_cookie():
     assert client.session_id == "new-session"
 
 
+def test_huawei_device_information_tries_both_read_only_endpoints_and_omits_identifiers():
+    client = huawei_router.HuaweiHiLinkClient({"host": "192.168.8.1", "password": "router-password"})
+    calls = []
+    responses = {
+        "api/device/information": b"<response><ProductFamily>B636-336</ProductFamily><SoftwareVersion>3.0.0.1</SoftwareVersion><IMEI>private-id</IMEI></response>",
+        "api/device/basic_information": b"<response><HardwareVersion>WL1B636M</HardwareVersion><WebUIVersion>WEBUI 3.0.0.1</WebUIVersion></response>",
+    }
+
+    def request(path, *, body=None, token=False):
+        calls.append(path)
+        return responses[path], {}
+
+    client._request = request
+    result = client.device_information()
+    assert calls == ["api/device/information", "api/device/basic_information"]
+    assert result["model"] == "B636-336"
+    assert result["software_version"] == "3.0.0.1"
+    assert result["hardware_version"] == "WL1B636M"
+    assert "private-id" not in json.dumps(result)
+    assert result["probe_status"] == "identified"
+
+
+def test_huawei_device_information_retries_after_login_required():
+    client = huawei_router.HuaweiHiLinkClient({"host": "192.168.8.1", "password": "router-password"})
+    calls = []
+
+    def request(path, *, body=None, token=False):
+        calls.append(path)
+        if len([item for item in calls if item == path]) == 1:
+            return b"<response><error><code>100003</code></error></response>", {}
+        if path == "api/device/information":
+            return b"<response><ProductName>B636-336</ProductName></response>", {}
+        return b"<response><HardwareVersion>HW1</HardwareVersion></response>", {}
+
+    client._request = request
+    client._login = lambda: setattr(client, "login_state", "authenticated")
+    result = client.device_information()
+    assert result["model"] == "B636-336"
+    assert result["hardware_version"] == "HW1"
+    assert result["authenticated"] is True
+
+
+def test_huawei_discovered_profile_survives_credential_edits_and_is_public_without_secrets():
+    old = {"huawei_router": {"host": "192.168.8.1", "username": "admin", "password": "secret",
+                              "discovered_device": {"model": "B636-336", "software_version": "3.0.0.1"}}}
+    updated = integrations.validate_config({"huawei_router": {"host": "192.168.8.1", "username": "root"}}, old)
+    public = integrations.public_config(updated)
+    assert updated["huawei_router"]["discovered_device"]["model"] == "B636-336"
+    assert public["huawei_router"]["discovered_device"]["software_version"] == "3.0.0.1"
+    assert "secret" not in json.dumps(public)
+
+
 def test_huawei_inventory_checks_lan_wifi_and_dhcp_endpoints_and_merges_hosts():
     client = huawei_router.HuaweiHiLinkClient({"host": "192.168.8.1", "password": "router-password"})
     client._login = lambda: None
@@ -456,6 +508,19 @@ def test_huawei_inventory_checks_lan_wifi_and_dhcp_endpoints_and_merges_hosts():
     }
     assert client.last_diagnostics["endpoints_succeeded"] == ["api/lan/HostInfo", "api/wlan/host-list"]
     assert client.last_diagnostics["endpoint_errors"]["api/dhcp/dhcp-host-info"] == "huawei_router_api_error_100002"
+
+
+def test_huawei_inventory_uses_detected_b636_profile_and_reports_profile_source():
+    client = huawei_router.HuaweiHiLinkClient({
+        "host": "192.168.8.1", "password": "router-password",
+        "discovered_device": {"model": "B636-336", "software_version": "3.0.0.1"},
+    })
+    client._login = lambda: None
+    client._request = lambda path, *, body=None, token=False: (
+        b"<response><error><code>100002</code></error></response>", {})
+    with pytest.raises(huawei_router.HuaweiRouterError):
+        client.clients()
+    assert client.last_diagnostics["device_profile"] == "B636-336"
 
 
 def test_huawei_inventory_refreshes_session_once_after_no_right_response():

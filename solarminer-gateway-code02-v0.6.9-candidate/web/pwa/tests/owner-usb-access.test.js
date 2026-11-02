@@ -10,7 +10,7 @@ const html = read("index.html");
 const manifest = read("manifest.webmanifest");
   const packageJson = JSON.parse(read("package.json"));
 const serviceWorker = read("service-worker.js");
-const huaweiRouter = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/huawei_router.py", import.meta.url), "utf8");
+const huaweiRouter = readFileSync(new URL("../../../src/solarminer_gateway/huawei_router.py", import.meta.url), "utf8");
 
 test("Owner user management uses authenticated Gateway endpoints with reauthentication", () => {
   assert.match(auth, /gatewayApi\("\/api\/v1\/users"\)/);
@@ -86,13 +86,13 @@ test("Owner recovery file parser accepts a generated key and rejects malformed/o
 });
 
 test("new PWA static cache version is changed and USB limitations are documented", () => {
-assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.96-terminal-ready-fix/);
+assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.97-huawei-staged-discovery/);
   assert.match(serviceWorker, /\.\/favorite-list\.js/);
-assert.match(manifest, /v0\.5\.96/);
-  assert.equal(packageJson.version, "0.5.96");
+assert.match(manifest, /v0\.5\.97/);
+  assert.equal(packageJson.version, "0.5.97");
   assert.doesNotMatch(html, /gateway-update-refresh|Atualizar estado/);
   assert.doesNotMatch(app, /gateway-update-refresh/);
-  const docs = read("OWNER_USB_AND_ACCESS.md");
+  const docs = readFileSync(new URL("../../../../the-solar-miner-pwa-v0.5.7-candidate/OWNER_USB_AND_ACCESS.md", import.meta.url), "utf8");
   assert.match(docs, /texto simples/);
   assert.match(docs, /não valida certificados TLS/);
   assert.match(docs, /chave privada de assinatura nunca deve ser incluída/);
@@ -103,13 +103,13 @@ test("Huawei inventory checks all supported local host tables and exposes a boun
   assert.match(huaweiRouter, /"api\/lan\/HostInfo",\s*"api\/system\/HostInfo",\s*"api\/wlan\/host-list",\s*"api\/dhcp\/dhcp-host-info"/);
   assert.match(huaweiRouter, /timeout: float = 15\.0, total_timeout: float = 120\.0/);
   assert.match(huaweiRouter, /if not MAC_RE\.fullmatch\(mac\) and not ip/);
-  assert.match(app, /\},160_000\)/);
+  assert.match(app, /\},220_000\)/);
   assert.match(app, /O Huawei não devolveu clientes e a varredura local/);
   assert.match(app, /O Huawei falhou/);
 });
 
 test("the Gateway-embedded PWA contains the Owner access controls and the package is version-aligned", () => {
-  const embedded = name => readFileSync(new URL(`../../solarminer-gateway-code02-v0.6.9-candidate/web/pwa/${name}`, import.meta.url), "utf8");
+  const embedded = name => readFileSync(new URL(`../../../web/pwa/${name}`, import.meta.url), "utf8");
   const embeddedHtml = embedded("index.html");
   const embeddedApp = embedded("app.js");
   const embeddedAuth = embedded("gateway-auth.js");
@@ -117,8 +117,8 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   const embeddedCss = embedded("styles.css");
   const embeddedManifest = embedded("manifest.webmanifest");
   const embeddedPhotoFormat = embedded("photo-format.js");
-  const control = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/packaging/control", import.meta.url), "utf8");
-  const installer = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/packaging/install-from-usb.sh", import.meta.url), "utf8");
+  const control = readFileSync(new URL("../../../packaging/control", import.meta.url), "utf8");
+  const installer = readFileSync(new URL("../../../packaging/install-from-usb.sh", import.meta.url), "utf8");
   assert.match(embeddedHtml, /gateway-user-management/);
   assert.match(embeddedHtml, /gateway-download-recovery-key/);
   assert.match(embeddedHtml, /gateway-owner-recovery-form/);
@@ -134,7 +134,7 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   assert.match(embeddedApp, /startGatewayTailscale/);
   assert.match(embeddedApp, /liveHomeMetric\("Painéis"/);
   assert.match(embeddedApp, /liveMinerHomeMetric\(\)/);
-  assert.match(embeddedWorker, /static-v0\.5\.96-terminal-ready-fix/);
+  assert.match(embeddedWorker, /static-v0\.5\.97-huawei-staged-discovery/);
   assert.match(embeddedHtml, /data-owner-tab="gateway"/);
   assert.doesNotMatch(embeddedHtml, /data-owner-panel="console"/);
   assert.match(embeddedHtml, /Carrega em .Atualizar consola. para consultar os dados mais recentes/);
@@ -153,10 +153,10 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   assert.doesNotMatch(embeddedHtml, /gateway-console-update-check/);
   assert.doesNotMatch(embeddedHtml, /gateway-console-command/);
   assert.match(embeddedWorker, /password-device-login/);
-  assert.match(embeddedHtml, /OWNER PWA 0\.5\.96/);
+  assert.match(embeddedHtml, /OWNER PWA 0\.5\.97/);
   assert.match(embeddedHtml, /gateway-password-login-form/);
-assert.match(control, /^Version: 0\.6\.143$/m);
-assert.match(installer, /solarminer-gateway_0\.6\.143_amd64\.deb/);
+assert.match(control, /^Version: 0\.6\.144$/m);
+assert.match(installer, /solarminer-gateway_0\.6\.144_amd64\.deb/);
   assert.match(embeddedApp, /RECOVERY_BLOCKED/);
   assert.match(embeddedApp, /rollbackFailure/);
   assert.match(installer, /install-tailscale\.sh/);

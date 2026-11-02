@@ -18,13 +18,25 @@ test("Tuya LAN report exposes the saved target and key presence without the key"
 });
 
 test("Huawei local client lookup has a cancelable deadline and reports Tuya MAC matches", () => {
-  assert.match(gatewayAuth, /readGatewayHuaweiClients\(\{ signal \} = \{\}\)/);
-  assert.match(gatewayAuth, /huawei\/clients", \{ method: "POST", body: \{\}, signal \}/);
-  assert.match(app, /setTimeout\(\(\)=>\{timedOut=true;controller\.abort\(\);\},160_000\)/);
+  assert.match(gatewayAuth, /readGatewayHuaweiClients\(\{ signal, discovery \} = \{\}\)/);
+  assert.match(gatewayAuth, /huawei\/clients", \{ method: "POST", body: \{ discovery \}, signal \}/);
+  assert.match(app, /setTimeout\(\(\)=>\{timedOut=true;controller\.abort\(\);\},220_000\)/);
   assert.match(app, /O Huawei não devolveu clientes e a varredura local/);
-  assert.match(app, /actions:\[\{label:"Cancelar",value:"cancel"\}\]/);
+  assert.match(app, /actions:\[\{label:"Parar",value:"stop"\}\]/);
   assert.match(app, /Foi encontrada 1 correspondência MAC\/IP/);
   assert.match(app, /Foram encontradas \$\{matchedCount\} correspondências MAC\/IP/);
+});
+
+test("Huawei search identifies the modem before the user continues into the IP/MAC scan", () => {
+  assert.match(html, /id="huawei-router-read"[^>]*>Pesquisar modem e IPs\/MACs/);
+  assert.doesNotMatch(html, /id="huawei-router-save"/);
+  assert.match(gatewayAuth, /probeGatewayHuawei/);
+  assert.match(app, /const probe=await probeGatewayHuawei/);
+  assert.match(app, /label:"Continuar",value:"continue"/);
+  assert.match(app, /label:"Parar",value:"stop"/);
+  assert.match(app, /readGatewayHuaweiClients\(\{signal:controller\.signal,discovery\}\)/);
+  assert.match(gatewayApp, /api\/v1\/integrations\/huawei\/probe/);
+  assert.match(huaweiRouter, /def device_information\(/);
 });
 
 test("Huawei client inventory tries LAN, WLAN and DHCP APIs with bounded longer timeouts", () => {

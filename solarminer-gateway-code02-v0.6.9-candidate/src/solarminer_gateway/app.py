@@ -52,7 +52,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.143"
+PACKAGE_VERSION = "0.6.144"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -1994,7 +1994,8 @@ def tuya_lan_reachability(payload: dict[str, Any],
 
 
 @app.post("/api/v1/integrations/huawei/clients")
-def huawei_router_clients(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+def huawei_router_clients(payload: dict[str, Any] | None = None,
+                          session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
     """Read Huawei's connected-client table and match known Tuya MAC/IP pairs."""
     with db() as conn:
         actor = _revalidate_actor(conn, session, "manage_gateway")
@@ -2004,6 +2005,18 @@ def huawei_router_clients(session: dict[str, Any] = Depends(require_permission("
         router = config.get("huawei_router", {})
         if not isinstance(router, dict) or not router.get("password"):
             raise HTTPException(409, "huawei_router_not_configured")
+        # Persist only the non-secret identity fields discovered in the
+        # preceding confirmation step. Never trust arbitrary client metadata.
+        discovery = payload.get("discovery") if isinstance(payload, dict) else None
+        if isinstance(discovery, dict):
+            allowed = ("model", "hardware_version", "software_version", "webui_version", "harmony_version", "product_family")
+            clean = {key: str(discovery.get(key) or "").strip()[:128] for key in allowed
+                     if isinstance(discovery.get(key), str) and discovery.get(key).strip()}
+            if clean:
+                router["discovered_device"] = {**clean, "source": "huawei_local_read_only_api",
+                                                "updated_at": utcnow()}
+                config["huawei_router"] = router
+                hardware_integrations.save_config(config)
         router_error = None
         arp_neighbors = local_arp_entries()
         lan_scan = network_discovery.discover_private_lan_hosts()
@@ -2115,6 +2128,29 @@ def huawei_router_clients(session: dict[str, Any] = Depends(require_permission("
                 "router_failure_class": diagnostics.get("failure_class"),
                 "router_error": router_error,
                 "read_only": True, "cloud_used": False, "commands_sent": False}
+
+
+@app.post("/api/v1/integrations/huawei/probe")
+def huawei_router_probe(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Identify the locally configured Huawei model and firmware before scan."""
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        router = hardware_integrations.load_config().get("huawei_router", {})
+        if not isinstance(router, dict) or not router.get("password"):
+            raise HTTPException(409, "huawei_router_not_configured")
+    try:
+        discovery = hardware_integrations.huawei_router.read_huawei_device_information(router)
+    except hardware_integrations.huawei_router.HuaweiRouterError as exc:
+        discovery = {"probe_status": "unavailable", "model": "", "endpoint_errors": {"probe": str(exc)[:80]},
+                     "source": "huawei_local_read_only_api"}
+    with db() as conn:
+        audit(conn, session["user_id"], "hardware.huawei.probe", "router", "success" if discovery.get("probe_status") == "identified" else "partial",
+              {"model_found": bool(discovery.get("model")), "software_version_found": bool(discovery.get("software_version")),
+               "read_only": True})
+        conn.commit()
+        return {"discovery": discovery, "read_only": True, "credentials_returned": False}
 
 
 @app.post("/api/v1/integrations/huawei/client-label")
@@ -3626,7 +3662,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.143"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.144"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

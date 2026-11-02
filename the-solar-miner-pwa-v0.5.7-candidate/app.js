@@ -6,7 +6,7 @@ const PWA_INVITE_LANDING_URL = "https://solargualdimpais-bot.github.io/TheSolarM
 import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classifyEndpoint, inferHostedGatewayEndpoint, buildInviteLandingUrl, readInviteLandingHash, PRESENCE_API_STATUS } from "./gateway-connection.js";
 import { isHeicPhoto } from "./photo-format.js";
 import { addFavoriteId, normalizeFavoriteIds, reorderFavoriteIds } from "./favorite-list.js";
-import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, redeemGatewayInvite, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, readGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayDiagnosticsUpload, saveGatewayDiagnosticsUploadToken, disableGatewayDiagnosticsUpload, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, controlGatewayAntminer, testGatewayAntminerControl, readGatewayAntminerManagement, writeGatewayAntminerManagement, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, controlGatewayTuyaSetting, saveGatewayTuyaProductDpsDescription, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, testGatewayTuyaLanReachability, discoverGatewayTuyaLanDevices, readGatewayHuaweiClients, saveGatewayNetworkDeviceLabel, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging, readGatewayTeslaLocalPresence } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, redeemGatewayInvite, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, readGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayDiagnosticsUpload, saveGatewayDiagnosticsUploadToken, disableGatewayDiagnosticsUpload, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, controlGatewayAntminer, testGatewayAntminerControl, readGatewayAntminerManagement, writeGatewayAntminerManagement, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, controlGatewayTuyaSetting, saveGatewayTuyaProductDpsDescription, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, testGatewayTuyaLanReachability, discoverGatewayTuyaLanDevices, readGatewayHuaweiClients, probeGatewayHuawei, saveGatewayNetworkDeviceLabel, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging, readGatewayTeslaLocalPresence } from "./gateway-auth.js";
 
 let automationEditingId = "";
 const state = { page: "inicio", devicesTab: "confirmed", mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], energyEngine: null, siteProfile: null, tuyaDevices: [], tuyaReadings: [], tuyaInventorySignature: "", lastUpdated: null, lastMeasurementAt: null, refreshing: false, tuyaInventoryRefreshing: false, pendingLiveRender: false, demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [], engineHistoryChart: { open: false, dateKey: "", loading: false, error: null } };
@@ -2484,8 +2484,9 @@ async function refreshHardwareIntegrationConfig({signal}={}) {
   $("#antminer-status").textContent = miner.host ? `Antminer configurada em ${miner.host}:${miner.port || 4028}. Credenciais de controlo ${config.antminer_control_configured ? "guardadas no Gateway" : "por configurar"}.` : "Antminer ainda não configurada.";
   const importedCount = (tuya.devices || []).filter(device => device.cloud_source === "TUYA_PROJECT" || device.local_key_available).length;
   $("#tuya-status").textContent = tuya.configured ? `Conta Tuya configurada; segredo oculto no Gateway. ${importedCount} dispositivo(s) sincronizado(s).` : "Conta Tuya ainda não configurada.";
+  const discoveredModem=config.huawei_router?.discovered_device||{};
   $("#huawei-router-status").textContent = config.huawei_router?.configured
-    ? `Huawei configurado em ${config.huawei_router.host}; palavra-passe guardada apenas no Gateway.`
+    ? `Huawei em ${config.huawei_router.host}; palavra-passe guardada no Gateway.${discoveredModem.model?` Modelo: ${discoveredModem.model}.` : ""}${discoveredModem.software_version?` Firmware: ${discoveredModem.software_version}.` : ""}`
     : "Indica o IP e as credenciais locais do Huawei para tentar ler a lista de clientes.";
   $("#deye-cloud-status").textContent=deyeCloud.configured?"Acesso Deye Cloud guardado no Gateway. Os segredos não são devolvidos à PWA.":"Configura a aplicação de developer Deye e a conta para importar o histórico.";
   renderTuyaDeviceCards(tuya.devices || []);
@@ -2694,33 +2695,30 @@ $("#tuya-save").addEventListener("click", event => {
   const devices = parseTuyaDevices();
   saveHardwareProvider("tuya", { region: $("#hardware-tuya-region").value, client_id: $("#hardware-tuya-client-id").value.trim() || undefined, client_secret: $("#hardware-tuya-client-secret").value || undefined, uid: $("#hardware-tuya-uid").value.trim() || undefined, devices }, event.currentTarget, "tuya-status");
 });
-$("#huawei-router-save").addEventListener("click", async event => {
-  const button=event.currentTarget,status=$("#huawei-router-status");
-  if(!ownerCanManageHardware("#tuya-status"))return;
-  button.disabled=true;
-  try{
-    const host=$("#huawei-router-host").value.trim(),username=$("#huawei-router-username").value.trim(),password=$("#huawei-router-password").value;
-    const saved=await saveGatewayHardwareIntegrationConfig({huawei_router:{host,username,...(password?{password}:{})}});
-    $("#huawei-router-password").value="";
-    status.textContent=saved.huawei_router?.configured?`Acesso local guardado no Gateway para ${saved.huawei_router.host}.`:`Endereço guardado; introduz a palavra-passe antes de consultar.`;
-  }catch(error){status.textContent=`Não foi possível guardar o acesso local: ${error.message}`;}
-  finally{button.disabled=false;}
-});
 $("#huawei-router-read").addEventListener("click", async event => {
   const button=event.currentTarget,status=$("#huawei-router-status");
-  if(!ownerCanManageHardware("#tuya-status"))return;
+  if(!ownerCanManageHardware("#huawei-router-status"))return;
   button.disabled=true;
-  const controller=new AbortController();let cancelled=false,timedOut=false,requestFinished=false;
-  const timeout=window.setTimeout(()=>{timedOut=true;controller.abort();},160_000);
-  const finished=showOperationDialog({title:"Consulta local do Huawei",message:"A consultar as listas LAN, Wi-Fi e DHCP do router. Pode demorar até 120 segundos conforme o firmware. Esta operação é apenas de leitura.",progress:true,actions:[{label:"Cancelar",value:"cancel"}]});
-  finished.then(result=>{if(!requestFinished&&(result==="cancel"||result==="dismiss")){cancelled=true;controller.abort();}});
+  const controller=new AbortController();let cancelled=false,timedOut=false,activeDialog=null;
+  const timeout=window.setTimeout(()=>{timedOut=true;controller.abort();},220_000);
   try{
     const host=$("#huawei-router-host").value.trim(),username=$("#huawei-router-username").value.trim(),password=$("#huawei-router-password").value;
     const saved=await saveGatewayHardwareIntegrationConfig({huawei_router:{host,username,...(password?{password}:{})}},{signal:controller.signal});
     $("#huawei-router-password").value="";
-    if(!saved.huawei_router?.configured)throw new Error("Introduz a palavra-passe do router e guarda o acesso local.");
-    const report=await readGatewayHuaweiClients({signal:controller.signal});
-    await refreshHardwareIntegrationConfig({signal:controller.signal});requestFinished=true;window.clearTimeout(timeout);
+    if(!saved.huawei_router?.configured)throw new Error("Introduz a palavra-passe do router.");
+    activeDialog=showOperationDialog({title:"A identificar o modem",message:"A consultar o modelo e as versões de software pela rede local. Esta etapa só lê informação; não altera o modem.",progress:true,actions:[{label:"Parar",value:"stop"}]});
+    activeDialog.then(result=>{if(result==="stop"||result==="dismiss"){cancelled=true;controller.abort();}});
+    const probe=await probeGatewayHuawei({signal:controller.signal}),discovery=probe.discovery||{};
+    if(controller.signal.aborted)throw new DOMException("Pesquisa parada.","AbortError");
+    const info=[["Marca","Huawei"],["Modelo",discovery.model||"Não identificado"],["Hardware",discovery.hardware_version||"Não indicado"],["Firmware",discovery.software_version||"Não identificado"],["HarmonyOS",discovery.harmony_version||"Não indicado"],["Interface Web",discovery.webui_version||"Não indicada"],["Família",discovery.product_family||"Não indicada"]].map(([label,value])=>`${label}: ${value}`).join("\n");
+    updateOperationDialog({title:discovery.probe_status==="identified"?"Modem identificado":"Identificação parcial",message:`${info}\n\n${discovery.probe_status==="identified"?"Ao continuar, o Gateway guarda estes dados e inicia a leitura de clientes, a varredura local e a correspondência por MAC.":"Não foi possível obter todos os dados do firmware. Se continuares, o Gateway guarda apenas os campos identificados e tenta os métodos de leitura disponíveis."}`,progress:false,actions:[{label:"Parar",value:"stop"},{label:"Continuar",value:"continue",primary:true}]});
+    const decision=await activeDialog;activeDialog=null;
+    if(decision!=="continue"){status.textContent="Pesquisa parada antes da leitura de IPs/MACs.";return;}
+    activeDialog=showOperationDialog({title:"A pesquisar IPs e MACs",message:"A guardar a identificação do modem e a consultar Huawei, varredura LAN e vizinhos locais. Podes parar a pesquisa.",progress:true,actions:[{label:"Parar",value:"stop"}]});
+    activeDialog.then(result=>{if(result==="stop"||result==="dismiss"){cancelled=true;controller.abort();}});
+    const report=await readGatewayHuaweiClients({signal:controller.signal,discovery});
+    if(controller.signal.aborted)throw new DOMException("Pesquisa parada.","AbortError");
+    await refreshHardwareIntegrationConfig({signal:controller.signal});window.clearTimeout(timeout);
     const matchedCount=Number(report.matched_count)||0;
     const gatewayMatches=(report.matched||[]).filter(item=>item.source==="gateway_neighbour_cache"||item.source==="gateway_active_lan_scan").length;
     const matchMessage=matchedCount===0?"Não foi encontrada correspondência com os dispositivos Tuya configurados.":matchedCount===1?`Foi encontrada 1 correspondência MAC/IP com um dispositivo Tuya${gatewayMatches?" através da descoberta local do Gateway":" através do inventário do Huawei"}.`:`Foram encontradas ${matchedCount} correspondências MAC/IP com dispositivos Tuya${gatewayMatches?`, ${gatewayMatches} através da descoberta local do Gateway`:" através do inventário do Huawei"}.`;
@@ -2730,20 +2728,19 @@ $("#huawei-router-read").addEventListener("click", async event => {
     const routerFailure=report.router_error?`O Huawei falhou (${report.router_error}). ${report.router_failure_class==="authorization_or_session"?"A resposta indica sessão ou permissões; verifica o utilizador e a palavra-passe do router.":"Mostro também os vizinhos que o Gateway já conhece."}`:"";
     const emptyMessage=Number(report.client_count)===0?(report.router_error?"O Huawei não devolveu clientes e a varredura local também não aprendeu pares IP/MAC. Confirma que o Gateway está ligado à rede local pretendida.":"As fontes responderam, mas não devolveram registos de clientes; equipamentos isolados, silenciosos ou noutra VLAN podem não aparecer."):"";
     const inventorySummary=`Huawei devolveu ${Number(report.huawei_client_count)||0}; o Gateway varreu ${Number(report.scan_scanned_count)||0} IPs em ${(report.scan_networks||[]).length} rede(s) e acrescentou ${Number(report.active_scan_count)||0} novos pares IP/MAC; a cache acrescentou ${Number(report.neighbor_cache_count)||0}; total apresentado: ${Number(report.client_count)||0}${report.scan_truncated?" (varrimento limitado pelo tamanho da rede)":""}.`;
-    updateOperationDialog({title:matchedCount?"Correspondência encontrada":"Consulta Huawei concluída",message:`Foram consultadas as fontes: ${sources.join(", ")||"nenhuma"}. ${inventorySummary} ${routerFailure} ${emptyMessage}${endpointErrors?` Algumas fontes não são suportadas: ${endpointErrors}.`:""} ${matchMessage}`,actions:[{label:"Ver lista",value:"report",primary:true}]});
-    await finished;
+    updateOperationDialog({title:matchedCount?"Correspondência encontrada":"Pesquisa concluída",message:`${info}\n\nForam consultadas as fontes: ${sources.join(", ")||"nenhuma"}. ${inventorySummary} ${routerFailure} ${emptyMessage}${endpointErrors?` Algumas fontes não são suportadas: ${endpointErrors}.`:""} ${matchMessage}`,progress:false,actions:[{label:"Ver lista",value:"report",primary:true}]});
+    await activeDialog;activeDialog=null;
     const rows=(report.clients||[]).map(item=>{const editable=!item.is_known_device&&Boolean(item.mac);const nameCell=editable?`<div class="network-device-name"><span>${esc(item.display_name||"Dispositivo desconhecido")}</span><div><input data-network-name value="${esc(item.gateway_name||"")}" placeholder="Nome deste dispositivo" maxlength="120" aria-label="Nome para MAC ${esc(item.mac)}"><button class="button secondary" type="button" data-network-save data-mac="${esc(item.mac)}" data-ip="${esc(item.ip)}">Guardar</button><small data-network-status></small></div></div>`:esc(item.display_name||"Dispositivo desconhecido");return `<tr><td>${nameCell}</td><td>${esc(item.mac||"Não fornecido")}</td><td>${esc(item.ip)}</td><td>${esc(sourceLabels[item.source]||item.source||"origem não indicada")}</td></tr>`;}).join("");
     const dialog=document.createElement("dialog");dialog.className="settings-dialog tuya-diagnostic-dialog";
     dialog.innerHTML=`<form method="dialog" class="dialog-header"><div><p class="eyebrow">REDE LOCAL · CONSULTA</p><h2>IPs e MACs encontrados</h2></div><button class="icon-button" value="close" aria-label="Fechar">×</button></form><div class="dialog-body"><p class="field-note">${esc(inventorySummary)} ${esc(matchMessage)} A varredura cobre as redes privadas diretamente ligadas ao Gateway; equipamentos isolados, desligados ou noutra VLAN podem não responder.</p><div class="diagnostic-table-wrap"><table class="diagnostic-table"><thead><tr><th>Nome</th><th>MAC</th><th>IP</th><th>Origem</th></tr></thead><tbody>${rows||'<tr><td colspan="4">Nenhum IP com MAC correspondente foi encontrado.</td></tr>'}</tbody></table></div><div class="dialog-actions"><button class="button primary" type="button" data-huawei-close>OK</button></div></div>`;
     dialog.addEventListener("close",()=>dialog.remove());document.body.append(dialog);dialog.querySelector("[data-huawei-close]").addEventListener("click",()=>dialog.close("ok"));dialog.querySelectorAll("[data-network-save]").forEach(saveButton=>saveButton.addEventListener("click",async()=>{const row=saveButton.closest("tr"),input=row?.querySelector("[data-network-name]"),message=row?.querySelector("[data-network-status]");try{saveButton.disabled=true;if(message)message.textContent="A guardar…";const result=await saveGatewayNetworkDeviceLabel({mac:saveButton.dataset.mac,ip:saveButton.dataset.ip,name:input?.value||""});if(message)message.textContent=`Guardado: ${result.name}`;row.querySelector(".network-device-name > span").textContent=result.name;}catch(error){if(message)message.textContent=error.message||"Não foi possível guardar o nome.";}finally{saveButton.disabled=false;}}));dialog.showModal();
     status.textContent=`${matchMessage} Os valores continuam editáveis em cada dispositivo.`;
   }catch(error){
-    requestFinished=true;
-    if(cancelled){status.textContent="Consulta Huawei cancelada.";}
+    if(cancelled||error?.name==="AbortError"){status.textContent="Pesquisa do modem parada.";}
     else{
-      const message=timedOut?"A consulta excedeu 160 segundos. A resposta do Gateway/modem está demasiado lenta ou não chegou; confirma que ambos estão na mesma rede local.":error.message||"O Gateway não conseguiu ler os clientes do router.";
-      updateOperationDialog({title:"Consulta Huawei falhou",message,actions:[{label:"OK",value:"ok",primary:true}]});
-      await finished;status.textContent=`Consulta Huawei falhou: ${message}`;
+      const message=timedOut?"A pesquisa excedeu 220 segundos. A resposta do Gateway/modem está demasiado lenta ou não chegou.":error.message||"O Gateway não conseguiu concluir a pesquisa do modem.";
+      if(activeDialog)updateOperationDialog({title:"Pesquisa do modem falhou",message,progress:false,actions:[{label:"OK",value:"ok",primary:true}]});
+      if(activeDialog)await activeDialog;status.textContent=`Pesquisa do modem falhou: ${message}`;
     }
   }finally{window.clearTimeout(timeout);button.disabled=false;}
 });

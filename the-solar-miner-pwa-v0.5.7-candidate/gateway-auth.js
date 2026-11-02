@@ -544,8 +544,12 @@ export async function testGatewayTuyaLanReachability(deviceId) {
 export async function discoverGatewayTuyaLanDevices() {
   return gatewayApi("/api/v1/integrations/tuya/lan-discovery", { method: "POST", body: {} });
 }
-export async function readGatewayHuaweiClients({ signal } = {}) {
-  return gatewayApi("/api/v1/integrations/huawei/clients", { method: "POST", body: {}, signal });
+export async function readGatewayHuaweiClients({ signal, discovery } = {}) {
+  return gatewayApi("/api/v1/integrations/huawei/clients", { method: "POST", body: { discovery }, signal });
+}
+
+export async function probeGatewayHuawei({ signal } = {}) {
+  return gatewayApi("/api/v1/integrations/huawei/probe", { method: "POST", body: {}, signal });
 }
 export async function saveGatewayNetworkDeviceLabel({ mac, ip, name }) {
   if (typeof mac !== "string" || typeof ip !== "string" || typeof name !== "string" || !name.trim()) {

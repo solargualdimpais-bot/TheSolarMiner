@@ -21,6 +21,25 @@ MAC_RE = re.compile(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 SESSION_RE = re.compile(r"^SessionID=([A-Za-z0-9+/=_-]{1,512})$")
 MAX_RESPONSE_BYTES = 256_000
 
+# Read-only inventory variants verified/maintained per Huawei model. Keep an
+# explicit generic fallback; do not infer firmware behavior from version
+# number formatting alone. New exact firmware profiles can be added here as
+# they are observed and validated.
+HUAWEI_INVENTORY_PROFILES: dict[str, tuple[str, ...]] = {
+    "B636-336": (
+        "api/lan/HostInfo",
+        "api/system/HostInfo",
+        "api/wlan/host-list",
+        "api/dhcp/dhcp-host-info",
+    ),
+}
+GENERIC_INVENTORY_ENDPOINTS = (
+    "api/lan/HostInfo",
+    "api/system/HostInfo",
+    "api/wlan/host-list",
+    "api/dhcp/dhcp-host-info",
+)
+
 
 class HuaweiRouterError(ValueError):
     """Sanitized error raised by the Huawei read-only adapter."""
@@ -48,6 +67,8 @@ class HuaweiHiLinkClient:
                 or address.is_link_local or address.is_multicast or address.is_unspecified):
             raise HuaweiRouterError("huawei_router_private_ip_required")
         self.base = f"http://{address}/"
+        discovered = config.get("discovered_device", {})
+        self.discovered_device = discovered if isinstance(discovered, dict) else {}
         self.username = str(config.get("username", "admin"))
         self.password = str(config.get("password", ""))
         if not self.username or len(self.username) > 128 or not self.password or len(self.password) > 512:
@@ -93,7 +114,7 @@ class HuaweiHiLinkClient:
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise HuaweiRouterError("huawei_router_total_timeout")
-        headers = {"Accept": "application/xml,text/xml", "User-Agent": "SolarMiner-Gateway/0.6.143"}
+        headers = {"Accept": "application/xml,text/xml", "User-Agent": "SolarMiner-Gateway/0.6.144"}
         headers["X-Requested-With"] = "XMLHttpRequest"
         if self.session_id:
             headers["Cookie"] = f"SessionID={self.session_id}"
@@ -177,18 +198,85 @@ class HuaweiHiLinkClient:
                 return
         raise HuaweiRouterError("huawei_router_login_rejected")
 
+    def device_information(self) -> dict[str, Any]:
+        """Read non-secret identity/version fields using known HiLink variants.
+
+        Firmware-specific APIs differ, so this is best-effort and read-only.
+        We deliberately omit serial numbers, IMEI/IMSI, MAC addresses and
+        credentials from the returned profile.
+        """
+        endpoints = ("api/device/information", "api/device/basic_information")
+        fields = {
+            "model": ("Model", "model", "ProductFamily", "ProductName", "DeviceName"),
+            "hardware_version": ("HardwareVersion", "hardwareversion"),
+            "software_version": ("SoftwareVersion", "softwareversion", "FirmwareVersion"),
+            "webui_version": ("WebUIVersion", "WebUIversion", "webuiversion"),
+            "harmony_version": ("HarmonyVersion", "HarmonyOSVersion", "harmonyversion"),
+            "product_family": ("ProductFamily", "productfamily"),
+        }
+        found: dict[str, str] = {}
+        errors: dict[str, str] = {}
+        authenticated = False
+
+        def read_endpoint(path: str) -> bool:
+            try:
+                raw, _headers = self._request(path, token=True)
+                root = self._xml(raw)
+                error = next((node for node in root.iter()
+                              if node.tag.rsplit("}", 1)[-1].lower() == "error"), None)
+                if error is not None:
+                    code = self._text(error, "code", "unknown")
+                    if code in {"100003", "125001", "125002", "125003"}:
+                        raise HuaweiRouterError(f"huawei_router_api_error_{code}")
+                    errors[path] = f"api_error_{code}"
+                    return False
+                for key, aliases in fields.items():
+                    if key in found:
+                        continue
+                    for alias in aliases:
+                        value = self._text(root, alias)
+                        if value and len(value) <= 128 and not any(ord(ch) < 32 for ch in value):
+                            found[key] = value.strip()
+                            break
+                return True
+            except HuaweiRouterError as exc:
+                errors[path] = str(exc)[:80]
+                return False
+
+        # Try firmware information endpoints without authentication first;
+        # a successful response avoids any login attempt at all.
+        for path in endpoints:
+            read_endpoint(path)
+        needs_auth = any(any(code in error for code in ("100003", "12500"))
+                         for error in errors.values())
+        if needs_auth and not found:
+            try:
+                self._login()
+                authenticated = True
+                errors.clear()
+                for path in endpoints:
+                    read_endpoint(path)
+            except HuaweiRouterError as exc:
+                errors["login"] = str(exc)[:80]
+        return {
+            **found,
+            "model": found.get("model") or "",
+            "probe_status": "identified" if found else "unavailable",
+            "authenticated": authenticated,
+            "endpoints": [path for path in endpoints if path not in errors],
+            "endpoint_errors": errors,
+            "source": "huawei_local_read_only_api",
+        }
+
     def clients(self) -> list[dict[str, str]]:
         started = time.monotonic()
         self._login()
         # HostInfo is the LAN-wide table (Ethernet + Wi-Fi) on supported CPEs.
         # host-list is explicitly WLAN-only, so it is a fallback, not the only
         # source. DHCP host-info exists on some older HiLink firmwares.
-        endpoints = (
-            "api/lan/HostInfo",
-            "api/system/HostInfo",
-            "api/wlan/host-list",
-            "api/dhcp/dhcp-host-info",
-        )
+        discovered_model = str(self.discovered_device.get("model") or "").upper()
+        profile_model = next((model for model in HUAWEI_INVENTORY_PROFILES if model.upper() == discovered_model), "")
+        endpoints = HUAWEI_INVENTORY_PROFILES.get(profile_model, GENERIC_INVENTORY_ENDPOINTS)
         combined: dict[tuple[str, str], dict[str, str]] = {}
         succeeded: list[str] = []
         errors: dict[str, str] = {}
@@ -227,6 +315,7 @@ class HuaweiHiLinkClient:
                 # firmware does not implement one of them.
                 continue
         self.last_diagnostics = {
+            "device_profile": profile_model or "generic_hilink",
             "endpoints_succeeded": succeeded,
             "endpoint_errors": errors,
             "login_state": self.login_state,
@@ -298,6 +387,11 @@ def read_huawei_clients_with_diagnostics(config: dict[str, Any]) -> tuple[list[d
     client = HuaweiHiLinkClient(config)
     hosts = client.clients()
     return hosts, dict(client.last_diagnostics)
+
+
+def read_huawei_device_information(config: dict[str, Any]) -> dict[str, Any]:
+    client = HuaweiHiLinkClient(config, timeout=8.0, total_timeout=24.0)
+    return client.device_information()
 
 
 def merge_gateway_neighbor_hosts(
