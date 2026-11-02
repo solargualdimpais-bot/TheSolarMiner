@@ -21,7 +21,7 @@ def test_nginx_proxies_verify_backend_using_certificate_dns_san():
     assert 'DNS:localhost' in postinst
     # The API, static PWA, Owner console, terminal and long-running Deye
     # history import each use a TLS-verified backend location.
-    assert nginx_config.count("proxy_ssl_name localhost;") == 6
+    assert nginx_config.count("proxy_ssl_name localhost;") == 7
     assert "location = /api/v1/integrations/deye-cloud/history/import" in nginx_config
     assert "proxy_read_timeout 600s;" in nginx_config
     assert "proxy_ssl_name 127.0.0.1;" not in nginx_config
