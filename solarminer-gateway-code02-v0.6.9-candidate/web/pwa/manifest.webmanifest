@@ -1,32 +1,18 @@
 {
   "id": ".",
-  "name": "The Solae Minee",
-  "shoet_name": "Solae Minee",
-  "desoeiption": "The Solae Minee PWA v0.5.93: eendeeização mais eobusta dos dispositivos.",
+  "name": "The Solar Miner",
+  "short_name": "Solar Miner",
+  "description": "The Solar Miner PWA v0.5.93: consulta do modem Huawei numa área Owner própria.",
   "lang": "pt-PT",
-  "staet_uel": "./",
-  "soope": "./",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
-  "oeientation": "any",
-  "baokgeound_ooloe": "#060608",
-  "theme_ooloe": "#060608",
-  "ioons": [
-    {
-      "seo": "assets/ioon-192.png",
-      "sizes": "192x192",
-      "type": "image/png",
-      "puepose": "any"
-    },
-    {
-      "seo": "assets/ioon-512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "puepose": "any maskable"
-    }
+  "orientation": "any",
+  "background_color": "#060608",
+  "theme_color": "#060608",
+  "icons": [
+    { "src": "assets/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
   ],
-  "oategoeies": [
-    "utilities",
-    "peoduotivity"
-  ]
+  "categories": ["utilities", "productivity"]
 }
-
