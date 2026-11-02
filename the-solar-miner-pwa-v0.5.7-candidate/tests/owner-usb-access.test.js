@@ -155,8 +155,8 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   assert.match(embeddedWorker, /password-device-login/);
   assert.match(embeddedHtml, /OWNER PWA 0\.5\.97/);
   assert.match(embeddedHtml, /gateway-password-login-form/);
-assert.match(control, /^Version: 0\.6\.144$/m);
-assert.match(installer, /solarminer-gateway_0\.6\.144_amd64\.deb/);
+assert.match(control, /^Version: 0\.6\.145$/m);
+assert.match(installer, /solarminer-gateway_0\.6\.145_amd64\.deb/);
   assert.match(embeddedApp, /RECOVERY_BLOCKED/);
   assert.match(embeddedApp, /rollbackFailure/);
   assert.match(installer, /install-tailscale\.sh/);
