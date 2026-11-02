@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const app = readFileSync(new URL("../app.js", import.meta.url), "utf8");
+const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const gatewayAuth = readFileSync(new URL("../gateway-auth.js", import.meta.url), "utf8");
 const gatewayApp = readFileSync(new URL("../../../src/solarminer_gateway/app.py", import.meta.url), "utf8");
 const energyEngine = readFileSync(new URL("../../../src/solarminer_gateway/energy_engine.py", import.meta.url), "utf8");
 const workflow = readFileSync(new URL("../../../../.github/workflows/gateway-release.yml", import.meta.url), "utf8");
@@ -12,6 +14,26 @@ test("Tuya LAN report exposes the saved target and key presence without the key"
   assert.match(gatewayApp, /"local_key_configured": bool\(item\.get\("local_key"\)\)/);
   assert.match(app, /IP guardado/);
   assert.match(app, /local_key_configured\?"Configurada":"Em falta"/);
+});
+
+test("Huawei local client lookup has a cancelable deadline and reports Tuya MAC matches", () => {
+  assert.match(gatewayAuth, /readGatewayHuaweiClients\(\{ signal \} = \{\}\)/);
+  assert.match(gatewayAuth, /huawei\/clients", \{ method: "POST", body: \{\}, signal \}/);
+  assert.match(app, /setTimeout\(\(\)=>\{timedOut=true;controller\.abort\(\);\},25_000\)/);
+  assert.match(app, /actions:\[\{label:"Cancelar",value:"cancel"\}\]/);
+  assert.match(app, /Foi encontrada 1 correspondência MAC\/IP/);
+  assert.match(app, /Foram encontradas \$\{matchedCount\} correspondências MAC\/IP/);
+});
+
+test("Huawei modem tools live in their own Owner tab, outside Tuya settings", () => {
+  assert.match(html, /data-owner-tab="modem"[^>]*>Modem<\/button>/);
+  assert.match(html, /data-owner-panel="modem" id="gateway-modem-management"/);
+  const tuyaPanel = html.match(/<fieldset class="device-card" data-device-panel="tuya"[\s\S]*?<\/fieldset>/)?.[0] || "";
+  const modemPanel = html.match(/<section class="panel gateway-auth-panel owner-tab-panel" data-owner-panel="modem"[\s\S]*?<\/section>/)?.[0] || "";
+  assert.ok(tuyaPanel);
+  assert.ok(modemPanel);
+  assert.doesNotMatch(tuyaPanel, /huawei-router-(?:host|password|save|read|status)/);
+  assert.match(modemPanel, /huawei-router-(?:host|password|save|read|status)/);
 });
 
 test("Panels separate MPPT readings from inverter output and AQS records retain user fields", () => {

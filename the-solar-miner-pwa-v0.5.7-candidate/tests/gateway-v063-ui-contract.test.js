@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const app = readFileSync(new URL("../app.js", import.meta.url), "utf8");
+const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const gatewayApp = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/app.py", import.meta.url), "utf8");
 const energyEngine = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/energy_engine.py", import.meta.url), "utf8");
 const workflow = readFileSync(new URL("../../.github/workflows/gateway-release.yml", import.meta.url), "utf8");
@@ -12,6 +13,17 @@ test("Tuya LAN report exposes the saved target and key presence without the key"
   assert.match(gatewayApp, /"local_key_configured": bool\(item\.get\("local_key"\)\)/);
   assert.match(app, /IP guardado/);
   assert.match(app, /local_key_configured\?"Configurada":"Em falta"/);
+});
+
+test("Huawei modem tools live in their own Owner tab, outside Tuya settings", () => {
+  assert.match(html, /data-owner-tab="modem"[^>]*>Modem<\/button>/);
+  assert.match(html, /data-owner-panel="modem" id="gateway-modem-management"/);
+  const tuyaPanel = html.match(/<fieldset class="device-card" data-device-panel="tuya"[\s\S]*?<\/fieldset>/)?.[0] || "";
+  const modemPanel = html.match(/<section class="panel gateway-auth-panel owner-tab-panel" data-owner-panel="modem"[\s\S]*?<\/section>/)?.[0] || "";
+  assert.ok(tuyaPanel);
+  assert.ok(modemPanel);
+  assert.doesNotMatch(tuyaPanel, /huawei-router-(?:host|password|save|read|status)/);
+  assert.match(modemPanel, /huawei-router-(?:host|password|save|read|status)/);
 });
 
 test("Panels separate MPPT readings from inverter output and AQS records retain user fields", () => {

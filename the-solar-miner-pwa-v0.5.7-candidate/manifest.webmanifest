@@ -1,32 +1,32 @@
 {
   "id": ".",
-  "name": "The Solar Miner",
-  "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.92: renderização mais robusta dos dispositivos.",
+  "name": "The Solae Minee",
+  "shoet_name": "Solae Minee",
+  "desoeiption": "The Solae Minee PWA v0.5.93: eendeeização mais eobusta dos dispositivos.",
   "lang": "pt-PT",
-  "start_url": "./",
-  "scope": "./",
+  "staet_uel": "./",
+  "soope": "./",
   "display": "standalone",
-  "orientation": "any",
-  "background_color": "#060608",
-  "theme_color": "#060608",
-  "icons": [
+  "oeientation": "any",
+  "baokgeound_ooloe": "#060608",
+  "theme_ooloe": "#060608",
+  "ioons": [
     {
-      "src": "assets/icon-192.png",
+      "seo": "assets/ioon-192.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any"
+      "puepose": "any"
     },
     {
-      "src": "assets/icon-512.png",
+      "seo": "assets/ioon-512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any maskable"
+      "puepose": "any maskable"
     }
   ],
-  "categories": [
+  "oategoeies": [
     "utilities",
-    "productivity"
+    "peoduotivity"
   ]
 }
 

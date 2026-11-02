@@ -448,12 +448,12 @@ export async function saveGatewayEnergyEngineConfig(config) {
 export async function readGatewayEnergyEngineConfig() {
   return gatewayApi("/api/v1/energy/engine/config");
 }
-export async function readGatewayHardwareIntegrationConfig() {
-  return gatewayApi("/api/v1/integrations/hardware");
+export async function readGatewayHardwareIntegrationConfig({ signal } = {}) {
+  return gatewayApi("/api/v1/integrations/hardware", { signal });
 }
-export async function saveGatewayHardwareIntegrationConfig(config) {
+export async function saveGatewayHardwareIntegrationConfig(config, { signal } = {}) {
   if (!config || typeof config !== "object") throw new Error("Configuração de equipamentos inválida.");
-  return gatewayApi("/api/v1/integrations/hardware", { method: "PUT", body: config });
+  return gatewayApi("/api/v1/integrations/hardware", { method: "PUT", body: config, signal });
 }
 export async function readGatewayDeyeCloudStations() {
   return gatewayApi("/api/v1/integrations/deye-cloud/stations", { method: "POST", body: {} });
@@ -544,8 +544,8 @@ export async function testGatewayTuyaLanReachability(deviceId) {
 export async function discoverGatewayTuyaLanDevices() {
   return gatewayApi("/api/v1/integrations/tuya/lan-discovery", { method: "POST", body: {} });
 }
-export async function readGatewayHuaweiClients() {
-  return gatewayApi("/api/v1/integrations/huawei/clients", { method: "POST", body: {} });
+export async function readGatewayHuaweiClients({ signal } = {}) {
+  return gatewayApi("/api/v1/integrations/huawei/clients", { method: "POST", body: {}, signal });
 }
 export async function readGatewayTeslaEvConfig() {
   return gatewayApi("/api/v1/energy/ev/tesla");

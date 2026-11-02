@@ -2451,8 +2451,8 @@ function updateSessionUi() {
   selectOwnerTab(activeOwnerTab);
   selectOwnerDevice(activeOwnerDevice);
 }
-async function refreshHardwareIntegrationConfig() {
-  const config = await readGatewayHardwareIntegrationConfig();
+async function refreshHardwareIntegrationConfig({signal}={}) {
+  const config = await readGatewayHardwareIntegrationConfig({signal});
   const deye = config.deye || {}, miner = config.antminer || {}, tuya = config.tuya || {};
   const deyeCloud=config.deye_cloud||{};
   state.tuyaDevices=normalizeTuyaInventory(tuya.devices);
@@ -2704,25 +2704,35 @@ $("#huawei-router-read").addEventListener("click", async event => {
   const button=event.currentTarget,status=$("#huawei-router-status");
   if(!ownerCanManageHardware("#tuya-status"))return;
   button.disabled=true;
-  const finished=showOperationDialog({title:"Consulta local do Huawei",message:"A ler a lista de clientes do router. Esta operação é apenas de leitura; não altera o Huawei nem envia comandos aos Tuya.",locked:true,progress:true});
+  const controller=new AbortController();let cancelled=false,timedOut=false,requestFinished=false;
+  const timeout=window.setTimeout(()=>{timedOut=true;controller.abort();},25_000);
+  const finished=showOperationDialog({title:"Consulta local do Huawei",message:"A ler a lista de clientes do router. Esta operação é apenas de leitura; não altera o Huawei nem envia comandos aos Tuya.",progress:true,actions:[{label:"Cancelar",value:"cancel"}]});
+  finished.then(result=>{if(!requestFinished&&(result==="cancel"||result==="dismiss")){cancelled=true;controller.abort();}});
   try{
     const host=$("#huawei-router-host").value.trim(),username="admin",password=$("#huawei-router-password").value;
-    const saved=await saveGatewayHardwareIntegrationConfig({huawei_router:{host,username,...(password?{password}:{})}});
+    const saved=await saveGatewayHardwareIntegrationConfig({huawei_router:{host,username,...(password?{password}:{})}},{signal:controller.signal});
     $("#huawei-router-password").value="";
     if(!saved.huawei_router?.configured)throw new Error("Introduz a palavra-passe do router e guarda o acesso local.");
-    const report=await readGatewayHuaweiClients();
-    await refreshHardwareIntegrationConfig();
-    updateOperationDialog({title:"Consulta Huawei concluída",message:`Foram lidos ${report.client_count} clientes; ${report.matched_count} MAC/IP foram associados aos Tuya configurados.`,actions:[{label:"Ver lista",value:"report",primary:true}]});
+    const report=await readGatewayHuaweiClients({signal:controller.signal});
+    await refreshHardwareIntegrationConfig({signal:controller.signal});requestFinished=true;window.clearTimeout(timeout);
+    const matchedCount=Number(report.matched_count)||0;
+    const matchMessage=matchedCount===1?"Foi encontrada 1 correspondência MAC/IP com um dispositivo Tuya.":`Foram encontradas ${matchedCount} correspondências MAC/IP com dispositivos Tuya.`;
+    updateOperationDialog({title:matchedCount?"Correspondência encontrada":"Consulta Huawei concluída",message:`O Huawei devolveu ${report.client_count} cliente(s). ${matchMessage}`,actions:[{label:"Ver lista",value:"report",primary:true}]});
     await finished;
     const rows=(report.clients||[]).map(item=>`<tr><td>${esc(item.name||"Sem nome")}</td><td>${esc(item.mac)}</td><td>${esc(item.ip)}</td></tr>`).join("");
     const dialog=document.createElement("dialog");dialog.className="settings-dialog tuya-diagnostic-dialog";
-    dialog.innerHTML=`<form method="dialog" class="dialog-header"><div><p class="eyebrow">HUAWEI · CONSULTA LOCAL</p><h2>MACs e IPs encontrados</h2></div><button class="icon-button" value="close" aria-label="Fechar">×</button></form><div class="dialog-body"><p class="field-note">O router devolveu ${esc(report.client_count)} cliente(s); ${esc(report.matched_count)} dispositivo(s) Tuya foram associados com os MACs/IPs já configurados. Os restantes podem ser associados manualmente ao editar cada dispositivo.</p><div class="diagnostic-table-wrap"><table class="diagnostic-table"><thead><tr><th>Nome no router</th><th>MAC</th><th>IP privado</th></tr></thead><tbody>${rows||'<tr><td colspan="3">O Huawei não devolveu clientes ligados.</td></tr>'}</tbody></table></div><div class="dialog-actions"><button class="button primary" type="button" data-huawei-close>OK</button></div></div>`;
+    dialog.innerHTML=`<form method="dialog" class="dialog-header"><div><p class="eyebrow">HUAWEI · CONSULTA LOCAL</p><h2>MACs e IPs encontrados</h2></div><button class="icon-button" value="close" aria-label="Fechar">×</button></form><div class="dialog-body"><p class="field-note">O router devolveu ${esc(report.client_count)} cliente(s). ${esc(matchMessage)} Os restantes podem ser associados manualmente ao editar cada dispositivo.</p><div class="diagnostic-table-wrap"><table class="diagnostic-table"><thead><tr><th>Nome no router</th><th>MAC</th><th>IP privado</th></tr></thead><tbody>${rows||'<tr><td colspan="3">O Huawei não devolveu clientes ligados.</td></tr>'}</tbody></table></div><div class="dialog-actions"><button class="button primary" type="button" data-huawei-close>OK</button></div></div>`;
     dialog.addEventListener("close",()=>dialog.remove());document.body.append(dialog);dialog.querySelector("[data-huawei-close]").addEventListener("click",()=>dialog.close("ok"));dialog.showModal();
-    status.textContent=`Consulta concluída: ${report.client_count} cliente(s), ${report.matched_count} associação(ões) Tuya. Os valores continuam editáveis em cada dispositivo.`;
+    status.textContent=`${matchMessage} Os valores continuam editáveis em cada dispositivo.`;
   }catch(error){
-    updateOperationDialog({title:"Consulta Huawei falhou",message:error.message||"O Gateway não conseguiu ler os clientes do router.",actions:[{label:"OK",value:"ok",primary:true}]});
-    await finished;status.textContent=`Consulta Huawei falhou: ${error.message||"verifica o IP, a ligação e as credenciais"}`;
-  }finally{button.disabled=false;}
+    requestFinished=true;
+    if(cancelled){status.textContent="Consulta Huawei cancelada.";}
+    else{
+      const message=timedOut?"O Gateway não respondeu à consulta Huawei dentro de 25 segundos. Confirma a ligação à rede local e tenta novamente.":error.message||"O Gateway não conseguiu ler os clientes do router.";
+      updateOperationDialog({title:"Consulta Huawei falhou",message,actions:[{label:"OK",value:"ok",primary:true}]});
+      await finished;status.textContent=`Consulta Huawei falhou: ${message}`;
+    }
+  }finally{window.clearTimeout(timeout);button.disabled=false;}
 });
 $("#tuya-sync").addEventListener("click", async event => {
   const status = $("#tuya-status"), button = event.currentTarget;
@@ -2873,7 +2883,7 @@ function teslaPresenceText(result) {
     NOT_DETECTED: "MAC não encontrado na lista atual do Huawei; isto pode acontecer se o Tesla estiver em repouso.",
     NOT_CONFIGURED: "Introduz e guarda o MAC Wi-Fi do Tesla primeiro.",
     UNKNOWN: result.reason === "huawei_router_not_configured"
-      ? "Configura e guarda o acesso local ao Huawei em Owner → Equipamentos."
+      ? "Configura e guarda o acesso local ao Huawei em Owner → Modem."
       : "O Gateway não conseguiu confirmar a presença pela lista do Huawei."
   };
   return (messages[result.state] || "Presença sem confirmação") + (result.checked_at ? " · " + new Date(result.checked_at).toLocaleString("pt-PT") : "");
