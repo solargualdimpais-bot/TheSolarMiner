@@ -159,6 +159,15 @@ test("Huawei router credentials allow choosing the account required by the local
   assert.match(app, /username=\$\("#huawei-router-username"\)\.value\.trim\(\)/);
 });
 
+test("Huawei version probe displays sanitized auth and endpoint diagnostics", () => {
+  const app = read("../app.js");
+  assert.match(app, /DIAGNÓSTICO DA CONSULTA/);
+  assert.match(app, /Autenticação no Huawei: /);
+  assert.match(app, /Endpoints que responderam/);
+  assert.match(app, /Respostas com erro/);
+  assert.match(app, /replace\(\/\[\^a-zA-Z0-9_\.:-\]\/g/);
+});
+
 test("Huawei LAN results cross-check known MACs and save Owner labels for new devices", () => {
   const app = read("../app.js");
   const auth = read("../gateway-auth.js");

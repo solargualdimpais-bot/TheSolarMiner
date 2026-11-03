@@ -161,8 +161,8 @@ test("Huawei router credentials allow choosing the account required by the local
 
 test("Huawei version probe displays sanitized auth and endpoint diagnostics", () => {
   const app = read("../app.js");
-  assert.match(app, /Diagnóstico da consulta/);
-  assert.match(app, /sessão autenticada/);
+  assert.match(app, /DIAGNÓSTICO DA CONSULTA/);
+  assert.match(app, /Autenticação no Huawei: /);
   assert.match(app, /Endpoints que responderam/);
   assert.match(app, /Respostas com erro/);
   assert.match(app, /replace\(\/\[\^a-zA-Z0-9_\.:-\]\/g/);
