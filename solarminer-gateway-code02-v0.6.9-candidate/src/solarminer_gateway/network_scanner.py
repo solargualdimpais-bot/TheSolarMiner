@@ -498,7 +498,9 @@ def scan_attached_networks() -> dict[str, Any]:
     # arp_sweep. TCP and ICMP probes below may cause Linux to resolve a neighbor;
     # that MAC can be used only for an IP that independently responded in this
     # scan, and is explicitly labeled as a neighbor-table result.
-    mac_by_ip = active_arp_macs
+    # Keep the raw-ARP capture set immutable: neighbor-table fallbacks are a
+    # different evidence source and must never be relabeled as active ARP.
+    mac_by_ip = dict(active_arp_macs)
     for ip in targets:
         if ip in mac_by_ip:
             responding[ip] = {"open_ports": [], "methods": ["arp_sweep"]}
