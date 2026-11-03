@@ -15,7 +15,7 @@ test("Tuya LAN report exposes the saved target and key presence without the key"
   assert.match(app, /local_key_configured\?"Configurada":"Em falta"/);
 });
 
-test("Modem tab remains as a clean placeholder after removing the Huawei search", () => {
+test("Modem tab hosts the local LAN scanner without restoring modem APIs", () => {
   assert.match(html, /data-owner-tab="modem"[^>]*>Modem<\/button>/);
   assert.match(html, /data-owner-panel="modem" id="gateway-modem-management"/);
   const tuyaPanel = html.match(/<fieldset class="device-card" data-device-panel="tuya"[\s\S]*?<\/fieldset>/)?.[0] || "";
@@ -23,9 +23,15 @@ test("Modem tab remains as a clean placeholder after removing the Huawei search"
   assert.ok(tuyaPanel);
   assert.ok(modemPanel);
   assert.doesNotMatch(tuyaPanel, /huawei|modem/i);
-  assert.match(modemPanel, /Esta área será reconstruída/);
+  assert.match(modemPanel, /id="local-network-scan"/);
+  assert.match(modemPanel, /id="local-network-apply"/);
+  assert.match(modemPanel, /id="local-network-results"/);
   assert.doesNotMatch(`${modemPanel}\n${app}`, /huawei|Pesquisar modem/i);
   assert.doesNotMatch(gatewayApp, /@app\.post\("\/api\/v1\/integrations\/huawei\/(?:clients|probe|client-label)/);
+  assert.match(gatewayApp, /@app\.post\("\/api\/v1\/network\/scan"\)/);
+  assert.match(gatewayApp, /@app\.post\("\/api\/v1\/network\/scan\/apply"\)/);
+  assert.match(app, /applyGatewayLocalNetworkMatches\(\)/);
+  assert.match(app, /dispositivos que responderam/);
 });
 
 test("Panels separate MPPT readings from inverter output and AQS records retain user fields", () => {

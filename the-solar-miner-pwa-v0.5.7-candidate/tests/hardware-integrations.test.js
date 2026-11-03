@@ -27,7 +27,8 @@ test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV 
   assert.match(app, /saveHardwareProvider\("antminer", \{ enabled: Boolean\(host\), host,/);
   for (const tab of ["access", "updates", "tailscale", "gateway", "equipment", "modem"]) assert.match(html, new RegExp(`data-owner-tab="${tab}"`));
   const modemPanel = html.match(/<section class="panel gateway-auth-panel owner-tab-panel" data-owner-panel="modem"[\s\S]*?<\/section>/)?.[0] || "";
-  assert.match(modemPanel, /Esta área será reconstruída/);
+  assert.match(modemPanel, /local-network-scan/);
+  assert.match(modemPanel, /local-network-results/);
   assert.doesNotMatch(`${html}\n${app}\n${auth}`, /huawei|Pesquisar modem|integrations\/huawei/i);
   for (const tab of ["deye", "antminer", "tuya"]) assert.match(html, new RegExp(`data-owner-device="${tab}"`));
   const workspace = read("../workspace-ui.js");

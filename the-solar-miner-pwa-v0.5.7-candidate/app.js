@@ -6,7 +6,7 @@ const PWA_INVITE_LANDING_URL = "https://solargualdimpais-bot.github.io/TheSolarM
 import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classifyEndpoint, inferHostedGatewayEndpoint, buildInviteLandingUrl, readInviteLandingHash, PRESENCE_API_STATUS } from "./gateway-connection.js";
 import { isHeicPhoto } from "./photo-format.js";
 import { addFavoriteId, normalizeFavoriteIds, reorderFavoriteIds } from "./favorite-list.js";
-import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, redeemGatewayInvite, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, readGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayDiagnosticsUpload, saveGatewayDiagnosticsUploadToken, disableGatewayDiagnosticsUpload, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, controlGatewayAntminer, testGatewayAntminerControl, readGatewayAntminerManagement, writeGatewayAntminerManagement, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, controlGatewayTuyaSetting, saveGatewayTuyaProductDpsDescription, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, testGatewayTuyaLanReachability, discoverGatewayTuyaLanDevices, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging, readGatewayTeslaLocalPresence } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, redeemGatewayInvite, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, readGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayDiagnosticsUpload, saveGatewayDiagnosticsUploadToken, disableGatewayDiagnosticsUpload, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, controlGatewayAntminer, testGatewayAntminerControl, readGatewayAntminerManagement, writeGatewayAntminerManagement, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, controlGatewayTuyaSetting, saveGatewayTuyaProductDpsDescription, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, testGatewayTuyaLanReachability, discoverGatewayTuyaLanDevices, scanGatewayLocalNetwork, applyGatewayLocalNetworkMatches, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging, readGatewayTeslaLocalPresence } from "./gateway-auth.js";
 
 let automationEditingId = "";
 let energyEngineActiveTab="summary";
@@ -2843,6 +2843,44 @@ function tuyaLanReasonText(reason){
   const messages={private_lan_target_required:"Configura o IP local ou o MAC do dispositivo.",tuya_local_ip_unresolved_from_mac:"Não foi possível descobrir o IP local a partir do MAC. Confirma que o dispositivo e o Gateway estão na mesma rede.",tuya_local_key_missing:"A chave local não está disponível no Gateway.",tuya_lan_driver_unavailable:"O controlador LAN não está disponível nesta instalação.",tuya_local_datapoint_mapping_required:"Falta mapear o canal do equipamento para o respetivo DPS local.",tuya_lan_status_unavailable:"O equipamento não devolveu leituras LAN válidas.",tuya_connection_failed:"O Gateway não conseguiu obter resposta do equipamento pela rede local.",tuya_lan_read_unavailable:"Não foi possível obter uma resposta LAN deste equipamento.",lan_response_timeout:"O dispositivo não respondeu na LAN dentro do limite de espera.",tuya_lan_port_closed:"O IP respondeu, mas a porta Tuya está fechada.",lan_response_timeout:"O dispositivo não respondeu na LAN dentro do limite de espera.",tuya_lan_port_closed:"O IP respondeu, mas a porta Tuya está fechada."};
   return messages[reason]||String(reason).replaceAll("_"," ");
 }
+function renderLocalNetworkResults(report){
+  const hostRows=(report.hosts||[]).map(host=>{
+    const matches=(host.matched_devices||[]).map(device=>`${esc(device.name)} · ${esc(device.device_id)}`).join("<br>")||"—";
+    const methods=(host.discovery_methods||[]).map(method=>({tcp:"TCP",icmp:"Ping",arp_neighbor:"vizinho ARP"}[method]||method)).join(", ")||"—";
+    return `<tr><td>${esc(host.ip)}${host.is_router?' <span class="source-tag">Router</span>':''}</td><td>${esc(host.mac||"MAC não visível")}</td><td>${matches}</td><td>${esc(methods)}</td><td>${(host.open_ports||[]).map(port=>esc(port)).join(", ")||"—"}</td></tr>`;
+  }).join("");
+  const networks=(report.networks||[]).map(item=>`${esc(item.network)} · ${esc(item.interface)}`).join("; ")||"Nenhuma rede local IPv4 encontrada.";
+  const skipped=(report.skipped_networks||[]).length?` Redes ignoradas por exceder o limite de ${esc(report.address_limit)} endereços: ${(report.skipped_networks||[]).map(esc).join(", ")}.`:"";
+  const matched=(report.hosts||[]).reduce((total,host)=>total+(host.matched_devices||[]).length,0);
+  const box=$("#local-network-results");
+  box.innerHTML=`<p class="field-note">Redes verificadas: ${networks}. Endereços verificados: ${esc(report.scanned_count)}; dispositivos que responderam: ${esc(report.responsive_count)}.${skipped}</p><div class="diagnostic-table-wrap"><table class="diagnostic-table"><thead><tr><th>IP</th><th>MAC</th><th>Device reconhecido</th><th>Detetado por</th><th>Portas abertas</th></tr></thead><tbody>${hostRows||'<tr><td colspan="5">Nenhum dispositivo respondeu nesta pesquisa.</td></tr>'}</tbody></table></div><p class="field-note">A pesquisa combina sondas TCP, ping e vizinhos ARP. Firewalls, isolamento Wi-Fi, VLANs, sub-redes atrás de routers e dispositivos desligados podem ocultar equipamentos. Um endereço sem resposta não prova que esteja livre.</p>`;
+  box.hidden=false;
+  $("#local-network-apply").hidden=matched===0;
+  return matched;
+}
+$("#local-network-scan").addEventListener("click",async event=>{
+  const button=event.currentTarget,status=$("#local-network-status"),results=$("#local-network-results"),save=$("#local-network-apply");
+  if(!ownerCanManageHardware("#local-network-status"))return;
+  button.disabled=true;save.hidden=true;results.hidden=true;status.textContent="A verificar as redes diretamente ligadas ao Gateway…";
+  try{
+    const report=await scanGatewayLocalNetwork();
+    const matched=renderLocalNetworkResults(report);
+    status.textContent=`Pesquisa concluída: ${report.responsive_count||0} dispositivo(s) responderam; ${matched} correspondência(s) por MAC com devices configurados.`;
+  }catch(error){status.textContent=`A pesquisa falhou: ${error.message||"o Gateway não conseguiu verificar a rede."}`;}
+  finally{button.disabled=false;}
+});
+$("#local-network-apply").addEventListener("click",async event=>{
+  const button=event.currentTarget,status=$("#local-network-status");
+  if(!ownerCanManageHardware("#local-network-status"))return;
+  if(!window.confirm("O Gateway vai fazer uma nova leitura e guardar o IP apenas nos devices cujo MAC detetado coincida com o MAC já configurado. Continuar?"))return;
+  button.disabled=true;status.textContent="A confirmar os MACs na rede e a guardar os IPs correspondentes…";
+  try{
+    const result=await applyGatewayLocalNetworkMatches();
+    await refreshHardwareIntegrationConfig();
+    status.textContent=result.updated_count?`IP atualizado em ${result.updated_count} device(s), após nova correspondência de MAC.`:"Os devices reconhecidos já tinham o IP atual; não foi necessária nenhuma alteração.";
+  }catch(error){status.textContent=`Não foi possível guardar: ${error.message||"falha na confirmação da rede."}`;}
+  finally{button.disabled=false;}
+});
 $("#deye-read").addEventListener("click", () => readHardwareProvider("deye"));
 $("#tuya-device-list").addEventListener("click", async event => {
   const card=event.target.closest('.tuya-device-card');

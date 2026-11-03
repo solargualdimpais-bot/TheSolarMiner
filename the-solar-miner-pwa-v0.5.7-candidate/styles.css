@@ -478,6 +478,7 @@ html[data-font="small"]{--font-ui-scale:.9;}html[data-font="normal"]{--font-ui-s
 .diagnostic-table tbody th{font-weight:600;white-space:normal;min-width:150px}
 @media(max-width:680px){.main-content .live-property-hero{border-radius:24px!important}}
 .diagnostic-table td:last-child{white-space:normal;min-width:230px;color:var(--muted)}
+.local-network-results{margin-top:14px}.local-network-results .diagnostic-table-wrap{max-height:58dvh}.local-network-results .diagnostic-table td{white-space:normal;min-width:110px}.local-network-results .diagnostic-table td:nth-child(2){font-family:ui-monospace,monospace}.local-network-results .source-tag{margin-left:6px}
 .home-favorites .favorite-device-grid{grid-template-columns:repeat(2,minmax(0,1fr));align-items:stretch;gap:10px}
 .home-favorites .favorite-device{aspect-ratio:1;min-height:0;padding:14px;display:flex;flex-direction:column;align-items:stretch;justify-content:space-between;gap:12px;border-radius:18px;cursor:default}
 .home-favorites .favorite-device{cursor:pointer}

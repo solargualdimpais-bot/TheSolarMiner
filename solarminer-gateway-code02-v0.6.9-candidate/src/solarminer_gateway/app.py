@@ -45,13 +45,14 @@ from . import energy_registry
 from . import energy_engine
 from . import site_profile
 from . import integrations as hardware_integrations
+from . import network_scanner
 from . import update_helper_client
 from . import updates as update_manager
 from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.154"
+PACKAGE_VERSION = "0.6.155"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -2071,6 +2072,87 @@ def tuya_lan_discovery(session: dict[str, Any] = Depends(require_permission("man
             raise HTTPException(500, "tuya_lan_discovery_save_failed") from exc
 
 
+@app.post("/api/v1/network/scan")
+def scan_local_network(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Scan only the Gateway's directly attached private IPv4 networks, read-only."""
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        try:
+            report = network_scanner.scan_attached_networks()
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            LOG.warning("Local network scan failed (%s)", type(exc).__name__)
+            raise HTTPException(502, "local_network_scan_failed") from exc
+        config = hardware_integrations.load_config()
+        tuya = config.get("tuya", {}) if isinstance(config.get("tuya"), dict) else {}
+        by_mac: dict[str, list[dict[str, str]]] = {}
+        for device in tuya.get("devices", []):
+            if not isinstance(device, dict) or not isinstance(device.get("device_id"), str):
+                continue
+            mac = str(device.get("local_mac") or "").strip().upper()
+            if re.fullmatch(MAC_RE, mac):
+                by_mac.setdefault(mac, []).append({"device_id": device["device_id"],
+                                                    "name": str(device.get("name") or "Tuya")[:120]})
+        for host in report["hosts"]:
+            host["matched_devices"] = by_mac.get(str(host.get("mac") or "").upper(), [])
+        audit(conn, session["user_id"], "network.local_scan", "local_network", "success", {
+            "scanned_count": report["scanned_count"], "responsive_count": report["responsive_count"],
+            "network_count": len(report["networks"]), "skipped_network_count": len(report["skipped_networks"]),
+        })
+        conn.commit()
+        return report
+
+
+@app.post("/api/v1/network/scan/apply")
+def apply_local_network_matches(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Rescan and persist IPs only where the observed MAC matches a configured device."""
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        try:
+            report = network_scanner.scan_attached_networks()
+            config = hardware_integrations.load_config()
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            LOG.warning("Local network rescan failed (%s)", type(exc).__name__)
+            raise HTTPException(502, "local_network_scan_failed") from exc
+        tuya = config.get("tuya", {}) if isinstance(config.get("tuya"), dict) else {}
+        devices = tuya.get("devices", [])
+        if not isinstance(devices, list):
+            devices = []
+        by_mac: dict[str, list[str]] = {}
+        for item in devices:
+            if isinstance(item, dict) and isinstance(item.get("device_id"), str):
+                mac = str(item.get("local_mac") or "").strip().upper()
+                if re.fullmatch(MAC_RE, mac):
+                    by_mac.setdefault(mac, []).append(item["device_id"])
+        updates = []
+        for host in report["hosts"]:
+            mac, ip = str(host.get("mac") or "").strip().upper(), str(host.get("ip") or "")
+            device_ids = by_mac.get(mac, [])
+            if not device_ids or not ip:
+                continue
+            for item in devices:
+                if isinstance(item, dict) and item.get("device_id") in device_ids:
+                    try:
+                        valid_ip = hardware_integrations._private_ip(ip)
+                    except ValueError:
+                        continue
+                    if item.get("local_ip") != valid_ip:
+                        item["local_ip"] = valid_ip
+                        updates.append({"device_id": item["device_id"], "name": str(item.get("name") or "Tuya"),
+                                        "mac": mac, "ip": valid_ip})
+        if updates:
+            hardware_integrations.save_config(config)
+        audit(conn, session["user_id"], "network.local_scan.apply", "tuya_devices", "success", {
+            "updated_device_count": len(updates), "scanned_count": report["scanned_count"],
+        })
+        conn.commit()
+        return {"updated_count": len(updates), "matched_count": sum(len(by_mac.get(str(host.get("mac") or "").upper(), [])) for host in report["hosts"]), "updated_devices": updates,
+                "message": "Only devices matched by their configured MAC address were updated."}
+
+
 @app.post("/api/v1/integrations/hardware/{provider}/read")
 def hardware_provider_read(provider: str, payload: dict[str, Any] | None = None,
                            session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
@@ -3438,7 +3520,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.154"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.155"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

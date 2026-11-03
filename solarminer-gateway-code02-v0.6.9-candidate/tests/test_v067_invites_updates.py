@@ -714,6 +714,38 @@ def test_tinytuya_lan_scanner_is_exported_by_bundled_package():
     assert callable(gateway.hardware_integrations.tinytuya.deviceScan)
 
 
+def test_local_network_scan_matches_known_tuya_by_mac_and_apply_updates_only_matching_ip(client, monkeypatch, tmp_path):
+    headers = {"Authorization": f"Bearer {owner_session(client)}"}
+    monkeypatch.setattr(gateway.hardware_integrations, "_data_dir", lambda: tmp_path)
+    gateway.hardware_integrations.save_config({"tuya": {"devices": [
+        {"device_id": "known-switch", "name": "Luz do jardim", "local_mac": "AA:BB:CC:DD:EE:21",
+         "local_ip": "192.168.10.20"},
+        {"device_id": "wrong-mac", "name": "Outro device", "local_mac": "AA:BB:CC:DD:EE:22",
+         "local_ip": "192.168.10.22"},
+    ]}})
+    report = {"networks": [{"interface": "eth0", "address": "192.168.10.2", "network": "192.168.10.0/24"}],
+              "scanned_count": 254, "responsive_count": 1, "hosts": [
+                  {"ip": "192.168.10.21", "mac": "AA:BB:CC:DD:EE:21", "interface": "eth0",
+                   "network": "192.168.10.0/24", "is_router": False, "open_ports": [80],
+                   "discovery_methods": ["tcp"]},
+              ], "skipped_networks": [], "address_limit": 4096,
+              "method": "bounded_tcp_probe_and_kernel_neighbor_table", "router_ips": []}
+    monkeypatch.setattr(gateway.network_scanner, "scan_attached_networks", lambda: report)
+
+    scanned = client.post("/api/v1/network/scan", headers=headers, json={})
+    assert scanned.status_code == 200, scanned.text
+    assert scanned.json()["hosts"][0]["matched_devices"] == [
+        {"device_id": "known-switch", "name": "Luz do jardim"},
+    ]
+
+    applied = client.post("/api/v1/network/scan/apply", headers=headers, json={})
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["updated_count"] == 1
+    saved = gateway.hardware_integrations.load_config()["tuya"]["devices"]
+    assert saved[0]["local_ip"] == "192.168.10.21"
+    assert saved[1]["local_ip"] == "192.168.10.22"
+
+
 def test_public_tuya_projection_never_labels_cloud_ip_as_local():
     projected = gateway.hardware_integrations.public_config({"tuya": {"devices": [
         {"device_id": "cloud-ip-only", "name": "Device", "ip": "87.10.20.30"},

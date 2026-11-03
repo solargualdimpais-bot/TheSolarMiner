@@ -544,6 +544,12 @@ export async function testGatewayTuyaLanReachability(deviceId) {
 export async function discoverGatewayTuyaLanDevices() {
   return gatewayApi("/api/v1/integrations/tuya/lan-discovery", { method: "POST", body: {} });
 }
+export async function scanGatewayLocalNetwork() {
+  return gatewayApi("/api/v1/network/scan", { method: "POST", body: {} });
+}
+export async function applyGatewayLocalNetworkMatches() {
+  return gatewayApi("/api/v1/network/scan/apply", { method: "POST", body: {} });
+}
 export async function readGatewayTeslaEvConfig() {
   return gatewayApi("/api/v1/energy/ev/tesla");
 }
