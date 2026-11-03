@@ -56,6 +56,7 @@ def test_scan_reports_direct_arp_tcp_and_ping_without_scanning_gateway_address(m
     })
     monkeypatch.setattr(network_scanner, "_ssdp_discovery", lambda _source: {})
     monkeypatch.setattr(network_scanner, "_mdns_discovery", lambda _source: {})
+    monkeypatch.setattr(network_scanner, "_neighbor_macs", lambda: {})
     monkeypatch.setattr(network_scanner.time, "sleep", lambda _seconds: None)
 
     def probe(ip, _ports, _timeout):
@@ -86,7 +87,7 @@ def test_scan_exposes_missing_interface_discovery(monkeypatch):
     assert report["scan_error"] == "interface_discovery_failed"
 
 
-def test_raw_arp_socket_failure_keeps_tcp_host_but_never_labels_it_arp_active(monkeypatch):
+def test_raw_arp_socket_failure_recovers_mac_for_a_current_tcp_response_as_neighbor(monkeypatch):
     monkeypatch.setattr(network_scanner, "_attached_ipv4_networks", lambda: ([
         {"interface": "eth0", "address": "192.168.10.2", "network": "192.168.10.0/30"},
     ], None))
@@ -94,6 +95,8 @@ def test_raw_arp_socket_failure_keeps_tcp_host_but_never_labels_it_arp_active(mo
     monkeypatch.setattr(network_scanner, "_active_arp_sweep", lambda *_args: (_ for _ in ()).throw(OSError("raw socket denied")))
     monkeypatch.setattr(network_scanner, "_ssdp_discovery", lambda _source: {})
     monkeypatch.setattr(network_scanner, "_mdns_discovery", lambda _source: {})
+    monkeypatch.setattr(network_scanner, "_neighbor_macs", lambda: {
+        "192.168.10.1": "AA:BB:CC:DD:EE:01"})
     monkeypatch.setattr(network_scanner, "_probe", lambda ip, *_args: (ip, [80]) if ip == "192.168.10.1" else None)
     monkeypatch.setattr(network_scanner, "_ping", lambda _ip: False)
     monkeypatch.setattr(network_scanner.time, "sleep", lambda _seconds: None)
@@ -102,8 +105,30 @@ def test_raw_arp_socket_failure_keeps_tcp_host_but_never_labels_it_arp_active(mo
 
     assert report["scan_warnings"] == ["active_arp_unavailable"]
     assert [host["ip"] for host in report["hosts"]] == ["192.168.10.1"]
-    assert report["hosts"][0]["mac"] is None
-    assert report["hosts"][0]["discovery_methods"] == ["tcp"]
+    assert report["hosts"][0]["mac"] == "AA:BB:CC:DD:EE:01"
+    assert report["hosts"][0]["mac_source"] == "neighbor_table"
+    assert report["hosts"][0]["discovery_methods"] == ["arp_neighbor", "tcp"]
+
+
+def test_stale_neighbor_is_not_shown_without_a_current_ip_response(monkeypatch):
+    monkeypatch.setattr(network_scanner, "_attached_ipv4_networks", lambda: ([
+        {"interface": "eth0", "address": "192.168.10.2", "network": "192.168.10.0/29"},
+    ], None))
+    monkeypatch.setattr(network_scanner, "default_gateway_ips", lambda: set())
+    monkeypatch.setattr(network_scanner, "_active_arp_sweep", lambda *_args: {})
+    monkeypatch.setattr(network_scanner, "_ssdp_discovery", lambda _source: {})
+    monkeypatch.setattr(network_scanner, "_mdns_discovery", lambda _source: {})
+    monkeypatch.setattr(network_scanner, "_probe", lambda ip, *_args: (ip, [80]) if ip == "192.168.10.5" else None)
+    monkeypatch.setattr(network_scanner, "_ping", lambda _ip: False)
+    monkeypatch.setattr(network_scanner, "_neighbor_macs", lambda: {
+        "192.168.10.3": "AA:BB:CC:DD:EE:03", "192.168.10.5": "AA:BB:CC:DD:EE:05"})
+
+    report = network_scanner.scan_attached_networks()
+
+    assert [host["ip"] for host in report["hosts"]] == ["192.168.10.5"]
+    assert report["hosts"][0]["mac"] == "AA:BB:CC:DD:EE:05"
+    assert report["hosts"][0]["mac_source"] == "neighbor_table"
+    assert report["hosts"][0]["discovery_methods"] == ["arp_neighbor", "tcp"]
 
 
 def test_scan_reports_one_mac_observed_on_multiple_ips(monkeypatch):
@@ -116,6 +141,7 @@ def test_scan_reports_one_mac_observed_on_multiple_ips(monkeypatch):
     })
     monkeypatch.setattr(network_scanner, "_ssdp_discovery", lambda _source: {})
     monkeypatch.setattr(network_scanner, "_mdns_discovery", lambda _source: {})
+    monkeypatch.setattr(network_scanner, "_neighbor_macs", lambda: {})
     monkeypatch.setattr(network_scanner, "_probe", lambda *_args: None)
     monkeypatch.setattr(network_scanner, "_ping", lambda _ip: False)
     report = network_scanner.scan_attached_networks()

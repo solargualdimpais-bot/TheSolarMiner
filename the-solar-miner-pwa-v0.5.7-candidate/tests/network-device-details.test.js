@@ -6,6 +6,7 @@ const app = readFileSync(new URL("../app.js", import.meta.url), "utf8");
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const auth = readFileSync(new URL("../gateway-auth.js", import.meta.url), "utf8");
 const gateway = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/app.py", import.meta.url), "utf8");
+const scanner = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/network_scanner.py", import.meta.url), "utf8");
 
 test("LAN result rows open editable MAC-keyed device details", () => {
   assert.match(app, /data-network-device-row="\$\{index\}"/);
@@ -14,6 +15,7 @@ test("LAN result rows open editable MAC-keyed device details", () => {
   assert.match(html, /id="network-device-detail-dialog"/);
   assert.match(html, /id="network-device-detail-ip"/);
   assert.match(html, /id="network-device-detail-mac"/);
+  assert.match(html, /id="network-device-detail-mac-source"/);
   assert.match(html, /id="network-device-detail-manufacturer"/);
   assert.match(html, /id="network-device-detail-model"/);
   assert.match(html, /id="network-device-detail-name"/);
@@ -27,4 +29,6 @@ test("saving LAN device details validates a fresh MAC sighting and blocks ambigu
   assert.match(gateway, /network_device_not_seen_in_current_scan/);
   assert.match(gateway, /ambiguous_ip/);
   assert.match(gateway, /network_device_inventory/);
+  assert.match(scanner, /neighbor_table/);
+  assert.match(scanner, /not set\(response\["methods"\]\)\.intersection\(\{"tcp", "icmp"\}\)/);
 });

@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.113: detalhes editáveis dos equipamentos encontrados na rede local.",
+  "description": "The Solar Miner PWA v0.5.114: origem do MAC distinguida entre ARP capturado e vizinhos atuais.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",

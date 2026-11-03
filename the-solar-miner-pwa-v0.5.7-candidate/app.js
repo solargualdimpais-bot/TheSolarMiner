@@ -2850,7 +2850,7 @@ function renderLocalNetworkResults(report){
   const hostRows=(report.hosts||[]).map((host,index)=>{
     const matches=(host.matched_devices||[]).map(device=>`${esc(device.name)}${device.device_id?` · ${esc(device.device_id)}`:""}`).join("<br>")||"—";
     const conflict=host.mac&&conflicts.has(String(host.mac).toUpperCase());
-    const methods=(host.discovery_methods||[]).map(method=>({arp_sweep:"ARP ativo",tcp:"TCP",icmp:"Ping",ssdp:"SSDP/UPnP",mdns:"mDNS/DNS-SD",arp_neighbor:"vizinho ARP"}[method]||method)).join(", ")||"—";
+    const methods=(host.discovery_methods||[]).map(method=>({arp_sweep:"ARP ativo · resposta capturada",tcp:"TCP",icmp:"Ping",ssdp:"SSDP/UPnP",mdns:"mDNS/DNS-SD",arp_neighbor:"Tabela de vizinhos · IP respondeu"}[method]||method)).join(", ")||"—";
     const ipLabel=host.mac_ip_conflict?`IP ambíguo: ${(host.ip_candidates||[]).map(esc).join(", ")}`:esc(host.ip);
     return `<tr${conflict?' class="warning-row"':''} tabindex="0" data-network-device-row="${index}" aria-label="Abrir detalhes de ${esc(host.friendly_name||host.hostname||host.ip||host.mac||"dispositivo")}"><td>${ipLabel}${host.is_router?' <span class="source-tag">Router</span>':''}</td><td>${esc(host.mac||"MAC não visível")}${conflict?' <span class="source-tag">MAC em vários IPs</span>':''}</td><td>${esc(host.friendly_name||host.hostname||"—")}</td><td>${esc(host.manufacturer||"—")}</td><td>${esc(host.model||"—")}</td><td>${matches}</td><td>${esc(methods)}</td><td>${(host.open_ports||[]).map(port=>esc(port)).join(", ")||"—"}</td></tr>`;
   }).join("");
@@ -2876,7 +2876,8 @@ function openLocalNetworkDeviceDetails(index){
   const match=(host.matched_devices||[])[0]||{};
   $("#network-device-detail-ip").textContent=ip;
   $("#network-device-detail-mac").textContent=host.mac||"Não visível; não é possível guardar pela chave MAC.";
-  $("#network-device-detail-discovery").textContent=(host.discovery_methods||[]).join(", ")||"—";
+  $("#network-device-detail-mac-source").textContent=host.mac_source==="active_arp"?"Resposta ARP capturada nesta pesquisa":host.mac_source==="neighbor_table"?"Tabela de vizinhos; o IP respondeu nesta pesquisa":"Sem MAC confirmado nesta pesquisa";
+  $("#network-device-detail-discovery").textContent=(host.discovery_methods||[]).map(method=>({arp_sweep:"ARP ativo",tcp:"TCP",icmp:"Ping",ssdp:"SSDP/UPnP",mdns:"mDNS/DNS-SD",arp_neighbor:"Tabela de vizinhos"}[method]||method)).join(", ")||"—";
   $("#network-device-detail-name").value=match.name||host.friendly_name||host.hostname||"";
   $("#network-device-detail-type").value=match.device_type|| (host.is_router?"router":"unknown");
   $("#network-device-detail-manufacturer").textContent=host.manufacturer||"—";

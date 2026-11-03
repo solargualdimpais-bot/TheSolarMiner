@@ -423,6 +423,27 @@ def _mac_vendor(mac: str | None) -> str | None:
     return _oui_database().get(prefix) if len(prefix) == 6 else None
 
 
+def _neighbor_macs(path: Path = Path("/proc/net/arp")) -> dict[str, str]:
+    """Read resolved Linux neighbors; callers must independently confirm a live IP."""
+    try:
+        lines = path.read_text(encoding="ascii", errors="ignore").splitlines()[1:]
+    except OSError:
+        return {}
+    result: dict[str, str] = {}
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 6 or fields[2].lower() != "0x2":
+            continue
+        ip, mac = fields[0], fields[3].upper()
+        try:
+            ipaddress.IPv4Address(ip)
+        except ValueError:
+            continue
+        if re.fullmatch(r"(?:[0-9A-F]{2}:){5}[0-9A-F]{2}", mac) and mac != "00:00:00:00:00:00":
+            result[ip] = mac
+    return result
+
+
 def scan_attached_networks() -> dict[str, Any]:
     """Actively discover link-layer neighbors on directly attached private IPv4 LANs."""
     networks, interface_error = _attached_ipv4_networks()
@@ -473,9 +494,10 @@ def scan_attached_networks() -> dict[str, Any]:
             LOG.warning("Active ARP scan unavailable on interface %s (%s)",
                         item["interface"], type(exc).__name__)
 
-    # Only replies captured from raw Ethernet ARP during this scan may produce an
-    # IP-to-MAC result. The Linux neighbor table can be stale and is not proof of
-    # a live ARP response, so it is intentionally excluded from scan results.
+    # Only replies captured from raw Ethernet ARP during this scan are labeled
+    # arp_sweep. TCP and ICMP probes below may cause Linux to resolve a neighbor;
+    # that MAC can be used only for an IP that independently responded in this
+    # scan, and is explicitly labeled as a neighbor-table result.
     mac_by_ip = active_arp_macs
     for ip in targets:
         if ip in mac_by_ip:
@@ -503,12 +525,22 @@ def scan_attached_networks() -> dict[str, Any]:
             if future.result():
                 responding[ping_futures[future]] = {"open_ports": [], "methods": ["icmp"]}
 
+    neighbor_macs = _neighbor_macs()
+    for ip, response in responding.items():
+        if ip in mac_by_ip or not set(response["methods"]).intersection({"tcp", "icmp"}):
+            continue
+        neighbor_mac = neighbor_macs.get(ip)
+        if neighbor_mac:
+            mac_by_ip[ip] = neighbor_mac
+            response["methods"].append("arp_neighbor")
+
     hosts = []
     for ip in sorted(responding, key=lambda value: int(ipaddress.IPv4Address(value))):
         iface = targets[ip]
         details = advertised.get(ip, {})
         mac = mac_by_ip.get(ip)
-        hosts.append({"ip": ip, "mac": mac, "hostname": details.get("hostname"),
+        mac_source = "active_arp" if ip in active_arp_macs else "neighbor_table" if mac else None
+        hosts.append({"ip": ip, "mac": mac, "mac_source": mac_source, "hostname": details.get("hostname"),
                       "friendly_name": details.get("friendly_name"), "model": details.get("model"),
                       "manufacturer": details.get("manufacturer") or _mac_vendor(mac),
                       "interface": iface["interface"],
