@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import errno
+import fcntl
 import ipaddress
 import json
 import re
@@ -43,10 +44,14 @@ def _run_ip_json(*args: str) -> Any:
 
 def _attached_ipv4_networks() -> tuple[list[dict[str, str]], str | None]:
     """Return eligible IPv4 interface networks and a safe discovery error, if any."""
+    command_failed = False
     try:
-        rows = _run_ip_json("-j", "-4", "addr", "show", "scope", "global")
+        # Do not ask `ip` to pre-filter by scope: interface metadata is not
+        # consistent across virtual, bridge and appliance network drivers.
+        rows = _run_ip_json("-j", "-4", "addr", "show")
     except (OSError, subprocess.SubprocessError, ValueError, json.JSONDecodeError):
-        return [], "interface_discovery_failed"
+        command_failed = True
+        rows = []
     found: dict[tuple[str, str], dict[str, str]] = {}
     for interface in rows if isinstance(rows, list) else []:
         if not isinstance(interface, dict):
@@ -64,7 +69,46 @@ def _attached_ipv4_networks() -> tuple[list[dict[str, str]], str | None]:
                 continue
             key = (name, str(network))
             found[key] = {"interface": name, "address": str(address.ip), "network": str(network)}
-    return list(found.values()), None
+    # Some constrained systemd environments or older iproute2 builds can
+    # return an empty JSON list even though Linux has an addressed interface.
+    # AF_INET ioctl is allowed by the service sandbox and avoids Netlink/ip.
+    if not found:
+        found.update(_ioctl_ipv4_interfaces())
+    error = None if found else (
+        "interface_discovery_failed" if command_failed else "no_ipv4_address_on_interfaces")
+    return list(found.values()), error
+
+
+def _ioctl_ipv4_interfaces() -> dict[tuple[str, str], dict[str, str]]:
+    """Fallback interface address enumeration using AF_INET ioctls."""
+    ioctl_address = 0x8915  # SIOCGIFADDR
+    ioctl_netmask = 0x891B  # SIOCGIFNETMASK
+    found: dict[tuple[str, str], dict[str, str]] = {}
+    try:
+        names = [entry.name for entry in Path("/sys/class/net").iterdir()]
+    except OSError:
+        return found
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            for name in names:
+                try:
+                    request = struct.pack("256s", name.encode("ascii")[:15])
+                    address_raw = fcntl.ioctl(sock.fileno(), ioctl_address, request)
+                    netmask_raw = fcntl.ioctl(sock.fileno(), ioctl_netmask, request)
+                    address = ipaddress.IPv4Address(address_raw[20:24])
+                    netmask = ipaddress.IPv4Address(netmask_raw[20:24])
+                    interface = ipaddress.IPv4Interface(f"{address}/{netmask}")
+                except (OSError, UnicodeEncodeError, ValueError):
+                    continue
+                network = interface.network
+                if network.is_loopback or network.is_link_local or network.is_multicast:
+                    continue
+                key = (name, str(network))
+                found[key] = {"interface": name, "address": str(address),
+                              "network": str(network)}
+    except OSError:
+        return found
+    return found
 
 
 def attached_ipv4_networks() -> list[dict[str, str]]:
@@ -518,7 +562,8 @@ def scan_attached_networks() -> dict[str, Any]:
                       "open_ports": responding[ip]["open_ports"],
                       "service_details": details, "discovery_methods": sorted(set(responding[ip]["methods"]))})
     scan_error = interface_error or ("no_eligible_private_ipv4_network" if not route_rows and not skipped else None)
-    return {"networks": route_rows, "scanned_count": len(targets), "responsive_count": len(hosts),
+    return {"networks": route_rows, "interface_addresses": networks,
+            "scanned_count": len(targets), "responsive_count": len(hosts),
             "hosts": hosts, "skipped_networks": skipped, "address_limit": MAX_ADDRESSES,
             "method": "active_arp_tcp_icmp_ssdp_mdns", "router_ips": sorted(gateways),
             "scan_error": scan_error, "scan_warnings": sorted(set(scan_warnings))}

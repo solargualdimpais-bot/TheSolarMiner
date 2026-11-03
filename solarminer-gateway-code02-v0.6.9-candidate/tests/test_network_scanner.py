@@ -113,6 +113,28 @@ def test_scan_exposes_missing_interface_discovery(monkeypatch):
     assert report["scan_error"] == "interface_discovery_failed"
 
 
+def test_interface_discovery_uses_ioctl_when_ip_returns_no_addresses(monkeypatch):
+    expected = {("eth0", "192.168.8.0/24"): {
+        "interface": "eth0", "address": "192.168.8.2", "network": "192.168.8.0/24"}}
+    monkeypatch.setattr(network_scanner, "_run_ip_json", lambda *_args: [])
+    monkeypatch.setattr(network_scanner, "_ioctl_ipv4_interfaces", lambda: expected)
+    networks, error = network_scanner._attached_ipv4_networks()
+    assert networks == list(expected.values())
+    assert error is None
+
+
+def test_interface_discovery_distinguishes_no_address_from_enumeration_failure(monkeypatch):
+    monkeypatch.setattr(network_scanner, "_run_ip_json", lambda *_args: [])
+    monkeypatch.setattr(network_scanner, "_ioctl_ipv4_interfaces", lambda: {})
+    assert network_scanner._attached_ipv4_networks() == ([], "no_ipv4_address_on_interfaces")
+
+    def fail_ip(*_args):
+        raise OSError("ip command unavailable")
+
+    monkeypatch.setattr(network_scanner, "_run_ip_json", fail_ip)
+    assert network_scanner._attached_ipv4_networks() == ([], "interface_discovery_failed")
+
+
 def test_large_networks_are_reported_as_skipped_without_materializing_all_hosts(monkeypatch):
     monkeypatch.setattr(network_scanner, "_attached_ipv4_networks", lambda: ([
         {"interface": "eth0", "address": "10.0.0.2", "network": "10.0.0.0/8"},
