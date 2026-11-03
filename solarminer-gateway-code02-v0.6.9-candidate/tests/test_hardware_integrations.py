@@ -1167,6 +1167,64 @@ def test_tuya_mac_only_configuration_resolves_private_ip_from_lan_scan(monkeypat
     assert integrations._tuya_resolve_local_ip({"local_mac": "aa-bb-cc-dd-ee-ff"}) == "192.168.8.44"
 
 
+def test_tuya_mac_scan_does_not_choose_between_duplicate_ips(monkeypatch):
+    monkeypatch.setattr(integrations, "_TUYA_MAC_SCAN_CACHE", (0.0, {}))
+    monkeypatch.setattr(integrations, "tinytuya", type("TinyTuyaFake", (), {
+        "deviceScan": staticmethod(lambda **_kwargs: {
+            "relay-a": {"mac": "AA:BB:CC:DD:EE:FF", "ip": "192.168.8.44"},
+            "relay-b": {"mac": "aa-bb-cc-dd-ee-ff", "ip": "192.168.8.45"},
+            "relay-c": {"mac": "11:22:33:44:55:66", "ip": "192.168.8.46"},
+        })
+    }))
+    found = integrations._tuya_scan_local_ips_by_mac(refresh=True)
+    assert found == {"112233445566": "192.168.8.46"}
+
+
+def test_tuya_read_refreshes_stale_ip_by_exact_mac_and_persists_new_ip(monkeypatch):
+    device = {"device_id": "relay-1", "name": "Breaker", "local_key": "local-key-123",
+              "local_ip": "192.168.8.80", "local_mac": "AA:BB:CC:DD:EE:FF", "local_protocol": "3.3"}
+    attempts = []
+
+    def local_status(item):
+        attempts.append(item["local_ip"])
+        if item["local_ip"] == "192.168.8.80":
+            raise RuntimeError("tuya_protocol_probe_failed:3.3,3.4,3.5")
+        return {"device_id": item["device_id"], "name": item["name"], "status": [{"code": "power", "value": 120}],
+                "connection_state": "local_responded", "local_protocol": "3.4", "local_ip": item["local_ip"]}
+
+    saved = []
+    monkeypatch.setattr(integrations, "_tuya_local_status", local_status)
+    monkeypatch.setattr(integrations, "_tuya_scan_local_ips_by_mac",
+                        lambda **_kwargs: {"AABBCCDDEEFF": "192.168.8.200"})
+    monkeypatch.setattr(integrations, "_persist_tuya_protocols", lambda protocols, ips: saved.append((protocols, ips)))
+
+    result = integrations.read_tuya({"devices": [device]})
+
+    assert attempts == ["192.168.8.80", "192.168.8.200"]
+    assert device["local_ip"] == "192.168.8.200"
+    assert result[0]["connection_state"] == "local_responded"
+    assert result[0]["ip_refreshed_by_mac"] is True
+    assert saved == [({"relay-1": "3.4"}, {"relay-1": "192.168.8.200"})]
+
+
+def test_tuya_read_marks_offline_and_discards_ip_when_mac_is_not_found(monkeypatch):
+    device = {"device_id": "relay-1", "name": "Breaker", "local_key": "local-key-123",
+              "local_ip": "192.168.8.80", "local_mac": "AA:BB:CC:DD:EE:FF", "local_protocol": "3.3"}
+    monkeypatch.setattr(integrations, "_tuya_local_status",
+                        lambda _item: (_ for _ in ()).throw(RuntimeError("tuya_protocol_probe_failed:3.3,3.4,3.5")))
+    monkeypatch.setattr(integrations, "_tuya_scan_local_ips_by_mac", lambda **_kwargs: {})
+    saved = []
+    monkeypatch.setattr(integrations, "_persist_tuya_protocols", lambda protocols, ips: saved.append((protocols, ips)))
+
+    result = integrations.read_tuya({"devices": [device]})
+
+    assert result[0]["connection_state"] == "failed"
+    assert result[0]["reason"] == "tuya_local_ip_not_found_for_mac"
+    assert result[0]["local_ip"] is None
+    assert "local_ip" not in device
+    assert saved == [({}, {"relay-1": None})]
+
+
 def test_tuya_switch_control_posts_only_configured_switch_without_immediate_readback(monkeypatch):
     calls = []
     class LocalDevice:

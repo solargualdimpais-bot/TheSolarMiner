@@ -559,6 +559,40 @@ def _tuya_normalize_mac(value: Any) -> str:
     return compact.upper() if len(compact) == 12 else ""
 
 
+def _tuya_scan_local_ips_by_mac(*, refresh: bool = False) -> dict[str, str]:
+    """Return only unambiguous private IPs discovered for exact Tuya MACs."""
+    if tinytuya is None:
+        raise RuntimeError("tuya_lan_driver_unavailable")
+    global _TUYA_MAC_SCAN_CACHE
+    with _TUYA_MAC_SCAN_LOCK:
+        now = time.monotonic()
+        expires_at, by_mac = _TUYA_MAC_SCAN_CACHE
+        if refresh or now >= expires_at:
+            candidates: dict[str, set[str]] = {}
+            try:
+                scanned = tinytuya.deviceScan(verbose=False, maxretry=3, poll=False, byID=True)
+            except Exception as exc:
+                _TUYA_MAC_SCAN_CACHE = (now + 5.0, {})
+                raise RuntimeError("tuya_local_ip_refresh_failed") from exc
+            if isinstance(scanned, dict):
+                for scan_key, row in scanned.items():
+                    if not isinstance(row, dict):
+                        continue
+                    scanned_mac = _tuya_normalize_mac(row.get("mac"))
+                    scanned_ip = row.get("ip") or (scan_key if isinstance(scan_key, str) else None)
+                    if not scanned_mac or not isinstance(scanned_ip, str):
+                        continue
+                    try:
+                        private_ip = _private_ip(scanned_ip)
+                    except ValueError:
+                        continue
+                    candidates.setdefault(scanned_mac, set()).add(private_ip)
+            # A repeated MAC at multiple IPs is ambiguous; never pick one by order.
+            by_mac = {mac: next(iter(ips)) for mac, ips in candidates.items() if len(ips) == 1}
+            _TUYA_MAC_SCAN_CACHE = (now + 5.0, by_mac)
+        return dict(by_mac)
+
+
 def _tuya_resolve_local_ip(device: dict[str, Any]) -> str:
     host = device.get("local_ip")
     if host:
@@ -570,35 +604,8 @@ def _tuya_resolve_local_ip(device: dict[str, Any]) -> str:
     mac = _tuya_normalize_mac(device.get("local_mac"))
     if not mac:
         raise RuntimeError("private_lan_target_required")
-    if tinytuya is None:
-        raise RuntimeError("tuya_lan_driver_unavailable")
-
-    # A MAC address identifies a LAN device but cannot be used as a TCP target.
-    # Resolve it from a bounded TinyTuya broadcast scan and cache the result briefly.
-    global _TUYA_MAC_SCAN_CACHE
-    with _TUYA_MAC_SCAN_LOCK:
-        now = time.monotonic()
-        expires_at, by_mac = _TUYA_MAC_SCAN_CACHE
-        if now >= expires_at:
-            found: dict[str, str] = {}
-            try:
-                scanned = tinytuya.deviceScan(verbose=False, maxretry=3, poll=False, byID=True)
-            except Exception as exc:
-                raise RuntimeError("tuya_local_ip_unresolved_from_mac") from exc
-            if isinstance(scanned, dict):
-                for scan_key, row in scanned.items():
-                    if not isinstance(row, dict):
-                        continue
-                    scanned_mac = _tuya_normalize_mac(row.get("mac"))
-                    scanned_ip = row.get("ip") or (scan_key if isinstance(scan_key, str) else None)
-                    if scanned_mac and isinstance(scanned_ip, str):
-                        try:
-                            found[scanned_mac] = _private_ip(scanned_ip)
-                        except ValueError:
-                            continue
-            _TUYA_MAC_SCAN_CACHE = (now + 30.0, found)
-            by_mac = found
-        host = by_mac.get(mac)
+    by_mac = _tuya_scan_local_ips_by_mac()
+    host = by_mac.get(mac)
     if not host:
         raise RuntimeError("tuya_local_ip_unresolved_from_mac")
     return host
@@ -717,8 +724,8 @@ def _tuya_probe_local_status(device: dict[str, Any]):
     raise RuntimeError("tuya_protocol_probe_failed:" + ",".join(failures))
 
 
-def _persist_tuya_protocols(protocols: dict[str, str], local_ips: dict[str, str] | None = None) -> None:
-    if not protocols:
+def _persist_tuya_protocols(protocols: dict[str, str], local_ips: dict[str, str | None] | None = None) -> None:
+    if not protocols and not local_ips:
         return
     with _TUYA_PROTOCOL_CONFIG_LOCK:
         try:
@@ -730,15 +737,21 @@ def _persist_tuya_protocols(protocols: dict[str, str], local_ips: dict[str, str]
             return
         changed = False
         for device in tuya["devices"]:
-            if isinstance(device, dict) and device.get("device_id") in protocols:
-                protocol = protocols[device["device_id"]]
-                if device.get("local_protocol") != protocol:
+            if isinstance(device, dict):
+                device_id = device.get("device_id")
+                protocol = protocols.get(device_id)
+                if protocol and device.get("local_protocol") != protocol:
                     device["local_protocol"] = protocol
                     changed = True
-                ip = (local_ips or {}).get(device["device_id"])
-                if ip and device.get("local_ip") != ip:
-                    device["local_ip"] = ip
-                    changed = True
+                if local_ips is not None and device_id in local_ips:
+                    ip = local_ips[device_id]
+                    if ip is None:
+                        if "local_ip" in device:
+                            device.pop("local_ip", None)
+                            changed = True
+                    elif ip and device.get("local_ip") != ip:
+                        device["local_ip"] = ip
+                        changed = True
         if changed:
             try:
                 save_config(current)
@@ -795,11 +808,63 @@ def read_tuya(config: dict[str, Any]) -> list[dict[str, Any]]:
     # Keep polling a large home bounded and return rows in their configured order.
     with ThreadPoolExecutor(max_workers=min(8, len(devices)), thread_name_prefix="tuya-lan") as pool:
         results = list(pool.map(read_one, devices))
+    # A stale configured IP is tried first. If that complete read fails, perform
+    # one LAN scan for this poll, match by exact MAC, persist only unique matches,
+    # then retry those devices once at the newly discovered address.
+    failed_indexes = [index for index, result in enumerate(results)
+                      if result.get("connection_state") == "failed"
+                      and (str(result.get("reason", "")).startswith("tuya_protocol_probe_failed:")
+                           or result.get("reason") == "tuya_local_ip_unresolved_from_mac")
+                      and _tuya_normalize_mac(devices[index].get("local_mac"))]
+    refreshed_ips: dict[str, str | None] = {}
+    cleared_ip_devices: set[str] = set()
+    if failed_indexes:
+        try:
+            discovered_by_mac = _tuya_scan_local_ips_by_mac(refresh=True)
+        except RuntimeError as exc:
+            discovered_by_mac = {}
+            for index in failed_indexes:
+                results[index]["reason"] = str(exc)
+                # A failed scan is not proof that the saved IP is stale. Keep
+                # the configured address for diagnostics; mark the read failed.
+                results[index]["local_ip"] = devices[index].get("local_ip")
+        else:
+            for index in failed_indexes:
+                device = devices[index]
+                device_id = device["device_id"]
+                mac = _tuya_normalize_mac(device.get("local_mac"))
+                current_ip = device.get("local_ip")
+                new_ip = discovered_by_mac.get(mac)
+                if not new_ip:
+                    if current_ip:
+                        device.pop("local_ip", None)
+                        refreshed_ips[device_id] = None
+                        cleared_ip_devices.add(device_id)
+                    results[index]["reason"] = "tuya_local_ip_not_found_for_mac"
+                    results[index]["local_ip"] = None
+                    results[index]["ip_cleared_missing_mac"] = bool(current_ip)
+                    continue
+                refreshed_ips[device_id] = new_ip
+                device["local_ip"] = new_ip
+                started = time.perf_counter()
+                try:
+                    retried = _tuya_local_status(device)
+                    retried["latency_ms"] = round((time.perf_counter() - started) * 1000, 1)
+                    retried["ip_refreshed_by_mac"] = new_ip != current_ip
+                    results[index] = retried
+                except (RuntimeError, ValueError, OSError, TypeError) as exc:
+                    results[index] = {"device_id": device_id, "name": device.get("name", "Tuya device"),
+                                      "connection_state": "failed", "reason": str(exc)[:120],
+                                      "source": "TUYA_LAN", "trust": "UNAVAILABLE",
+                                      "local_ip": new_ip, "ip_refreshed_by_mac": new_ip != current_ip,
+                                      "latency_ms": round((time.perf_counter() - started) * 1000, 1)}
     selected = {item["device_id"]: item["local_protocol"] for item in results
                 if item.get("connection_state") == "local_responded" and item.get("local_protocol") in _TUYA_PROTOCOL_FALLBACKS}
-    if selected:
-        local_ips = {item["device_id"]: item["local_ip"] for item in results
-                     if item.get("connection_state") == "local_responded" and item.get("local_ip")}
+    local_ips: dict[str, str | None] = {item["device_id"]: item["local_ip"] for item in results
+                                       if item.get("local_ip") and (item.get("connection_state") == "local_responded"
+                                                                     or item.get("device_id") in refreshed_ips)}
+    local_ips.update({device_id: None for device_id in cleared_ip_devices})
+    if selected or local_ips:
         _persist_tuya_protocols(selected, local_ips)
     return results
 

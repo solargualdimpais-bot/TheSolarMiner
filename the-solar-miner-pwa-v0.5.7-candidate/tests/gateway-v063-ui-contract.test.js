@@ -11,8 +11,20 @@ const workflow = readFileSync(new URL("../../.github/workflows/gateway-release.y
 test("Tuya LAN report exposes the saved target and key presence without the key", () => {
   assert.match(gatewayApp, /"local_ip": item\.get\("local_ip", ""\)/);
   assert.match(gatewayApp, /"local_key_configured": bool\(item\.get\("local_key"\)\)/);
+  assert.match(gatewayApp, /"ip_refreshed_by_mac": any\(row\.get\("ip_refreshed_by_mac"\) for row in rows\)/);
+  assert.match(gatewayApp, /"ip_cleared_missing_mac": any\(row\.get\("ip_cleared_missing_mac"\) for row in rows\)/);
   assert.match(app, /IP guardado/);
+  assert.match(app, /Atualizado pelo MAC/);
+  assert.match(app, /Removido: MAC ausente/);
   assert.match(app, /local_key_configured\?"Configurada":"Em falta"/);
+});
+
+test("Tuya LAN recovery requires an exact unique MAC match and refreshes only after a failed read", () => {
+  const integrations = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/integrations.py", import.meta.url), "utf8");
+  assert.match(integrations, /failed_indexes[\s\S]*_tuya_scan_local_ips_by_mac\(refresh=True\)/);
+  assert.match(integrations, /by_mac = \{mac: next\(iter\(ips\)\) for mac, ips in candidates\.items\(\) if len\(ips\) == 1\}/);
+  assert.match(integrations, /tuya_local_ip_not_found_for_mac/);
+  assert.match(integrations, /device\.pop\("local_ip", None\)/);
 });
 
 test("Modem tab hosts the local LAN scanner without restoring modem APIs", () => {

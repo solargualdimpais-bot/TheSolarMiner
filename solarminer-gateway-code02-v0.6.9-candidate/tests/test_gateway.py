@@ -169,6 +169,7 @@ def test_tuya_event_collector_polls_devices_even_without_a_pwa_request(tmp_path,
         {"device_id": "not-configured", "name": "No key", "local_ip": "192.168.1.21"},
     ]}
     monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: {"tuya": config})
+    monkeypatch.setattr(gateway.hardware_integrations, "save_config", lambda _config: None)
     observed = []
     def read_tuya(selected):
         observed.extend(item["device_id"] for item in selected["devices"])
@@ -182,6 +183,32 @@ def test_tuya_event_collector_polls_devices_even_without_a_pwa_request(tmp_path,
         rows = conn.execute("SELECT event_type, new_value_json FROM device_events ORDER BY id").fetchall()
     assert [(row["event_type"], row["new_value_json"]) for row in rows] == [
         ("availability", "true"), ("switch_state", "true")]
+    assert config["devices"][0]["local_control_state"] == "ready"
+
+
+def test_tuya_event_collector_marks_a_failed_device_offline_without_rewriting_status(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLARMINER_DATA_DIR", str(tmp_path / "solarminer-data"))
+    monkeypatch.setattr(gateway, "DB_PATH", tmp_path / "gateway.db")
+    monkeypatch.setattr(gateway, "BOOTSTRAP_PATH", tmp_path / "bootstrap.token")
+    monkeypatch.setattr(gateway, "INSTANCE_MARKER", tmp_path / "initialized.marker")
+    gateway.initialize()
+    config = {"devices": [{"device_id": "lan-offline", "name": "Breaker", "local_key": "local-key-valid",
+                          "local_ip": "192.168.1.20", "local_control_state": "ready",
+                          "current_status": [{"code": "power", "value": 500}], "last_status_at": 123}]}
+    saved = []
+    monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: {"tuya": config})
+    monkeypatch.setattr(gateway.hardware_integrations, "save_config", lambda value: saved.append(value))
+    monkeypatch.setattr(gateway.hardware_integrations, "read_tuya", lambda _selected: [{
+        "device_id": "lan-offline", "name": "Breaker", "connection_state": "failed",
+        "reason": "tuya_local_ip_not_found_for_mac", "status": [],
+    }])
+
+    gateway._collect_tuya_device_events_once()
+
+    assert config["devices"][0]["local_control_state"] == "unavailable"
+    assert config["devices"][0]["current_status"] == [{"code": "power", "value": 500}]
+    assert config["devices"][0]["last_status_at"] == 123
+    assert len(saved) == 1
 
 
 def test_tuya_event_poll_interval_defaults_to_one_and_a_half_seconds_and_honors_override(monkeypatch):

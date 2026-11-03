@@ -52,7 +52,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.165"
+PACKAGE_VERSION = "0.6.166"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -751,6 +751,8 @@ def _collect_tuya_device_events_once() -> int:
         recorded = _persist_tuya_device_events(conn, readings)
         energy_engine.persist_tuya_telemetry(conn, readings, devices, config.get("product_schemas", {}))
         conn.commit()
+    if _update_tuya_device_records(integration_config, readings, record_status=False):
+        hardware_integrations.save_config(integration_config)
     return recorded
 
 
@@ -1796,10 +1798,12 @@ def _persist_tuya_device_events(conn: sqlite3.Connection, readings: list[dict[st
     return recorded
 
 
-def _update_tuya_device_records(config: dict[str, Any], readings: list[dict[str, Any]]) -> None:
-    """Persist sticky LAN confirmation and the last valid status without trusting PWA claims."""
+def _update_tuya_device_records(config: dict[str, Any], readings: list[dict[str, Any]], *,
+                                record_status: bool = True) -> bool:
+    """Persist device availability and, when requested, the last valid status."""
     tuya = config.get("tuya", {}) if isinstance(config.get("tuya"), dict) else {}
     by_id = {item.get("device_id"): item for item in readings if isinstance(item, dict)}
+    changed = False
     for device in tuya.get("devices", []):
         if not isinstance(device, dict):
             continue
@@ -1808,11 +1812,19 @@ def _update_tuya_device_records(config: dict[str, Any], readings: list[dict[str,
             continue
         valid = (reading.get("connection_state") == "local_responded"
                  and isinstance(reading.get("status"), list) and bool(reading.get("status")))
-        device["local_control_state"] = "ready" if valid else "unavailable"
-        device["local_verified"] = bool(device.get("local_verified") or valid)
-        if valid:
+        state = "ready" if valid else "unavailable"
+        if device.get("local_control_state") != state:
+            device["local_control_state"] = state
+            changed = True
+        if record_status:
+            was_verified = bool(device.get("local_verified"))
+            device["local_verified"] = bool(was_verified or valid)
+            changed = changed or device["local_verified"] != was_verified
+        if valid and record_status:
             device["current_status"] = reading["status"]
             device["last_status_at"] = int(time.time())
+            changed = True
+    return changed
 
 
 def _append_tuya_command_event(conn: sqlite3.Connection, device_id: str, code: str, requested_on: bool,
@@ -1922,7 +1934,9 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
                                                "latency_ms": row.get("latency_ms") if ok else None,
                                                "reason": row.get("reason"),
                                                "status": row.get("status", []) if ok else [],
-                                               "local_protocol": row.get("local_protocol") if ok else None})
+                                               "local_protocol": row.get("local_protocol") if ok else None,
+                                               "ip_refreshed_by_mac": bool(row.get("ip_refreshed_by_mac")),
+                                               "ip_cleared_missing_mac": bool(row.get("ip_cleared_missing_mac"))})
         elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
         result = []
         for item in devices:
@@ -1941,6 +1955,8 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
                            "connection_state": "local_responded" if times else "failed",
                            "status": next((row["status"] for row in reversed(rows) if row["ok"]), []),
                            "local_protocol": next((row["local_protocol"] for row in reversed(rows) if row["ok"]), None),
+                           "ip_refreshed_by_mac": any(row.get("ip_refreshed_by_mac") for row in rows),
+                           "ip_cleared_missing_mac": any(row.get("ip_cleared_missing_mac") for row in rows),
                            "power_telemetry_configured": power_telemetry,
                            "reason": next((row["reason"] for row in rows if row.get("reason")),
                                           "private_lan_target_required" if not item.get("local_ip") else None)})
@@ -3688,7 +3704,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.165"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.166"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(
