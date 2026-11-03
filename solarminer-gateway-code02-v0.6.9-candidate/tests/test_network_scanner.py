@@ -1,4 +1,14 @@
 from solarminer_gateway import network_scanner
+from pathlib import Path
+
+
+def test_gateway_sandbox_allows_netlink_interface_enumeration_and_raw_arp():
+    service = Path(__file__).parents[1] / "packaging" / "solarminer-gateway.service"
+    contents = service.read_text(encoding="utf-8")
+    families = next(line.partition("=")[2].split() for line in contents.splitlines()
+                    if line.startswith("RestrictAddressFamilies="))
+    assert {"AF_NETLINK", "AF_PACKET", "AF_INET", "AF_UNIX"}.issubset(families)
+    assert "AmbientCapabilities=CAP_NET_RAW" in contents
 
 
 def test_arp_request_is_an_ethernet_broadcast_for_target_ip():
