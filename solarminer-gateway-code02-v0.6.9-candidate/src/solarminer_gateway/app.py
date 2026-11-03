@@ -52,7 +52,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.161"
+PACKAGE_VERSION = "0.6.162"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -2133,29 +2133,42 @@ def apply_local_network_matches(session: dict[str, Any] = Depends(require_permis
                 mac = str(item.get("local_mac") or "").strip().upper()
                 if re.fullmatch(MAC_RE, mac):
                     by_mac.setdefault(mac, []).append(item["device_id"])
+        ips_by_mac: dict[str, set[str]] = {}
+        for host in report.get("hosts", []):
+            mac = str(host.get("mac") or "").strip().upper()
+            ip = str(host.get("ip") or "").strip()
+            candidates = host.get("ip_candidates") if isinstance(host.get("ip_candidates"), list) else []
+            observed_ips = {str(candidate).strip() for candidate in candidates if str(candidate).strip()}
+            if ip:
+                observed_ips.add(ip)
+            if mac and observed_ips:
+                ips_by_mac.setdefault(mac, set()).update(observed_ips)
+        ambiguous_macs = {mac for mac, ips in ips_by_mac.items() if len(ips) != 1}
+        ambiguous_macs.update(str(item.get("mac") or "").strip().upper()
+                              for item in report.get("mac_ip_conflicts", []) if isinstance(item, dict))
+        ambiguous_macs.update(mac for mac, device_ids in by_mac.items() if len(set(device_ids)) != 1)
         updates = []
-        for host in report["hosts"]:
-            mac, ip = str(host.get("mac") or "").strip().upper(), str(host.get("ip") or "")
-            device_ids = by_mac.get(mac, [])
-            if not device_ids or not ip:
+        for mac, ips in ips_by_mac.items():
+            device_ids = list(dict.fromkeys(by_mac.get(mac, [])))
+            if mac in ambiguous_macs or len(device_ids) != 1:
+                continue
+            try:
+                valid_ip = hardware_integrations._private_ip(next(iter(ips)))
+            except ValueError:
                 continue
             for item in devices:
-                if isinstance(item, dict) and item.get("device_id") in device_ids:
-                    try:
-                        valid_ip = hardware_integrations._private_ip(ip)
-                    except ValueError:
-                        continue
-                    if item.get("local_ip") != valid_ip:
-                        item["local_ip"] = valid_ip
-                        updates.append({"device_id": item["device_id"], "name": str(item.get("name") or "Tuya"),
-                                        "mac": mac, "ip": valid_ip})
+                if isinstance(item, dict) and item.get("device_id") == device_ids[0] and item.get("local_ip") != valid_ip:
+                    item["local_ip"] = valid_ip
+                    updates.append({"device_id": item["device_id"], "name": str(item.get("name") or "Tuya"),
+                                    "mac": mac, "ip": valid_ip})
         if updates:
             hardware_integrations.save_config(config)
         audit(conn, session["user_id"], "network.local_scan.apply", "tuya_devices", "success", {
             "updated_device_count": len(updates), "scanned_count": report["scanned_count"],
         })
         conn.commit()
-        return {"updated_count": len(updates), "matched_count": sum(len(by_mac.get(str(host.get("mac") or "").upper(), [])) for host in report["hosts"]), "updated_devices": updates,
+        return {"updated_count": len(updates), "matched_count": sum(1 for mac in ips_by_mac if by_mac.get(mac)),
+                "ambiguous_mac_count": len(ambiguous_macs.intersection(by_mac)), "updated_devices": updates,
                 "message": "Only devices matched by their configured MAC address were updated."}
 
 
@@ -3526,7 +3539,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.161"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.162"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

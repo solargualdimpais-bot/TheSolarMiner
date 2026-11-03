@@ -2844,23 +2844,27 @@ function tuyaLanReasonText(reason){
   return messages[reason]||String(reason).replaceAll("_"," ");
 }
 function renderLocalNetworkResults(report){
+  const conflicts=new Set((report.mac_ip_conflicts||[]).map(item=>String(item.mac||"").toUpperCase()));
   const hostRows=(report.hosts||[]).map(host=>{
     const matches=(host.matched_devices||[]).map(device=>`${esc(device.name)} · ${esc(device.device_id)}`).join("<br>")||"—";
+    const conflict=host.mac&&conflicts.has(String(host.mac).toUpperCase());
     const methods=(host.discovery_methods||[]).map(method=>({arp_sweep:"ARP ativo",tcp:"TCP",icmp:"Ping",ssdp:"SSDP/UPnP",mdns:"mDNS/DNS-SD",arp_neighbor:"vizinho ARP"}[method]||method)).join(", ")||"—";
-    return `<tr><td>${esc(host.ip)}${host.is_router?' <span class="source-tag">Router</span>':''}</td><td>${esc(host.mac||"MAC não visível")}</td><td>${esc(host.friendly_name||host.hostname||"—")}</td><td>${esc(host.manufacturer||"—")}</td><td>${esc(host.model||"—")}</td><td>${matches}</td><td>${esc(methods)}</td><td>${(host.open_ports||[]).map(port=>esc(port)).join(", ")||"—"}</td></tr>`;
+    const ipLabel=host.mac_ip_conflict?`IP ambíguo: ${(host.ip_candidates||[]).map(esc).join(", ")}`:esc(host.ip);
+    return `<tr${conflict?' class="warning-row"':''}><td>${ipLabel}${host.is_router?' <span class="source-tag">Router</span>':''}</td><td>${esc(host.mac||"MAC não visível")}${conflict?' <span class="source-tag">MAC em vários IPs</span>':''}</td><td>${esc(host.friendly_name||host.hostname||"—")}</td><td>${esc(host.manufacturer||"—")}</td><td>${esc(host.model||"—")}</td><td>${matches}</td><td>${esc(methods)}</td><td>${(host.open_ports||[]).map(port=>esc(port)).join(", ")||"—"}</td></tr>`;
   }).join("");
   const networks=(report.networks||[]).map(item=>`${esc(item.network)} · ${esc(item.interface)}`).join("; ")||"Nenhuma rede local IPv4 encontrada.";
   const interfaceAddresses=(report.interface_addresses||[]).map(item=>`${esc(item.interface)}: ${esc(item.address)} · ${esc(item.network)}`).join("; ");
   const skipped=(report.skipped_networks||[]).length?` Redes ignoradas por exceder o limite de ${esc(report.address_limit)} endereços: ${(report.skipped_networks||[]).map(esc).join(", ")}.`:"";
   const scanError=report.scan_error==="interface_discovery_failed"?"O Gateway não conseguiu ler as interfaces IPv4 do sistema, nem pelo comando de rede nem pela alternativa do sistema.":report.scan_error==="no_ipv4_address_on_interfaces"?"O Gateway não tem nenhum endereço IPv4 atribuído às interfaces de rede.":report.scan_error==="no_eligible_private_ipv4_network"?"O Gateway tem IPv4, mas não encontrou uma rede local privada diretamente ligada que possa varrer.":report.scan_error?`A pesquisa terminou com diagnóstico: ${esc(report.scan_error)}.`:"";
   const scanWarnings=(report.scan_warnings||[]).includes("active_arp_unavailable")?"O Gateway não conseguiu abrir a varredura ARP Ethernet nesta interface; os resultados podem ficar incompletos.":"";
-  const matched=(report.hosts||[]).reduce((total,host)=>total+(host.matched_devices||[]).length,0);
+  const matchedMacs=new Set((report.hosts||[]).filter(host=>host.mac&&!conflicts.has(String(host.mac).toUpperCase())&&(host.matched_devices||[]).length===1).map(host=>String(host.mac).toUpperCase()));
+  const conflictNote=conflicts.size?`<p class="field-note" role="status">${conflicts.size} MAC(s) aparecem associados a vários IPs. Esses casos não serão guardados automaticamente; confirma a causa antes de corrigir a associação.</p>`:"";
   const box=$("#local-network-results");
   const routers=(report.router_ips||[]).map(esc).join(", ")||"Não identificado pela tabela de rotas do Gateway.";
-  box.innerHTML=`<p class="field-note">Redes verificadas: ${networks}. Endereços verificados: ${esc(report.scanned_count)}; dispositivos que responderam: ${esc(report.responsive_count)}. Router de saída indicado pela rota: ${routers}.${skipped}</p>${interfaceAddresses?`<p class="field-note">IPv4 atribuídos às interfaces: ${interfaceAddresses}.</p>`:""}${scanError?`<p class="field-note" role="status">${scanError}</p>`:""}${scanWarnings?`<p class="field-note" role="status">${scanWarnings}</p>`:""}<div class="diagnostic-table-wrap"><table class="diagnostic-table"><thead><tr><th>IP</th><th>MAC</th><th>Nome / hostname</th><th>Fabricante</th><th>Modelo</th><th>Device reconhecido</th><th>Detetado por</th><th>Portas abertas</th></tr></thead><tbody>${hostRows||'<tr><td colspan="8">Nenhum dispositivo respondeu nesta pesquisa.</td></tr>'}</tbody></table></div><p class="field-note">A pesquisa usa ARP Ethernet ativo, ICMP, TCP, SSDP/UPnP e mDNS/DNS-SD nas redes diretamente ligadas ao Gateway. Firewalls, isolamento Wi-Fi, VLANs, sub-redes atrás de routers e dispositivos desligados podem ocultar equipamentos. Fabricante e modelo só aparecem quando anunciados localmente ou encontrados na base OUI local.</p>`;
+  box.innerHTML=`<p class="field-note">Redes verificadas: ${networks}. Endereços verificados: ${esc(report.scanned_count)}; dispositivos que responderam: ${esc(report.responsive_count)}. Router de saída indicado pela rota: ${routers}.${skipped}</p>${interfaceAddresses?`<p class="field-note">IPv4 atribuídos às interfaces: ${interfaceAddresses}.</p>`:""}${scanError?`<p class="field-note" role="status">${scanError}</p>`:""}${scanWarnings?`<p class="field-note" role="status">${scanWarnings}</p>`:""}${conflictNote}<div class="diagnostic-table-wrap"><table class="diagnostic-table"><thead><tr><th>IP</th><th>MAC</th><th>Nome / hostname</th><th>Fabricante</th><th>Modelo</th><th>Device reconhecido</th><th>Detetado por</th><th>Portas abertas</th></tr></thead><tbody>${hostRows||'<tr><td colspan="8">Nenhum dispositivo respondeu nesta pesquisa.</td></tr>'}</tbody></table></div><p class="field-note">A pesquisa usa ARP Ethernet ativo, ICMP, TCP, SSDP/UPnP e mDNS/DNS-SD nas redes diretamente ligadas ao Gateway. Firewalls, isolamento Wi-Fi, VLANs, sub-redes atrás de routers e dispositivos desligados podem ocultar equipamentos. Fabricante e modelo só aparecem quando anunciados localmente ou encontrados na base OUI local.</p>`;
   box.hidden=false;
-  $("#local-network-apply").hidden=matched===0;
-  return matched;
+  $("#local-network-apply").hidden=matchedMacs.size===0;
+  return matchedMacs.size;
 }
 $("#local-network-scan").addEventListener("click",async event=>{
   const button=event.currentTarget,status=$("#local-network-status"),results=$("#local-network-results"),save=$("#local-network-apply");
@@ -2881,7 +2885,7 @@ $("#local-network-apply").addEventListener("click",async event=>{
   try{
     const result=await applyGatewayLocalNetworkMatches();
     await refreshHardwareIntegrationConfig();
-    status.textContent=result.updated_count?`IP atualizado em ${result.updated_count} device(s), após nova correspondência de MAC.`:"Os devices reconhecidos já tinham o IP atual; não foi necessária nenhuma alteração.";
+    status.textContent=`${result.updated_count?`IP atualizado em ${result.updated_count} device(s).`:"Nenhum IP precisou de alteração."}${result.ambiguous_mac_count?` ${result.ambiguous_mac_count} MAC(s) ambíguos foram ignorados para evitar guardar um IP errado.`:""}`;
   }catch(error){status.textContent=`Não foi possível guardar: ${error.message||"falha na confirmação da rede."}`;}
   finally{button.disabled=false;}
 });

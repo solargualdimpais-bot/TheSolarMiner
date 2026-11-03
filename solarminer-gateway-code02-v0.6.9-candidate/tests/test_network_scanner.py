@@ -88,6 +88,7 @@ def test_scan_reports_tcp_ping_and_neighbor_hosts_without_scanning_gateway_addre
     monkeypatch.setattr(network_scanner, "_ping", lambda ip: ip == "192.168.10.4")
     monkeypatch.setattr(network_scanner, "_neighbor_macs", lambda: {
         "192.168.10.1": "AA:BB:CC:DD:EE:01",
+        "192.168.10.2": "AA:BB:CC:DD:EE:01",
         "192.168.10.5": "AA:BB:CC:DD:EE:05",
     })
 
@@ -102,6 +103,7 @@ def test_scan_reports_tcp_ping_and_neighbor_hosts_without_scanning_gateway_addre
     assert report["hosts"][1]["open_ports"] == [80]
     assert report["hosts"][2]["discovery_methods"] == ["icmp"]
     assert report["hosts"][3]["mac"] == "AA:BB:CC:DD:EE:05"
+    assert report["mac_ip_conflicts"] == []
 
 
 def test_scan_exposes_missing_interface_discovery(monkeypatch):
@@ -131,6 +133,30 @@ def test_raw_arp_socket_failure_is_logged_and_falls_back_without_aborting(monkey
 
     assert report["scan_warnings"] == ["active_arp_unavailable"]
     assert [host["ip"] for host in report["hosts"]] == ["192.168.10.1"]
+
+
+def test_scan_reports_one_mac_observed_on_multiple_ips(monkeypatch):
+    monkeypatch.setattr(network_scanner, "_attached_ipv4_networks", lambda: ([
+        {"interface": "eth0", "address": "192.168.10.2", "network": "192.168.10.0/29"},
+    ], None))
+    monkeypatch.setattr(network_scanner, "default_gateway_ips", lambda: set())
+    monkeypatch.setattr(network_scanner, "_active_arp_sweep", lambda *_args: {
+        "192.168.10.3": "AA:BB:CC:DD:EE:33", "192.168.10.4": "AA:BB:CC:DD:EE:33",
+    })
+    monkeypatch.setattr(network_scanner, "_ssdp_discovery", lambda _source: {})
+    monkeypatch.setattr(network_scanner, "_mdns_discovery", lambda _source: {})
+    monkeypatch.setattr(network_scanner, "_probe", lambda *_args: None)
+    monkeypatch.setattr(network_scanner, "_ping", lambda _ip: False)
+    monkeypatch.setattr(network_scanner, "_neighbor_macs", lambda: (_ for _ in ()).throw(AssertionError("stale cache must not be read after successful active ARP")))
+
+    report = network_scanner.scan_attached_networks()
+
+    assert report["mac_ip_conflicts"] == [{"mac": "AA:BB:CC:DD:EE:33", "ips": ["192.168.10.3", "192.168.10.4"]}]
+    assert len(report["hosts"]) == 1
+    assert report["hosts"][0]["mac"] == "AA:BB:CC:DD:EE:33"
+    assert report["hosts"][0]["ip"] == ""
+    assert report["hosts"][0]["ip_candidates"] == ["192.168.10.3", "192.168.10.4"]
+    assert report["hosts"][0]["mac_ip_conflict"] is True
 
 
 def test_interface_discovery_uses_ioctl_when_ip_returns_no_addresses(monkeypatch):

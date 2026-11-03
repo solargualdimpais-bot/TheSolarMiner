@@ -746,6 +746,28 @@ def test_local_network_scan_matches_known_tuya_by_mac_and_apply_updates_only_mat
     assert saved[1]["local_ip"] == "192.168.10.22"
 
 
+def test_local_network_apply_skips_mac_seen_at_multiple_ips(client, monkeypatch, tmp_path):
+    headers = {"Authorization": f"Bearer {owner_session(client)}"}
+    monkeypatch.setattr(gateway.hardware_integrations, "_data_dir", lambda: tmp_path)
+    gateway.hardware_integrations.save_config({"tuya": {"devices": [
+        {"device_id": "known-switch", "name": "Disjuntor", "local_mac": "AA:BB:CC:DD:EE:21",
+         "local_ip": "192.168.10.20"},
+    ]}})
+    report = {"scanned_count": 254, "hosts": [
+        {"ip": "192.168.10.21", "mac": "AA:BB:CC:DD:EE:21"},
+        {"ip": "192.168.10.31", "mac": "AA:BB:CC:DD:EE:21"},
+    ]}
+    monkeypatch.setattr(gateway.network_scanner, "scan_attached_networks", lambda: report)
+
+    applied = client.post("/api/v1/network/scan/apply", headers=headers, json={})
+
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["updated_count"] == 0
+    assert applied.json()["ambiguous_mac_count"] == 1
+    saved = gateway.hardware_integrations.load_config()["tuya"]["devices"]
+    assert saved[0]["local_ip"] == "192.168.10.20"
+
+
 def test_public_tuya_projection_never_labels_cloud_ip_as_local():
     projected = gateway.hardware_integrations.public_config({"tuya": {"devices": [
         {"device_id": "cloud-ip-only", "name": "Device", "ip": "87.10.20.30"},

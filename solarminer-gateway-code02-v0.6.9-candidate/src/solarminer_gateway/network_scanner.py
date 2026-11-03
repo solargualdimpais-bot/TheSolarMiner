@@ -495,7 +495,7 @@ def scan_attached_networks() -> dict[str, Any]:
     responding: dict[str, dict[str, Any]] = {}
     scan_warnings: list[str] = []
     active_arp_macs: dict[str, str] = {}
-    active_arp_ok: set[str] = set()
+    fallback_targets: dict[str, dict[str, str]] = {}
     for item in route_rows:
         ips = [ip for ip, target in targets.items() if target["interface"] == item["interface"]
                and target["network"] == item["network"]]
@@ -503,24 +503,27 @@ def scan_attached_networks() -> dict[str, Any]:
             continue
         try:
             active_arp_macs.update(_active_arp_sweep(item["interface"], item["address"], ips))
-            active_arp_ok.add(item["interface"])
         except (OSError, ValueError, AttributeError) as exc:
+            fallback_targets.update({ip: item for ip in ips})
             scan_warnings.append("active_arp_unavailable")
             LOG.warning("Active ARP scan unavailable on interface %s (%s)",
                         item["interface"], type(exc).__name__)
 
-    if len(active_arp_ok) < len({item["interface"] for item in route_rows}):
+    fallback_macs: dict[str, str] = {}
+    if fallback_targets:
         # The kernel-neighbour fallback remains useful on platforms where raw sockets
-        # are unavailable; it is supplemental to the direct Ethernet ARP requests.
+        # are unavailable. Never merge its potentially stale entries for networks
+        # where the direct Ethernet ARP sweep succeeded.
         with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as executor:
             arp_futures = [executor.submit(_trigger_arp_resolution, ip, item["address"])
-                           for ip, item in targets.items() if item["interface"] not in active_arp_ok]
+                           for ip, item in fallback_targets.items()]
             for future in concurrent.futures.as_completed(arp_futures):
                 future.result()
-        if targets:
-            time.sleep(ARP_SETTLE_SECONDS)
+        time.sleep(ARP_SETTLE_SECONDS)
+        neighbor_cache = _neighbor_macs()
+        fallback_macs = {ip: neighbor_cache[ip] for ip in fallback_targets if ip in neighbor_cache}
 
-    mac_by_ip = _neighbor_macs()
+    mac_by_ip = fallback_macs
     mac_by_ip.update(active_arp_macs)
     for ip in targets:
         if ip in mac_by_ip:
@@ -563,9 +566,32 @@ def scan_attached_networks() -> dict[str, Any]:
                       "network": iface["network"], "is_router": ip in gateways,
                       "open_ports": responding[ip]["open_ports"],
                       "service_details": details, "discovery_methods": sorted(set(responding[ip]["methods"]))})
+    ips_by_mac: dict[str, list[str]] = {}
+    for host in hosts:
+        if host.get("mac"):
+            ips_by_mac.setdefault(host["mac"], []).append(host["ip"])
+    mac_ip_conflicts = [{"mac": mac, "ips": ips}
+                        for mac, ips in sorted(ips_by_mac.items()) if len(ips) > 1]
+    # Present one row per physical MAC. If live ARP says that MAC owns multiple
+    # addresses, preserve the candidates as an explicit conflict and leave its
+    # single-IP field empty so downstream persistence cannot pick one arbitrarily.
+    conflicted = {item["mac"]: item["ips"] for item in mac_ip_conflicts}
+    unique_hosts: list[dict[str, Any]] = []
+    seen_macs: set[str] = set()
+    for host in hosts:
+        mac = host.get("mac")
+        if not mac or mac not in conflicted:
+            unique_hosts.append(host)
+            continue
+        if mac in seen_macs:
+            continue
+        seen_macs.add(mac)
+        unique_hosts.append({**host, "ip": "", "ip_candidates": conflicted[mac], "mac_ip_conflict": True})
+    hosts = unique_hosts
     scan_error = interface_error or ("no_eligible_private_ipv4_network" if not route_rows and not skipped else None)
     return {"networks": route_rows, "interface_addresses": networks,
             "scanned_count": len(targets), "responsive_count": len(hosts),
             "hosts": hosts, "skipped_networks": skipped, "address_limit": MAX_ADDRESSES,
             "method": "active_arp_tcp_icmp_ssdp_mdns", "router_ips": sorted(gateways),
-            "scan_error": scan_error, "scan_warnings": sorted(set(scan_warnings))}
+            "scan_error": scan_error, "scan_warnings": sorted(set(scan_warnings)),
+            "mac_ip_conflicts": mac_ip_conflicts}

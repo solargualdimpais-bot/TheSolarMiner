@@ -14,3 +14,11 @@ test("local network scan distinguishes a missing Gateway response from zero devi
   assert.match(implementation, /network_scan_gateway_unreachable/);
   assert.match(implementation, /não recebeu resposta do Gateway/);
 });
+
+test("local network scan exposes repeated MAC conflicts and hides their IP save path", async () => {
+  const source = await readFile(new URL("../app.js", import.meta.url), "utf8");
+  assert.match(source, /MAC em vários IPs/);
+  assert.match(source, /IP ambíguo:/);
+  assert.match(source, /conflicts\.has\(String\(host\.mac\)\.toUpperCase\(\)\)/);
+  assert.match(source, /ambiguous_mac_count/);
+});
