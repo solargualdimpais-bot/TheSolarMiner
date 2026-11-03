@@ -5,8 +5,12 @@ import concurrent.futures
 import errno
 import ipaddress
 import json
+import re
 import socket
+import struct
 import subprocess
+import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +19,19 @@ MAX_ADDRESSES = 4096
 WORKERS = 128
 TCP_PORTS = (80, 443, 22, 53, 8080)
 TCP_TIMEOUT_SECONDS = 0.12
+ARP_SETTLE_SECONDS = 1.0
+DISCOVERY_LISTEN_SECONDS = 1.25
+SSDP_GROUP = "239.255.255.250"
+MDNS_GROUP = "224.0.0.251"
+MDNS_SERVICES = (
+    "_services._dns-sd._udp.local", "_http._tcp.local", "_workstation._tcp.local",
+    "_device-info._tcp.local", "_googlecast._tcp.local", "_airplay._tcp.local",
+    "_hap._tcp.local", "_ipp._tcp.local", "_printer._tcp.local", "_smb._tcp.local",
+)
+OUI_FILES = (
+    Path("/usr/share/arp-scan/ieee-oui.txt"), Path("/usr/share/ieee-data/oui.txt"),
+    Path("/usr/share/nmap/nmap-mac-prefixes"), Path("/usr/share/wireshark/manuf"),
+)
 
 
 def _run_ip_json(*args: str) -> Any:
@@ -23,12 +40,12 @@ def _run_ip_json(*args: str) -> Any:
     return json.loads(completed.stdout or "[]")
 
 
-def attached_ipv4_networks() -> list[dict[str, str]]:
-    """Return usable IPv4 interface networks and their local interface addresses."""
+def _attached_ipv4_networks() -> tuple[list[dict[str, str]], str | None]:
+    """Return eligible IPv4 interface networks and a safe discovery error, if any."""
     try:
         rows = _run_ip_json("-j", "-4", "addr", "show", "scope", "global")
     except (OSError, subprocess.SubprocessError, ValueError, json.JSONDecodeError):
-        return []
+        return [], "interface_discovery_failed"
     found: dict[tuple[str, str], dict[str, str]] = {}
     for interface in rows if isinstance(rows, list) else []:
         if not isinstance(interface, dict):
@@ -46,7 +63,12 @@ def attached_ipv4_networks() -> list[dict[str, str]]:
                 continue
             key = (name, str(network))
             found[key] = {"interface": name, "address": str(address.ip), "network": str(network)}
-    return list(found.values())
+    return list(found.values()), None
+
+
+def attached_ipv4_networks() -> list[dict[str, str]]:
+    """Return usable IPv4 interface networks and their local interface addresses."""
+    return _attached_ipv4_networks()[0]
 
 
 def default_gateway_ips() -> set[str]:
@@ -110,9 +132,218 @@ def _ping(ip: str) -> bool:
         return False
 
 
+def _trigger_arp_resolution(ip: str, source_ip: str) -> bool:
+    """Cause Linux to resolve the host's link-layer address without a raw socket."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.bind((source_ip, 0))
+        # UDP to a closed discard port still makes the kernel ARP for on-link hosts.
+        sock.sendto(b"\x00", (ip, 9))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def _ssdp_discovery(source_ip: str) -> dict[str, dict[str, str]]:
+    """Collect UPnP/SSDP advertisements from one directly attached interface."""
+    request = ("M-SEARCH * HTTP/1.1\r\n"
+               f"HOST: {SSDP_GROUP}:1900\r\n"
+               'MAN: "ssdp:discover"\r\n'
+               "MX: 1\r\nST: ssdp:all\r\n\r\n").encode("ascii")
+    found: dict[str, dict[str, str]] = {}
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(source_ip))
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+        sock.bind((source_ip, 0))
+        sock.settimeout(0.2)
+        sock.sendto(request, (SSDP_GROUP, 1900))
+        deadline = time.monotonic() + DISCOVERY_LISTEN_SECONDS
+        while time.monotonic() < deadline:
+            try:
+                payload, peer = sock.recvfrom(8192)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            headers: dict[str, str] = {}
+            for line in payload.decode("utf-8", "ignore").splitlines()[1:]:
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    headers[key.strip().lower()] = value.strip()[:512]
+            item = found.setdefault(peer[0], {})
+            item["ssdp_server"] = headers.get("server", item.get("ssdp_server", ""))
+            item["ssdp_name"] = headers.get("usn", item.get("ssdp_name", ""))
+            item["ssdp_type"] = headers.get("st", item.get("ssdp_type", ""))
+            item["ssdp_location"] = headers.get("location", item.get("ssdp_location", ""))
+    except OSError:
+        return found
+    finally:
+        sock.close()
+    return found
+
+
+def _dns_name(packet: bytes, offset: int) -> tuple[str, int]:
+    labels: list[str] = []
+    cursor, end, jumps = offset, None, 0
+    while cursor < len(packet) and jumps < 16:
+        length = packet[cursor]
+        if length == 0:
+            cursor += 1
+            return ".".join(labels).rstrip("."), end if end is not None else cursor
+        if length & 0xC0 == 0xC0:
+            if cursor + 1 >= len(packet):
+                break
+            pointer = ((length & 0x3F) << 8) | packet[cursor + 1]
+            if end is None:
+                end = cursor + 2
+            cursor = pointer
+            jumps += 1
+            continue
+        cursor += 1
+        if cursor + length > len(packet):
+            break
+        labels.append(packet[cursor:cursor + length].decode("utf-8", "ignore"))
+        cursor += length
+    return "".join(labels).rstrip("."), end if end is not None else cursor
+
+
+def _mdns_query(name: str) -> bytes:
+    encoded = b"".join(bytes((len(label.encode("ascii")),)) + label.encode("ascii")
+                       for label in name.split(".")) + b"\x00"
+    return struct.pack("!HHHHHH", 0, 0, 1, 0, 0, 0) + encoded + struct.pack("!HH", 12, 1)
+
+
+def _mdns_records(packet: bytes) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    """Return local A records and descriptive aliases parsed from an mDNS response."""
+    ips: dict[str, str] = {}
+    descriptions: dict[str, dict[str, str]] = {}
+    try:
+        _ident, _flags, questions, answers, authority, additional = struct.unpack_from("!HHHHHH", packet, 0)
+        offset = 12
+        for _ in range(questions):
+            _name, offset = _dns_name(packet, offset)
+            offset += 4
+        records: list[tuple[str, int, bytes, int]] = []
+        for _ in range(answers + authority + additional):
+            owner, offset = _dns_name(packet, offset)
+            rtype, _klass, _ttl, size = struct.unpack_from("!HHIH", packet, offset)
+            offset += 10
+            data_offset = offset
+            data = packet[offset:offset + size]
+            offset += size
+            if len(data) != size:
+                break
+            records.append((owner.lower(), rtype, data, data_offset))
+        aliases: dict[str, str] = {}
+        for owner, rtype, data, data_offset in records:
+            if rtype == 1 and len(data) == 4:
+                ips[owner] = socket.inet_ntoa(data)
+            elif rtype == 12:
+                target, _ = _dns_name(packet, data_offset)
+                aliases[target.lower()] = owner
+            elif rtype == 33 and len(data) >= 7:
+                target, _ = _dns_name(packet, data_offset + 6)
+                aliases[target.lower()] = owner
+            elif rtype == 16:
+                parts: list[str] = []
+                cursor = 0
+                while cursor < len(data):
+                    size = data[cursor]
+                    cursor += 1
+                    parts.append(data[cursor:cursor + size].decode("utf-8", "ignore"))
+                    cursor += size
+                meta = descriptions.setdefault(owner, {})
+                for part in parts:
+                    if "=" in part:
+                        key, value = part.split("=", 1)
+                        if key.lower() in {"model", "manufacturer", "product", "name", "fn"}:
+                            meta[{"fn": "friendly_name", "name": "friendly_name", "product": "model"}.get(key.lower(), key.lower())] = value[:160]
+        for host_name, ip in ips.items():
+            desc = descriptions.setdefault(ip, {})
+            desc.setdefault("hostname", host_name)
+            desc.update(descriptions.get(host_name, {}))
+            for alias, owner in aliases.items():
+                if alias == host_name or alias.endswith("." + host_name):
+                    desc.setdefault("mdns_name", alias)
+                    owner_desc = descriptions.get(owner)
+                    if owner_desc:
+                        desc.update(owner_desc)
+    except (struct.error, IndexError, ValueError):
+        return {}, {}
+    return ips, descriptions
+
+
+def _mdns_discovery(source_ip: str) -> dict[str, dict[str, str]]:
+    """Query common DNS-SD service types and collect local mDNS A/TXT responses."""
+    found: dict[str, dict[str, str]] = {}
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, "SO_REUSEPORT"):
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except OSError:
+                pass
+        sock.bind(("", 5353))
+        membership = socket.inet_aton(MDNS_GROUP) + socket.inet_aton(source_ip)
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership)
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(source_ip))
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
+        for name in MDNS_SERVICES:
+            sock.sendto(_mdns_query(name), (MDNS_GROUP, 5353))
+        sock.settimeout(0.2)
+        deadline = time.monotonic() + DISCOVERY_LISTEN_SECONDS
+        while time.monotonic() < deadline:
+            try:
+                packet, _peer = sock.recvfrom(9000)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            ips, descriptions = _mdns_records(packet)
+            for name, ip in ips.items():
+                if ip in found:
+                    found[ip].update(descriptions.get(ip, {}))
+                else:
+                    found[ip] = descriptions.get(ip, {"hostname": name})
+    except OSError:
+        return found
+    finally:
+        sock.close()
+    return found
+
+
+@lru_cache(maxsize=1)
+def _oui_database() -> dict[str, str]:
+    vendors: dict[str, str] = {}
+    for path in OUI_FILES:
+        try:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            match = re.match(r"\s*([0-9A-Fa-f:-]{6,8})\s+(?:\(hex\)\s+)?(.+?)\s*$", line)
+            if not match:
+                continue
+            assignment = re.sub(r"[^0-9A-F]", "", match.group(1).upper())[:6]
+            if len(assignment) == 6:
+                vendors.setdefault(assignment, match.group(2).strip())
+    return vendors
+
+
+def _mac_vendor(mac: str | None) -> str | None:
+    if not mac:
+        return None
+    prefix = re.sub(r"[^0-9A-F]", "", mac.upper())[:6]
+    return _oui_database().get(prefix) if len(prefix) == 6 else None
+
+
 def scan_attached_networks() -> dict[str, Any]:
-    """Probe hosts in directly connected private IPv4 networks, without router login."""
-    networks = attached_ipv4_networks()
+    """Actively discover link-layer neighbors on directly attached private IPv4 LANs."""
+    networks, interface_error = _attached_ipv4_networks()
     route_rows = []
     targets: dict[str, dict[str, str]] = {}
     skipped: list[str] = []
@@ -139,9 +370,37 @@ def scan_attached_networks() -> dict[str, Any]:
             targets[ip] = item
 
     gateways = default_gateway_ips()
+    advertised: dict[str, dict[str, str]] = {}
+    for item in route_rows:
+        for ip, detail in _ssdp_discovery(item["address"]).items():
+            advertised.setdefault(ip, {}).update(detail)
+        for ip, detail in _mdns_discovery(item["address"]).items():
+            advertised.setdefault(ip, {}).update(detail)
     responding: dict[str, dict[str, Any]] = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as executor:
-        futures = [executor.submit(_probe, ip, TCP_PORTS, TCP_TIMEOUT_SECONDS) for ip in targets]
+        arp_futures = [executor.submit(_trigger_arp_resolution, ip, item["address"])
+                       for ip, item in targets.items()]
+        for future in concurrent.futures.as_completed(arp_futures):
+            future.result()
+    if targets:
+        time.sleep(ARP_SETTLE_SECONDS)
+
+    mac_by_ip = _neighbor_macs()
+    for ip in targets:
+        if ip in mac_by_ip:
+            responding[ip] = {"open_ports": [], "methods": ["arp_sweep"]}
+        if ip in advertised:
+            responding.setdefault(ip, {"open_ports": [], "methods": []})["methods"].extend(
+                method for method in ("ssdp", "mdns")
+                if (method == "ssdp" and any(key.startswith("ssdp_") for key in advertised[ip]))
+                or (method == "mdns" and any(key in advertised[ip] for key in ("hostname", "manufacturer", "model", "friendly_name", "mdns_name")))
+            )
+
+    # TCP and ICMP remain secondary signals for unusual hosts or systems without an
+    # exposed ARP table. They no longer determine whether an ordinary LAN host exists.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as executor:
+        futures = [executor.submit(_probe, ip, TCP_PORTS, TCP_TIMEOUT_SECONDS)
+                   for ip in targets if ip not in responding]
         for future in concurrent.futures.as_completed(futures):
             hit = future.result()
             if hit:
@@ -153,17 +412,23 @@ def scan_attached_networks() -> dict[str, Any]:
             if future.result():
                 responding[ping_futures[future]] = {"open_ports": [], "methods": ["icmp"]}
 
-    mac_by_ip = _neighbor_macs()
     for ip in mac_by_ip:
         if ip in targets and ip not in responding:
-            responding[ip] = {"open_ports": [], "methods": ["arp_neighbor"]}
+            responding[ip] = {"open_ports": [], "methods": ["arp_sweep"]}
     hosts = []
     for ip in sorted(responding, key=lambda value: int(ipaddress.IPv4Address(value))):
         iface = targets[ip]
-        hosts.append({"ip": ip, "mac": mac_by_ip.get(ip), "interface": iface["interface"],
+        details = advertised.get(ip, {})
+        mac = mac_by_ip.get(ip)
+        hosts.append({"ip": ip, "mac": mac, "hostname": details.get("hostname"),
+                      "friendly_name": details.get("friendly_name"), "model": details.get("model"),
+                      "manufacturer": details.get("manufacturer") or _mac_vendor(mac),
+                      "interface": iface["interface"],
                       "network": iface["network"], "is_router": ip in gateways,
                       "open_ports": responding[ip]["open_ports"],
-                      "discovery_methods": responding[ip]["methods"]})
+                      "service_details": details, "discovery_methods": sorted(set(responding[ip]["methods"]))})
+    scan_error = interface_error or ("no_eligible_private_ipv4_network" if not route_rows and not skipped else None)
     return {"networks": route_rows, "scanned_count": len(targets), "responsive_count": len(hosts),
             "hosts": hosts, "skipped_networks": skipped, "address_limit": MAX_ADDRESSES,
-            "method": "bounded_tcp_probe_and_kernel_neighbor_table", "router_ips": sorted(gateways)}
+            "method": "active_arp_tcp_icmp_ssdp_mdns", "router_ips": sorted(gateways),
+            "scan_error": scan_error}
