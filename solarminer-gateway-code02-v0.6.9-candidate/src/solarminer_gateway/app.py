@@ -52,7 +52,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.163"
+PACKAGE_VERSION = "0.6.164"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -133,6 +133,12 @@ CREATE TABLE IF NOT EXISTS device_events(
 CREATE TABLE IF NOT EXISTS device_observations(
  device_id TEXT NOT NULL, observation_key TEXT NOT NULL, value_json TEXT NOT NULL,
  observed_at TEXT NOT NULL, PRIMARY KEY(device_id, observation_key)
+);
+CREATE TABLE IF NOT EXISTS network_device_inventory(
+ mac TEXT PRIMARY KEY, name TEXT NOT NULL, device_type TEXT NOT NULL DEFAULT 'unknown',
+ manufacturer TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '', last_ip TEXT NOT NULL DEFAULT '',
+ source_provider TEXT NOT NULL DEFAULT '', source_device_id TEXT NOT NULL DEFAULT '',
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_seen_at TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_device_events_device_time ON device_events(device_id, id DESC);
 CREATE TABLE IF NOT EXISTS owner_recovery_keys(
@@ -350,6 +356,7 @@ def initialize() -> None:
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(5,?)", (utcnow(),))
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(6,?)", (utcnow(),))
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(7,?)", (utcnow(),))
+        conn.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(8,?)", (utcnow(),))
         conn.execute("INSERT OR IGNORE INTO system_state(key,value) VALUES('bootstrap_state','UNINITIALIZED')")
         if not INSTANCE_MARKER.exists():
             try:
@@ -2088,23 +2095,165 @@ def scan_local_network(session: dict[str, Any] = Depends(require_permission("man
             LOG.exception("Unexpected local network scan failure")
             raise HTTPException(502, "local_network_scan_failed") from exc
         config = hardware_integrations.load_config()
+        identities: dict[str, list[dict[str, str]]] = {}
         tuya = config.get("tuya", {}) if isinstance(config.get("tuya"), dict) else {}
-        by_mac: dict[str, list[dict[str, str]]] = {}
         for device in tuya.get("devices", []):
             if not isinstance(device, dict) or not isinstance(device.get("device_id"), str):
                 continue
             mac = str(device.get("local_mac") or "").strip().upper()
             if re.fullmatch(MAC_RE, mac):
-                by_mac.setdefault(mac, []).append({"device_id": device["device_id"],
-                                                    "name": str(device.get("name") or "Tuya")[:120]})
+                identities.setdefault(mac, []).append({"device_id": device["device_id"],
+                    "name": str(device.get("name") or "Tuya")[:120], "provider": "tuya",
+                    "device_type": str(device.get("device_kind_override") or device.get("device_kind") or "tuya")[:48]})
+        for provider, device_type, default_name in (("deye", "inverter", "Deye inverter"),
+                                                     ("antminer", "miner", "Antminer"),
+                                                     ("tesla", "vehicle", "Tesla")):
+            item = config.get(provider, {}) if isinstance(config.get(provider), dict) else {}
+            mac = str(item.get("local_mac") or "").strip().upper()
+            if re.fullmatch(MAC_RE, mac):
+                identities.setdefault(mac, []).append({"device_id": f"{provider}:main",
+                    "name": str(item.get("name") or item.get("model") or default_name)[:120],
+                    "provider": provider, "device_type": device_type})
+        now = utcnow()
+        for mac, refs in identities.items():
+            preferred = refs[0]
+            conn.execute("""INSERT INTO network_device_inventory
+                (mac,name,device_type,source_provider,source_device_id,created_at,updated_at,last_seen_at)
+                VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(mac) DO UPDATE SET
+                source_provider=CASE WHEN network_device_inventory.source_provider='' THEN excluded.source_provider ELSE network_device_inventory.source_provider END,
+                source_device_id=CASE WHEN network_device_inventory.source_device_id='' THEN excluded.source_device_id ELSE network_device_inventory.source_device_id END,
+                device_type=CASE WHEN network_device_inventory.device_type='unknown' THEN excluded.device_type ELSE network_device_inventory.device_type END,
+                name=CASE WHEN network_device_inventory.name='' THEN excluded.name ELSE network_device_inventory.name END,
+                updated_at=excluded.updated_at""",
+                (mac, preferred["name"], preferred["device_type"], preferred["provider"],
+                 preferred["device_id"], now, now, ""))
+        stored = {row["mac"]: dict(row) for row in conn.execute("SELECT * FROM network_device_inventory")}
+        conflicted_macs = {str(item.get("mac") or "").strip().upper()
+                           for item in report.get("mac_ip_conflicts", []) if isinstance(item, dict)}
+        ips_by_mac: dict[str, set[str]] = {}
         for host in report["hosts"]:
-            host["matched_devices"] = by_mac.get(str(host.get("mac") or "").upper(), [])
+            mac = str(host.get("mac") or "").strip().upper()
+            ip = str(host.get("ip") or "").strip()
+            if mac and ip and not host.get("mac_ip_conflict"):
+                ips_by_mac.setdefault(mac, set()).add(ip)
+            for candidate in host.get("ip_candidates", []):
+                if isinstance(candidate, str) and candidate:
+                    ips_by_mac.setdefault(mac, set()).add(candidate)
+        for host in report["hosts"]:
+            mac = str(host.get("mac") or "").strip().upper()
+            candidates = sorted(ips_by_mac.get(mac, set()))
+            if mac and (len(candidates) > 1 or mac in conflicted_macs):
+                host["mac_ip_conflict"] = True
+                host["ip_candidates"] = candidates or list(host.get("ip_candidates", []))
+                host["ip"] = ""
+        for host in report["hosts"]:
+            mac = str(host.get("mac") or "").strip().upper()
+            inventory = stored.get(mac)
+            refs = identities.get(mac, [])
+            matched: dict[str, Any] = {}
+            if inventory:
+                matched = {"name": inventory["name"], "device_id": inventory["source_device_id"] or None,
+                           "provider": inventory["source_provider"] or "local",
+                           "device_type": inventory["device_type"], "local_mac": mac}
+            elif refs:
+                matched = {**refs[0], "local_mac": mac}
+            host["matched_devices"] = [matched] if matched else []
+            if inventory and mac:
+                if host.get("mac_ip_conflict"):
+                    conn.execute("UPDATE network_device_inventory SET last_seen_at=?,updated_at=? WHERE mac=?",
+                                 (now, now, mac))
+                else:
+                    try:
+                        observed_ip = hardware_integrations._private_ip(str(host.get("ip") or ""))
+                    except ValueError:
+                        observed_ip = ""
+                    conn.execute("UPDATE network_device_inventory SET last_seen_at=?,last_ip=CASE WHEN ?<>'' THEN ? ELSE last_ip END,updated_at=? WHERE mac=?",
+                                 (now, observed_ip, observed_ip, now, mac))
         audit(conn, session["user_id"], "network.local_scan", "local_network", "success", {
             "scanned_count": report["scanned_count"], "responsive_count": report["responsive_count"],
             "network_count": len(report["networks"]), "skipped_network_count": len(report["skipped_networks"]),
         })
         conn.commit()
         return report
+
+
+@app.post("/api/v1/network/devices/save")
+def save_local_network_device(payload: dict[str, Any],
+                              session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Save or rename a discovered network device with its MAC as stable key."""
+    if set(payload) != {"mac", "name", "device_type"}:
+        raise HTTPException(422, "network_device_payload_invalid")
+    mac = str(payload.get("mac") or "").strip().upper()
+    name = str(payload.get("name") or "").strip()
+    device_type = str(payload.get("device_type") or "unknown").strip().lower()
+    if not re.fullmatch(MAC_RE, mac):
+        raise HTTPException(422, "network_device_mac_invalid")
+    if not name or len(name) > 120:
+        raise HTTPException(422, "network_device_name_invalid")
+    allowed_types = {"unknown", "tuya", "inverter", "miner", "router", "vehicle", "computer", "phone", "printer", "other"}
+    if device_type not in allowed_types:
+        raise HTTPException(422, "network_device_type_invalid")
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        try:
+            report = network_scanner.scan_attached_networks()
+        except Exception as exc:
+            LOG.warning("Network device verification failed (%s)", type(exc).__name__)
+            raise HTTPException(502, "network_device_verification_failed") from exc
+        matching_hosts = [item for item in report.get("hosts", [])
+                          if str(item.get("mac") or "").strip().upper() == mac]
+        if not matching_hosts:
+            raise HTTPException(409, "network_device_not_seen_in_current_scan")
+        host = matching_hosts[0]
+        observed_ips = {str(item.get("ip") or "").strip() for item in matching_hosts if item.get("ip")}
+        for item in matching_hosts:
+            observed_ips.update(value for value in item.get("ip_candidates", []) if isinstance(value, str) and value)
+        conflicted_macs = {str(item.get("mac") or "").strip().upper()
+                           for item in report.get("mac_ip_conflicts", []) if isinstance(item, dict)}
+        ambiguous_ip = mac in conflicted_macs or any(item.get("mac_ip_conflict") for item in matching_hosts) or len(observed_ips) > 1
+        current_ip = ""
+        if not ambiguous_ip and host.get("ip"):
+            try:
+                current_ip = hardware_integrations._private_ip(str(host["ip"]))
+            except ValueError:
+                current_ip = ""
+        config = hardware_integrations.load_config()
+        tuya = config.get("tuya", {}) if isinstance(config.get("tuya"), dict) else {}
+        matching_tuya = [item for item in tuya.get("devices", []) if isinstance(item, dict)
+                         and str(item.get("local_mac") or "").strip().upper() == mac]
+        provider = "tuya" if len(matching_tuya) == 1 else ""
+        provider_device_id = str(matching_tuya[0].get("device_id") or "") if provider else ""
+        now = utcnow()
+        previous = conn.execute("SELECT last_ip,created_at FROM network_device_inventory WHERE mac=?", (mac,)).fetchone()
+        last_ip = current_ip or (str(previous["last_ip"]) if previous else "")
+        created_at = str(previous["created_at"]) if previous else now
+        conn.execute("""INSERT INTO network_device_inventory
+            (mac,name,device_type,manufacturer,model,last_ip,source_provider,source_device_id,created_at,updated_at,last_seen_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(mac) DO UPDATE SET
+            name=excluded.name,device_type=excluded.device_type,
+            manufacturer=CASE WHEN excluded.manufacturer<>'' THEN excluded.manufacturer ELSE network_device_inventory.manufacturer END,
+            model=CASE WHEN excluded.model<>'' THEN excluded.model ELSE network_device_inventory.model END,
+            last_ip=CASE WHEN excluded.last_ip<>'' THEN excluded.last_ip ELSE network_device_inventory.last_ip END,
+            source_provider=CASE WHEN excluded.source_provider<>'' THEN excluded.source_provider ELSE network_device_inventory.source_provider END,
+            source_device_id=CASE WHEN excluded.source_device_id<>'' THEN excluded.source_device_id ELSE network_device_inventory.source_device_id END,
+            updated_at=excluded.updated_at,last_seen_at=excluded.last_seen_at""",
+            (mac, name, device_type, str(host.get("manufacturer") or "")[:120], str(host.get("model") or "")[:120],
+             last_ip, provider, provider_device_id, created_at, now, now))
+        if provider:
+            for item in matching_tuya:
+                item["name"] = name
+                item["name_source"] = "local"
+                item["local_name"] = name
+                if current_ip:
+                    item["local_ip"] = current_ip
+            hardware_integrations.save_config(config)
+        audit(conn, session["user_id"], "network.device.save", mac, "success", {
+            "device_type": device_type, "has_current_ip": bool(current_ip), "ambiguous_ip": ambiguous_ip})
+        conn.commit()
+        saved = dict(conn.execute("SELECT * FROM network_device_inventory WHERE mac=?", (mac,)).fetchone())
+        return {"device": saved, "ambiguous_ip": ambiguous_ip}
 
 
 @app.post("/api/v1/network/scan/apply")
@@ -3539,7 +3688,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.163"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.164"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

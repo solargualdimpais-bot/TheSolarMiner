@@ -562,6 +562,12 @@ export async function scanGatewayLocalNetwork() {
 export async function applyGatewayLocalNetworkMatches() {
   return gatewayApi("/api/v1/network/scan/apply", { method: "POST", body: {} });
 }
+export async function saveGatewayLocalNetworkDevice({ mac, name, device_type }) {
+  if (typeof mac !== "string" || !/^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$/i.test(mac)) throw new Error("MAC inválido.");
+  if (typeof name !== "string" || !name.trim() || name.trim().length > 120) throw new Error("Indica um nome até 120 caracteres.");
+  if (typeof device_type !== "string") throw new Error("Tipo de equipamento inválido.");
+  return gatewayApi("/api/v1/network/devices/save", { method: "POST", body: { mac: mac.toUpperCase(), name: name.trim(), device_type } });
+}
 export async function readGatewayTeslaEvConfig() {
   return gatewayApi("/api/v1/energy/ev/tesla");
 }

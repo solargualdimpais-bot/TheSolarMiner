@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.112: identificação de MAC/IP sem associações ambíguas.",
+  "description": "The Solar Miner PWA v0.5.113: detalhes editáveis dos equipamentos encontrados na rede local.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",

@@ -134,14 +134,24 @@
       </section>
       <section class="panel gateway-auth-panel owner-tab-panel" data-owner-panel="modem" id="gateway-modem-management" hidden>
         <div class="panel-header"><div><p class="eyebrow">DESCOBERTA NA LAN</p><h3>Rede local</h3></div><span class="source-tag">OWNER</span></div>
-        <p class="field-note">O Gateway verifica as redes IPv4 diretamente ligadas a si, usando respostas TCP, ping e a tabela local de vizinhos. Os MACs só são visíveis quando o dispositivo está no mesmo segmento. Dispositivos desligados, isolados ou atrás de outro router podem não aparecer.</p>
+        <p class="field-note">O Gateway verifica as redes IPv4 diretamente ligadas a si, usando respostas ARP Ethernet, TCP, ping, SSDP/UPnP e mDNS. Só atribui um MAC ao IP quando recebe a resposta ARP durante a pesquisa atual. Dispositivos desligados, isolados ou atrás de outro router podem não aparecer.</p>
         <div class="dialog-actions"><button id="local-network-scan" class="button primary" type="button">Procurar dispositivos na rede</button><button id="local-network-apply" class="button secondary" type="button" hidden>Guardar IPs dos devices reconhecidos</button></div>
         <div id="local-network-status" class="connection-result" role="status" aria-live="polite">Pesquisa ainda não iniciada.</div>
         <div id="local-network-results" class="local-network-results" aria-live="polite" hidden></div>
       </section>
+      <dialog id="network-device-detail-dialog" class="settings-dialog compact-dialog" aria-labelledby="network-device-detail-title">
+        <div class="dialog-header"><div><p class="eyebrow">DISPOSITIVO NA REDE</p><h2 id="network-device-detail-title">Detalhes do equipamento</h2></div><button id="network-device-detail-close" class="icon-button" type="button" aria-label="Fechar">×</button></div>
+        <div class="dialog-body">
+          <dl class="network-device-detail-list"><dt>IP detetado</dt><dd id="network-device-detail-ip">—</dd><dt>MAC</dt><dd id="network-device-detail-mac">—</dd><dt>Nome reconhecido</dt><dd id="network-device-detail-recognized">—</dd><dt>Fabricante</dt><dd id="network-device-detail-manufacturer">—</dd><dt>Modelo</dt><dd id="network-device-detail-model">—</dd><dt>Método de descoberta</dt><dd id="network-device-detail-discovery">—</dd></dl>
+          <label for="network-device-detail-name">Nome deste equipamento</label><input id="network-device-detail-name" maxlength="120" autocomplete="off" placeholder="Ex.: Inversor Deye">
+          <label for="network-device-detail-type">Tipo de equipamento</label><select id="network-device-detail-type"><option value="unknown">Por identificar</option><option value="tuya">Tuya</option><option value="inverter">Inversor</option><option value="miner">Mineradora</option><option value="router">Router</option><option value="vehicle">Veículo</option><option value="computer">Computador</option><option value="phone">Telemóvel</option><option value="printer">Impressora</option><option value="other">Outro</option></select>
+          <p class="field-note">O Gateway guarda o equipamento pelo MAC. O IP é atualizado apenas quando a pesquisa confirma um único IP para esse MAC.</p>
+          <div class="dialog-actions"><button id="network-device-detail-cancel" class="button secondary" type="button">Cancelar</button><button id="network-device-detail-save" class="button primary" type="button">Guardar equipamento</button></div>
+        </div>
+      </dialog>
       </section>
 
-      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.5.112</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
+      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.5.113</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
     </main>
   </div>
 

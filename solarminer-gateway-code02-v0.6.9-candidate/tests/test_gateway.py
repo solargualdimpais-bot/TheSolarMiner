@@ -1040,7 +1040,7 @@ def test_sqlite_replace_trigger_and_migration_v2_remain_intact_after_a1b(client)
         conn.rollback()
         versions = [r[0] for r in conn.execute("SELECT version FROM schema_migrations ORDER BY version")]
         triggers = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
-    assert versions == [1, 2, 3, 4, 5, 6, 7]
+    assert versions == [1, 2, 3, 4, 5, 6, 7, 8]
     assert "protect_last_active_owner_replace" in triggers
 
 

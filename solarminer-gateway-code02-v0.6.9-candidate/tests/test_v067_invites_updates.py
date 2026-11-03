@@ -735,7 +735,8 @@ def test_local_network_scan_matches_known_tuya_by_mac_and_apply_updates_only_mat
     scanned = client.post("/api/v1/network/scan", headers=headers, json={})
     assert scanned.status_code == 200, scanned.text
     assert scanned.json()["hosts"][0]["matched_devices"] == [
-        {"device_id": "known-switch", "name": "Luz do jardim"},
+        {"device_id": "known-switch", "name": "Luz do jardim", "provider": "tuya",
+         "device_type": "tuya", "local_mac": "AA:BB:CC:DD:EE:21"},
     ]
 
     applied = client.post("/api/v1/network/scan/apply", headers=headers, json={})
@@ -744,6 +745,62 @@ def test_local_network_scan_matches_known_tuya_by_mac_and_apply_updates_only_mat
     saved = gateway.hardware_integrations.load_config()["tuya"]["devices"]
     assert saved[0]["local_ip"] == "192.168.10.21"
     assert saved[1]["local_ip"] == "192.168.10.22"
+
+
+def test_network_device_detail_save_uses_mac_and_persists_name(client, monkeypatch):
+    headers = {"Authorization": f"Bearer {owner_session(client)}"}
+    report = {"hosts": [{"ip": "192.168.10.44", "mac": "AA:BB:CC:DD:EE:44",
+                         "manufacturer": "Example", "model": "Bridge", "discovery_methods": ["arp_sweep"]}]}
+    monkeypatch.setattr(gateway.network_scanner, "scan_attached_networks", lambda: report)
+
+    response = client.post("/api/v1/network/devices/save", headers=headers,
+                           json={"mac": "aa:bb:cc:dd:ee:44", "name": "Bridge da cave", "device_type": "router"})
+
+    assert response.status_code == 200, response.text
+    saved = response.json()
+    assert saved["device"]["mac"] == "AA:BB:CC:DD:EE:44"
+    assert saved["device"]["name"] == "Bridge da cave"
+    assert saved["device"]["device_type"] == "router"
+    assert saved["device"]["last_ip"] == "192.168.10.44"
+    assert saved["ambiguous_ip"] is False
+
+
+def test_network_device_detail_save_never_updates_ambiguous_ip(client, monkeypatch):
+    headers = {"Authorization": f"Bearer {owner_session(client)}"}
+    report = {"hosts": [
+        {"ip": "192.168.10.80", "mac": "AA:BB:CC:DD:EE:95"},
+        {"ip": "192.168.10.200", "mac": "AA:BB:CC:DD:EE:95"},
+    ]}
+    monkeypatch.setattr(gateway.network_scanner, "scan_attached_networks", lambda: report)
+
+    response = client.post("/api/v1/network/devices/save", headers=headers,
+                           json={"mac": "AA:BB:CC:DD:EE:95", "name": "Inversor", "device_type": "inverter"})
+
+    assert response.status_code == 200, response.text
+    saved = response.json()
+    assert saved["device"]["name"] == "Inversor"
+    assert saved["device"]["last_ip"] == ""
+    assert saved["ambiguous_ip"] is True
+
+
+def test_network_device_detail_save_updates_matching_tuya_name_and_unique_local_ip(client, monkeypatch, tmp_path):
+    headers = {"Authorization": f"Bearer {owner_session(client)}"}
+    monkeypatch.setattr(gateway.hardware_integrations, "_data_dir", lambda: tmp_path)
+    gateway.hardware_integrations.save_config({"tuya": {"devices": [
+        {"device_id": "known-breaker", "name": "Old name", "local_mac": "AA:BB:CC:DD:EE:21",
+         "local_ip": "192.168.10.20"},
+    ]}})
+    report = {"hosts": [{"ip": "192.168.10.21", "mac": "AA:BB:CC:DD:EE:21"}]}
+    monkeypatch.setattr(gateway.network_scanner, "scan_attached_networks", lambda: report)
+
+    response = client.post("/api/v1/network/devices/save", headers=headers,
+                           json={"mac": "AA:BB:CC:DD:EE:21", "name": "Disjuntor oficina", "device_type": "tuya"})
+
+    assert response.status_code == 200, response.text
+    saved = gateway.hardware_integrations.load_config()["tuya"]["devices"][0]
+    assert saved["name"] == "Disjuntor oficina"
+    assert saved["name_source"] == "local"
+    assert saved["local_ip"] == "192.168.10.21"
 
 
 def test_local_network_apply_skips_mac_seen_at_multiple_ips(client, monkeypatch, tmp_path):

@@ -6,12 +6,13 @@ const PWA_INVITE_LANDING_URL = "https://solargualdimpais-bot.github.io/TheSolarM
 import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classifyEndpoint, inferHostedGatewayEndpoint, buildInviteLandingUrl, readInviteLandingHash, PRESENCE_API_STATUS } from "./gateway-connection.js";
 import { isHeicPhoto } from "./photo-format.js";
 import { addFavoriteId, normalizeFavoriteIds, reorderFavoriteIds } from "./favorite-list.js";
-import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, redeemGatewayInvite, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, readGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayDiagnosticsUpload, saveGatewayDiagnosticsUploadToken, disableGatewayDiagnosticsUpload, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, controlGatewayAntminer, testGatewayAntminerControl, readGatewayAntminerManagement, writeGatewayAntminerManagement, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, controlGatewayTuyaSetting, saveGatewayTuyaProductDpsDescription, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, testGatewayTuyaLanReachability, discoverGatewayTuyaLanDevices, scanGatewayLocalNetwork, applyGatewayLocalNetworkMatches, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging, readGatewayTeslaLocalPresence } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, redeemGatewayInvite, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, readGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayDiagnosticsUpload, saveGatewayDiagnosticsUploadToken, disableGatewayDiagnosticsUpload, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, controlGatewayAntminer, testGatewayAntminerControl, readGatewayAntminerManagement, writeGatewayAntminerManagement, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, controlGatewayTuyaSetting, saveGatewayTuyaProductDpsDescription, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, testGatewayTuyaLanReachability, discoverGatewayTuyaLanDevices, scanGatewayLocalNetwork, applyGatewayLocalNetworkMatches, saveGatewayLocalNetworkDevice, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging, readGatewayTeslaLocalPresence } from "./gateway-auth.js";
 
 let automationEditingId = "";
 let energyEngineActiveTab="summary";
 let surplusActiveTab="status";
 const state = { page: "inicio", devicesTab: "confirmed", mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], energyEngine: null, siteProfile: null, tuyaDevices: [], tuyaReadings: [], tuyaInventorySignature: "", lastUpdated: null, lastMeasurementAt: null, refreshing: false, tuyaInventoryRefreshing: false, pendingLiveRender: false, demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [], engineHistoryChart: { open: false, dateKey: "", loading: false, error: null } };
+let lastLocalNetworkScanReport = null;
 let inventoryCardClickTimer = null;
 let favoriteCardClickTimer = null;
 let favoriteReorderPressTimer=null,favoriteReorder=null,favoriteDragSuppressClickUntil=0;
@@ -2844,13 +2845,14 @@ function tuyaLanReasonText(reason){
   return messages[reason]||String(reason).replaceAll("_"," ");
 }
 function renderLocalNetworkResults(report){
+  lastLocalNetworkScanReport=report;
   const conflicts=new Set((report.mac_ip_conflicts||[]).map(item=>String(item.mac||"").toUpperCase()));
-  const hostRows=(report.hosts||[]).map(host=>{
-    const matches=(host.matched_devices||[]).map(device=>`${esc(device.name)} · ${esc(device.device_id)}`).join("<br>")||"—";
+  const hostRows=(report.hosts||[]).map((host,index)=>{
+    const matches=(host.matched_devices||[]).map(device=>`${esc(device.name)}${device.device_id?` · ${esc(device.device_id)}`:""}`).join("<br>")||"—";
     const conflict=host.mac&&conflicts.has(String(host.mac).toUpperCase());
     const methods=(host.discovery_methods||[]).map(method=>({arp_sweep:"ARP ativo",tcp:"TCP",icmp:"Ping",ssdp:"SSDP/UPnP",mdns:"mDNS/DNS-SD",arp_neighbor:"vizinho ARP"}[method]||method)).join(", ")||"—";
     const ipLabel=host.mac_ip_conflict?`IP ambíguo: ${(host.ip_candidates||[]).map(esc).join(", ")}`:esc(host.ip);
-    return `<tr${conflict?' class="warning-row"':''}><td>${ipLabel}${host.is_router?' <span class="source-tag">Router</span>':''}</td><td>${esc(host.mac||"MAC não visível")}${conflict?' <span class="source-tag">MAC em vários IPs</span>':''}</td><td>${esc(host.friendly_name||host.hostname||"—")}</td><td>${esc(host.manufacturer||"—")}</td><td>${esc(host.model||"—")}</td><td>${matches}</td><td>${esc(methods)}</td><td>${(host.open_ports||[]).map(port=>esc(port)).join(", ")||"—"}</td></tr>`;
+    return `<tr${conflict?' class="warning-row"':''} tabindex="0" data-network-device-row="${index}" aria-label="Abrir detalhes de ${esc(host.friendly_name||host.hostname||host.ip||host.mac||"dispositivo")}"><td>${ipLabel}${host.is_router?' <span class="source-tag">Router</span>':''}</td><td>${esc(host.mac||"MAC não visível")}${conflict?' <span class="source-tag">MAC em vários IPs</span>':''}</td><td>${esc(host.friendly_name||host.hostname||"—")}</td><td>${esc(host.manufacturer||"—")}</td><td>${esc(host.model||"—")}</td><td>${matches}</td><td>${esc(methods)}</td><td>${(host.open_ports||[]).map(port=>esc(port)).join(", ")||"—"}</td></tr>`;
   }).join("");
   const networks=(report.networks||[]).map(item=>`${esc(item.network)} · ${esc(item.interface)}`).join("; ")||"Nenhuma rede local IPv4 encontrada.";
   const interfaceAddresses=(report.interface_addresses||[]).map(item=>`${esc(item.interface)}: ${esc(item.address)} · ${esc(item.network)}`).join("; ");
@@ -2866,6 +2868,52 @@ function renderLocalNetworkResults(report){
   $("#local-network-apply").hidden=matchedMacs.size===0;
   return matchedMacs.size;
 }
+function openLocalNetworkDeviceDetails(index){
+  const host=lastLocalNetworkScanReport?.hosts?.[index];
+  if(!host)return;
+  const dialog=$("#network-device-detail-dialog");
+  const ip=host.mac_ip_conflict?`Ambíguo: ${(host.ip_candidates||[]).join(", ")||"vários IPs"}`:(host.ip||"—");
+  const match=(host.matched_devices||[])[0]||{};
+  $("#network-device-detail-ip").textContent=ip;
+  $("#network-device-detail-mac").textContent=host.mac||"Não visível; não é possível guardar pela chave MAC.";
+  $("#network-device-detail-discovery").textContent=(host.discovery_methods||[]).join(", ")||"—";
+  $("#network-device-detail-name").value=match.name||host.friendly_name||host.hostname||"";
+  $("#network-device-detail-type").value=match.device_type|| (host.is_router?"router":"unknown");
+  $("#network-device-detail-manufacturer").textContent=host.manufacturer||"—";
+  $("#network-device-detail-model").textContent=host.model||"—";
+  $("#network-device-detail-recognized").textContent=match.name?(match.device_id?`${match.name} · ${match.device_id}`:match.name):"Ainda não associado a um equipamento guardado.";
+  $("#network-device-detail-save").disabled=!host.mac;
+  dialog.dataset.hostIndex=String(index);
+  dialog.showModal();
+}
+$("#local-network-results").addEventListener("click",event=>{
+  const row=event.target.closest("[data-network-device-row]");
+  if(row)openLocalNetworkDeviceDetails(Number(row.dataset.networkDeviceRow));
+});
+$("#local-network-results").addEventListener("keydown",event=>{
+  if(!["Enter"," "].includes(event.key))return;
+  const row=event.target.closest("[data-network-device-row]");
+  if(!row)return;
+  event.preventDefault();openLocalNetworkDeviceDetails(Number(row.dataset.networkDeviceRow));
+});
+$("#network-device-detail-close").addEventListener("click",()=>$("#network-device-detail-dialog").close());
+$("#network-device-detail-cancel").addEventListener("click",()=>$("#network-device-detail-dialog").close());
+$("#network-device-detail-save").addEventListener("click",async event=>{
+  const button=event.currentTarget,dialog=$("#network-device-detail-dialog"),status=$("#local-network-status");
+  const host=lastLocalNetworkScanReport?.hosts?.[Number(dialog.dataset.hostIndex)];
+  if(!host?.mac){status.textContent="Não é possível guardar este equipamento sem um MAC detetado.";return;}
+  if(!ownerCanManageHardware("#local-network-status"))return;
+  button.disabled=true;button.textContent="A guardar…";
+  try{
+    const result=await saveGatewayLocalNetworkDevice({mac:host.mac,name:$("#network-device-detail-name").value,device_type:$("#network-device-detail-type").value});
+    host.matched_devices=[{name:result.device.name,device_id:result.device.source_device_id||null,provider:result.device.source_provider||"local",device_type:result.device.device_type,local_mac:result.device.mac}];
+    if(!host.mac_ip_conflict&&result.device.last_ip)host.ip=result.device.last_ip;
+    renderLocalNetworkResults(lastLocalNetworkScanReport);
+    status.textContent=result.ambiguous_ip?"Nome guardado pelo MAC. O IP ficou por atualizar porque este MAC apareceu associado a mais de um IP.":`Equipamento guardado pelo MAC${result.device.last_ip?`; IP atual ${result.device.last_ip} guardado`:"; sem IP atual inequívoco"}.`;
+    dialog.close();
+  }catch(error){status.textContent=`Não foi possível guardar o equipamento: ${error.message||"falha na gravação local."}`;}
+  finally{button.disabled=false;button.textContent="Guardar equipamento";}
+});
 $("#local-network-scan").addEventListener("click",async event=>{
   const button=event.currentTarget,status=$("#local-network-status"),results=$("#local-network-results"),save=$("#local-network-apply");
   if(!ownerCanManageHardware("#local-network-status"))return;
