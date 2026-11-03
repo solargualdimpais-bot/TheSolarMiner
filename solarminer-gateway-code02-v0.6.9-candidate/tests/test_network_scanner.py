@@ -28,28 +28,6 @@ def test_arp_reply_parser_returns_sender_mac_and_ip():
         "192.168.10.5", "AA:BB:CC:DD:EE:FF")
 
 
-def test_arp_resolution_uses_udp_bound_to_the_gateway_interface(monkeypatch):
-    calls = []
-
-    class FakeSocket:
-        def bind(self, address):
-            calls.append(("bind", address))
-
-        def sendto(self, payload, address):
-            calls.append(("sendto", payload, address))
-
-        def close(self):
-            calls.append(("close",))
-
-    monkeypatch.setattr(network_scanner.socket, "socket", lambda *_args: FakeSocket())
-    assert network_scanner._trigger_arp_resolution("192.168.10.5", "192.168.10.2") is True
-    assert calls == [
-        ("bind", ("192.168.10.2", 0)),
-        ("sendto", b"\x00", ("192.168.10.5", 9)),
-        ("close",),
-    ]
-
-
 def test_mdns_parser_maps_local_hostname_and_manufacturer_to_ipv4():
     import struct
 
@@ -68,12 +46,11 @@ def test_mdns_parser_maps_local_hostname_and_manufacturer_to_ipv4():
     assert descriptions["192.168.10.44"]["manufacturer"] == "Deye"
 
 
-def test_scan_reports_tcp_ping_and_neighbor_hosts_without_scanning_gateway_address(monkeypatch):
+def test_scan_reports_direct_arp_tcp_and_ping_without_scanning_gateway_address(monkeypatch):
     monkeypatch.setattr(network_scanner, "_attached_ipv4_networks", lambda: ([
         {"interface": "eth0", "address": "192.168.10.2", "network": "192.168.10.0/29"},
     ], None))
     monkeypatch.setattr(network_scanner, "default_gateway_ips", lambda: {"192.168.10.1"})
-    monkeypatch.setattr(network_scanner, "_trigger_arp_resolution", lambda _ip, _source: True)
     monkeypatch.setattr(network_scanner, "_active_arp_sweep", lambda _interface, _source, _targets: {
         "192.168.10.1": "AA:BB:CC:DD:EE:01", "192.168.10.5": "AA:BB:CC:DD:EE:05",
     })
@@ -86,12 +63,6 @@ def test_scan_reports_tcp_ping_and_neighbor_hosts_without_scanning_gateway_addre
 
     monkeypatch.setattr(network_scanner, "_probe", probe)
     monkeypatch.setattr(network_scanner, "_ping", lambda ip: ip == "192.168.10.4")
-    monkeypatch.setattr(network_scanner, "_neighbor_macs", lambda: {
-        "192.168.10.1": "AA:BB:CC:DD:EE:01",
-        "192.168.10.2": "AA:BB:CC:DD:EE:01",
-        "192.168.10.5": "AA:BB:CC:DD:EE:05",
-    })
-
     report = network_scanner.scan_attached_networks()
 
     assert report["scanned_count"] == 5
@@ -115,17 +86,15 @@ def test_scan_exposes_missing_interface_discovery(monkeypatch):
     assert report["scan_error"] == "interface_discovery_failed"
 
 
-def test_raw_arp_socket_failure_is_logged_and_falls_back_without_aborting(monkeypatch):
+def test_raw_arp_socket_failure_keeps_tcp_host_but_never_labels_it_arp_active(monkeypatch):
     monkeypatch.setattr(network_scanner, "_attached_ipv4_networks", lambda: ([
         {"interface": "eth0", "address": "192.168.10.2", "network": "192.168.10.0/30"},
     ], None))
     monkeypatch.setattr(network_scanner, "default_gateway_ips", lambda: {"192.168.10.1"})
     monkeypatch.setattr(network_scanner, "_active_arp_sweep", lambda *_args: (_ for _ in ()).throw(OSError("raw socket denied")))
-    monkeypatch.setattr(network_scanner, "_trigger_arp_resolution", lambda *_args: True)
-    monkeypatch.setattr(network_scanner, "_neighbor_macs", lambda: {"192.168.10.1": "AA:BB:CC:DD:EE:01"})
     monkeypatch.setattr(network_scanner, "_ssdp_discovery", lambda _source: {})
     monkeypatch.setattr(network_scanner, "_mdns_discovery", lambda _source: {})
-    monkeypatch.setattr(network_scanner, "_probe", lambda *_args: None)
+    monkeypatch.setattr(network_scanner, "_probe", lambda ip, *_args: (ip, [80]) if ip == "192.168.10.1" else None)
     monkeypatch.setattr(network_scanner, "_ping", lambda _ip: False)
     monkeypatch.setattr(network_scanner.time, "sleep", lambda _seconds: None)
 
@@ -133,6 +102,8 @@ def test_raw_arp_socket_failure_is_logged_and_falls_back_without_aborting(monkey
 
     assert report["scan_warnings"] == ["active_arp_unavailable"]
     assert [host["ip"] for host in report["hosts"]] == ["192.168.10.1"]
+    assert report["hosts"][0]["mac"] is None
+    assert report["hosts"][0]["discovery_methods"] == ["tcp"]
 
 
 def test_scan_reports_one_mac_observed_on_multiple_ips(monkeypatch):
@@ -147,8 +118,6 @@ def test_scan_reports_one_mac_observed_on_multiple_ips(monkeypatch):
     monkeypatch.setattr(network_scanner, "_mdns_discovery", lambda _source: {})
     monkeypatch.setattr(network_scanner, "_probe", lambda *_args: None)
     monkeypatch.setattr(network_scanner, "_ping", lambda _ip: False)
-    monkeypatch.setattr(network_scanner, "_neighbor_macs", lambda: (_ for _ in ()).throw(AssertionError("stale cache must not be read after successful active ARP")))
-
     report = network_scanner.scan_attached_networks()
 
     assert report["mac_ip_conflicts"] == [{"mac": "AA:BB:CC:DD:EE:33", "ips": ["192.168.10.3", "192.168.10.4"]}]

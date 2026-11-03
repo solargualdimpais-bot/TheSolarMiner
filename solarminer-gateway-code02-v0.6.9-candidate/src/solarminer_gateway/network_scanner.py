@@ -149,26 +149,6 @@ def _probe(ip: str, ports: tuple[int, ...], timeout: float) -> tuple[str, list[i
     return None
 
 
-def _neighbor_macs(path: Path = Path("/proc/net/arp")) -> dict[str, str]:
-    try:
-        lines = path.read_text(encoding="ascii", errors="ignore").splitlines()[1:]
-    except OSError:
-        return {}
-    result: dict[str, str] = {}
-    for line in lines:
-        fields = line.split()
-        if len(fields) < 6 or fields[2] != "0x2":
-            continue
-        try:
-            ipaddress.IPv4Address(fields[0])
-        except ValueError:
-            continue
-        mac = fields[3].upper()
-        if len(mac) == 17 and mac.count(":") == 5:
-            result[fields[0]] = mac
-    return result
-
-
 def _ping(ip: str) -> bool:
     """Use the system ping binary as a fallback for hosts that filter TCP probes."""
     try:
@@ -177,20 +157,6 @@ def _ping(ip: str) -> bool:
         return completed.returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
-
-
-def _trigger_arp_resolution(ip: str, source_ip: str) -> bool:
-    """Cause Linux to resolve the host's link-layer address without a raw socket."""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        sock.bind((source_ip, 0))
-        # UDP to a closed discard port still makes the kernel ARP for on-link hosts.
-        sock.sendto(b"\x00", (ip, 9))
-        return True
-    except OSError:
-        return False
-    finally:
-        sock.close()
 
 
 def _build_arp_request(source_mac: str, source_ip: str, target_ip: str) -> bytes:
@@ -495,7 +461,6 @@ def scan_attached_networks() -> dict[str, Any]:
     responding: dict[str, dict[str, Any]] = {}
     scan_warnings: list[str] = []
     active_arp_macs: dict[str, str] = {}
-    fallback_targets: dict[str, dict[str, str]] = {}
     for item in route_rows:
         ips = [ip for ip, target in targets.items() if target["interface"] == item["interface"]
                and target["network"] == item["network"]]
@@ -504,27 +469,14 @@ def scan_attached_networks() -> dict[str, Any]:
         try:
             active_arp_macs.update(_active_arp_sweep(item["interface"], item["address"], ips))
         except (OSError, ValueError, AttributeError) as exc:
-            fallback_targets.update({ip: item for ip in ips})
             scan_warnings.append("active_arp_unavailable")
             LOG.warning("Active ARP scan unavailable on interface %s (%s)",
                         item["interface"], type(exc).__name__)
 
-    fallback_macs: dict[str, str] = {}
-    if fallback_targets:
-        # The kernel-neighbour fallback remains useful on platforms where raw sockets
-        # are unavailable. Never merge its potentially stale entries for networks
-        # where the direct Ethernet ARP sweep succeeded.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as executor:
-            arp_futures = [executor.submit(_trigger_arp_resolution, ip, item["address"])
-                           for ip, item in fallback_targets.items()]
-            for future in concurrent.futures.as_completed(arp_futures):
-                future.result()
-        time.sleep(ARP_SETTLE_SECONDS)
-        neighbor_cache = _neighbor_macs()
-        fallback_macs = {ip: neighbor_cache[ip] for ip in fallback_targets if ip in neighbor_cache}
-
-    mac_by_ip = fallback_macs
-    mac_by_ip.update(active_arp_macs)
+    # Only replies captured from raw Ethernet ARP during this scan may produce an
+    # IP-to-MAC result. The Linux neighbor table can be stale and is not proof of
+    # a live ARP response, so it is intentionally excluded from scan results.
+    mac_by_ip = active_arp_macs
     for ip in targets:
         if ip in mac_by_ip:
             responding[ip] = {"open_ports": [], "methods": ["arp_sweep"]}
@@ -551,9 +503,6 @@ def scan_attached_networks() -> dict[str, Any]:
             if future.result():
                 responding[ping_futures[future]] = {"open_ports": [], "methods": ["icmp"]}
 
-    for ip in mac_by_ip:
-        if ip in targets and ip not in responding:
-            responding[ip] = {"open_ports": [], "methods": ["arp_sweep"]}
     hosts = []
     for ip in sorted(responding, key=lambda value: int(ipaddress.IPv4Address(value))):
         iface = targets[ip]
@@ -592,6 +541,6 @@ def scan_attached_networks() -> dict[str, Any]:
     return {"networks": route_rows, "interface_addresses": networks,
             "scanned_count": len(targets), "responsive_count": len(hosts),
             "hosts": hosts, "skipped_networks": skipped, "address_limit": MAX_ADDRESSES,
-            "method": "active_arp_tcp_icmp_ssdp_mdns", "router_ips": sorted(gateways),
+            "method": "direct_ethernet_arp_tcp_icmp_ssdp_mdns", "router_ips": sorted(gateways),
             "scan_error": scan_error, "scan_warnings": sorted(set(scan_warnings)),
             "mac_ip_conflicts": mac_ip_conflicts}
