@@ -127,7 +127,7 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   assert.match(embeddedApp, /startGatewayTailscale/);
   assert.match(embeddedApp, /liveHomeMetric\("Painéis"/);
   assert.match(embeddedApp, /liveMinerHomeMetric\(\)/);
-  assert.match(embeddedWorker, /static-v0\.5\.108-local-network-scan/);
+  assert.match(embeddedWorker, /static-v0\.5\.109-active-arp-diagnostics/);
   assert.match(embeddedApp, /data-miner-breaker-save/);
   assert.match(embeddedApp, /Potência medida partilhada/);
   assert.match(embeddedApp, /Consumo medido/);
