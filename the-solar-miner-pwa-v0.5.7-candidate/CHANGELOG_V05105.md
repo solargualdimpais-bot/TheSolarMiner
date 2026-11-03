@@ -1,0 +1,1 @@
+# The Solar Miner Owner PWA 0.5.105`n`n- The network inventory identifies the default router and reads only public web interface metadata.`n- Owners can save names and device/router classification by MAC or IP for future scans.

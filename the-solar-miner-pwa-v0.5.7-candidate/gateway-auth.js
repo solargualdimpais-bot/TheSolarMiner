@@ -553,12 +553,12 @@ export async function probeGatewayHuawei({ signal, referenceValues = {} } = {}) 
     method: "POST", body: { reference_values: referenceValues }, signal
   });
 }
-export async function saveGatewayNetworkDeviceLabel({ mac, ip, name }) {
-  if (typeof mac !== "string" || typeof ip !== "string" || typeof name !== "string" || !name.trim()) {
+export async function saveGatewayNetworkDeviceLabel({ mac, ip, name = "", kind = "device" }) {
+  if (typeof mac !== "string" || typeof ip !== "string" || typeof name !== "string" || !["device", "router"].includes(kind)) {
     throw new Error("Nome ou endereço do dispositivo inválido.");
   }
   return gatewayApi("/api/v1/integrations/huawei/client-label", {
-    method: "POST", body: { mac, ip, name: name.trim() }
+    method: "POST", body: { mac, ip, name: name.trim(), kind }
   });
 }
 export async function readGatewayTeslaEvConfig() {

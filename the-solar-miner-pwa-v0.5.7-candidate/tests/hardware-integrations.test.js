@@ -174,8 +174,14 @@ test("Huawei LAN results cross-check known MACs and save Owner labels for new de
   const gateway = read("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/app.py");
   assert.match(app, /item\.display_name/);
   assert.match(app, /data-network-save/);
+  assert.match(app, /data-network-kind/);
+  assert.match(app, /Routers encontrados/);
+  assert.match(app, /data-mac="" data-ip=/);
   assert.match(auth, /integrations\/huawei\/client-label/);
+  assert.match(auth, /name\.trim\(\), kind/);
   assert.match(gateway, /network_inventory_devices/);
+  assert.match(gateway, /network_inventory_ip_labels/);
+  assert.match(gateway, /configured_router_ips/);
   assert.match(gateway, /known_device_name/);
 });
 

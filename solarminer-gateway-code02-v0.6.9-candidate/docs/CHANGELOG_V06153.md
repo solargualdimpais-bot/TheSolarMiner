@@ -1,0 +1,1 @@
+# SolarMiner Gateway 0.6.153 / Owner PWA 0.5.105`n`n- LAN inventory now reports the route-table gateway and a read-only public HTTP identity fingerprint for the configured modem and default router.`n- Owner network labels persist by MAC or IP, including an explicit router/device classification.
