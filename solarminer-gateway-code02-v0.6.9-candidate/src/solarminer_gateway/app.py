@@ -52,7 +52,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.148"
+PACKAGE_VERSION = "0.6.149"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -1003,6 +1003,11 @@ class DeviceDiscoveryRequest(BaseModel):
     cidr: StrictStr = Field(min_length=9, max_length=43)
     ports: list[int] = Field(min_length=1, max_length=16)
     timeout_seconds: float = Field(default=0.25, ge=0.05, le=1.0)
+
+
+class HuaweiProbeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    reference_values: dict[StrictStr, StrictStr] = Field(default_factory=dict)
 
 
 class NetworkDeviceLabelRequest(BaseModel):
@@ -2135,7 +2140,8 @@ def huawei_router_clients(payload: dict[str, Any] | None = None,
 
 
 @app.post("/api/v1/integrations/huawei/probe")
-def huawei_router_probe(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+def huawei_router_probe(payload: HuaweiProbeRequest,
+                        session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
     """Identify the locally configured Huawei model and firmware before scan."""
     with db() as conn:
         actor = _revalidate_actor(conn, session, "manage_gateway")
@@ -2145,7 +2151,8 @@ def huawei_router_probe(session: dict[str, Any] = Depends(require_permission("ma
         if not isinstance(router, dict) or not router.get("password"):
             raise HTTPException(409, "huawei_router_not_configured")
     try:
-        discovery = hardware_integrations.huawei_router.read_huawei_device_information(router)
+        discovery = hardware_integrations.huawei_router.read_huawei_device_information(
+            router, payload.reference_values)
     except hardware_integrations.huawei_router.HuaweiRouterError as exc:
         discovery = {"probe_status": "unavailable", "model": "", "endpoint_errors": {"probe": str(exc)[:80]},
                      "source": "huawei_local_read_only_api"}
@@ -3666,7 +3673,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.148"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.149"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

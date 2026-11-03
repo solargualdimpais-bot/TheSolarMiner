@@ -56,6 +56,24 @@ function showOperationDialog(options={}){
 }
 function updateOperationDialog(options={}){renderOperationDialog(options);}
 async function showOperationResult(title,message){return showOperationDialog({title,message,actions:[{label:"OK",value:"ok",primary:true}]});}
+function requestHuaweiVersionReferences(){
+  return new Promise(resolve=>{
+    const dialog=document.createElement("dialog");dialog.className="settings-dialog context-editor";
+    dialog.setAttribute("aria-labelledby","huawei-reference-title");
+    dialog.innerHTML=`<form class="dialog-header"><div><p class="eyebrow">DIAGNÓSTICO TEMPORÁRIO · SÓ LEITURA</p><h2 id="huawei-reference-title">Comparar versões do modem</h2></div><button class="icon-button" type="button" data-huawei-reference-close aria-label="Fechar">×</button></form><div class="dialog-body"><p class="field-note">Preenchi os valores que indicaste. O Gateway vai compará-los com as respostas dos endereços de informação do Huawei e mostrar o campo XML e o endereço onde encontrou cada valor. Estes valores servem só para esta pesquisa e não ficam guardados.</p><form data-huawei-reference-form><label>Modelo<input name="model" maxlength="128" value="B636-336"></label><label>Hardware<input name="hardware_version" maxlength="128" value="WR1B636M"></label><label>Firmware / software<input name="software_version" maxlength="128" value="3.0.0.1"></label><label>Harmony OS<input name="harmony_version" maxlength="128" value="3.0.0.1"></label><label>WebUI<input name="webui_version" maxlength="128" value="WEB UI 3.0.0.1"></label><div class="dialog-actions"><button class="button secondary" type="button" data-huawei-reference-skip>Pesquisar sem comparação</button><button class="button primary" type="submit">Comparar e pesquisar</button></div></form></div>`;
+    let settled=false;
+    const finish=value=>{if(settled)return;settled=true;resolve(value);dialog.close();};
+    dialog.addEventListener("close",()=>{if(!settled)resolve(null);dialog.remove();});
+    dialog.querySelector("[data-huawei-reference-form]").addEventListener("submit",event=>{
+      event.preventDefault();const data=new FormData(event.currentTarget),values={};
+      for(const key of ["model","hardware_version","software_version","harmony_version","webui_version"]){const value=String(data.get(key)||"").trim();if(value)values[key]=value;}
+      finish(values);
+    });
+    dialog.querySelector("[data-huawei-reference-skip]").addEventListener("click",()=>finish({}));
+    dialog.querySelector("[data-huawei-reference-close]").addEventListener("click",()=>dialog.close("cancel"));
+    document.body.append(dialog);dialog.showModal();
+  });
+}
 const terminalUpdateStates=new Set(["COMMITTED","FAILED","ROLLED_BACK","RECOVERY_BLOCKED","CURRENT"]);
 function updateStatusMessage(result){
   const status=String(result?.status||"UNKNOWN").toUpperCase();
@@ -2769,16 +2787,23 @@ $("#huawei-router-read").addEventListener("click", async event => {
   const controller=new AbortController();let cancelled=false,timedOut=false,activeDialog=null;
   const timeout=window.setTimeout(()=>{timedOut=true;controller.abort();},220_000);
   try{
+    const referenceValues=await requestHuaweiVersionReferences();
+    if(referenceValues===null)throw new DOMException("Pesquisa cancelada.","AbortError");
     const host=$("#huawei-router-host").value.trim(),username=$("#huawei-router-username").value.trim(),password=$("#huawei-router-password").value;
     const saved=await saveGatewayHardwareIntegrationConfig({huawei_router:{host,username,...(password?{password}:{})}},{signal:controller.signal});
     $("#huawei-router-password").value="";
     if(!saved.huawei_router?.configured)throw new Error("Introduz a palavra-passe do router.");
     activeDialog=showOperationDialog({title:"A identificar o modem",message:"A consultar o modelo e as versões de software pela rede local. Esta etapa só lê informação; não altera o modem.",progress:true,actions:[{label:"Parar",value:"stop"}]});
     activeDialog.then(result=>{if(result==="stop"||result==="dismiss"){cancelled=true;controller.abort();}});
-    const probe=await probeGatewayHuawei({signal:controller.signal}),discovery=probe.discovery||{};
+    const probe=await probeGatewayHuawei({signal:controller.signal,referenceValues}),discovery=probe.discovery||{};
     if(controller.signal.aborted)throw new DOMException("Pesquisa parada.","AbortError");
     const info=[["Marca","Huawei"],["Modelo",discovery.model||"Não identificado"],["Hardware",discovery.hardware_version||"Não indicado"],["Firmware",discovery.software_version||"Não identificado"],["HarmonyOS",discovery.harmony_version||"Não indicado"],["Interface Web",discovery.webui_version||"Não indicada"],["Família",discovery.product_family||"Não indicada"]].map(([label,value])=>`${label}: ${value}`).join("\n");
-    updateOperationDialog({title:discovery.probe_status==="identified"?"Modem identificado":"Identificação parcial",message:`${info}\n\n${discovery.probe_status==="identified"?"Ao continuar, o Gateway guarda estes dados e inicia a leitura de clientes, a varredura local e a correspondência por MAC.":"Não foi possível obter todos os dados do firmware. Se continuares, o Gateway guarda apenas os campos identificados e tenta os métodos de leitura disponíveis."}`,progress:false,actions:[{label:"Parar",value:"stop"},{label:"Continuar",value:"continue",primary:true}]});
+    const referenceLabels={model:"Modelo",hardware_version:"Hardware",software_version:"Firmware/software",harmony_version:"Harmony OS",webui_version:"WebUI"};
+    const referenceSummary=Object.entries(referenceValues).map(([key,value])=>{const matches=discovery.reference_matches?.[key]||[];return `${referenceLabels[key]||key} (${value}): ${matches.length?matches.map(match=>`${match.endpoint} · ${match.xml_path||"campo XML sem caminho"}`).join("; "):"sem correspondência nas respostas consultadas"}`;}).join("\n");
+    const fieldSources=Object.entries(discovery.field_sources||{}).map(([key,source])=>`${referenceLabels[key]||key}: ${source.endpoint} · ${source.xml_path||"campo XML sem caminho"}`).join("\n");
+    const locationSummary=referenceSummary?`\n\nComparação dos valores introduzidos:\n${referenceSummary}`:"";
+    const sourceSummary=fieldSources?`\n\nCampos identificados pelo Gateway:\n${fieldSources}`:"";
+    updateOperationDialog({title:discovery.probe_status==="identified"?"Modem identificado":"Identificação parcial",message:`${info}${locationSummary}${sourceSummary}\n\n${discovery.probe_status==="identified"?"Ao continuar, o Gateway guarda estes dados e inicia a leitura de clientes, a varredura local e a correspondência por MAC.":"Não foi possível obter todos os dados do firmware. Se continuares, o Gateway guarda apenas os campos identificados e tenta os métodos de leitura disponíveis."}`,progress:false,actions:[{label:"Parar",value:"stop"},{label:"Continuar",value:"continue",primary:true}]});
     const decision=await activeDialog;activeDialog=null;
     if(decision!=="continue"){status.textContent="Pesquisa parada antes da leitura de IPs/MACs.";return;}
     activeDialog=showOperationDialog({title:"A pesquisar IPs e MACs",message:"A guardar a identificação do modem e a consultar Huawei, varredura LAN e vizinhos locais. Podes parar a pesquisa.",progress:true,actions:[{label:"Parar",value:"stop"}]});

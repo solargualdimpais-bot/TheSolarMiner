@@ -117,7 +117,7 @@ class HuaweiHiLinkClient:
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise HuaweiRouterError("huawei_router_total_timeout")
-        headers = {"Accept": "application/xml,text/xml", "User-Agent": "SolarMiner-Gateway/0.6.148"}
+        headers = {"Accept": "application/xml,text/xml", "User-Agent": "SolarMiner-Gateway/0.6.149"}
         headers["X-Requested-With"] = "XMLHttpRequest"
         if self.session_id:
             headers["Cookie"] = f"SessionID={self.session_id}"
@@ -216,7 +216,7 @@ class HuaweiHiLinkClient:
                 return
         raise HuaweiRouterError("huawei_router_login_rejected")
 
-    def device_information(self) -> dict[str, Any]:
+    def device_information(self, reference_values: dict[str, Any] | None = None) -> dict[str, Any]:
         """Read non-secret identity/version fields using known HiLink variants.
 
         Firmware-specific APIs differ, so this is best-effort and read-only.
@@ -226,15 +226,39 @@ class HuaweiHiLinkClient:
         endpoints = ("api/device/information", "api/device/basic_information")
         fields = {
             "model": ("Model", "model", "ProductFamily", "ProductName", "DeviceName"),
-            "hardware_version": ("HardwareVersion", "hardwareversion"),
-            "software_version": ("SoftwareVersion", "softwareversion", "FirmwareVersion"),
-            "webui_version": ("WebUIVersion", "WebUIversion", "webuiversion"),
-            "harmony_version": ("HarmonyVersion", "HarmonyOSVersion", "harmonyversion"),
+            "hardware_version": ("HardwareVersion", "hardwareversion", "Hardware", "HWVersion", "HWVer", "hw_version"),
+            "software_version": ("SoftwareVersion", "softwareversion", "FirmwareVersion", "Firmware", "SWVersion", "FWVersion", "sw_version"),
+            "webui_version": ("WebUIVersion", "WebUIversion", "webuiversion", "WebUI", "WebVersion", "web_ui_version"),
+            "harmony_version": ("HarmonyVersion", "HarmonyOSVersion", "harmonyversion", "HarmonyOS", "harmony_version"),
             "product_family": ("ProductFamily", "productfamily"),
         }
+        reference_keys = ("model", "hardware_version", "software_version", "harmony_version", "webui_version")
+        references = {key: str(reference_values.get(key) or "").strip()[:128]
+                      for key in reference_keys
+                      if isinstance(reference_values, dict) and str(reference_values.get(key) or "").strip()}
         found: dict[str, str] = {}
+        found_at: dict[str, dict[str, str]] = {}
+        reference_matches: dict[str, list[dict[str, str]]] = {key: [] for key in references}
         errors: dict[str, str] = {}
         authenticated = False
+
+        def comparable(value: str) -> str:
+            return re.sub(r"[^a-z0-9]", "", value.casefold())
+
+        def values_match(expected: str, actual: str) -> bool:
+            # Firmware strings often wrap a dotted version in a WebUI prefix
+            # or carrier suffix, so compare the version token when available.
+            version = re.search(r"\d+(?:\.\d+){2,}", expected)
+            if version:
+                return version.group(0) in actual
+            return bool(comparable(expected)) and comparable(expected) == comparable(actual)
+
+        def xml_path(root: ET.Element, target: ET.Element) -> str:
+            parents = {child: parent for parent in root.iter() for child in parent}
+            nodes = [target]
+            while nodes[-1] in parents:
+                nodes.append(parents[nodes[-1]])
+            return "/".join(node.tag.rsplit("}", 1)[-1] for node in reversed(nodes))
 
         def read_endpoint(path: str) -> bool:
             try:
@@ -248,13 +272,25 @@ class HuaweiHiLinkClient:
                         raise HuaweiRouterError(f"huawei_router_api_error_{code}")
                     errors[path] = f"api_error_{code}"
                     return False
+                for ref_key, expected in references.items():
+                    for node in root.iter():
+                        actual = (node.text or "").strip()
+                        if not actual or not values_match(expected, actual):
+                            continue
+                        match = {"endpoint": path, "xml_path": xml_path(root, node), "value": actual[:128]}
+                        if match not in reference_matches[ref_key]:
+                            reference_matches[ref_key].append(match)
                 for key, aliases in fields.items():
-                    if key in found:
+                    if key in found and not authenticated:
                         continue
                     for alias in aliases:
                         value = self._text(root, alias)
                         if value and len(value) <= 128 and not any(ord(ch) < 32 for ch in value):
                             found[key] = value.strip()
+                            found_at[key] = {"endpoint": path, "xml_path": next(
+                                (xml_path(root, node) for node in root.iter()
+                                 if node.tag.rsplit("}", 1)[-1].lower() == alias.lower()
+                                 and (node.text or "").strip() == value), "")}
                             break
                 return True
             except HuaweiRouterError as exc:
@@ -267,7 +303,13 @@ class HuaweiHiLinkClient:
             read_endpoint(path)
         needs_auth = any(any(code in error for code in ("100003", "12500"))
                          for error in errors.values())
-        if needs_auth and not found:
+        missing_version_fields = any(key not in found for key in
+                                     ("hardware_version", "software_version", "webui_version"))
+        missing_reference_values = any(not reference_matches.get(key) for key in references)
+        # A sparse unauthenticated response (for example model only) is not a
+        # complete identification. Re-read after establishing the normal
+        # HiLink session so version fields are not silently left undiscovered.
+        if needs_auth or missing_version_fields or missing_reference_values:
             try:
                 self._login()
                 authenticated = True
@@ -278,6 +320,9 @@ class HuaweiHiLinkClient:
                 errors["login"] = str(exc)[:80]
         return {
             **found,
+            "field_sources": found_at,
+            "reference_matches": reference_matches,
+            "missing_fields": [key for key in fields if key not in found],
             "model": found.get("model") or "",
             "probe_status": "identified" if found else "unavailable",
             "authenticated": authenticated,
@@ -408,9 +453,10 @@ def read_huawei_clients_with_diagnostics(config: dict[str, Any]) -> tuple[list[d
     return hosts, dict(client.last_diagnostics)
 
 
-def read_huawei_device_information(config: dict[str, Any]) -> dict[str, Any]:
+def read_huawei_device_information(config: dict[str, Any],
+                                   reference_values: dict[str, Any] | None = None) -> dict[str, Any]:
     client = HuaweiHiLinkClient(config, timeout=8.0, total_timeout=90.0)
-    return client.device_information()
+    return client.device_information(reference_values)
 
 
 def merge_gateway_neighbor_hosts(
