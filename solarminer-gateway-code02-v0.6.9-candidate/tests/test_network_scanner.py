@@ -8,7 +8,7 @@ def test_scan_reports_tcp_ping_and_neighbor_hosts_without_scanning_gateway_addre
     monkeypatch.setattr(network_scanner, "default_gateway_ips", lambda: {"192.168.10.1"})
 
     def probe(ip, _ports, _timeout):
-        return (ip, [80]) if ip == "192.168.10.3" else None
+        return (ip, [80] if ip == "192.168.10.3" else []) if ip in {"192.168.10.1", "192.168.10.3"} else None
 
     monkeypatch.setattr(network_scanner, "_probe", probe)
     monkeypatch.setattr(network_scanner, "_ping", lambda ip: ip == "192.168.10.4")

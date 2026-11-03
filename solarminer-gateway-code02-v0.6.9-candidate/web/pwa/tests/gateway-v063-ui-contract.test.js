@@ -32,6 +32,7 @@ test("Modem tab hosts the local LAN scanner without restoring modem APIs", () =>
   assert.match(gatewayApp, /@app\.post\("\/api\/v1\/network\/scan\/apply"\)/);
   assert.match(app, /applyGatewayLocalNetworkMatches\(\)/);
   assert.match(app, /dispositivos que responderam/);
+  assert.match(app, /Router de saída indicado pela rota/);
 });
 
 test("Panels separate MPPT readings from inverter output and AQS records retain user fields", () => {
