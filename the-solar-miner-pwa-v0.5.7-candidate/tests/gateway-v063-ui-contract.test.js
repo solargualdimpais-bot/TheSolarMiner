@@ -15,15 +15,17 @@ test("Tuya LAN report exposes the saved target and key presence without the key"
   assert.match(app, /local_key_configured\?"Configurada":"Em falta"/);
 });
 
-test("Huawei modem tools live in their own Owner tab, outside Tuya settings", () => {
+test("Modem tab remains as a clean placeholder after removing the Huawei search", () => {
   assert.match(html, /data-owner-tab="modem"[^>]*>Modem<\/button>/);
   assert.match(html, /data-owner-panel="modem" id="gateway-modem-management"/);
   const tuyaPanel = html.match(/<fieldset class="device-card" data-device-panel="tuya"[\s\S]*?<\/fieldset>/)?.[0] || "";
   const modemPanel = html.match(/<section class="panel gateway-auth-panel owner-tab-panel" data-owner-panel="modem"[\s\S]*?<\/section>/)?.[0] || "";
   assert.ok(tuyaPanel);
   assert.ok(modemPanel);
-  assert.doesNotMatch(tuyaPanel, /huawei-router-(?:host|password|save|read|status)/);
-  assert.match(modemPanel, /huawei-router-(?:host|password|save|read|status)/);
+  assert.doesNotMatch(tuyaPanel, /huawei|modem/i);
+  assert.match(modemPanel, /Esta área será reconstruída/);
+  assert.doesNotMatch(`${modemPanel}\n${app}`, /huawei|Pesquisar modem/i);
+  assert.doesNotMatch(gatewayApp, /@app\.post\("\/api\/v1\/integrations\/huawei\/(?:clients|probe|client-label)/);
 });
 
 test("Panels separate MPPT readings from inverter output and AQS records retain user fields", () => {

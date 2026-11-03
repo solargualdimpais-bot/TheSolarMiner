@@ -27,7 +27,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import deye_modbus
-from . import huawei_router
 from . import tuya_dps_registry
 
 # TinyTuya is bundled with the signed Gateway package so local control works
@@ -155,6 +154,16 @@ def load_config() -> dict[str, Any]:
     return value
 
 
+def remove_legacy_huawei_config() -> bool:
+    """Erase credentials and identity cached by the retired modem-search feature."""
+    value = load_config()
+    if "huawei_router" not in value:
+        return False
+    value.pop("huawei_router", None)
+    save_config(value)
+    return True
+
+
 def save_config(value: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("integration_config_invalid")
@@ -187,11 +196,6 @@ def public_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
     config = value if value is not None else load_config()
     tuya = config.get("tuya", {}) if isinstance(config.get("tuya", {}), dict) else {}
     deye_cloud = config.get("deye_cloud", {}) if isinstance(config.get("deye_cloud", {}), dict) else {}
-    modem = config.get("huawei_router", {}) if isinstance(config.get("huawei_router", {}), dict) else {}
-    modem_profile = modem.get("discovered_device", {}) if isinstance(modem.get("discovered_device", {}), dict) else {}
-    modem_identity = {key: str(modem_profile[key])[:128] for key in
-                      ("model", "hardware_version", "software_version", "webui_version", "harmony_version", "product_family", "source", "updated_at")
-                      if isinstance(modem_profile.get(key), str)}
     product_catalog = _bounded_tuya_product_schemas(tuya.get("product_schemas"))
     category_catalog = _bounded_tuya_product_schemas(tuya.get("category_schemas"))
     public_devices = []
@@ -208,10 +212,6 @@ def public_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
         "deye": {k: config.get("deye", {}).get(k) for k in ("host", "port", "unit_id", "model") if config.get("deye", {}).get(k) is not None},
         "antminer": {k: config.get("antminer", {}).get(k) for k in ("host", "port", "rest_port", "model") if config.get("antminer", {}).get(k) is not None},
         "antminer_control_configured": bool(config.get("antminer", {}).get("password")),
-        "huawei_router": {"host": modem.get("host", "192.168.8.1"),
-                          "username": modem.get("username", "admin"),
-                          "configured": bool(modem.get("password")),
-                          "discovered_device": modem_identity},
         "deye_cloud": {"data_center": deye_cloud.get("data_center", "eu"), "app_id": deye_cloud.get("app_id"),
                        "email": deye_cloud.get("email"), "configured": bool(deye_cloud.get("app_id") and deye_cloud.get("app_secret") and deye_cloud.get("email") and deye_cloud.get("password")),
                        "secrets_returned": False},
@@ -253,7 +253,7 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
     if "tesla" in payload:
         raise ValueError("tesla_config_must_use_ev_api")
     old = existing if existing is not None else load_config()
-    result: dict[str, Any] = {k: old.get(k, {}) for k in ("deye", "antminer", "tuya", "huawei_router", "deye_cloud")}
+    result: dict[str, Any] = {k: old.get(k, {}) for k in ("deye", "antminer", "tuya", "deye_cloud")}
     result["tesla"] = old.get("tesla", {})
     if "deye" in payload:
         item = payload["deye"]
@@ -288,26 +288,6 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
             result["antminer"] = {"host": host, "port": port, "rest_port": rest_port, "model": model,
                                   "username": username, "password": password}
         else: result["antminer"] = {}
-    if "huawei_router" in payload:
-        item = payload["huawei_router"]
-        if not isinstance(item, dict):
-            raise ValueError("invalid_huawei_router_config")
-        if item.get("enabled", True):
-            host = _private_ip(item.get("host", "192.168.8.1"))
-            username = item.get("username", result.get("huawei_router", {}).get("username", "admin"))
-            if isinstance(username, str) and not username.strip():
-                username = "admin"
-            password = item.get("password") or result.get("huawei_router", {}).get("password")
-            if not isinstance(username, str) or not 1 <= len(username) <= 128 or any(ord(c) < 32 for c in username):
-                raise ValueError("invalid_huawei_router_username")
-            if password is not None and (not isinstance(password, str) or not 1 <= len(password) <= 512):
-                raise ValueError("invalid_huawei_router_password")
-            previous = result.get("huawei_router", {})
-            result["huawei_router"] = {"host": host, "username": username.strip(), "password": password}
-            if isinstance(previous.get("discovered_device"), dict):
-                result["huawei_router"]["discovered_device"] = previous["discovered_device"]
-        else:
-            result["huawei_router"] = {}
     if "deye_cloud" in payload:
         item = payload["deye_cloud"]
         if not isinstance(item, dict):

@@ -3,7 +3,7 @@ import hashlib
 
 import pytest
 
-from solarminer_gateway import integrations, huawei_router, tuya_dps_registry
+from solarminer_gateway import integrations, tuya_dps_registry
 
 
 def test_tuya_local_dps_prefers_tuya_dp_id_to_channel_suffix():
@@ -351,285 +351,6 @@ def test_qccdz_local_status_names_dps_18_as_switch(monkeypatch):
                         lambda device: (Client(), {"dps": {"18": True}}, "3.3"))
     result = integrations._tuya_local_status({"device_id": "ev-1", "category": "qccdz", "functions": []})
     assert result["status"] == [{"code": "switch", "dps_id": 18, "value": True}]
-
-
-def test_huawei_password_only_login_uses_admin_hash_without_username_xml():
-    client = huawei_router.HuaweiHiLinkClient({"host": "192.168.8.1", "password": "router-password"})
-    client.token = "tok-info-value"
-    requests = []
-    client._load_token = lambda: None
-
-    def request(path, *, body=None, token=False):
-        requests.append((path, body, token))
-        if path == "api/user/state-login":
-            return b"<response><State>1</State><password_type>4</password_type></response>", {}
-        if path == "api/user/login":
-            return b"<response>OK</response>", {"__RequestVerificationTokenone": "next-token"}
-        raise AssertionError(f"Unexpected Huawei request: {path}")
-
-    client._request = request
-    client._login()
-
-    login_request = next(item for item in requests if item[0] == "api/user/login")
-    body = login_request[1]
-    root = huawei_router.ET.fromstring(body)
-    assert root.find("Username") is None
-    assert root.findtext("password_type") == "4"
-    password_hash = huawei_router.base64.b64encode(
-        huawei_router.hashlib.sha256(b"router-password").hexdigest().encode("ascii")
-    )
-    challenge = b"admin" + password_hash + b"tok-info-value"
-    expected = huawei_router.base64.b64encode(
-        huawei_router.hashlib.sha256(challenge).hexdigest().encode("ascii")
-    ).decode("ascii")
-    assert root.findtext("Password") == expected
-    assert client.token == "next-token"
-    assert client.login_state == "authenticated"
-
-
-def test_huawei_login_falls_back_to_admin_username_xml_when_password_only_body_is_rejected():
-    client = huawei_router.HuaweiHiLinkClient({"host": "192.168.8.1", "password": "router-password"})
-    client.token = "tok-info-value"
-    client._load_token = lambda: None
-    bodies = []
-
-    def request(path, *, body=None, token=False):
-        if path == "api/user/state-login":
-            return b"<response><State>1</State><password_type>4</password_type></response>", {}
-        if path == "api/user/login":
-            bodies.append(huawei_router.ET.fromstring(body))
-            if len(bodies) == 1:
-                return b"<response><code>108006</code></response>", {}
-            return b"<response>OK</response>", {"__RequestVerificationTokenone": "rotated"}
-        raise AssertionError(path)
-
-    client._request = request
-    client._login()
-    assert bodies[0].find("Username") is None
-    assert bodies[1].findtext("Username") == "admin"
-    assert bodies[0].findtext("Password") == bodies[1].findtext("Password")
-    assert client.token == "rotated"
-    assert client.login_state == "authenticated"
-
-
-def test_huawei_inventory_diagnostics_distinguish_successful_login_from_denied_host_list():
-    client = huawei_router.HuaweiHiLinkClient({
-        "host": "192.168.8.1", "password": "router-password",
-        "discovered_device": {"model": "B636-336", "software_version": "2.0.0.41"},
-    })
-    client._login = lambda: setattr(client, "login_state", "authenticated")
-    client._load_token = lambda: None
-
-    def request(path, *, body=None, token=False):
-        return b"<response><error><code>100003</code></error></response>", {}
-
-    client._request = request
-    with pytest.raises(huawei_router.HuaweiRouterError, match="huawei_router_hosts_unavailable") as caught:
-        client.clients()
-    assert caught.value.diagnostics["login_state"] == "authenticated"
-    assert caught.value.diagnostics["device_profile"] == "B636-336"
-    assert caught.value.diagnostics["software_version"] == "2.0.0.41"
-    assert caught.value.diagnostics["failure_class"] == "authorization_or_session"
-
-
-def test_huawei_api_requests_wait_two_and_a_half_seconds_between_calls(monkeypatch):
-    client = huawei_router.HuaweiHiLinkClient({"host": "192.168.8.1", "password": "router-password"})
-    sleeps = []
-    monkeypatch.setattr(huawei_router.time, "sleep", sleeps.append)
-    client.last_request_completed_at = huawei_router.time.monotonic()
-    client._wait_for_request_slot()
-    assert len(sleeps) == 1
-    assert 2.0 <= sleeps[0] <= 2.5
-
-
-def test_huawei_session_token_info_parses_cookie_and_token_from_xml():
-    client = huawei_router.HuaweiHiLinkClient({"host": "192.168.8.1", "password": "router-password"})
-    client._request = lambda *_args, **_kwargs: (
-        b"<SesTokInfo><SesInfo>SessionID=Abc123+_==</SesInfo><TokInfo>tok-123</TokInfo></SesTokInfo>", {})
-    client._load_token()
-    assert client.session_id == "Abc123+_=="
-    assert client.token == "tok-123"
-
-
-def test_huawei_rotating_session_headers_update_token_and_cookie():
-    client = huawei_router.HuaweiHiLinkClient({"host": "192.168.8.1", "password": "router-password"})
-    client.token = "old-token"
-    client.session_id = "old-session"
-    client._refresh_session_headers({
-        "__RequestVerificationTokenone": "new-token#metadata",
-        "Set-Cookie": "SessionID=new-session; Path=/",
-    })
-    assert client.token == "new-token"
-    assert client.session_id == "new-session"
-
-
-def test_huawei_device_information_tries_both_read_only_endpoints_and_omits_identifiers():
-    client = huawei_router.HuaweiHiLinkClient({"host": "192.168.8.1", "password": "router-password"})
-    calls = []
-    responses = {
-        "api/device/information": b"<response><ProductFamily>B636-336</ProductFamily><SoftwareVersion>3.0.0.1</SoftwareVersion><IMEI>private-id</IMEI></response>",
-        "api/device/basic_information": b"<response><HardwareVersion>WL1B636M</HardwareVersion><WebUIVersion>WEBUI 3.0.0.1</WebUIVersion></response>",
-    }
-
-    def request(path, *, body=None, token=False):
-        calls.append(path)
-        return responses[path], {}
-
-    client._request = request
-    result = client.device_information()
-    assert calls == ["api/device/information", "api/device/basic_information"]
-    assert result["model"] == "B636-336"
-    assert result["software_version"] == "3.0.0.1"
-    assert result["hardware_version"] == "WL1B636M"
-    assert "private-id" not in json.dumps(result)
-    assert result["probe_status"] == "identified"
-
-
-def test_huawei_device_information_retries_after_login_required():
-    client = huawei_router.HuaweiHiLinkClient({"host": "192.168.8.1", "password": "router-password"})
-    calls = []
-
-    def request(path, *, body=None, token=False):
-        calls.append(path)
-        if len([item for item in calls if item == path]) == 1:
-            return b"<response><error><code>100003</code></error></response>", {}
-        if path == "api/device/information":
-            return b"<response><ProductName>B636-336</ProductName></response>", {}
-        return b"<response><HardwareVersion>HW1</HardwareVersion></response>", {}
-
-    client._request = request
-    client._login = lambda: setattr(client, "login_state", "authenticated")
-    result = client.device_information()
-    assert result["model"] == "B636-336"
-    assert result["hardware_version"] == "HW1"
-    assert result["authenticated"] is True
-
-
-def test_huawei_discovered_profile_survives_credential_edits_and_is_public_without_secrets():
-    old = {"huawei_router": {"host": "192.168.8.1", "username": "admin", "password": "huawei-password-test-value",
-                              "discovered_device": {"model": "B636-336", "software_version": "3.0.0.1"}}}
-    updated = integrations.validate_config({"huawei_router": {"host": "192.168.8.1", "username": "root"}}, old)
-    public = integrations.public_config(updated)
-    assert updated["huawei_router"]["discovered_device"]["model"] == "B636-336"
-    assert public["huawei_router"]["discovered_device"]["software_version"] == "3.0.0.1"
-    assert "huawei-password-test-value" not in json.dumps(public)
-
-
-def test_huawei_inventory_checks_lan_wifi_and_dhcp_endpoints_and_merges_hosts():
-    client = huawei_router.HuaweiHiLinkClient({"host": "192.168.8.1", "password": "router-password"})
-    client._login = lambda: None
-    client._load_token = lambda: None
-    calls = []
-    responses = {
-        "api/lan/HostInfo": b"<response><Hosts><Host><HostName>Wired</HostName><MacAddress>AA:BB:CC:DD:EE:01</MacAddress><IpAddress>192.168.8.20</IpAddress></Host></Hosts></response>",
-        "api/system/HostInfo": b"<response><error><code>100002</code></error></response>",
-        "api/wlan/host-list": b"<response><Hosts><Host><HostName>Wifi</HostName><MACAddress>AA:BB:CC:DD:EE:02</MACAddress><IPAddress>192.168.8.21</IPAddress></Host></Hosts></response>",
-        "api/dhcp/dhcp-host-info": b"<response><error><code>100002</code></error></response>",
-    }
-
-    def request(path, *, body=None, token=False):
-        calls.append(path)
-        return responses[path], {}
-
-    client._request = request
-    hosts = client.clients()
-    assert calls == ["api/lan/HostInfo", "api/system/HostInfo", "api/wlan/host-list", "api/dhcp/dhcp-host-info"]
-    assert {(host["mac"], host["ip"], host["name"]) for host in hosts} == {
-        ("AA:BB:CC:DD:EE:01", "192.168.8.20", "Wired"),
-        ("AA:BB:CC:DD:EE:02", "192.168.8.21", "Wifi"),
-    }
-    assert client.last_diagnostics["endpoints_succeeded"] == ["api/lan/HostInfo", "api/wlan/host-list"]
-    assert client.last_diagnostics["endpoint_errors"]["api/dhcp/dhcp-host-info"] == "huawei_router_api_error_100002"
-
-
-def test_huawei_inventory_uses_detected_b636_profile_and_reports_profile_source():
-    client = huawei_router.HuaweiHiLinkClient({
-        "host": "192.168.8.1", "password": "router-password",
-        "discovered_device": {"model": "B636-336", "software_version": "3.0.0.1"},
-    })
-    client._login = lambda: None
-    client._request = lambda path, *, body=None, token=False: (
-        b"<response><error><code>100002</code></error></response>", {})
-    with pytest.raises(huawei_router.HuaweiRouterError):
-        client.clients()
-    assert client.last_diagnostics["device_profile"] == "B636-336"
-
-
-def test_b636_uses_ui_host_endpoint_and_keeps_static_dhcp_reservations_separate():
-    client = huawei_router.HuaweiHiLinkClient({
-        "host": "192.168.8.1", "password": "router-password",
-        "discovered_device": {"model": "B636-336", "software_version": "3.0.0.1"},
-    })
-    client._login = lambda: None
-    client._load_token = lambda: None
-    calls = []
-
-    def request(path, *, body=None, token=False):
-        calls.append(path)
-        if path == "api/system/HostInfo":
-            return b"<response><error><code>100003</code></error></response>", {}
-        return (b"<response><Hosts><Host><HostName>Reserved inverter</HostName>"
-                b"<MacAddress>AA:BB:CC:DD:EE:09</MacAddress>"
-                b"<IpAddress>192.168.8.200</IpAddress></Host></Hosts></response>", {})
-
-    client._request = request
-    with pytest.raises(huawei_router.HuaweiRouterError) as caught:
-        client.clients()
-    assert calls == ["api/system/HostInfo", "api/system/HostInfo", "api/dhcp/static-addr-info"]
-    assert caught.value.diagnostics["endpoints_succeeded"] == []
-    assert caught.value.diagnostics["dhcp_reservation_count"] == 1
-    assert caught.value.diagnostics["dhcp_reservations"] == [{
-        "mac": "AA:BB:CC:DD:EE:09", "ip": "192.168.8.200", "name": "Reserved inverter",
-        "source": "huawei_dhcp_reservation",
-    }]
-    assert caught.value.diagnostics["failure_class"] == "authorization_or_session"
-
-
-def test_huawei_inventory_refreshes_session_once_after_no_right_response():
-    client = huawei_router.HuaweiHiLinkClient({"host": "192.168.8.1", "password": "router-password"})
-    client._login = lambda: None
-    client._load_token = lambda: None
-    calls = []
-
-    def request(path, *, body=None, token=False):
-        calls.append(path)
-        if path == "api/lan/HostInfo" and calls.count(path) == 1:
-            return b"<response><error><code>100003</code></error></response>", {}
-        return b"<response><Hosts/></response>", {}
-
-    client._request = request
-    assert client.clients() == []
-    assert calls.count("api/lan/HostInfo") == 2
-    assert client.last_diagnostics["endpoints_succeeded"] == [
-        "api/lan/HostInfo", "api/system/HostInfo", "api/wlan/host-list", "api/dhcp/dhcp-host-info"]
-
-
-def test_huawei_inventory_keeps_ip_when_firmware_omits_mac():
-    parsed = huawei_router.HuaweiHiLinkClient._parse_hosts(
-        huawei_router.ET.fromstring(b"<response><Host><HostName>Unknown device</HostName><IpAddress>192.168.8.30</IpAddress></Host></response>")
-    )
-    assert parsed == [{"mac": "", "ip": "192.168.8.30", "name": "Unknown device"}]
-
-
-def test_huawei_inventory_merges_gateway_neighbor_cache_without_duplicate_or_public_hosts():
-    hosts, added = huawei_router.merge_gateway_neighbor_hosts(
-        [{"mac": "AA:BB:CC:DD:EE:01", "ip": "192.168.8.20", "name": "router record"}],
-        {
-            "AA:BB:CC:DD:EE:01": "192.168.8.20",
-            "AA:BB:CC:DD:EE:02": "192.168.8.21",
-            "AA:BB:CC:DD:EE:03": "8.8.8.8",
-        },
-    )
-    assert added == 1
-    assert len(hosts) == 2
-    assert {item["ip"] for item in hosts} == {"192.168.8.20", "192.168.8.21"}
-
-
-def test_huawei_inventory_marks_gateway_discoveries_with_their_source():
-    hosts, added = huawei_router.merge_gateway_neighbor_hosts(
-        [], {"AA:BB:CC:DD:EE:22": "192.168.8.22"}, source="gateway_active_lan_scan")
-    assert added == 1
-    assert hosts[0]["source"] == "gateway_active_lan_scan"
 
 
 def test_deye_cloud_config_keeps_credentials_private_and_supports_centers():
@@ -1276,6 +997,19 @@ def test_empty_hardware_configuration_is_reported_as_unconfigured():
     assert result["configuration"] == {"deye": "not_configured", "antminer": "not_configured", "tuya": "not_configured"}
     assert result["deye"] is None and result["antminer"] is None
     assert result["errors"] == []
+
+
+def test_retired_huawei_search_credentials_are_erased_from_saved_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLARMINER_DATA_DIR", str(tmp_path))
+    integrations.save_config({
+        "huawei_router": {"host": "192.168.8.1", "username": "admin", "password": "retired-secret"},
+        "tuya": {"devices": []},
+    })
+    assert integrations.remove_legacy_huawei_config() is True
+    saved = integrations.load_config()
+    assert "huawei_router" not in saved
+    assert saved["tuya"] == {"devices": []}
+    assert integrations.remove_legacy_huawei_config() is False
 
 
 def test_tuya_request_uses_fixed_https_region_and_does_not_log_or_return_secret(monkeypatch):

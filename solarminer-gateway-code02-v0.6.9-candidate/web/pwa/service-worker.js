@@ -1,4 +1,4 @@
-const CACHE_NAME = "the-solar-miner-static-v0.5.105-network-router-discovery";
+const CACHE_NAME = "the-solar-miner-static-v0.5.106-modem-tab-reset";
 const STATIC_ASSETS = [
   "./", "./index.html", "./styles.css", "./app.js", "./gateway-connection.js", "./qrcode-generator.js",
   "./gateway-auth.js", "./favorite-list.js", "./app-core.js", "./workspace-ui.js", "./demo-mode.js", "./photo-format.js",

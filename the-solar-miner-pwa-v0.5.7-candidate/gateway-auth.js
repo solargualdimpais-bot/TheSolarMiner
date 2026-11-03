@@ -544,23 +544,6 @@ export async function testGatewayTuyaLanReachability(deviceId) {
 export async function discoverGatewayTuyaLanDevices() {
   return gatewayApi("/api/v1/integrations/tuya/lan-discovery", { method: "POST", body: {} });
 }
-export async function readGatewayHuaweiClients({ signal, discovery } = {}) {
-  return gatewayApi("/api/v1/integrations/huawei/clients", { method: "POST", body: { discovery }, signal });
-}
-
-export async function probeGatewayHuawei({ signal, referenceValues = {} } = {}) {
-  return gatewayApi("/api/v1/integrations/huawei/probe", {
-    method: "POST", body: { reference_values: referenceValues }, signal
-  });
-}
-export async function saveGatewayNetworkDeviceLabel({ mac, ip, name = "", kind = "device" }) {
-  if (typeof mac !== "string" || typeof ip !== "string" || typeof name !== "string" || !["device", "router"].includes(kind)) {
-    throw new Error("Nome ou endereço do dispositivo inválido.");
-  }
-  return gatewayApi("/api/v1/integrations/huawei/client-label", {
-    method: "POST", body: { mac, ip, name: name.trim(), kind }
-  });
-}
 export async function readGatewayTeslaEvConfig() {
   return gatewayApi("/api/v1/energy/ev/tesla");
 }

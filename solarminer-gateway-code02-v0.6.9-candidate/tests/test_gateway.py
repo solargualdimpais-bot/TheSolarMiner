@@ -69,16 +69,18 @@ def test_owner_terminal_diagnostics_reports_runtime_capabilities(client):
     assert result["available"] is (result["pty_available"] and result["shell_available"])
 
 
-def test_owner_can_check_tesla_presence_by_mac_without_fleet_credentials(client, monkeypatch):
+def test_retired_huawei_search_routes_are_not_registered():
+    paths = {route.path for route in gateway.app.routes if hasattr(route, "path")}
+    assert not any(path.startswith("/api/v1/integrations/huawei/") for path in paths)
+
+
+def test_owner_can_check_tesla_presence_from_local_neighbour_cache(client, monkeypatch):
     owner, private, _ = create_owner(client)
     token = login(client, owner, private).json()["access_token"]
     monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: {
         "tesla": {"local_mac": "4C:FC:AA:D5:86:68"},
-        "huawei_router": {"host": "192.168.8.1", "username": "admin", "password": "router-secret"},
     })
-    monkeypatch.setattr(gateway.hardware_integrations.huawei_router, "read_huawei_clients", lambda _config: [
-        {"name": "Tesla", "mac": "4C:FC:AA:D5:86:68", "ip": "192.168.8.100"},
-    ])
+    monkeypatch.setattr(gateway, "local_arp_entries", lambda: {"4C:FC:AA:D5:86:68": "192.168.8.100"})
     response = client.post("/api/v1/energy/ev/tesla/presence",
                            headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 200, response.text

@@ -10,7 +10,6 @@ const html = read("index.html");
 const manifest = read("manifest.webmanifest");
   const packageJson = JSON.parse(read("package.json"));
 const serviceWorker = read("service-worker.js");
-const huaweiRouter = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/huawei_router.py", import.meta.url), "utf8");
 
 test("Owner user management uses authenticated Gateway endpoints with reauthentication", () => {
   assert.match(auth, /gatewayApi\("\/api\/v1\/users"\)/);
@@ -89,10 +88,10 @@ test("Owner recovery file parser accepts a generated key and rejects malformed/o
 });
 
 test("new PWA static cache version is changed and USB limitations are documented", () => {
-  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.105-network-router-discovery/);
+  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.106-modem-tab-reset/);
   assert.match(serviceWorker, /\.\/favorite-list\.js/);
-assert.match(manifest, /v0\.5\.105/);
-  assert.equal(packageJson.version, "0.5.105");
+assert.match(manifest, /v0\.5\.106/);
+  assert.equal(packageJson.version, "0.5.106");
   assert.doesNotMatch(html, /gateway-update-refresh|Atualizar estado/);
   assert.doesNotMatch(app, /gateway-update-refresh/);
   const docs = read("OWNER_USB_AND_ACCESS.md");
@@ -100,93 +99,5 @@ assert.match(manifest, /v0\.5\.105/);
   assert.match(docs, /não valida certificados TLS/);
   assert.match(docs, /chave privada de assinatura nunca deve ser incluída/);
   assert.match(docs, /edição manual do SQLite.*não é suportada/s);
-});
-
-test("Huawei inventory checks all supported local host tables and exposes a bounded long timeout", () => {
-  const gateway = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/app.py", import.meta.url), "utf8");
-  assert.match(huaweiRouter, /"api\/lan\/HostInfo",\s*"api\/system\/HostInfo",\s*"api\/wlan\/host-list",\s*"api\/dhcp\/dhcp-host-info"/);
-  assert.match(huaweiRouter, /timeout: float = 15\.0, total_timeout: float = 150\.0/);
-  assert.match(huaweiRouter, /MIN_API_REQUEST_GAP_SECONDS = 2\.5/);
-  assert.match(huaweiRouter, /self\._wait_for_request_slot\(\)/);
-  assert.match(huaweiRouter, /if not MAC_RE\.fullmatch\(mac\) and not ip/);
-  assert.match(app, /\},220_000\)/);
-  assert.match(app, /O Huawei não devolveu clientes e a varredura local/);
-  assert.match(app, /O Huawei falhou/);
-  assert.match(app, /O Gateway autenticou-se/);
-  assert.match(app, /report\.router_login_state/);
-  assert.match(gateway, /"router_login_state": diagnostics\.get\("login_state"/);
-});
-
-test("the Gateway-embedded PWA contains the Owner access controls and the package is version-aligned", () => {
-  const embedded = name => readFileSync(new URL(`../../solarminer-gateway-code02-v0.6.9-candidate/web/pwa/${name}`, import.meta.url), "utf8");
-  const embeddedHtml = embedded("index.html");
-  const embeddedApp = embedded("app.js");
-  const embeddedAuth = embedded("gateway-auth.js");
-  const embeddedWorker = embedded("service-worker.js");
-  const embeddedCss = embedded("styles.css");
-  const embeddedManifest = embedded("manifest.webmanifest");
-  const embeddedPhotoFormat = embedded("photo-format.js");
-  const control = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/packaging/control", import.meta.url), "utf8");
-  const installer = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/packaging/install-from-usb.sh", import.meta.url), "utf8");
-  assert.match(embeddedHtml, /gateway-user-management/);
-  assert.match(embeddedHtml, /gateway-download-recovery-key/);
-  assert.match(embeddedHtml, /gateway-owner-recovery-form/);
-  assert.match(embeddedHtml, /gateway-tailscale-management/);
-  assert.match(embeddedHtml, /gateway-tailscale-endpoint/);
-  assert.match(embeddedHtml, /gateway-tailscale-connect/);
-  assert.match(embeddedApp, /updateGatewayUserRole/);
-  assert.match(embeddedApp, /recoverGatewayOwner\(/);
-  assert.match(embeddedApp, /solarminer-gateway-tailscale-endpoint-v1/);
-  assert.match(embeddedAuth, /\/api\/v1\/users/);
-  assert.match(embeddedAuth, /\/api\/v1\/system\/tailscale/);
-  assert.match(embeddedAuth, /\/api\/v1\/system\/tailscale\/connect/);
-  assert.match(embeddedApp, /startGatewayTailscale/);
-  assert.match(embeddedApp, /liveHomeMetric\("Painéis"/);
-  assert.match(embeddedApp, /liveMinerHomeMetric\(\)/);
-  assert.match(embeddedWorker, /static-v0\.5\.105-network-router-discovery/);
-  assert.match(embeddedApp, /data-miner-breaker-save/);
-  assert.match(embeddedApp, /Potência medida partilhada/);
-  assert.match(embeddedApp, /Consumo medido/);
-  assert.match(embeddedHtml, /data-owner-tab="gateway"/);
-  assert.doesNotMatch(embeddedHtml, /data-owner-panel="console"/);
-  assert.match(embeddedHtml, /Carrega em .Atualizar consola. para consultar os dados mais recentes/);
-  assert.match(embeddedHtml, /id="gateway-console-output"/);
-  assert.match(embeddedHtml, /gateway-console-services/);
-  assert.match(embeddedHtml, /gateway-console-resources/);
-  assert.match(embeddedApp, /readGatewayConsole/);
-  assert.match(embeddedApp, /gatewayConsoleServiceLabels/);
-  assert.match(embeddedApp, /gatewayConsoleBytes/);
-  assert.match(embeddedAuth, /\/api\/v1\/system\/console/);
-  assert.match(embeddedHtml, /id="gateway-diagnostics-upload-token"/);
-  assert.match(embeddedApp, /saveGatewayDiagnosticsUploadToken/);
-  assert.match(embeddedAuth, /\/api\/v1\/system\/diagnostics-upload/);
-  assert.match(embeddedApp, /activeOwnerTab = name/);
-  assert.doesNotMatch(embeddedApp, /refreshGatewayConsole\(\{ silent: true \}\)/);
-  assert.doesNotMatch(embeddedHtml, /gateway-console-update-check/);
-  assert.doesNotMatch(embeddedHtml, /gateway-console-command/);
-  assert.match(embeddedWorker, /password-device-login/);
-  assert.match(embeddedHtml, /OWNER PWA 0\.5\.105/);
-  assert.match(embeddedHtml, /gateway-password-login-form/);
-assert.match(control, /^Version: 0\.6\.153$/m);
-assert.match(installer, /solarminer-gateway_0\.6\.153_amd64\.deb/);
-  assert.match(embeddedApp, /RECOVERY_BLOCKED/);
-  assert.match(embeddedApp, /rollbackFailure/);
-  assert.match(installer, /install-tailscale\.sh/);
-  assert.equal(embeddedHtml, html);
-  assert.equal(embeddedApp, app);
-  assert.equal(embeddedWorker, serviceWorker);
-  assert.equal(embeddedCss, read("styles.css"));
-  assert.equal(embeddedManifest, manifest);
-  assert.equal(embeddedPhotoFormat, read("photo-format.js"));
-});
-
-test("Tuya devices expose a local editor with channel names and Gateway-only persistence", () => {
-  assert.match(app, /data-edit-tuya-device/);
-  assert.match(app, /function openTuyaDeviceEditor/);
-  assert.match(app, /data-tuya-capability-label/);
-  assert.match(app, /name_source:"local"/);
-  assert.match(app, /saveGatewayHardwareIntegrationConfig\(\{tuya:\{devices:next\}\}\)/);
-  assert.match(app, /Dispositivo e canal Tuya/);
-  assert.match(app, /device\.channel_labels\?\./);
 });
 

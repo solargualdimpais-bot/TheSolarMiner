@@ -26,6 +26,9 @@ test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV 
   assert.doesNotMatch(app, /hardware-antminer-username/);
   assert.match(app, /saveHardwareProvider\("antminer", \{ enabled: Boolean\(host\), host,/);
   for (const tab of ["access", "updates", "tailscale", "gateway", "equipment", "modem"]) assert.match(html, new RegExp(`data-owner-tab="${tab}"`));
+  const modemPanel = html.match(/<section class="panel gateway-auth-panel owner-tab-panel" data-owner-panel="modem"[\s\S]*?<\/section>/)?.[0] || "";
+  assert.match(modemPanel, /Esta área será reconstruída/);
+  assert.doesNotMatch(`${html}\n${app}\n${auth}`, /huawei|Pesquisar modem|integrations\/huawei/i);
   for (const tab of ["deye", "antminer", "tuya"]) assert.match(html, new RegExp(`data-owner-device="${tab}"`));
   const workspace = read("../workspace-ui.js");
   for (const id of ["ev-tesla-refresh-token", "ev-tesla-vehicle-id", "ev-tesla-local-mac", "ev-tesla-save", "ev-tesla-presence", "ev-tesla-fleet-save", "ev-tesla-read"]) assert.match(workspace, new RegExp(`id="${id}"`));
@@ -60,8 +63,6 @@ test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV 
   assert.match(auth, /\/api\/v1\/energy\/ev\/tesla\/read/);
   assert.match(auth, /\/api\/v1\/energy\/ev\/tesla\/presence/);
   assert.match(app, /readGatewayTeslaLocalPresence/);
-  assert.match(app, /huawei-router-username/);
-  assert.match(app, /username=\$\("#huawei-router-username"\)\.value\.trim\(\)/);
   assert.doesNotMatch(app, /hardware-tesla-(?:region|client-id|refresh-token|vehicles)/);
   assert.doesNotMatch(auth, /tuya.*localStorage/i);
 });
@@ -150,48 +151,6 @@ test("Gateway terminal waits for server authentication and explains WebSocket fa
 test("Gateway terminal enables its input after authenticated readiness", () => {
   const app = read("../app.js");
   assert.match(app, /const socket = await openGatewayTerminalSocket\(\);\s*gatewayTerminalSocket = socket;[\s\S]{0,360}setGatewayTerminalConnected\(true\);\s*status\.textContent = "Terminal ligado ao Gateway\."/);
-});
-
-test("Huawei router credentials allow choosing the account required by the local firmware", () => {
-  const html = read("../index.html");
-  const app = read("../app.js");
-  assert.match(html, /id="huawei-router-username"/);
-  assert.match(app, /username=\$\("#huawei-router-username"\)\.value\.trim\(\)/);
-});
-
-test("Huawei version probe displays sanitized auth and endpoint diagnostics", () => {
-  const app = read("../app.js");
-  assert.match(app, /DIAGNÓSTICO DA CONSULTA/);
-  assert.match(app, /Autenticação no Huawei: /);
-  assert.match(app, /Endpoints que responderam/);
-  assert.match(app, /Respostas com erro/);
-  assert.match(app, /replace\(\/\[\^a-zA-Z0-9_\.:-\]\/g/);
-});
-
-test("Huawei LAN results cross-check known MACs and save Owner labels for new devices", () => {
-  const app = read("../app.js");
-  const auth = read("../gateway-auth.js");
-  const gateway = read("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/app.py");
-  assert.match(app, /item\.display_name/);
-  assert.match(app, /data-network-save/);
-  assert.match(app, /data-network-kind/);
-  assert.match(app, /Routers encontrados/);
-  assert.match(app, /data-mac="" data-ip=/);
-  assert.match(auth, /integrations\/huawei\/client-label/);
-  assert.match(auth, /name\.trim\(\), kind/);
-  assert.match(gateway, /network_inventory_devices/);
-  assert.match(gateway, /network_inventory_ip_labels/);
-  assert.match(gateway, /configured_router_ips/);
-  assert.match(gateway, /known_device_name/);
-});
-
-test("Huawei static DHCP reservations are clearly separate from online clients", () => {
-  const app = read("../app.js");
-  const gateway = read("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/app.py");
-  assert.match(gateway, /router_dhcp_reservations/);
-  assert.match(app, /Reservas DHCP estáticas/);
-  assert.match(app, /reserva DHCP Huawei · não confirma ligação/);
-  assert.match(app, /<strong>Reservas DHCP \(não significa que estejam online\)<\/strong>/);
 });
 
 test("Deye Cloud import explains HTTP 504 as a Gateway or proxy timeout", () => {

@@ -21,7 +21,7 @@ def test_nginx_proxies_verify_backend_using_certificate_dns_san():
     assert 'DNS:localhost' in postinst
     # The API, static PWA, Owner console, terminal and long-running Deye
     # history import each use a TLS-verified backend location.
-    assert nginx_config.count("proxy_ssl_name localhost;") == 7
+    assert nginx_config.count("proxy_ssl_name localhost;") == 5
     assert "location = /api/v1/integrations/deye-cloud/history/import" in nginx_config
     assert "proxy_read_timeout 600s;" in nginx_config
     assert "proxy_ssl_name 127.0.0.1;" not in nginx_config
@@ -35,10 +35,3 @@ def test_nginx_proxies_verify_backend_using_certificate_dns_san():
     assert "systemctl enable --now solarminer-tailscale-cert.timer" in postinst
     assert "systemctl disable --now solarminer-public-tls-renew.timer" in postinst
     assert "systemctl enable --now solarminer-public-tls-renew.timer" not in postinst
-
-
-def test_huawei_inventory_endpoint_has_timeout_longer_than_full_read_cycle():
-    nginx_config = (ROOT / "packaging/solarminer-gateway-nginx.conf").read_text()
-    location = nginx_config.split("location = /api/v1/integrations/huawei/clients {", 1)[1].split("}", 1)[0]
-    assert "proxy_read_timeout 180s;" in location
-    assert "proxy_send_timeout 180s;" in location
