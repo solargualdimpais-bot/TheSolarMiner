@@ -545,7 +545,19 @@ export async function discoverGatewayTuyaLanDevices() {
   return gatewayApi("/api/v1/integrations/tuya/lan-discovery", { method: "POST", body: {} });
 }
 export async function scanGatewayLocalNetwork() {
-  return gatewayApi("/api/v1/network/scan", { method: "POST", body: {} });
+  try {
+    return await gatewayApi("/api/v1/network/scan", { method: "POST", body: {} });
+  } catch (error) {
+    // Browsers hide the underlying cause of cross-origin TLS/network failures
+    // behind generic errors such as "Load failed". Make it clear that no scan
+    // report arrived, instead of presenting that wording as a scanner result.
+    if (error instanceof TypeError) {
+      const transportError = new Error("A PWA não recebeu resposta do Gateway; a pesquisa não confirmou se chegou a começar. Verifica a ligação segura ao Gateway e tenta novamente.");
+      transportError.code = "network_scan_gateway_unreachable";
+      throw transportError;
+    }
+    throw error;
+  }
 }
 export async function applyGatewayLocalNetworkMatches() {
   return gatewayApi("/api/v1/network/scan/apply", { method: "POST", body: {} });

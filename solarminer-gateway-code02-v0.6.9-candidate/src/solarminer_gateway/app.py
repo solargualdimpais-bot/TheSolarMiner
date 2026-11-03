@@ -52,7 +52,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.160"
+PACKAGE_VERSION = "0.6.161"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -2084,6 +2084,9 @@ def scan_local_network(session: dict[str, Any] = Depends(require_permission("man
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             LOG.warning("Local network scan failed (%s)", type(exc).__name__)
             raise HTTPException(502, "local_network_scan_failed") from exc
+        except Exception as exc:
+            LOG.exception("Unexpected local network scan failure")
+            raise HTTPException(502, "local_network_scan_failed") from exc
         config = hardware_integrations.load_config()
         tuya = config.get("tuya", {}) if isinstance(config.get("tuya"), dict) else {}
         by_mac: dict[str, list[dict[str, str]]] = {}
@@ -2116,6 +2119,9 @@ def apply_local_network_matches(session: dict[str, Any] = Depends(require_permis
             config = hardware_integrations.load_config()
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             LOG.warning("Local network rescan failed (%s)", type(exc).__name__)
+            raise HTTPException(502, "local_network_scan_failed") from exc
+        except Exception as exc:
+            LOG.exception("Unexpected local network rescan failure")
             raise HTTPException(502, "local_network_scan_failed") from exc
         tuya = config.get("tuya", {}) if isinstance(config.get("tuya"), dict) else {}
         devices = tuya.get("devices", [])
@@ -3520,7 +3526,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.160"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.161"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

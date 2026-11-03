@@ -6,6 +6,7 @@ import errno
 import fcntl
 import ipaddress
 import json
+import logging
 import re
 import select
 import socket
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 
+LOG = logging.getLogger(__name__)
 MAX_ADDRESSES = 4096
 WORKERS = 128
 TCP_PORTS = (80, 443, 22, 53, 8080)

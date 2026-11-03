@@ -113,6 +113,26 @@ def test_scan_exposes_missing_interface_discovery(monkeypatch):
     assert report["scan_error"] == "interface_discovery_failed"
 
 
+def test_raw_arp_socket_failure_is_logged_and_falls_back_without_aborting(monkeypatch):
+    monkeypatch.setattr(network_scanner, "_attached_ipv4_networks", lambda: ([
+        {"interface": "eth0", "address": "192.168.10.2", "network": "192.168.10.0/30"},
+    ], None))
+    monkeypatch.setattr(network_scanner, "default_gateway_ips", lambda: {"192.168.10.1"})
+    monkeypatch.setattr(network_scanner, "_active_arp_sweep", lambda *_args: (_ for _ in ()).throw(OSError("raw socket denied")))
+    monkeypatch.setattr(network_scanner, "_trigger_arp_resolution", lambda *_args: True)
+    monkeypatch.setattr(network_scanner, "_neighbor_macs", lambda: {"192.168.10.1": "AA:BB:CC:DD:EE:01"})
+    monkeypatch.setattr(network_scanner, "_ssdp_discovery", lambda _source: {})
+    monkeypatch.setattr(network_scanner, "_mdns_discovery", lambda _source: {})
+    monkeypatch.setattr(network_scanner, "_probe", lambda *_args: None)
+    monkeypatch.setattr(network_scanner, "_ping", lambda _ip: False)
+    monkeypatch.setattr(network_scanner.time, "sleep", lambda _seconds: None)
+
+    report = network_scanner.scan_attached_networks()
+
+    assert report["scan_warnings"] == ["active_arp_unavailable"]
+    assert [host["ip"] for host in report["hosts"]] == ["192.168.10.1"]
+
+
 def test_interface_discovery_uses_ioctl_when_ip_returns_no_addresses(monkeypatch):
     expected = {("eth0", "192.168.8.0/24"): {
         "interface": "eth0", "address": "192.168.8.2", "network": "192.168.8.0/24"}}
