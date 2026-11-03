@@ -1,6 +1,23 @@
 from solarminer_gateway import network_scanner
 
 
+def test_arp_request_is_an_ethernet_broadcast_for_target_ip():
+    frame = network_scanner._build_arp_request(
+        "02:11:22:33:44:55", "192.168.10.2", "192.168.10.5")
+    assert frame[:6] == b"\xff" * 6
+    assert frame[6:12] == bytes.fromhex("021122334455")
+    assert frame[12:14] == b"\x08\x06"
+    assert frame[20:22] == b"\x00\x01"
+    assert frame[38:42] == bytes((192, 168, 10, 5))
+
+
+def test_arp_reply_parser_returns_sender_mac_and_ip():
+    ethernet = bytes.fromhex("001122334455aabbccddeeff0806")
+    arp = bytes.fromhex("0001080006040002aabbccddeeffc0a80a05") + bytes.fromhex("001122334455c0a80a02")
+    assert network_scanner._parse_arp_reply(ethernet + arp) == (
+        "192.168.10.5", "AA:BB:CC:DD:EE:FF")
+
+
 def test_arp_resolution_uses_udp_bound_to_the_gateway_interface(monkeypatch):
     calls = []
 
@@ -47,6 +64,9 @@ def test_scan_reports_tcp_ping_and_neighbor_hosts_without_scanning_gateway_addre
     ], None))
     monkeypatch.setattr(network_scanner, "default_gateway_ips", lambda: {"192.168.10.1"})
     monkeypatch.setattr(network_scanner, "_trigger_arp_resolution", lambda _ip, _source: True)
+    monkeypatch.setattr(network_scanner, "_active_arp_sweep", lambda _interface, _source, _targets: {
+        "192.168.10.1": "AA:BB:CC:DD:EE:01", "192.168.10.5": "AA:BB:CC:DD:EE:05",
+    })
     monkeypatch.setattr(network_scanner, "_ssdp_discovery", lambda _source: {})
     monkeypatch.setattr(network_scanner, "_mdns_discovery", lambda _source: {})
     monkeypatch.setattr(network_scanner.time, "sleep", lambda _seconds: None)

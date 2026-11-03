@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.108: descoberta local por ARP, SSDP, mDNS e atualização confirmada de IPs Tuya.",
+  "description": "The Solar Miner PWA v0.5.109: descoberta local por ARP ativo, SSDP, mDNS e diagnóstico explícito.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",

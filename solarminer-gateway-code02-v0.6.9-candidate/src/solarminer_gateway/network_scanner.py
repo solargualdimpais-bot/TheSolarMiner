@@ -6,6 +6,7 @@ import errno
 import ipaddress
 import json
 import re
+import select
 import socket
 import struct
 import subprocess
@@ -144,6 +145,75 @@ def _trigger_arp_resolution(ip: str, source_ip: str) -> bool:
         return False
     finally:
         sock.close()
+
+
+def _build_arp_request(source_mac: str, source_ip: str, target_ip: str) -> bytes:
+    """Build a broadcast Ethernet ARP request for one IPv4 address."""
+    source = bytes.fromhex(re.sub(r"[^0-9A-Fa-f]", "", source_mac))
+    if len(source) != 6:
+        raise ValueError("invalid_interface_mac")
+    ethernet = struct.pack("!6s6sH", b"\xff" * 6, source, 0x0806)
+    arp = struct.pack("!HHBBH6s4s6s4s", 1, 0x0800, 6, 4, 1, source,
+                      socket.inet_aton(source_ip), b"\x00" * 6,
+                      socket.inet_aton(target_ip))
+    return ethernet + arp
+
+
+def _parse_arp_reply(frame: bytes) -> tuple[str, str] | None:
+    """Extract a valid sender IPv4/MAC pair from an Ethernet ARP reply."""
+    if len(frame) < 42:
+        return None
+    try:
+        _dst, _src, ethertype = struct.unpack_from("!6s6sH", frame, 0)
+        htype, ptype, hlen, plen, opcode = struct.unpack_from("!HHBBH", frame, 14)
+        if (ethertype, htype, ptype, hlen, plen, opcode) != (0x0806, 1, 0x0800, 6, 4, 2):
+            return None
+        mac = ":".join(f"{value:02X}" for value in frame[22:28])
+        ip = socket.inet_ntoa(frame[28:32])
+        if mac == "00:00:00:00:00:00" or mac.startswith(("01:", "33:33:")):
+            return None
+        return ip, mac
+    except (OSError, struct.error, ValueError):
+        return None
+
+
+def _active_arp_sweep(interface: str, source_ip: str, targets: list[str]) -> dict[str, str]:
+    """Send real Ethernet ARP requests and collect replies on the selected NIC."""
+    packet_family = getattr(socket, "AF_PACKET", None)
+    if packet_family is None:
+        raise OSError("raw_packet_socket_unavailable")
+    source_mac = Path("/sys/class/net", interface, "address").read_text(
+        encoding="ascii").strip()
+    sock = socket.socket(packet_family, socket.SOCK_RAW, socket.htons(0x0806))
+    found: dict[str, str] = {}
+    try:
+        sock.bind((interface, 0))
+        sent = 0
+        send_error: OSError | None = None
+        for ip in targets:
+            try:
+                sock.sendto(_build_arp_request(source_mac, source_ip, ip),
+                            (interface, socket.htons(0x0806)))
+                sent += 1
+            except OSError as exc:
+                send_error = exc
+        if targets and not sent:
+            raise OSError("active_arp_send_failed") from send_error
+        deadline = time.monotonic() + ARP_SETTLE_SECONDS
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([sock], [], [], min(0.1, deadline - time.monotonic()))
+            if not ready:
+                continue
+            try:
+                frame = sock.recv(2048)
+            except OSError:
+                break
+            reply = _parse_arp_reply(frame)
+            if reply and reply[0] in targets:
+                found[reply[0]] = reply[1]
+    finally:
+        sock.close()
+    return found
 
 
 def _ssdp_discovery(source_ip: str) -> dict[str, dict[str, str]]:
@@ -377,15 +447,35 @@ def scan_attached_networks() -> dict[str, Any]:
         for ip, detail in _mdns_discovery(item["address"]).items():
             advertised.setdefault(ip, {}).update(detail)
     responding: dict[str, dict[str, Any]] = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as executor:
-        arp_futures = [executor.submit(_trigger_arp_resolution, ip, item["address"])
-                       for ip, item in targets.items()]
-        for future in concurrent.futures.as_completed(arp_futures):
-            future.result()
-    if targets:
-        time.sleep(ARP_SETTLE_SECONDS)
+    scan_warnings: list[str] = []
+    active_arp_macs: dict[str, str] = {}
+    active_arp_ok: set[str] = set()
+    for item in route_rows:
+        ips = [ip for ip, target in targets.items() if target["interface"] == item["interface"]
+               and target["network"] == item["network"]]
+        if not ips:
+            continue
+        try:
+            active_arp_macs.update(_active_arp_sweep(item["interface"], item["address"], ips))
+            active_arp_ok.add(item["interface"])
+        except (OSError, ValueError, AttributeError) as exc:
+            scan_warnings.append("active_arp_unavailable")
+            LOG.warning("Active ARP scan unavailable on interface %s (%s)",
+                        item["interface"], type(exc).__name__)
+
+    if len(active_arp_ok) < len({item["interface"] for item in route_rows}):
+        # The kernel-neighbour fallback remains useful on platforms where raw sockets
+        # are unavailable; it is supplemental to the direct Ethernet ARP requests.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=WORKERS) as executor:
+            arp_futures = [executor.submit(_trigger_arp_resolution, ip, item["address"])
+                           for ip, item in targets.items() if item["interface"] not in active_arp_ok]
+            for future in concurrent.futures.as_completed(arp_futures):
+                future.result()
+        if targets:
+            time.sleep(ARP_SETTLE_SECONDS)
 
     mac_by_ip = _neighbor_macs()
+    mac_by_ip.update(active_arp_macs)
     for ip in targets:
         if ip in mac_by_ip:
             responding[ip] = {"open_ports": [], "methods": ["arp_sweep"]}
@@ -431,4 +521,4 @@ def scan_attached_networks() -> dict[str, Any]:
     return {"networks": route_rows, "scanned_count": len(targets), "responsive_count": len(hosts),
             "hosts": hosts, "skipped_networks": skipped, "address_limit": MAX_ADDRESSES,
             "method": "active_arp_tcp_icmp_ssdp_mdns", "router_ips": sorted(gateways),
-            "scan_error": scan_error}
+            "scan_error": scan_error, "scan_warnings": sorted(set(scan_warnings))}

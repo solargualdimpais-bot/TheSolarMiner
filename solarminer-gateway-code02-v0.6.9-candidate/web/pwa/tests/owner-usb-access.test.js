@@ -88,10 +88,10 @@ test("Owner recovery file parser accepts a generated key and rejects malformed/o
 });
 
 test("new PWA static cache version is changed and USB limitations are documented", () => {
-  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.108-local-network-scan/);
+  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.109-active-arp-diagnostics/);
   assert.match(serviceWorker, /\.\/favorite-list\.js/);
-  assert.match(manifest, /v0\.5\.108/);
-  assert.equal(packageJson.version, "0.5.108");
+  assert.match(manifest, /v0\.5\.109/);
+  assert.equal(packageJson.version, "0.5.109");
   assert.doesNotMatch(html, /gateway-update-refresh|Atualizar estado/);
   assert.doesNotMatch(app, /gateway-update-refresh/);
   const docs = read("OWNER_USB_AND_ACCESS.md");
@@ -149,10 +149,10 @@ test("the Gateway-embedded PWA contains the Owner access controls and the packag
   assert.doesNotMatch(embeddedHtml, /gateway-console-update-check/);
   assert.doesNotMatch(embeddedHtml, /gateway-console-command/);
   assert.match(embeddedWorker, /password-device-login/);
-  assert.match(embeddedHtml, /OWNER PWA 0\.5\.108/);
+  assert.match(embeddedHtml, /OWNER PWA 0\.5\.109/);
   assert.match(embeddedHtml, /gateway-password-login-form/);
-  assert.match(control, /^Version: 0\.6\.157$/m);
-  assert.match(installer, /solarminer-gateway_0\.6\.157_amd64\.deb/);
+  assert.match(control, /^Version: 0\.6\.158$/m);
+  assert.match(installer, /solarminer-gateway_0\.6\.158_amd64\.deb/);
   assert.match(embeddedApp, /RECOVERY_BLOCKED/);
   assert.match(embeddedApp, /rollbackFailure/);
   assert.match(installer, /install-tailscale\.sh/);

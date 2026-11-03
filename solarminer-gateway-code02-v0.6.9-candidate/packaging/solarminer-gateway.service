@@ -14,13 +14,15 @@ Environment=SOLARMINER_PWA_DIR=/opt/solarminer/current/usr/share/solarminer/pwa
 Environment=SOLARMINER_CATALOG_DIR=/opt/solarminer/current/usr/share/solarminer
 Environment=SOLARMINER_HOST=0.0.0.0
 Environment=SOLARMINER_PORT=8443
-Environment=SOLARMINER_PACKAGE_VERSION=0.6.157
+Environment=SOLARMINER_PACKAGE_VERSION=0.6.158
 ExecStartPre=/usr/bin/solarminer-data-volume-check
 ExecStart=/usr/bin/python3 -m solarminer_gateway.app
 Restart=on-failure
 RestartSec=3
 UMask=0077
 NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_RAW
+AmbientCapabilities=CAP_NET_RAW
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
@@ -30,7 +32,7 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_PACKET
 
 [Install]
 WantedBy=multi-user.target
