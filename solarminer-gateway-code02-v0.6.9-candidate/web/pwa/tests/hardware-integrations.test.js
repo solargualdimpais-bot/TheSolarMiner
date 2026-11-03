@@ -179,6 +179,15 @@ test("Huawei LAN results cross-check known MACs and save Owner labels for new de
   assert.match(gateway, /known_device_name/);
 });
 
+test("Huawei static DHCP reservations are clearly separate from online clients", () => {
+  const app = read("../app.js");
+  const gateway = read("../../../src/solarminer_gateway/app.py");
+  assert.match(gateway, /router_dhcp_reservations/);
+  assert.match(app, /Reservas DHCP estáticas/);
+  assert.match(app, /reserva DHCP Huawei · não confirma ligação/);
+  assert.match(app, /<strong>Reservas DHCP \(não significa que estejam online\)<\/strong>/);
+});
+
 test("Deye Cloud import explains HTTP 504 as a Gateway or proxy timeout", () => {
   const app = read("../app.js");
   const auth = read("../gateway-auth.js");

@@ -555,6 +555,36 @@ def test_huawei_inventory_uses_detected_b636_profile_and_reports_profile_source(
     assert client.last_diagnostics["device_profile"] == "B636-336"
 
 
+def test_b636_uses_ui_host_endpoint_and_keeps_static_dhcp_reservations_separate():
+    client = huawei_router.HuaweiHiLinkClient({
+        "host": "192.168.8.1", "password": "router-password",
+        "discovered_device": {"model": "B636-336", "software_version": "3.0.0.1"},
+    })
+    client._login = lambda: None
+    client._load_token = lambda: None
+    calls = []
+
+    def request(path, *, body=None, token=False):
+        calls.append(path)
+        if path == "api/system/HostInfo":
+            return b"<response><error><code>100003</code></error></response>", {}
+        return (b"<response><Hosts><Host><HostName>Reserved inverter</HostName>"
+                b"<MacAddress>AA:BB:CC:DD:EE:09</MacAddress>"
+                b"<IpAddress>192.168.8.200</IpAddress></Host></Hosts></response>", {})
+
+    client._request = request
+    with pytest.raises(huawei_router.HuaweiRouterError) as caught:
+        client.clients()
+    assert calls == ["api/system/HostInfo", "api/system/HostInfo", "api/dhcp/static-addr-info"]
+    assert caught.value.diagnostics["endpoints_succeeded"] == []
+    assert caught.value.diagnostics["dhcp_reservation_count"] == 1
+    assert caught.value.diagnostics["dhcp_reservations"] == [{
+        "mac": "AA:BB:CC:DD:EE:09", "ip": "192.168.8.200", "name": "Reserved inverter",
+        "source": "huawei_dhcp_reservation",
+    }]
+    assert caught.value.diagnostics["failure_class"] == "authorization_or_session"
+
+
 def test_huawei_inventory_refreshes_session_once_after_no_right_response():
     client = huawei_router.HuaweiHiLinkClient({"host": "192.168.8.1", "password": "router-password"})
     client._login = lambda: None

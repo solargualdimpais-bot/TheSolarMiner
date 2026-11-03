@@ -28,11 +28,11 @@ MIN_API_REQUEST_GAP_SECONDS = 2.5
 # they are observed and validated.
 HUAWEI_INVENTORY_PROFILES: dict[str, tuple[str, ...]] = {
     "B636-336": (
-        "api/lan/HostInfo",
         "api/system/HostInfo",
-        "api/wlan/host-list",
-        "api/dhcp/dhcp-host-info",
     ),
+}
+HUAWEI_STATIC_DHCP_PROFILES: dict[str, str] = {
+    "B636-336": "api/dhcp/static-addr-info",
 }
 GENERIC_INVENTORY_ENDPOINTS = (
     "api/lan/HostInfo",
@@ -117,7 +117,7 @@ class HuaweiHiLinkClient:
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise HuaweiRouterError("huawei_router_total_timeout")
-        headers = {"Accept": "application/xml,text/xml", "User-Agent": "SolarMiner-Gateway/0.6.151"}
+        headers = {"Accept": "application/xml,text/xml", "User-Agent": "SolarMiner-Gateway/0.6.152"}
         headers["X-Requested-With"] = "XMLHttpRequest"
         if self.session_id:
             headers["Cookie"] = f"SessionID={self.session_id}"
@@ -340,9 +340,13 @@ class HuaweiHiLinkClient:
         discovered_model = str(self.discovered_device.get("model") or "").upper()
         profile_model = next((model for model in HUAWEI_INVENTORY_PROFILES if model.upper() == discovered_model), "")
         endpoints = HUAWEI_INVENTORY_PROFILES.get(profile_model, GENERIC_INVENTORY_ENDPOINTS)
+        static_dhcp_endpoint = next((path for model, path in HUAWEI_STATIC_DHCP_PROFILES.items()
+                                     if model.upper() == discovered_model), "")
         combined: dict[tuple[str, str], dict[str, str]] = {}
         succeeded: list[str] = []
         errors: dict[str, str] = {}
+        dhcp_reservations: list[dict[str, str]] = []
+        dhcp_reservation_error = ""
         refreshed_after_no_right = False
         for path in endpoints:
             try:
@@ -377,6 +381,20 @@ class HuaweiHiLinkClient:
                 # Continue to other read-only inventory endpoints when a
                 # firmware does not implement one of them.
                 continue
+        if static_dhcp_endpoint:
+            try:
+                raw, _headers = self._request(static_dhcp_endpoint, token=True)
+                root = self._xml(raw)
+                error_node = next((node for node in root.iter()
+                                   if node.tag.rsplit("}", 1)[-1].lower() == "error"), None)
+                if error_node is not None:
+                    code = self._text(error_node, "code", "unknown")
+                    raise HuaweiRouterError(f"huawei_router_api_error_{code}")
+                dhcp_reservations = self._parse_hosts(root)
+                for item in dhcp_reservations:
+                    item["source"] = "huawei_dhcp_reservation"
+            except HuaweiRouterError as exc:
+                dhcp_reservation_error = str(exc)[:80]
         self.last_diagnostics = {
             "device_profile": profile_model or "generic_hilink",
             "software_version": str(self.discovered_device.get("software_version") or "")[:128],
@@ -385,6 +403,10 @@ class HuaweiHiLinkClient:
             "login_state": self.login_state,
             "auth_session_id_present": bool(self.session_id),
             "verification_token_refreshed": bool(self.token),
+            "dhcp_reservation_endpoint": static_dhcp_endpoint,
+            "dhcp_reservation_count": len(dhcp_reservations),
+            "dhcp_reservations": dhcp_reservations,
+            "dhcp_reservation_error": dhcp_reservation_error,
             "failure_class": ("authorization_or_session" if errors and all("100003" in value or "12500" in value for value in errors.values()) else "endpoint_or_firmware" if errors and not succeeded else None),
             "elapsed_seconds": round(time.monotonic() - started, 2),
         }
