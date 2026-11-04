@@ -1,22 +1,30 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import ipaddress
 import math
 import asyncio
+import base64
+import csv
+from html.parser import HTMLParser
 import json
 import logging
 import io
 import os
 import re
+import socket
 import shutil
 import secrets
+import ssl
 import subprocess
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 import sqlite3
 import threading
 import time
 import uuid
+import zipfile
+import xml.etree.ElementTree as ET
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -53,7 +61,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.169"
+PACKAGE_VERSION = "0.6.171"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -593,7 +601,7 @@ def _sync_gateway_device_inventory(conn: sqlite3.Connection, config: dict[str, A
             product_code=shelly_model, product_name=shelly_model, device_kind=str(item["device_type"] or "smart"),
             capabilities=capabilities if isinstance(capabilities, list) else [], source="shelly_device_identification",
             confidence="device_reported")
-        _upsert_gateway_device_inventory(conn, provider="shelly", source_device_id=str(item["device_id"]),
+        _upsert_gateway_inventory_device(conn, provider="shelly", source_device_id=str(item["device_id"]),
             name=str(item["name"] or item["model"] or "Smart device"), device_type=str(item["device_type"] or "smart"),
             mac=str(item["mac"] or ""), ip=str(item["host"] or ""), manufacturer="Shelly",
             model=str(item["model"] or ""), status="confirmed" if item["protocol"] else "pending")
@@ -2536,6 +2544,358 @@ def read_smart_product_catalog(session: dict[str, Any] = Depends(require_permiss
         return {"products": rows, "product_count": len(rows), "source": "gateway_sqlite"}
 
 
+class _ProductTableParser(HTMLParser):
+    """Extract simple HTML tables without executing or rendering source markup."""
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.tables: list[list[list[str]]] = []
+        self._table = False
+        self._row: list[str] | None = None
+        self._cell: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "table":
+            self._table = True
+            self.tables.append([])
+        elif self._table and tag == "tr":
+            self._row = []
+        elif self._table and self._row is not None and tag in {"td", "th"}:
+            self._cell = []
+
+    def handle_data(self, data: str) -> None:
+        if self._cell is not None:
+            self._cell.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._table and tag in {"td", "th"} and self._cell is not None and self._row is not None:
+            self._row.append(" ".join("".join(self._cell).split()))
+            self._cell = None
+        elif self._table and tag == "tr" and self._row is not None:
+            if self._row:
+                self.tables[-1].append(self._row)
+            self._row = None
+        elif tag == "table" and self._table:
+            self._table = False
+
+
+def _product_import_json_value(value: Any) -> dict[str, dict[str, Any]]:
+    """Normalize explicitly structured product schemas; never infer DPS meaning."""
+    if isinstance(value, dict):
+        for key in ("product_schemas", "products", "items", "results", "data"):
+            nested = value.get(key)
+            if isinstance(nested, (dict, list)):
+                value = nested
+                break
+    rows: list[tuple[str, Any]] = []
+    if isinstance(value, dict):
+        rows = [(str(key), profile) for key, profile in value.items() if isinstance(profile, dict)]
+    elif isinstance(value, list):
+        for row in value:
+            if isinstance(row, dict):
+                product_id = row.get("product_id") or row.get("productId") or row.get("product_code") or row.get("code")
+                if product_id:
+                    rows.append((str(product_id), row))
+    result: dict[str, dict[str, Any]] = {}
+    for product_id, row in rows[:1000]:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", product_id):
+            continue
+        if not isinstance(row, dict):
+            continue
+        profile = {key: row[key] for key in ("product_name", "productName", "name", "category", "device_kind", "channel_count", "functions", "status_spec", "dps_profile") if key in row}
+        profile["product_name"] = str(profile.get("product_name") or profile.get("productName") or profile.get("name") or "")[:120]
+        profile.pop("productName", None)
+        profile.pop("name", None)
+        if "dps" in row and "dps_profile" not in profile and isinstance(row["dps"], (list, dict)):
+            profile["dps_profile"] = row["dps"] if isinstance(row["dps"], dict) else {"dps": row["dps"]}
+        profile.update({"protocol": "tuya", "manufacturer": str(row.get("manufacturer") or "Tuya")[:64],
+                        "schema_source": "EXTERNAL_REFERENCE", "cached_at": int(time.time())})
+        if not profile.get("functions") and not profile.get("status_spec") and not (profile.get("dps_profile") or {}).get("dps"):
+            continue
+        result[product_id] = profile
+    return result
+
+
+def _product_import_csv_value(text: str, *, html_source: bool = False) -> dict[str, dict[str, Any]]:
+    if html_source:
+        parser = _ProductTableParser()
+        parser.feed(text)
+        table = next((rows for rows in parser.tables if len(rows) > 1), [])
+        if not table:
+            raise ValueError("product_import_no_html_table")
+        text = "\n".join("\t".join(cell.replace("\t", " ") for cell in row) for row in table)
+    sample = text[:8192]
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+    except csv.Error:
+        dialect = csv.excel
+    reader = csv.DictReader(io.StringIO(text), dialect=dialect)
+    if not reader.fieldnames:
+        raise ValueError("product_import_headers_required")
+    normalize = lambda key: re.sub(r"[^a-z0-9]+", "_", str(key or "").strip().casefold()).strip("_")
+    headers = {normalize(key): key for key in reader.fieldnames}
+    pid_key = next((headers[key] for key in ("product_id", "productid", "product_code", "productcode", "code", "id") if key in headers), None)
+    if not pid_key:
+        raise ValueError("product_import_product_id_column_required")
+    result: dict[str, dict[str, Any]] = {}
+    for raw in reader:
+        if not isinstance(raw, dict):
+            continue
+        product_id = str(raw.get(pid_key) or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", product_id):
+            continue
+        name_key = next((headers[key] for key in ("product_name", "productname", "name", "model", "description") if key in headers), None)
+        category_key = next((headers[key] for key in ("category", "device_kind", "type") if key in headers), None)
+        profile = result.setdefault(product_id, {"protocol": "tuya", "manufacturer": "Tuya", "schema_source": "EXTERNAL_REFERENCE", "cached_at": int(time.time()), "functions": [], "status_spec": [], "dps_profile": {"dps": []}})
+        if name_key and raw.get(name_key): profile["product_name"] = str(raw[name_key]).strip()[:120]
+        if category_key and raw.get(category_key): profile["category"] = str(raw[category_key]).strip()[:64]
+        for field_name, target in (("functions", "functions"), ("status_spec", "status_spec"), ("dps", "dps"), ("dps_profile", "dps_profile")):
+            key = headers.get(field_name)
+            if key and raw.get(key):
+                try: parsed = json.loads(raw[key])
+                except (ValueError, TypeError): continue
+                if target == "dps_profile" and isinstance(parsed, dict): profile[target] = parsed
+                elif target == "dps" and isinstance(parsed, list): profile["dps_profile"] = {"dps": parsed}
+                elif target in {"functions", "status_spec"} and isinstance(parsed, list): profile[target] = parsed
+        dps_key = headers.get("dps_id") or headers.get("dpsid") or headers.get("dp_id")
+        if dps_key and raw.get(dps_key):
+            try: dps_id = int(str(raw[dps_key]).strip())
+            except (ValueError, TypeError): dps_id = 0
+            if 1 <= dps_id <= 65535:
+                profile["dps_profile"]["dps"].append({"dps_id": dps_id, "display_name": str(raw.get(headers.get("dps_name", "")) or f"DPS {dps_id}")[:80], "semantic_code": "unknown", "data_type": "unknown", "confidence": "REFERENCE_ONLY", "source": "external_reference", "read_supported": True, "write_supported": False})
+        elif not any(profile.get(key) for key in ("functions", "status_spec")) and not profile["dps_profile"]["dps"]:
+            # Common product tables put one datapoint per column (for example,
+            # “DPS 1”, “DPS 2”) instead of one datapoint per row.
+            for normalized, source_header in headers.items():
+                match = re.fullmatch(r"dps_(\d{1,5})", normalized)
+                value = str(raw.get(source_header) or "").strip()
+                if not match or not value:
+                    continue
+                try:
+                    parsed = json.loads(value) if value[:1] in "{[\"" else value
+                except (ValueError, TypeError):
+                    parsed = value
+                if isinstance(parsed, dict):
+                    entry = dict(parsed)
+                    entry.setdefault("dps_id", int(match.group(1)))
+                    entry.setdefault("display_name", entry.get("name") or f"DPS {match.group(1)}")
+                    entry.setdefault("semantic_code", "unknown")
+                    entry.setdefault("confidence", "REFERENCE_ONLY")
+                    entry.setdefault("source", "external_reference")
+                    entry.setdefault("read_supported", True)
+                    entry["write_supported"] = False
+                elif isinstance(parsed, list):
+                    continue
+                else:
+                    entry = {"dps_id": int(match.group(1)), "display_name": str(parsed)[:80], "semantic_code": "unknown", "data_type": "unknown", "confidence": "REFERENCE_ONLY", "source": "external_reference", "read_supported": True, "write_supported": False}
+                profile["dps_profile"]["dps"].append(entry)
+    return {key: value for key, value in result.items() if value.get("functions") or value.get("status_spec") or value.get("dps_profile", {}).get("dps")}
+
+
+def _read_public_product_url(url: str) -> tuple[str | bytes, str]:
+    parsed = urlsplit(url)
+    if (parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password
+            or parsed.port not in (None, 80, 443) or len(url) > 2048):
+        raise ValueError("product_import_url_invalid")
+    host = parsed.hostname.rstrip(".")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        addresses = sorted({entry[4][0] for entry in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)})
+    except OSError as exc:
+        raise ValueError("product_import_url_dns_failed") from exc
+    if not addresses or any(not ipaddress.ip_address(address).is_global for address in addresses):
+        raise ValueError("product_import_url_host_not_public")
+    # Connect to the already-validated address to prevent DNS rebinding between
+    # validation and request. Redirects are deliberately not followed.
+    path = parsed.path or "/"
+    if parsed.query:
+        path += "?" + parsed.query
+    connection = http.client.HTTPSConnection(host, port, timeout=8) if parsed.scheme == "https" else http.client.HTTPConnection(host, port, timeout=8)
+    try:
+        raw_socket = socket.create_connection((addresses[0], port), timeout=8)
+        if parsed.scheme == "https":
+            connection.sock = ssl.create_default_context().wrap_socket(raw_socket, server_hostname=host)
+        else:
+            connection.sock = raw_socket
+        connection.request("GET", path, headers={"Host": parsed.netloc, "User-Agent": "SolarMiner-ProductCatalog/1.0", "Accept": "application/json,text/csv,text/tab-separated-values,text/html,text/plain", "Connection": "close"})
+        response = connection.getresponse()
+        if 300 <= response.status < 400:
+            raise ValueError("product_import_url_redirect_not_supported")
+        if response.status < 200 or response.status >= 300:
+            raise ValueError("product_import_url_fetch_failed")
+        raw = response.read(2_000_001)
+        if len(raw) > 2_000_000:
+            raise ValueError("product_import_source_too_large")
+        content_type = response.headers.get_content_type()
+        return (raw if "spreadsheet" in content_type or "excel" in content_type else raw.decode("utf-8-sig")), content_type
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError("product_import_url_fetch_failed") from exc
+    finally:
+        connection.close()
+
+
+def _xlsx_product_rows(raw: bytes) -> str:
+    if len(raw) > 2_000_000:
+        raise ValueError("product_import_source_too_large")
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            infos = archive.infolist()
+            if len(infos) > 64 or sum(item.file_size for item in infos) > 12_000_000 or any(item.file_size > 4_000_000 for item in infos):
+                raise ValueError("product_import_spreadsheet_too_large")
+            names = {item.filename for item in infos}
+            workbook_xml = ET.fromstring(archive.read("xl/workbook.xml"))
+            rels_xml = ET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+            rel_ns = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+            package_rel_ns = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+            sheet = workbook_xml.find(".//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}sheet")
+            if sheet is None:
+                raise ValueError("product_import_spreadsheet_has_no_sheet")
+            rel_id = sheet.attrib.get(rel_ns + "id")
+            relationship = next((item for item in rels_xml.findall(package_rel_ns + "Relationship") if item.attrib.get("Id") == rel_id), None)
+            if relationship is None:
+                raise ValueError("product_import_spreadsheet_sheet_invalid")
+            target = relationship.attrib.get("Target", "").lstrip("/")
+            sheet_path = target if target.startswith("xl/") else "xl/" + target
+            if ".." in sheet_path.split("/") or sheet_path not in names:
+                raise ValueError("product_import_spreadsheet_sheet_invalid")
+            shared: list[str] = []
+            if "xl/sharedStrings.xml" in names:
+                strings_xml = ET.fromstring(archive.read("xl/sharedStrings.xml"))
+                shared = ["".join(node.itertext()) for node in strings_xml.findall("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}si")]
+            sheet_xml = ET.fromstring(archive.read(sheet_path))
+    except ValueError:
+        raise
+    except (OSError, KeyError, zipfile.BadZipFile, ET.ParseError) as exc:
+        raise ValueError("product_import_spreadsheet_invalid") from exc
+    ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter="\t", lineterminator="\n")
+    for row in sheet_xml.findall(".//" + ns + "row")[:5000]:
+        values: dict[int, str] = {}
+        for cell in row.findall(ns + "c"):
+            reference = cell.attrib.get("r", "")
+            letters = re.match(r"([A-Z]+)", reference.upper())
+            if not letters:
+                continue
+            column = 0
+            for char in letters.group(1):
+                column = column * 26 + ord(char) - 64
+            column -= 1
+            cell_type = cell.attrib.get("t")
+            value = cell.findtext(ns + "v", default="")
+            if cell_type == "s":
+                try: value = shared[int(value)]
+                except (ValueError, IndexError): value = ""
+            elif cell_type == "inlineStr":
+                inline = cell.find(ns + "is")
+                value = "".join(inline.itertext()) if inline is not None else ""
+            values[column] = value
+        if values:
+            writer.writerow([values.get(index, "") for index in range(max(values) + 1)])
+    return output.getvalue()
+
+
+def _parse_tuya_product_import(text: str | bytes, filename: str = "") -> dict[str, dict[str, Any]]:
+    if isinstance(text, bytes):
+        if not filename.lower().endswith(".xlsx"):
+            raise ValueError("product_import_binary_format_unsupported")
+        text = _xlsx_product_rows(text)
+    if not isinstance(text, str) or not text.strip() or len(text.encode("utf-8")) > 2_000_000:
+        raise ValueError("product_import_source_empty_or_too_large")
+    try:
+        parsed = json.loads(text)
+    except (ValueError, TypeError):
+        parsed = None
+    if parsed is not None:
+        profiles = _product_import_json_value(parsed)
+    else:
+        profiles = _product_import_csv_value(text, html_source=filename.lower().endswith((".html", ".htm")) or "<table" in text[:2048].lower())
+    bounded = hardware_integrations._bounded_tuya_product_schemas(profiles)
+    if not bounded:
+        raise ValueError("product_import_no_supported_product_schemas")
+    return bounded
+
+
+def _tuya_product_import_equal(current: Any, proposed: Any) -> bool:
+    if not isinstance(current, dict) or not isinstance(proposed, dict):
+        return False
+    def canonical(profile: dict[str, Any]) -> str:
+        content = {key: profile.get(key) for key in ("product_name", "category", "device_kind", "channel_count", "functions", "status_spec")}
+        dps_profile = profile.get("dps_profile") if isinstance(profile.get("dps_profile"), dict) else {}
+        content["dps_profile"] = dps_profile
+        return json.dumps(content, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return canonical(current) == canonical(proposed)
+
+
+@app.post("/api/v1/integrations/tuya/product-catalog/preview")
+def preview_tuya_product_catalog_import(payload: dict[str, Any], session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Read a bounded public URL or uploaded text and return a non-persistent diff."""
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner": raise HTTPException(403, "owner_required")
+    if set(payload) - {"url", "content", "content_base64", "filename"}:
+        raise HTTPException(422, "product_import_payload_invalid")
+    try:
+        if payload.get("url"):
+            text, content_type = _read_public_product_url(str(payload.get("url")))
+            filename = ".html" if "html" in content_type else ".csv" if "csv" in content_type or "tab-separated" in content_type else ".xlsx" if "spreadsheet" in content_type or "excel" in content_type else ".json" if "json" in content_type else ""
+        else:
+            filename = str(payload.get("filename") or "")[:128]
+            if payload.get("content_base64") is not None:
+                encoded = payload.get("content_base64")
+                if not isinstance(encoded, str) or len(encoded) > 2_700_000:
+                    raise ValueError("product_import_source_too_large")
+                try: text = base64.b64decode(encoded, validate=True)
+                except (ValueError, base64.binascii.Error) as exc: raise ValueError("product_import_file_encoding_invalid") from exc
+            else:
+                text = payload.get("content")
+        proposed = _parse_tuya_product_import(text, filename)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    current = hardware_integrations.public_config().get("tuya", {}).get("product_catalog", {})
+    with db() as conn:
+        known_rows = {str(row["product_code"]): dict(row) for row in conn.execute(
+            "SELECT * FROM smart_product_catalog WHERE protocol='tuya'")}
+    changes = []
+    for product_id, profile in proposed.items():
+        old = current.get(product_id)
+        known = known_rows.get(product_id)
+        status_value = "added" if old is None and known is None else "unchanged" if _tuya_product_import_equal(old, profile) else "changed"
+        changes.append({"product_id": product_id, "status": status_value,
+                        "current_name": (old.get("product_name") if isinstance(old, dict) else known.get("product_name", "") if known else ""),
+                        "proposed_name": profile.get("product_name", ""),
+                        "current_dps_count": (len(old.get("functions", []) + old.get("status_spec", [])) + len((old.get("dps_profile") or {}).get("dps", []))) if isinstance(old, dict) else 0,
+                        "proposed_dps_count": len(profile.get("functions", []) + profile.get("status_spec", [])) + len((profile.get("dps_profile") or {}).get("dps", []))})
+    return {"changes": changes, "profiles": proposed, "source_count": len(proposed), "unchanged_count": sum(1 for row in changes if row["status"] == "unchanged"), "persisted": False}
+
+
+@app.post("/api/v1/integrations/tuya/product-catalog/apply")
+def apply_tuya_product_catalog_import(payload: dict[str, Any], session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Apply only the accepted rows from an Owner-reviewed preview."""
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner": raise HTTPException(403, "owner_required")
+        if set(payload) - {"profiles", "excluded_product_ids"} or not isinstance(payload.get("profiles"), dict) or not isinstance(payload.get("excluded_product_ids", []), list):
+            raise HTTPException(422, "product_import_apply_payload_invalid")
+        profiles = hardware_integrations._bounded_tuya_product_schemas(payload["profiles"])
+        excluded = {str(value) for value in payload.get("excluded_product_ids", []) if isinstance(value, str)}
+        accepted = {product_id: profile for product_id, profile in profiles.items() if product_id not in excluded}
+        config = hardware_integrations.load_config()
+        tuya = config.setdefault("tuya", {})
+        existing = hardware_integrations._bounded_tuya_product_schemas(tuya.get("product_schemas"))
+        existing.update(accepted)
+        tuya["product_schemas"] = existing
+        try:
+            saved = hardware_integrations.save_config(config)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(500, "product_import_save_failed") from exc
+        _persist_tuya_product_dps_map(conn, tuya.get("product_schemas", {}))
+        audit(conn, session["user_id"], "hardware.tuya.product_catalog.import", "product-catalog", "success",
+              {"accepted_count": len(accepted), "excluded_count": len(excluded)})
+        return {"applied_count": len(accepted), "excluded_count": len(excluded), "product_schema_count": len(existing)}
+
+
 @app.post("/api/v1/integrations/shelly/register")
 def register_shelly_device(payload: dict[str, Any],
                            session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
@@ -3539,7 +3899,15 @@ def tuya_product_dps_description(payload: dict[str, Any], session: dict[str, Any
         product.setdefault("manufacturer", "Tuya")
         product.setdefault("device_kind", str(device.get("device_kind") or device.get("category") or "unknown")[:32])
         recognized: set[int] = set()
-        for rows in (device.get("current_status"), device.get("functions"), device.get("status_spec"),
+        # The periodic reader stores the latest successful LAN DPS snapshot in
+        # SQLite. The config file can lag behind it, so include only a fresh,
+        # successful observation for this exact device when validating an
+        # Owner's Product ID scoped mapping.
+        telemetry = energy_engine.read_tuya_telemetry(conn, max_age_seconds=10).get(device_id, {})
+        observed_status = (telemetry.get("status", [])
+                           if telemetry.get("fresh") and telemetry.get("connection_state") == "local_responded"
+                           else [])
+        for rows in (observed_status, device.get("current_status"), device.get("functions"), device.get("status_spec"),
                      product.get("functions"), product.get("status_spec")):
             for row in rows if isinstance(rows, list) else []:
                 if not isinstance(row, dict):
@@ -4608,7 +4976,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.169"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.171"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

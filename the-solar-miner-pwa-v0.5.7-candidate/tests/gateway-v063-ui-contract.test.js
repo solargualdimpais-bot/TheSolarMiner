@@ -231,7 +231,8 @@ test("Tuya engine readings update open device popups without a page refresh", ()
   assert.match(app, /currentReading=state\.tuyaReadings\.find\(item=>item\.device_id===device\.device_id\)/);
   assert.match(app, /pendingTuyaSwitchStates\.set\(/);
   assert.match(app, /function settlePendingTuyaSwitchStates\(devices,readings\)/);
-  assert.match(app, /typeof observed==="boolean"&&observed===pending\.value/);
+  assert.match(app, /if\(observed!==pending\.value\)[\s\S]*?Falha ao confirmar a ordem/);
+  assert.match(app, /async function sendTuyaSwitchCommand\(device,code,desired\)\{[\s\S]*?pendingTuyaSwitchStates\.set\([\s\S]*?updateVisibleTuyaCard\(device\.device_id\);updateOpenTuyaDeviceDialog\(device\.device_id\);[\s\S]*?await controlGatewayTuyaSwitch/);
   assert.match(app, /tuyaSwitchState\(device,reading,code\)[\s\S]*?if\(pending\)return pending\.value/);
 });
 

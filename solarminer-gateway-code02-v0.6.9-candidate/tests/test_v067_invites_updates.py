@@ -479,6 +479,35 @@ def test_hardware_provider_read_is_independent_and_owner_only(client, monkeypatc
                        json={"device_id": "unexpected"}).status_code == 422
 
 
+def test_owner_can_map_a_dps_from_a_fresh_lan_read_even_when_product_schema_omits_it(client, monkeypatch):
+    headers = {"Authorization": f"Bearer {owner_session(client)}"}
+    config = {"tuya": {"devices": [{"device_id": "breaker-1", "name": "Termoacumulador",
+              "product_id": "breaker-product", "category": "dlq", "functions": [],
+              "status_spec": [], "current_status": []}], "product_schemas": {}}}
+    monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: config)
+    monkeypatch.setattr(gateway.hardware_integrations, "save_config", lambda value: value)
+    monkeypatch.setattr(gateway.energy_engine, "read_tuya_telemetry", lambda conn, *, max_age_seconds: {
+        "breaker-1": {"fresh": True, "connection_state": "local_responded",
+                      "status": [{"code": "dps_17", "dps_id": 17, "value": 2301}]}
+    })
+
+    mapped = client.post("/api/v1/integrations/tuya/product-dps-description", headers=headers, json={
+        "device_id": "breaker-1", "dps_id": 17, "description": "Tensão medida",
+        "semantic_code": "voltage", "unit": "V", "scale": 10,
+    })
+    assert mapped.status_code == 200, mapped.text
+    assert mapped.json()["product_id"] == "breaker-product"
+    assert mapped.json()["dps_id"] == 17
+    assert config["tuya"]["product_schemas"]["breaker-product"]["custom_dps_overrides"]["17"]["semantic_code"] == "voltage"
+
+    unknown = client.post("/api/v1/integrations/tuya/product-dps-description", headers=headers, json={
+        "device_id": "breaker-1", "dps_id": 18, "description": "Corrente",
+        "semantic_code": "current", "unit": "A", "scale": 1000,
+    })
+    assert unknown.status_code == 422
+    assert unknown.json()["detail"] == "tuya_dps_not_in_product_schema"
+
+
 def test_tuya_cloud_inventory_sync_stores_local_key_only_on_gateway(client, monkeypatch, tmp_path):
     monkeypatch.setattr(gateway.hardware_integrations, "_data_dir", lambda: tmp_path / "gateway-data")
     headers = {"Authorization": f"Bearer {owner_session(client)}"}

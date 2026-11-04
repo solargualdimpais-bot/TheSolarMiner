@@ -1251,6 +1251,25 @@ def test_tuya_switch_control_posts_only_configured_switch_without_immediate_read
     assert result["source"] == "TUYA_LAN"
 
 
+def test_tuya_switch_without_immediate_ack_waits_for_periodic_readback(monkeypatch):
+    class LocalDevice:
+        def set_socketTimeout(self, value): pass
+        def set_retry(self, value): pass
+        def status(self): pytest.fail("switch command must not read DPS")
+        def set_status(self, on, switch=1): return {"Error": "no_dps_ack"}
+    monkeypatch.setattr(integrations, "_tuya_lan_client", lambda device: LocalDevice())
+    monkeypatch.setattr(integrations, "_persist_tuya_protocols", lambda *args, **kwargs: None)
+    monkeypatch.setattr(integrations, "_tuya_local_status", lambda device: pytest.fail("no immediate status read"))
+    device = {"device_id": "breaker-1", "switch_code": "switch_1",
+              "functions": [{"code": "switch_1", "type": "Boolean", "dp_id": 1}],
+              "local_key": "local-key-123", "local_ip": "192.168.8.44"}
+    result = integrations.control_tuya_switch({"devices": [device]}, "breaker-1", True)
+    assert result["control_command_sent"] is True
+    assert result["command_acknowledged"] is False
+    assert result["state_confirmed"] is False
+    assert result["connection_state"] == "command_sent_awaiting_independent_scan"
+
+
 def test_tuya_switch_command_uses_saved_protocol_without_reading_status(monkeypatch):
     commands = []
     class LocalDevice:

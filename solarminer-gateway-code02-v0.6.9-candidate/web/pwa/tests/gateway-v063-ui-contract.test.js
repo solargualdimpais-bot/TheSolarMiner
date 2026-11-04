@@ -231,7 +231,8 @@ test("Tuya engine readings update open device popups without a page refresh", ()
   assert.match(app, /currentReading=state\.tuyaReadings\.find\(item=>item\.device_id===device\.device_id\)/);
   assert.match(app, /pendingTuyaSwitchStates\.set\(/);
   assert.match(app, /function settlePendingTuyaSwitchStates\(devices,readings\)/);
-  assert.match(app, /typeof observed==="boolean"&&observed===pending\.value/);
+  assert.match(app, /if\(observed!==pending\.value\)[\s\S]*?Falha ao confirmar a ordem/);
+  assert.match(app, /async function sendTuyaSwitchCommand\(device,code,desired\)\{[\s\S]*?pendingTuyaSwitchStates\.set\([\s\S]*?updateVisibleTuyaCard\(device\.device_id\);updateOpenTuyaDeviceDialog\(device\.device_id\);[\s\S]*?await controlGatewayTuyaSwitch/);
   assert.match(app, /tuyaSwitchState\(device,reading,code\)[\s\S]*?if\(pending\)return pending\.value/);
 });
 
@@ -273,5 +274,4 @@ for (const loop of rollbackLoops) {
   assert.match(loop, /0\.6\.139 0\.6\.140 0\.6\.141 0\.6\.142 0\.6\.143 0\.6\.145 0\.6\.146 0\.6\.147 0\.6\.148 0\.6\.149 0\.6\.150 0\.6\.151 0\.6\.152 0\.6\.153 0\.6\.154 0\.6\.155 0\.6\.156 0\.6\.157 0\.6\.158 0\.6\.159 0\.6\.160 0\.6\.161 0\.6\.162 0\.6\.163 0\.6\.164 0\.6\.165 0\.6\.166; do/);
 }
 });
-
 

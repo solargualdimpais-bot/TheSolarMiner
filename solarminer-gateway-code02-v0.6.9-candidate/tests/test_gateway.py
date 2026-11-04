@@ -1,6 +1,9 @@
 import hashlib
+import io
+import json
 import os
 import time
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -110,6 +113,14 @@ def test_shelly_registration_uses_authenticated_owner_and_sqlite_mac_identity(cl
         assert device["host"] == "192.168.1.31"
         inventory = conn.execute("SELECT last_ip FROM gateway_device_inventory WHERE mac='AA:BB:CC:DD:EE:30'").fetchone()
         assert inventory["last_ip"] == "192.168.1.31"
+    # The next inventory/read synchronization must project Shelly rows without
+    # calling a misspelled helper (the production NameError seen in Gateway logs).
+    monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: {})
+    monkeypatch.setattr(gateway.hardware_integrations.shelly_integration, "read_devices", lambda config: [])
+    synced = client.post("/api/v1/integrations/shelly/read", headers=headers)
+    assert synced.status_code == 200, synced.text
+    with gateway.db() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM gateway_device_inventory WHERE mac='AA:BB:CC:DD:EE:30'").fetchone()[0] == 1
     assert client.post("/api/v1/integrations/shelly/register",
                        json={"name": "No auth", "host": "192.168.1.32"}).status_code == 401
 
@@ -1580,3 +1591,74 @@ def test_site_profile_is_shared_and_owner_only_for_writes(client):
     denied = client.put("/api/v1/site/profile", headers=viewer_headers, json={**profile, "name": "Alteração não autorizada"})
     assert denied.status_code == 403
     assert client.get("/api/v1/site/profile", headers=owner_headers).json()["name"] == "Casa Solar"
+
+
+def test_tuya_product_import_accepts_explicit_json_schema_without_enabling_writes():
+    payload = '{"products":[{"product_id":"kg_ev","product_name":"EV Charger","functions":[{"code":"charge_switch","dp_id":1,"type":"Boolean"}],"dps":[{"dps_id":2,"display_name":"Power","semantic_code":"power","data_type":"Integer","unit":"W","scale":1}]}]}'
+    profiles = gateway._parse_tuya_product_import(payload, "catalog.json")
+    assert list(profiles) == ["kg_ev"]
+    assert profiles["kg_ev"]["functions"][0]["dp_id"] == 1
+    assert profiles["kg_ev"]["dps_profile"]["dps"][0]["semantic_code"] == "power"
+    assert profiles["kg_ev"]["schema_source"] == "EXTERNAL_REFERENCE"
+
+
+def test_tuya_product_import_accepts_csv_product_and_dps_rows_as_reference_only():
+    payload = "product_id,product_name,category,dps_id,dps_name\nkg_ev,EV Charger,charger,7,Charging state\nkg_ev,EV Charger,charger,8,Current"
+    profiles = gateway._parse_tuya_product_import(payload, "catalog.csv")
+    dps = profiles["kg_ev"]["dps_profile"]["dps"]
+    assert [row["dps_id"] for row in dps] == [7, 8]
+    assert all(row["write_supported"] is False and row["semantic_code"] == "unknown" for row in dps)
+
+
+def test_tuya_product_import_accepts_one_dps_per_csv_column():
+    payload = "Product ID,Product Name,DPS 1,DPS 2\nkg_columns,EV Charger,Switch state,Power (W)"
+    profiles = gateway._parse_tuya_product_import(payload, "column-map.csv")
+    dps = profiles["kg_columns"]["dps_profile"]["dps"]
+    assert [(item["dps_id"], item["display_name"]) for item in dps] == [(1, "Switch state"), (2, "Power (W)")]
+    assert all(item["write_supported"] is False for item in dps)
+
+
+def test_tuya_product_import_extracts_html_tables_and_rejects_unstructured_text():
+    html = "<table><tr><th>Product ID</th><th>Name</th><th>DPS ID</th><th>DPS Name</th></tr><tr><td>kg_ev</td><td>EV Charger</td><td>3</td><td>Voltage</td></tr></table>"
+    profiles = gateway._parse_tuya_product_import(html, "reference.html")
+    assert profiles["kg_ev"]["dps_profile"]["dps"][0]["dps_id"] == 3
+    with pytest.raises(ValueError, match="product_import_product_id_column_required"):
+        gateway._parse_tuya_product_import("a paragraph with no structured product information", "notes.txt")
+
+
+def test_tuya_product_import_reads_first_sheet_of_xlsx():
+    workbook = io.BytesIO()
+    with zipfile.ZipFile(workbook, "w") as archive:
+        archive.writestr("xl/workbook.xml", '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Products" sheetId="1" r:id="rId1"/></sheets></workbook>')
+        archive.writestr("xl/_rels/workbook.xml.rels", '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Target="worksheets/sheet1.xml" Type="worksheet"/></Relationships>')
+        archive.writestr("xl/sharedStrings.xml", '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t>Product ID</t></si><si><t>Name</t></si><si><t>DPS ID</t></si><si><t>Power</t></si><si><t>kg_xlsx</t></si><si><t>Charger</t></si></sst>')
+        archive.writestr("xl/worksheets/sheet1.xml", '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="s"><v>2</v></c><c r="D1" t="inlineStr"><is><t>DPS Name</t></is></c></row><row r="2"><c r="A2" t="s"><v>4</v></c><c r="B2" t="s"><v>5</v></c><c r="C2"><v>9</v></c><c r="D2" t="s"><v>3</v></c></row></sheetData></worksheet>')
+    profiles = gateway._parse_tuya_product_import(workbook.getvalue(), "catalog.xlsx")
+    assert profiles["kg_xlsx"]["product_name"] == "Charger"
+    assert profiles["kg_xlsx"]["dps_profile"]["dps"][0]["dps_id"] == 9
+
+
+def test_tuya_product_import_preview_is_read_only_and_apply_skips_owner_selected_rows(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLARMINER_DATA_DIR", str(tmp_path / "data"))
+    owner, private, _ = create_owner(client)
+    login_result = login(client, owner, private)
+    headers = {"Authorization": f"Bearer {login_result.json()['access_token']}"}
+    content = json.dumps({"products": [
+        {"product_id": "kg_one", "product_name": "Charger One", "dps": [{"dps_id": 2, "display_name": "Power"}]},
+        {"product_id": "kg_two", "product_name": "Charger Two", "dps": [{"dps_id": 4, "display_name": "Current"}]},
+    ]})
+    preview = client.post("/api/v1/integrations/tuya/product-catalog/preview", headers=headers,
+                          json={"content": content, "filename": "products.json"})
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["persisted"] is False
+    assert preview.json()["source_count"] == 2
+    before = client.get("/api/v1/integrations/hardware", headers=headers).json()["tuya"]["product_catalog"]
+    assert "kg_one" not in before and "kg_two" not in before
+    applied = client.post("/api/v1/integrations/tuya/product-catalog/apply", headers=headers,
+                          json={"profiles": preview.json()["profiles"], "excluded_product_ids": ["kg_two"]})
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["applied_count"] == 1
+    after = client.get("/api/v1/integrations/hardware", headers=headers).json()["tuya"]["product_catalog"]
+    assert "kg_one" in after and "kg_two" not in after
+    with gateway.db() as conn:
+        assert conn.execute("SELECT 1 FROM tuya_product_dps_map WHERE product_id='kg_one' AND dps_id=2").fetchone()

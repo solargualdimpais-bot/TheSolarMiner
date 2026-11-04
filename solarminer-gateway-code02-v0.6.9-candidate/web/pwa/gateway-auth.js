@@ -482,6 +482,14 @@ export async function importGatewayDeyeCloudHistory(stationId, onProgress = () =
 export async function syncGatewayTuyaDevices({ signal } = {}) {
   return gatewayApi("/api/v1/integrations/tuya/sync", { method: "POST", body: {}, signal });
 }
+export async function previewGatewayTuyaProductImport(source, { signal } = {}) {
+  if (!source || typeof source !== "object" || (source.url && typeof source.url !== "string") || (source.content && typeof source.content !== "string") || (source.content_base64 && typeof source.content_base64 !== "string")) throw new Error("Origem do catálogo inválida.");
+  return gatewayApi("/api/v1/integrations/tuya/product-catalog/preview", { method: "POST", body: source, signal });
+}
+export async function applyGatewayTuyaProductImport(profiles, excludedProductIds = [], { signal } = {}) {
+  if (!profiles || typeof profiles !== "object" || !Array.isArray(excludedProductIds)) throw new Error("Revisão do catálogo inválida.");
+  return gatewayApi("/api/v1/integrations/tuya/product-catalog/apply", { method: "POST", body: { profiles, excluded_product_ids: excludedProductIds }, signal });
+}
 export async function readGatewayHardwareIntegrations() {
   return gatewayApi("/api/v1/integrations/hardware/read", { method: "POST", body: {} });
 }

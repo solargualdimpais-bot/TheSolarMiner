@@ -1240,12 +1240,14 @@ def control_tuya_switch(config: dict[str, Any], device_id: str, on: bool, code: 
     # Do not issue a status/DPS probe as part of a user command.
     client = _tuya_lan_client(device)
     response = client.set_status(on, switch=int(dps))
-    if not isinstance(response, dict) or (response.get("Error") and not response.get("dps")):
-        raise _tuya_command_rejection(response, dps)
+    # Some devices apply a relay command but omit the immediate DPS ACK. Treat
+    # the write as unconfirmed and let the independent polling engine verify
+    # the requested state; do not report a false rejection here.
+    acknowledged = isinstance(response, dict) and not response.get("Error") and bool(response.get("dps"))
     return {"device_id": device_id, "switch_code": code, "requested_on": on,
-            "command_accepted": True, "observed_on": None,
-            "state_confirmed": False, "connection_state": "command_accepted_awaiting_independent_scan",
-            "control_command_sent": True, "source": "TUYA_LAN"}
+            "command_accepted": acknowledged, "command_acknowledged": acknowledged, "observed_on": None,
+            "state_confirmed": False, "connection_state": "command_accepted_awaiting_independent_scan" if acknowledged else "command_sent_awaiting_independent_scan",
+            "control_command_sent": True, "command_sent": True, "source": "TUYA_LAN"}
 
 
 def control_tuya_level(config: dict[str, Any], device_id: str, percent: int) -> dict[str, Any]:
