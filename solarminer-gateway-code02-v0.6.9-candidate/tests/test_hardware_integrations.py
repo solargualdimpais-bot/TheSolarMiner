@@ -107,7 +107,7 @@ def test_tuya_local_status_does_not_guess_when_schema_codes_conflict_for_same_dp
         integrations._tuya_local_dps(device, "switch_1")
 
 
-def test_tuya_command_rejection_reports_target_dps_and_sanitized_device_hint(monkeypatch):
+def test_tuya_command_without_ack_is_left_for_independent_state_confirmation(monkeypatch):
     class LocalDevice:
         def set_socketTimeout(self, _value): pass
         def set_retry(self, _value): pass
@@ -116,8 +116,11 @@ def test_tuya_command_rejection_reports_target_dps_and_sanitized_device_hint(mon
     monkeypatch.setattr(integrations, "_tuya_lan_client", lambda _device: LocalDevice())
     device = {"device_id": "relay-1", "local_key": "local-key-123", "local_ip": "192.168.1.20",
               "functions": [{"code": "switch_2", "type": "Boolean", "dp_id": 2}]}
-    with pytest.raises(RuntimeError, match=r"tuya_lan_command_rejected:dps_2:DPS_2_is_not_writable_local_protocol"):
-        integrations.control_tuya_switch({"devices": [device]}, "relay-1", True, "switch_2")
+    result = integrations.control_tuya_switch({"devices": [device]}, "relay-1", True, "switch_2")
+    assert result["control_command_sent"] is True
+    assert result["command_acknowledged"] is False
+    assert result["state_confirmed"] is False
+    assert result["connection_state"] == "command_sent_awaiting_independent_scan"
 
 
 def test_tuya_dps_registry_keeps_dp18_scoped_and_unknown_read_only():

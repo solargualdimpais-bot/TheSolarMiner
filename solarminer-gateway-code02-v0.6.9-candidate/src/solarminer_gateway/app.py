@@ -51,6 +51,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictStr
 from . import connectors as connector_manager
 from . import energy_registry
 from . import energy_engine
+from . import tuya_dps_registry
 from . import site_profile
 from . import integrations as hardware_integrations
 from . import network_scanner
@@ -3895,6 +3896,7 @@ def tuya_product_dps_description(payload: dict[str, Any], session: dict[str, Any
                        "status_spec": device.get("status_spec", []) if isinstance(device.get("status_spec"), list) else [],
                        "dps_profile": tuya_dps_registry.product_profile(device), "custom_dps_overrides": {},
                        "cached_at": int(time.time())}
+            profiles[product_id] = product
         product.setdefault("protocol", "tuya")
         product.setdefault("manufacturer", "Tuya")
         product.setdefault("device_kind", str(device.get("device_kind") or device.get("category") or "unknown")[:32])
@@ -3981,7 +3983,9 @@ def tuya_product_dps_description(payload: dict[str, Any], session: dict[str, Any
             saved = hardware_integrations.save_config(config)
         except (OSError, ValueError) as exc:
             raise HTTPException(500, "tuya_product_dps_description_save_failed") from exc
-        _persist_tuya_product_dps_map(conn, saved.get("tuya", {}).get("product_schemas", {}))
+        # save_config returns a public view that deliberately omits private
+        # schema internals; persist from the validated in-memory profiles.
+        _persist_tuya_product_dps_map(conn, profiles)
         audit(conn, session["user_id"], "hardware.tuya.dps_description", f"{product_id}:{dps_id}", "success",
               {"device_id": device_id, "product_id": product_id, "dps_id": dps_id, "semantic_code": semantic})
         return {"saved": True, "product_id": product_id, "dps_id": dps_id,
