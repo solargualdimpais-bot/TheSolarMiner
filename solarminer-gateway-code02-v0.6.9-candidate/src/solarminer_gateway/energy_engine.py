@@ -390,7 +390,7 @@ def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, 
     kinds = {"miner", "water_heater", "underfloor_heating", "ev_charger", "generic"}
     controls = {"tuya_smart", "tuya_breaker", "antminer_braiins", "tesla_fleet", "manual"}
     for load in loads:
-        allowed_load = {"id", "name", "kind", "control_type", "rated_power_w", "minimum_power_w", "maximum_power_w", "manufacturer", "volume_l",
+        allowed_load = {"id", "name", "kind", "control_type", "rated_power_w", "minimum_power_w", "maximum_power_w", "manufacturer", "volume_l", "equipment_id", "device_key", "control_device_key",
                         "priority", "enabled", "automatic", "tuya_device_id", "tuya_switch_code",
                         "tuya_measurement_codes", "minimum_on_seconds", "minimum_off_seconds", "requires_load_id"}
         if not isinstance(load, dict) or set(load) - allowed_load:
@@ -424,10 +424,19 @@ def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, 
         enabled = load.get("enabled", True)
         automatic = load.get("automatic", False)
         requires_load_id = load.get("requires_load_id")
+        equipment_id = load.get("equipment_id")
+        device_key = load.get("device_key")
+        control_device_key = load.get("control_device_key")
         if not isinstance(enabled, bool) or not isinstance(automatic, bool):
             raise ValueError("invalid_flexible_load_flags")
         if requires_load_id is not None and (not isinstance(requires_load_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,47}", requires_load_id)):
             raise ValueError("invalid_flexible_load_dependency")
+        if equipment_id is not None and (not isinstance(equipment_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", equipment_id)):
+            raise ValueError("invalid_flexible_load_equipment_id")
+        if device_key is not None and (not isinstance(device_key, str) or not re.fullmatch(r"[A-Za-z0-9:_-]{1,160}", device_key)):
+            raise ValueError("invalid_flexible_load_device_key")
+        if control_device_key is not None and (not isinstance(control_device_key, str) or not re.fullmatch(r"[A-Za-z0-9:_-]{1,160}", control_device_key)):
+            raise ValueError("invalid_flexible_load_control_device_key")
         device_id, switch_code = load.get("tuya_device_id"), load.get("tuya_switch_code")
         measurement_codes = load.get("tuya_measurement_codes", {})
         if not isinstance(measurement_codes, dict) or set(measurement_codes) - {"voltage", "current", "power", "energy"}:
@@ -459,7 +468,8 @@ def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, 
                                  "automatic": automatic, "tuya_device_id": device_id, "tuya_switch_code": switch_code,
                                  "tuya_measurement_codes": measurement_codes,
                                  "minimum_on_seconds": min_on, "minimum_off_seconds": min_off,
-                                 "requires_load_id": requires_load_id})
+                                 "requires_load_id": requires_load_id, "equipment_id": equipment_id,
+                                 "device_key": device_key, "control_device_key": control_device_key})
     for load in normalized_loads:
         if load["requires_load_id"] is not None:
             dependency = next((item for item in normalized_loads if item["id"] == load["requires_load_id"]), None)

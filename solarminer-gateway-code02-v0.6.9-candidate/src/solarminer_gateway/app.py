@@ -63,7 +63,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.173"
+PACKAGE_VERSION = "0.6.174"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -546,6 +546,24 @@ def _upsert_gateway_inventory_device(conn: sqlite3.Connection, *, provider: str,
              now if replace_ip and ip else "", now, current["device_key"]))
         current = conn.execute("SELECT * FROM gateway_device_inventory WHERE device_key=?", (current["device_key"],)).fetchone()
     return dict(current)
+
+
+def _sync_miner_name_from_inventory(conn: sqlite3.Connection, device_key: str, name: str) -> bool:
+    """Propagate an Owner-assigned MAC identity name into its miner load/card."""
+    config = energy_engine.get_config(conn)
+    loads = list(config.get("loads", []))
+    matches = [item for item in loads if isinstance(item, dict) and item.get("kind") == "miner"
+               and item.get("control_type") == "antminer_braiins" and item.get("device_key") == device_key]
+    if len(matches) != 1:
+        return False
+    load = matches[0]
+    load["name"] = name
+    saved = energy_engine.save_config(conn, {"loads": loads})
+    equipment_id = load.get("equipment_id")
+    if equipment_id:
+        conn.execute("UPDATE energy_equipment SET name=?,updated_at=? WHERE id=? AND category='mineradoras'",
+                     (name, utcnow(), equipment_id))
+    return bool(saved)
 
 
 def _upsert_smart_product_catalog(conn: sqlite3.Connection, *, manufacturer: str, protocol: str,
@@ -1642,7 +1660,9 @@ def energy_engine_configure(payload: dict[str, Any], session: dict[str, Any] = D
     with db() as conn:
         _require_owner(session, conn)
         try:
-            configured_tuya = hardware_integrations.load_config().get("tuya", {}).get("devices", [])
+            current_integrations = hardware_integrations.load_config()
+            configured_tuya = current_integrations.get("tuya", {}).get("devices", [])
+            configured_antminer = current_integrations.get("antminer", {})
             proposed_loads = payload.get("loads", energy_engine.get_config(conn).get("loads", []))
             config_payload = dict(payload)
             if "site_location_name" in config_payload:
@@ -1650,6 +1670,7 @@ def energy_engine_configure(payload: dict[str, Any], session: dict[str, Any] = D
             tuya_by_id = {item.get("device_id"): item for item in configured_tuya if isinstance(item, dict)}
             if not isinstance(proposed_loads, list):
                 raise ValueError("invalid_flexible_loads")
+            _sync_gateway_device_inventory(conn, current_integrations)
             for load in proposed_loads:
                 if not isinstance(load, dict):
                     raise ValueError("invalid_flexible_load")
@@ -1665,14 +1686,83 @@ def energy_engine_configure(payload: dict[str, Any], session: dict[str, Any] = D
                     schema_codes = {entry.get("code") for entry in specs if isinstance(entry.get("code"), str)}
                     if not isinstance(measurement_codes, dict) or any(code not in schema_codes for code in measurement_codes.values()):
                         raise ValueError("load_tuya_measurement_code_not_configured")
+                    mac = _inventory_mac(device.get("local_mac") or device.get("mac") or device.get("mac_address") or "") if device else ""
+                    if mac:
+                        linked = conn.execute("SELECT device_key FROM gateway_device_inventory WHERE mac=?", (mac,)).fetchall()
+                        if len(linked) == 1:
+                            load["control_device_key"] = linked[0]["device_key"]
+            conn.execute("BEGIN IMMEDIATE")
+            antminer_config = current_integrations.get("antminer", {}) if isinstance(current_integrations, dict) else {}
+            antminer_host = antminer_config.get("host") if isinstance(antminer_config, dict) else None
+            antminer_equipment_id = (f"braiins-antminer-{hashlib.sha256(antminer_host.encode('utf-8')).hexdigest()[:16]}"
+                                     if isinstance(antminer_host, str) and antminer_host else None)
+            for load in proposed_loads:
+                if not isinstance(load, dict) or load.get("kind") != "miner" or load.get("control_type") != "antminer_braiins":
+                    continue
+                if load.get("device_key"):
+                    identity = conn.execute("SELECT mac FROM gateway_device_inventory WHERE device_key=?", (load["device_key"],)).fetchone()
+                    if not identity or not identity["mac"]:
+                        raise ValueError("miner_mac_identity_not_found")
+                if antminer_equipment_id:
+                    load.setdefault("equipment_id", antminer_equipment_id)
+                if not load.get("device_key"):
+                    local_mac = _inventory_mac(antminer_config.get("local_mac") or antminer_config.get("mac") or "")
+                    if local_mac:
+                        identity = conn.execute("SELECT device_key FROM gateway_device_inventory WHERE mac=?", (local_mac,)).fetchone()
+                    else:
+                        candidates = conn.execute("SELECT device_key FROM gateway_device_inventory WHERE mac<>'' AND (source_provider='antminer' OR device_type='miner')").fetchall()
+                        identity = candidates[0] if len(candidates) == 1 else None
+                    if identity:
+                        load["device_key"] = identity["device_key"]
+            config_payload["loads"] = proposed_loads
             result = energy_engine.save_config(conn, config_payload)
+            # Keep the flexible-load settings attached to the canonical miner
+            # equipment record, so its display name and characteristics do not
+            # diverge between Energy and the miner management page.
+            energy_registry.ensure_schema(conn)
+            antminer_host = configured_antminer.get("host") if isinstance(configured_antminer, dict) else None
+            miner_equipment_id = (f"braiins-antminer-{hashlib.sha256(antminer_host.encode('utf-8')).hexdigest()[:16]}"
+                                  if isinstance(antminer_host, str) and antminer_host else None)
+            for load in result.get("loads", []):
+                if load.get("kind") != "miner" or load.get("control_type") != "antminer_braiins":
+                    continue
+                equipment_id = load.get("equipment_id") or miner_equipment_id
+                if not equipment_id:
+                    continue
+                equipment = conn.execute("SELECT id,category,config_json FROM energy_equipment WHERE id=?", (equipment_id,)).fetchone()
+                if not equipment or equipment["category"] != "mineradoras":
+                    continue
+                try:
+                    equipment_config = json.loads(equipment["config_json"] or "{}")
+                except (TypeError, ValueError):
+                    equipment_config = {}
+                if not isinstance(equipment_config, dict):
+                    equipment_config = {}
+                equipment_config["load_characteristics"] = {
+                    "rated_power_w": load["rated_power_w"],
+                    "minimum_power_w": load["minimum_power_w"],
+                    "maximum_power_w": load["maximum_power_w"],
+                    "priority": load["priority"],
+                    "automatic": load["automatic"],
+                }
+                conn.execute("UPDATE energy_equipment SET name=?,config_json=?,updated_at=? WHERE id=?",
+                             (load["name"], json.dumps(equipment_config, separators=(",", ":")), utcnow(), equipment_id))
+                # Update the physical identity by its stable inventory key/MAC.
+                if load.get("device_key"):
+                    identity = conn.execute("SELECT device_key,mac FROM gateway_device_inventory WHERE device_key=?", (load["device_key"],)).fetchone()
+                    if identity and identity["mac"]:
+                        conn.execute("UPDATE gateway_device_inventory SET name=?,name_source='owner',updated_at=? WHERE device_key=?",
+                                     (load["name"], utcnow(), identity["device_key"]))
             audit(conn, session["user_id"], "energy.engine.configure", "energy-engine", "success", {
                 "battery_capacity_kwh_configured": result["battery_capacity_kwh"] is not None,
                 "minimum_soc_percent": result["minimum_soc_percent"],
                 "maximum_soc_percent": result["maximum_soc_percent"],
             })
+            conn.commit()
             return result
         except ValueError as exc:
+            if conn.in_transaction:
+                conn.rollback()
             raise HTTPException(422, str(exc)) from exc
 
 
@@ -2094,14 +2184,28 @@ def _persist_antminer_telemetry(conn: sqlite3.Connection, miner: dict[str, Any] 
             observed_at = datetime.fromtimestamp(float(timestamp), timezone.utc).isoformat(timespec="microseconds")
     except (OverflowError, OSError, ValueError):
         pass
+    # A user-assigned equipment name is canonical; periodic telemetry must not
+    # replace it with the connector's model label.
+    saved_identity = conn.execute("SELECT name,config_json FROM energy_equipment WHERE id=? AND category='mineradoras'",
+                                  (equipment_id,)).fetchone()
+    owner_identity = conn.execute("SELECT name FROM gateway_device_inventory WHERE mac<>'' AND source_provider='antminer' AND name_source='owner' ORDER BY updated_at DESC LIMIT 1").fetchone()
+    display_name = (owner_identity["name"] if owner_identity else
+                    saved_identity["name"] if saved_identity else "Antminer S19K Pro")
+    try:
+        equipment_config = json.loads(saved_identity["config_json"] or "{}") if saved_identity else {}
+    except (TypeError, ValueError):
+        equipment_config = {}
+    if not isinstance(equipment_config, dict):
+        equipment_config = {}
+    equipment_config.update({"host": host, "port": miner.get("port", 4028), "trust": "LIVE_UNVERIFIED"})
     energy_registry.upsert_equipment(conn, {
-        "category": "mineradoras", "name": "Antminer S19K Pro", "manufacturer": "Bitmain",
+        "category": "mineradoras", "name": display_name, "manufacturer": "Bitmain",
         "model": "S19K Pro", "protocol": "Braiins OS · telemetria CGMiner + controlo REST",
         "connection_state": "CONNECTED", "status": "CONFIGURED",
         "declared_capabilities": ["mining telemetry", "mining control via Braiins OS REST"],
         "implemented_capabilities": ["CGMiner summary/stats/devs telemetry", "Braiins REST start/pause/stop/power target", "Braiins tuner status when available"],
         "verified_capabilities": [], "limitations": ["Model identity is configured, not verified by the API response."],
-        "config": {"host": host, "port": miner.get("port", 4028), "trust": "LIVE_UNVERIFIED"},
+        "config": equipment_config,
     }, equipment_id=equipment_id)
     for field, value, unit, api_field in metrics:
         energy_registry.add_reading(conn, equipment_id, {
@@ -3538,6 +3642,8 @@ def save_local_network_device(payload: dict[str, Any],
         _sync_gateway_device_inventory(conn, saved_integrations)
         central_saved = dict(conn.execute("SELECT * FROM gateway_device_inventory WHERE device_key=?",
                                          (central_saved["device_key"],)).fetchone())
+        if central_saved.get("mac") and central_saved.get("device_type") in {"miner", "mineradora", "antminer"}:
+            _sync_miner_name_from_inventory(conn, central_saved["device_key"], central_saved["name"])
         audit(conn, session["user_id"], "network.device.save", mac, "success", {
             "device_type": device_type, "has_current_ip": bool(current_ip), "ambiguous_ip": ambiguous_ip})
         conn.commit()
@@ -5016,7 +5122,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.173"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.174"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

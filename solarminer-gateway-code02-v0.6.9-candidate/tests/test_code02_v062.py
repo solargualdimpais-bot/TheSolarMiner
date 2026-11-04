@@ -220,7 +220,9 @@ def test_energy_api_uses_existing_auth_rbac_and_audit(tmp_path, monkeypatch):
         configured=client.put("/api/v1/energy/engine/config",headers=headers,json={"battery_capacity_kwh":18,"minimum_soc_percent":20,"maximum_soc_percent":95})
         assert configured.status_code==200 and configured.json()["battery_capacity_kwh"]==18
         assert client.put("/api/v1/energy/engine/config",headers=headers,json={"battery_capacity_kwh":18,"minimum_soc_percent":98,"maximum_soc_percent":95}).status_code==422
-        monkeypatch.setattr(gateway.hardware_integrations,"load_config",lambda:{"tuya":{"devices":[{"device_id":"switch1","switch_code":"switch_1"}]}})
+        miner_host="192.168.1.71"
+        miner_equipment_id="braiins-antminer-"+hashlib.sha256(miner_host.encode("utf-8")).hexdigest()[:16]
+        monkeypatch.setattr(gateway.hardware_integrations,"load_config",lambda:{"tuya":{"devices":[{"device_id":"switch1","switch_code":"switch_1"}]},"antminer":{"host":miner_host}})
         def fake_tuya_control(_config, device_id, on, *, code=None):
             if device_id != "switch1": raise ValueError("tuya_device_not_configured")
             return {"device_id":device_id,"requested_on":on,"code":code,"state_confirmed":True,"control_command_sent":True}
@@ -232,6 +234,24 @@ def test_energy_api_uses_existing_auth_rbac_and_audit(tmp_path, monkeypatch):
         assert invalid_load.status_code==422
         valid_load=client.put("/api/v1/energy/engine/config",headers=headers,json={"loads":[{"id":"aqs1","name":"AQS 1","kind":"water_heater","control_type":"tuya_breaker","rated_power_w":1500,"tuya_device_id":"switch1","tuya_switch_code":"switch_1"}]})
         assert valid_load.status_code==200 and valid_load.json()["loads"][0]["name"]=="AQS 1"
+        with gateway.db() as conn:
+            energy.upsert_equipment(conn,{"category":"mineradoras","name":"Antminer S19K Pro","manufacturer":"Bitmain","model":"S19K Pro","protocol":"Braiins OS"},miner_equipment_id)
+            conn.execute("INSERT INTO gateway_device_inventory(device_key,source_provider,source_device_id,source_links_json,name,name_source,device_type,mac,last_ip,manufacturer,model,product_id,confirmation_status,created_at,updated_at,last_seen_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         ("mac:AA:BB:CC:DD:EE:71","network","AA:BB:CC:DD:EE:71","[]","Antminer","source","miner","AA:BB:CC:DD:EE:71","192.168.1.71","Bitmain","S19K Pro","","confirmed",gateway.utcnow(),gateway.utcnow(),gateway.utcnow()))
+        miner_load={"id":"miner-load-1","name":"Mineradora Oficina","kind":"miner","control_type":"antminer_braiins","rated_power_w":2600,"minimum_power_w":300,"maximum_power_w":2500,"priority":1,"enabled":True,"automatic":False,"equipment_id":miner_equipment_id,"device_key":"mac:AA:BB:CC:DD:EE:71"}
+        miner_saved=client.put("/api/v1/energy/engine/config",headers=headers,json={"loads":[miner_load]})
+        assert miner_saved.status_code==200, miner_saved.text
+        assert miner_saved.json()["loads"][0]["equipment_id"]==miner_equipment_id
+        with gateway.db() as conn:
+            assert conn.execute("SELECT name FROM energy_equipment WHERE id=?",(miner_equipment_id,)).fetchone()[0]=="Mineradora Oficina"
+            identity=conn.execute("SELECT name,name_source FROM gateway_device_inventory WHERE device_key=?",("mac:AA:BB:CC:DD:EE:71",)).fetchone()
+            assert (identity["name"],identity["name_source"])==("Mineradora Oficina","owner")
+            settings=json.loads(conn.execute("SELECT config_json FROM energy_equipment WHERE id=?",(miner_equipment_id,)).fetchone()[0])
+            assert settings["load_characteristics"]=={"rated_power_w":2600,"minimum_power_w":300,"maximum_power_w":2500,"priority":1,"automatic":False}
+            gateway._persist_antminer_telemetry(conn,{"host":miner_host,"port":4028,"connection_state":"api_responded","data":{}})
+            telemetered=conn.execute("SELECT name,config_json FROM energy_equipment WHERE id=?",(miner_equipment_id,)).fetchone()
+            assert telemetered["name"]=="Mineradora Oficina"
+            assert json.loads(telemetered["config_json"])["load_characteristics"]==settings["load_characteristics"]
         viewer_id="00000000-0000-4000-8000-000000000071"; viewer_token="energy-viewer-session-token"
         with gateway.db() as conn:
             conn.execute("INSERT INTO users(id,account_id,username,password_hash,role,status,created_at) VALUES(?,?,?,?,?,?,?)",

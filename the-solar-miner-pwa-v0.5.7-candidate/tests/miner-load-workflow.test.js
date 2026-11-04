@@ -21,3 +21,22 @@ test("Home labels measured miner power as coming from the associated breaker", (
   assert.match(app, /Disjuntor · potência medida/);
   assert.match(app, /Disjuntor · sem leitura recente/);
 });
+
+test("miner name and characteristics are saved as one canonical inventory identity", () => {
+  assert.match(app, /data-miner-load-save=/);
+  assert.match(app, /O Gateway não confirmou todas as alterações/);
+  assert.match(app, /state\.equipment\|\|\[\]\)if\(item\.category==="mineradoras"/);
+  assert.match(app, /linked\?\.device_key/);
+  assert.match(app, /state\.energyConfigStatus=`\$\{name\}: nome e características guardados no dispositivo e no inventário\.`/);
+});
+
+test("periodic energy refresh does not redraw miner and load configuration pages", () => {
+  assert.match(app, /!\["mineradoras","gestao-excedentes"\]\.includes\(state\.page\)/);
+  assert.match(app, /antminerActiveSubmenu!=="config"\?"hidden":""/);
+});
+
+test("registered miners have individual named tabs and unsupported machines stay read-only", () => {
+  assert.match(app, /data-miner-equipment-select=/);
+  assert.match(app, /não são apresentados comandos que poderiam atingir outra máquina/);
+  assert.match(app, /activeMiner\?\.name/);
+});
