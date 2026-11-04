@@ -902,6 +902,72 @@ def test_network_device_detail_save_updates_matching_tuya_name_and_unique_local_
     assert saved["local_ip"] == "192.168.10.21"
 
 
+def test_network_device_save_syncs_and_auto_links_tuya_local_key_by_read_only_dps(client, monkeypatch, tmp_path):
+    headers = {"Authorization": f"Bearer {owner_session(client)}"}
+    monkeypatch.setattr(gateway.hardware_integrations, "_data_dir", lambda: tmp_path / "gateway-data")
+    monkeypatch.setattr(gateway.network_scanner, "scan_attached_networks", lambda: {
+        "hosts": [{"ip": "192.168.10.61", "mac": "AA:BB:CC:DD:EE:61", "manufacturer": "Tuya"}]})
+    secret_key = "test-local-key-never-return-this"
+    monkeypatch.setattr(gateway.hardware_integrations, "synchronize_tuya_devices", lambda config, **kwargs: {
+        "devices": [{"device_id": "cloud-dimmer-61", "product_id": "two-gang-dimmer",
+                     "product_name": "Two Gang Dimmer", "local_key": secret_key,
+                     "functions": [{"code": "switch_1", "type": "Boolean"}]}],
+        "product_schemas": {}, "category_schemas": {}})
+    monkeypatch.setattr(gateway.hardware_integrations, "_tuya_local_status", lambda candidate: {
+        "connection_state": "local_responded", "local_protocol": "3.3",
+        "status": [{"code": "switch_1", "dps_id": 1, "value": False}], "latency_ms": 4.0})
+    monkeypatch.setattr(gateway.hardware_integrations, "probe_tuya_lan_reachability", lambda ip: {
+        "state": "lan_reachable", "host": ip, "port": 6668, "latency_ms": 2.0})
+    configured = client.put("/api/v1/integrations/hardware", headers=headers, json={"tuya": {
+        "region": "eu_central", "client_id": "client-id", "client_secret": "client-secret",
+        "uid": "account-id", "devices": []}})
+    assert configured.status_code == 200, configured.text
+
+    response = client.post("/api/v1/network/devices/save", headers=headers, json={
+        "mac": "AA:BB:CC:DD:EE:61", "ip": "192.168.10.61", "name": "Cozinha Dimmer",
+        "device_type": "dimmer", "manufacturer": "Tuya", "model": "Two Gang Dimmer",
+        "product_id": "two-gang-dimmer"})
+
+    assert response.status_code == 200, response.text
+    saved = response.json()
+    assert saved["tuya_association"] == {"state": "verified", "device_id": "cloud-dimmer-61"}
+    assert saved["tuya_reading"]["status"][0]["value"] is False
+    assert secret_key not in response.text
+    persisted = gateway.hardware_integrations.load_config()["tuya"]["devices"][0]
+    assert persisted["local_mac"] == "AA:BB:CC:DD:EE:61"
+    assert persisted["local_ip"] == "192.168.10.61"
+    assert persisted["local_control_state"] == "ready"
+    assert persisted["local_verified"] is True
+    assert persisted["name"] == "Cozinha Dimmer"
+
+
+def test_network_device_save_refuses_ambiguous_tuya_key_match(client, monkeypatch, tmp_path):
+    headers = {"Authorization": f"Bearer {owner_session(client)}"}
+    monkeypatch.setattr(gateway.hardware_integrations, "_data_dir", lambda: tmp_path / "gateway-data")
+    monkeypatch.setattr(gateway.network_scanner, "scan_attached_networks", lambda: {
+        "hosts": [{"ip": "192.168.10.62", "mac": "AA:BB:CC:DD:EE:62", "manufacturer": "Tuya"}]})
+    monkeypatch.setattr(gateway.hardware_integrations, "synchronize_tuya_devices", lambda config, **kwargs: {
+        "devices": [{"device_id": f"cloud-dimmer-{index}", "product_id": "two-gang-dimmer",
+                     "local_key": f"test-key-{index}-long"} for index in (1, 2)],
+        "product_schemas": {}, "category_schemas": {}})
+    monkeypatch.setattr(gateway.hardware_integrations, "_tuya_local_status", lambda candidate: {
+        "connection_state": "local_responded", "status": [{"code": "switch_1", "value": False}]})
+    monkeypatch.setattr(gateway.hardware_integrations, "probe_tuya_lan_reachability", lambda ip: {
+        "state": "lan_reachable", "host": ip, "port": 6668})
+    client.put("/api/v1/integrations/hardware", headers=headers, json={"tuya": {
+        "region": "eu_central", "client_id": "client-id", "client_secret": "client-secret",
+        "uid": "account-id", "devices": []}})
+
+    response = client.post("/api/v1/network/devices/save", headers=headers, json={
+        "mac": "AA:BB:CC:DD:EE:62", "name": "Dimmer", "device_type": "dimmer",
+        "manufacturer": "Tuya", "model": "Two Gang Dimmer", "product_id": "two-gang-dimmer"})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["tuya_association"]["state"] == "ambiguous_key_match"
+    assert response.json()["device"]["confirmation_status"] == "confirmed"
+    assert len(gateway.hardware_integrations.load_config()["tuya"]["devices"]) == 2
+
+
 def test_local_network_apply_skips_mac_seen_at_multiple_ips(client, monkeypatch, tmp_path):
     headers = {"Authorization": f"Bearer {owner_session(client)}"}
     monkeypatch.setattr(gateway.hardware_integrations, "_data_dir", lambda: tmp_path)

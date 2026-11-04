@@ -88,10 +88,10 @@ test("Owner recovery file parser accepts a generated key and rejects malformed/o
 });
 
 test("new PWA static cache version is changed and USB limitations are documented", () => {
-  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.130-shelly-product-profiles/);
+  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.131-tuya-auto-link/);
   assert.match(serviceWorker, /\.\/favorite-list\.js/);
-  assert.match(manifest, /v0\.5\.130/);
-  assert.equal(packageJson.version, "0.5.130");
+  assert.match(manifest, /v0\.5\.131/);
+  assert.equal(packageJson.version, "0.5.131");
   assert.doesNotMatch(html, /gateway-update-refresh|Atualizar estado/);
   assert.doesNotMatch(app, /gateway-update-refresh/);
   const docs = read("OWNER_USB_AND_ACCESS.md");
@@ -100,5 +100,3 @@ test("new PWA static cache version is changed and USB limitations are documented
   assert.match(docs, /chave privada de assinatura nunca deve ser incluída/);
   assert.match(docs, /edição manual do SQLite.*não é suportada/s);
 });
-
-

@@ -63,6 +63,17 @@ test("Shelly Vintage card opens details and local light control is exposed", () 
   assert.doesNotMatch(cardRenderer, /range|data-shelly-apply-brightness|Procurar sensores BLU/);
 });
 
+test("Shelly detail uses the shared device dialog layout used by Tuya", () => {
+  const detail = app.match(/function openShellyDeviceDetails\(deviceId\)\{[\s\S]*?\n\}/)?.[0] || "";
+  assert.match(detail, /class="dialog-body"/);
+  assert.match(detail, /class="dialog-header"/);
+  assert.match(detail, /class="device-detail-grid"/);
+  assert.match(detail, /class="dialog-actions"/);
+  assert.match(detail, /data-shelly-light-on/);
+  assert.match(detail, /data-shelly-brightness/);
+  assert.doesNotMatch(detail, /device\.protocol|device\.model\}\s*·/);
+});
+
 test("Shelly inventory cards use the same compact layout and live only model-confirmed toggles", () => {
   assert.match(app, /data-shelly-card-state/);
   assert.match(app, /favorite-expand.*data-shelly-expand/);

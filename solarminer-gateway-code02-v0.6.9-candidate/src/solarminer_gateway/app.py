@@ -64,7 +64,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.182"
+PACKAGE_VERSION = "0.6.183"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -3882,6 +3882,66 @@ def scan_local_network(session: dict[str, Any] = Depends(require_permission("man
         return report
 
 
+def _tuya_auto_link_by_local_key(tuya: dict[str, Any], *, ip: str, mac: str, name: str,
+                                product_id: str, model: str = "") -> tuple[str, dict[str, Any] | None, dict[str, Any] | None]:
+    """Associate a discovered LAN endpoint to one synced Tuya identity by read-only DPS authentication.
+
+    Tuya local keys never leave Gateway config. A candidate is accepted only when
+    its device ID/key pair returns a non-empty DPS status from this exact IP.
+    """
+    devices = [item for item in tuya.get("devices", []) if isinstance(item, dict)
+               and isinstance(item.get("device_id"), str) and item.get("local_key")]
+    if not devices:
+        return "no_local_key", None, None
+    norm = lambda value: "".join(ch.casefold() for ch in str(value or "") if ch.isalnum())
+    ip_matches = [item for item in devices if str(item.get("local_ip") or item.get("ip") or "") == ip]
+    pid_matches = [item for item in devices if product_id and str(item.get("product_id") or "") == product_id]
+    model_key = norm(model)
+    model_matches = [item for item in devices if model_key and model_key in norm(item.get("product_name") or item.get("name"))]
+    # Never test a random home's other local keys against this endpoint. Use
+    # only inventory rows with an exact product ID, IP, or model association.
+    strong_matches = pid_matches or ip_matches or model_matches
+    if not strong_matches:
+        return "no_matching_cloud_device", None, None
+    ordered = list(dict.fromkeys(item["device_id"] for item in strong_matches))
+    if len(ordered) > 12:
+        return "too_many_cloud_candidates", None, None
+    by_id = {item["device_id"]: item for item in devices}
+    candidates = [by_id[device_id] for device_id in ordered]
+    matched: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+    saw_protocol_response = False
+    for original in candidates:
+        candidate = {**original, "local_ip": ip, "local_mac": mac}
+        try:
+            reading = hardware_integrations._tuya_local_status(candidate)
+        except (RuntimeError, ValueError, OSError, TypeError):
+            continue
+        if reading.get("connection_state") == "local_responded" and reading.get("status"):
+            saw_protocol_response = True
+            matched.append((original, candidate, reading))
+            if len(matched) > 1:
+                return "ambiguous_key_match", None, None
+    if len(matched) != 1:
+        return ("ambiguous_key_match" if saw_protocol_response else "no_matching_cloud_device",
+                None, None)
+    original, candidate, reading = matched[0]
+    original.update({
+        "local_ip": ip,
+        "local_mac": mac,
+        "local_protocol": candidate.get("local_protocol") or reading.get("local_protocol"),
+        "local_control_state": "ready",
+        "local_verified": True,
+        "name": name,
+        "name_source": "local",
+        "local_name": name,
+        "current_status": reading["status"],
+        "last_status_at": int(time.time()),
+    })
+    if product_id and not original.get("product_id"):
+        original["product_id"] = product_id
+    return "verified", original, reading
+
+
 @app.post("/api/v1/network/devices/save")
 def save_local_network_device(payload: dict[str, Any],
                               session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
@@ -3948,6 +4008,77 @@ def save_local_network_device(payload: dict[str, Any],
             raise HTTPException(409, "tuya_product_id_conflicts_with_mac_inventory")
         if not product_id and len(known_product_ids) == 1:
             product_id = next(iter(known_product_ids))
+        tuya_association = None
+        tuya_device_id = ""
+        if manufacturer.casefold() in {"tuya", "moes"} and current_ip:
+            if not any(isinstance(item.get("local_key"), str) and len(item.get("local_key", "")) >= 8
+                       for item in matching_tuya):
+                # Refresh the configured Tuya cloud inventory on save so a
+                # synced local key can be tested automatically. Failure leaves
+                # the network identity saved with a clear connection status.
+                if tuya.get("client_id") and tuya.get("client_secret") and tuya.get("uid"):
+                    try:
+                        synced = hardware_integrations.synchronize_tuya_devices(tuya)
+                        old_by_id = {item.get("device_id"): item for item in tuya.get("devices", [])
+                                     if isinstance(item, dict) and item.get("device_id")}
+                        imported = {item["device_id"]: {**old_by_id.get(item["device_id"], {}), **item}
+                                    for item in synced.get("devices", [])
+                                    if isinstance(item, dict) and item.get("device_id")}
+                        # Cloud sync is an enrichment step, never a destructive
+                        # replacement of local keys or local DPS overrides.
+                        for device_id, old in old_by_id.items():
+                            if device_id not in imported:
+                                imported[device_id] = old
+                            else:
+                                for field in ("local_key", "local_mac", "local_ip", "local_protocol",
+                                              "local_dps_map", "handler_value_mappings",
+                                              "handler_initial_status_mappings", "handler_type_overrides"):
+                                    if old.get(field) and not imported[device_id].get(field):
+                                        imported[device_id][field] = old[field]
+                        tuya["devices"] = list(imported.values())
+                        tuya["product_schemas"] = synced.get("product_schemas", tuya.get("product_schemas", {}))
+                        tuya["category_schemas"] = synced.get("category_schemas", tuya.get("category_schemas", {}))
+                        config["tuya"] = tuya
+                        hardware_integrations.save_config(config)
+                        matching_tuya = [item for item in tuya.get("devices", []) if isinstance(item, dict)
+                                         and str(item.get("local_mac") or "").strip().upper() == mac]
+                    except (ValueError, RuntimeError, OSError) as exc:
+                        tuya_association = {"state": "cloud_sync_unavailable", "reason": str(exc)[:80]}
+            if not any(isinstance(item.get("local_key"), str) and len(item.get("local_key", "")) >= 8
+                       for item in matching_tuya):
+                if tuya_association is None:
+                    association_state, matched_tuya, matched_reading = _tuya_auto_link_by_local_key(
+                        tuya, ip=current_ip, mac=mac, name=name, product_id=product_id, model=model)
+                    if association_state == "verified" and matched_tuya:
+                        matching_tuya = [matched_tuya]
+                        tuya_device_id = str(matched_tuya.get("device_id") or "")
+                        if matched_tuya.get("product_id"):
+                            product_id = str(matched_tuya["product_id"])
+                        tuya_association = {"state": "verified", "device_id": tuya_device_id,
+                                            "reading": matched_reading}
+                    else:
+                        tuya_association = {"state": association_state}
+            elif len(matching_tuya) == 1:
+                # A direct MAC match still needs a real DPS read before control
+                # readiness is reported; this never sends a command.
+                matched_tuya = matching_tuya[0]
+                probe_device = {**matched_tuya, "local_ip": current_ip, "local_mac": mac}
+                try:
+                    matched_reading = hardware_integrations._tuya_local_status(probe_device)
+                except (RuntimeError, ValueError, OSError, TypeError):
+                    matched_reading = None
+                if matched_reading and matched_reading.get("status"):
+                    matched_tuya.update({"local_ip": current_ip, "local_mac": mac,
+                                         "local_protocol": probe_device.get("local_protocol"),
+                                         "local_control_state": "ready", "local_verified": True,
+                                         "name": name, "name_source": "local", "local_name": name,
+                                         "current_status": matched_reading["status"],
+                                         "last_status_at": int(time.time())})
+                    tuya_device_id = str(matched_tuya.get("device_id") or "")
+                    tuya_association = {"state": "verified", "device_id": tuya_device_id,
+                                        "reading": matched_reading}
+                else:
+                    tuya_association = {"state": "dps_read_failed"}
         shelly_detected = str(host.get("manufacturer") or "").casefold() == "shelly" and host.get("protocol") in {"shelly_rpc", "shelly_http_gen1"}
         provider = "tuya" if len(matching_tuya) == 1 else "shelly" if shelly_detected else ""
         provider_device_id = str(matching_tuya[0].get("device_id") or "") if provider == "tuya" else f"shelly:{mac}" if provider == "shelly" else ""
@@ -4022,7 +4153,10 @@ def save_local_network_device(payload: dict[str, Any],
             "device_type": device_type, "has_current_ip": bool(current_ip), "ambiguous_ip": ambiguous_ip})
         conn.commit()
         return {"device": central_saved, "ambiguous_ip": ambiguous_ip,
-                "tuya_lan_probe": tuya_probe}
+                "tuya_lan_probe": tuya_probe,
+                "tuya_association": {key: value for key, value in (tuya_association or {}).items()
+                                     if key != "reading"},
+                "tuya_reading": tuya_association.get("reading") if tuya_association else None}
 
 
 @app.post("/api/v1/network/scan/apply")
@@ -5497,7 +5631,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.182"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.183"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(
