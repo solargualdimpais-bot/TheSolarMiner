@@ -3,7 +3,77 @@ import hashlib
 
 import pytest
 
-from solarminer_gateway import integrations, tuya_dps_registry
+from solarminer_gateway import integrations, tuya_dps_registry, tuya_local_catalog
+from solarminer_gateway import tuya_device_handler_catalog
+
+
+def test_exact_product_handlers_are_bundled_offline_and_preserve_owner_dps_edits():
+    handlers = tuya_device_handler_catalog.profiles_by_product_id()
+    assert len(handlers) >= 50
+    product_id, handler = next((product_id, item) for product_id, item in handlers.items()
+                               if item.get("dps"))
+    dps_id = handler["dps"][0]["id"]
+    owner_row = {"dps_id": dps_id, "display_name": "Potência instantânea",
+                 "semantic_code": "power", "unit": "W", "scale": 10,
+                 "confidence": "OWNER_CUSTOM", "source": "Gateway Product ID mapping"}
+    schema = {"product_name": "Owner model", "dps_profile": {"product_id": product_id,
+              "dps": [owner_row]}, "custom_dps_overrides": {str(dps_id): {
+                  "label": "Potência instantânea", "semantic_code": "power",
+                  "unit": "W", "scale": 10}}, "functions": [], "status_spec": []}
+    _, enriched = tuya_device_handler_catalog.apply_profile(
+        {"product_id": product_id, "manufacturer": "Tuya"}, schema)
+    mapped = next(row for row in enriched["dps_profile"]["dps"] if row["dps_id"] == dps_id)
+    assert mapped["display_name"] == "Potência instantânea"
+    assert mapped["semantic_code"] == "power"
+    assert mapped["scale"] == 10
+    assert enriched["custom_dps_overrides"][str(dps_id)]["semantic_code"] == "power"
+
+
+def test_exact_product_handler_schema_uses_divisor_scale_and_does_not_cross_match():
+    handlers = tuya_device_handler_catalog.profiles_by_product_id()
+    product_id, handler = next((product_id, item) for product_id, item in handlers.items()
+                               if any(isinstance(dp.get("range"), dict)
+                                      and dp["range"].get("scale") == 1 for dp in item.get("dps", [])))
+    row = next(dp for dp in handler["dps"] if isinstance(dp.get("range"), dict)
+               and dp["range"].get("scale") == 1)
+    profile = tuya_device_handler_catalog.product_schema(handler)
+    reference = next(dp for dp in profile["dps_profile"]["dps"] if dp["dps_id"] == row["id"])
+    assert reference["scale"] == 10
+    assert reference["tuya_scale"] == 1
+    unrelated, _ = tuya_device_handler_catalog.apply_profile(
+        {"product_id": product_id + "-other", "manufacturer": "Tuya"}, {})
+    assert "community_handler" not in unrelated
+
+
+def test_owner_dps_meaning_survives_gateway_config_reload_for_handler_product(tmp_path, monkeypatch):
+    handlers = tuya_device_handler_catalog.profiles_by_product_id()
+    product_id, handler = next((product_id, item) for product_id, item in handlers.items()
+                               if item.get("dps"))
+    dps_id = handler["dps"][0]["id"]
+    profile = tuya_device_handler_catalog.product_schema(handler)
+    profile["custom_dps_overrides"] = {str(dps_id): {
+        "label": "Potência instantânea", "semantic_code": "power", "unit": "W",
+        "data_type": "number", "scale": 10, "write_enabled": False}}
+    profile["dps_profile"]["dps"][0].update({"display_name": "Potência instantânea",
+        "semantic_code": "power", "unit": "W", "scale": 10,
+        "confidence": "OWNER_CUSTOM", "source": "Gateway Product ID mapping"})
+    monkeypatch.setattr(integrations, "_data_dir", lambda: tmp_path)
+    config_path = tmp_path / "hardware-integrations.json"
+    config_path.write_text(json.dumps({"tuya": {"devices": [{"device_id": "breaker",
+        "name": "Disjuntor", "product_id": product_id, "manufacturer": "Tuya",
+        "functions": [], "status_spec": []}], "product_schemas": {product_id: profile}}}),
+        encoding="utf-8")
+    loaded = integrations.load_config()
+    public = integrations.public_config(loaded)["tuya"]
+    saved_profile = public["product_catalog"][product_id]["dps_profile"]
+    row = next(item for item in saved_profile["dps"] if item["dps_id"] == dps_id)
+    assert row["display_name"] == "Potência instantânea"
+    assert row["semantic_code"] == "power"
+    assert row["scale"] == 10
+    mapped = next(item for item in public["devices"][0]["dps_knowledge"]["dps"]
+                  if item["dps_id"] == dps_id)
+    assert mapped["confidence"] == "OWNER_CUSTOM"
+    assert mapped["display_name"] == "Potência instantânea"
 
 
 def test_tuya_local_dps_prefers_tuya_dp_id_to_channel_suffix():
@@ -198,6 +268,69 @@ def test_bounded_product_catalog_preserves_owner_dps_overrides():
     assert bounded["pid"]["custom_dps_overrides"]["18"]["label"] == "Interruptor"
 
 
+def test_every_configured_product_id_exposes_complete_normalized_characteristics():
+    pid = "breaker-pid-1"
+    public = integrations.public_config({"tuya": {"devices": [{
+        "device_id": "breaker-1", "name": "Disjuntor", "product_id": pid,
+        "functions": [], "status_spec": [],
+    }]}})["tuya"]
+    profile = public["product_catalog"][pid]["dps_profile"]
+    choices = {item["code"]: item for item in profile["normalized_characteristics"]}
+    assert {"power", "active_power", "apparent_power", "reactive_power", "frequency",
+            "energy_import", "energy_export", "energy_daily", "energy_session",
+            "leakage_current", "over_voltage", "short_circuit", "auto_reclosing",
+            "trip_reason", "operating_mode"}.issubset(choices)
+    assert choices["power"]["data_type"] == "number"
+    assert choices["fault"]["data_type"] == "bitmap"
+
+
+def test_normalized_characteristics_registry_seeds_sqlite_without_deleting_extensions():
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    conn.execute("""CREATE TABLE tuya_canonical_features(
+        canonical_key TEXT PRIMARY KEY,display_name TEXT,category TEXT,canonical_unit TEXT,
+        canonical_type TEXT,units_json TEXT,description TEXT,source TEXT,registry_version INTEGER,updated_at TEXT)""")
+    conn.execute("INSERT INTO tuya_canonical_features(canonical_key,display_name,updated_at) VALUES('future_custom','future feature','2025')")
+    count = tuya_dps_registry.sync_canonical_features(conn, "2026-11-04T00:00:00Z")
+    assert count == len(tuya_dps_registry.NORMALIZED_CHARACTERISTICS)
+    assert conn.execute("SELECT canonical_type,canonical_unit FROM tuya_canonical_features WHERE canonical_key='power'").fetchone() == ("number", "W")
+    assert conn.execute("SELECT display_name FROM tuya_canonical_features WHERE canonical_key='future_custom'").fetchone() == ("future feature",)
+
+
+def test_pinned_tuya_local_breaker_references_are_visible_exact_pid_and_read_only():
+    pid = "ai1wxf8tow62uieb"
+    public = integrations.public_config({"tuya": {"devices": [{
+        "device_id": "brinna-1", "name": "Brinna", "product_id": pid,
+        "functions": [], "status_spec": [], "current_status": [],
+    }]}})["tuya"]
+    product = public["product_catalog"][pid]
+    assert product["schema_source"] == "TUYA_LOCAL_EXACT_PRODUCT_REFERENCE"
+    refs = product["dps_profile"]["reference_dps"]
+    dp6 = next(item for item in refs if item["id"] == 6)
+    assert dp6["type"] == "base64"
+    assert len(dp6["representations"]) >= 4
+    assert {item.get("unit") for item in dp6["representations"]} >= {"V", "A", "W"}
+    assert all(item["write_supported"] is False for item in refs)
+    assert product["reference_commit"] == "75019afbada5210f8752c6476b50c2c1a3fc74fe"
+
+    knowledge = tuya_dps_registry.analyze_device({
+        "product_id": pid, "current_status": [{"dps_id": 6, "code": "dps_6", "value": "AA=="}],
+        "functions": [], "status_spec": [],
+    })
+    row = next(item for item in knowledge["dps"] if item["dps_id"] == 6)
+    assert row["confidence"] == "COMMUNITY_REFERENCE"
+    assert row["write_supported"] is False
+    assert row["community_reference"]["representations"] == dp6["representations"]
+
+
+def test_pinned_tuya_local_catalog_covers_all_current_product_profiles_offline():
+    profiles = tuya_local_catalog.profiles_by_product_id()
+    assert len(profiles) >= 1800
+    assert "ai1wxf8tow62uieb" in profiles
+    assert "tj9l3ghsjnbdjom6" in profiles
+    assert profiles["tj9l3ghsjnbdjom6"]["dps"]
+
+
 def test_tuya_community_catalog_is_exact_product_scoped_and_never_authorizes_writes():
     ev_profile = tuya_dps_registry.analyze_device({
         "category": "qccdz", "product_id": "tj9l3ghsjnbdjom6",
@@ -210,7 +343,7 @@ def test_tuya_community_catalog_is_exact_product_scoped_and_never_authorizes_wri
     assert dp18["write_supported"] is False
     assert ev_profile["write_authorized"] is False
     by_id = {row["dps_id"]: row for row in ev_profile["dps"]}
-    assert by_id[3]["display_name"] == "charger state"
+    assert by_id[3]["display_name"] == "status"
     assert by_id[14]["display_name"] == "charging_mode"
     assert by_id[106]["semantic_code"] == "current_x"
     assert all(row["write_supported"] is False for row in by_id.values())

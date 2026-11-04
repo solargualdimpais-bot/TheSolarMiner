@@ -22,6 +22,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 import sqlite3
 import threading
 import time
+import unicodedata
 import uuid
 import zipfile
 import xml.etree.ElementTree as ET
@@ -62,7 +63,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.171"
+PACKAGE_VERSION = "0.6.172"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -182,6 +183,13 @@ CREATE TABLE IF NOT EXISTS tuya_product_dps_map(
  source TEXT NOT NULL DEFAULT '', validation_status TEXT NOT NULL DEFAULT 'reference_only',
  read_supported INTEGER NOT NULL DEFAULT 1, write_supported INTEGER NOT NULL DEFAULT 0,
  updated_at TEXT NOT NULL, PRIMARY KEY(protocol, product_id, dps_id)
+);
+CREATE TABLE IF NOT EXISTS tuya_canonical_features(
+ canonical_key TEXT PRIMARY KEY, display_name TEXT NOT NULL, category TEXT NOT NULL DEFAULT '',
+ canonical_unit TEXT NOT NULL DEFAULT '', canonical_type TEXT NOT NULL DEFAULT 'unknown',
+ units_json TEXT NOT NULL DEFAULT '[]', description TEXT NOT NULL DEFAULT '',
+ source TEXT NOT NULL DEFAULT 'solarminer_registry', registry_version INTEGER NOT NULL DEFAULT 1,
+ updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS smart_product_catalog(
  manufacturer TEXT NOT NULL, protocol TEXT NOT NULL, product_code TEXT NOT NULL,
@@ -706,6 +714,11 @@ def _persist_tuya_product_dps_map(conn: sqlite3.Connection, product_schemas: Any
     return saved
 
 
+def _sync_tuya_canonical_features(conn: sqlite3.Connection) -> int:
+    """Idempotently seed/update canonical meanings without deleting old rows."""
+    return tuya_dps_registry.sync_canonical_features(conn, utcnow())
+
+
 def initialize() -> None:
     ensure_private_dir(DB_PATH.parent)
     if INSTANCE_MARKER.exists():
@@ -729,6 +742,7 @@ def initialize() -> None:
             return
     with db() as conn:
         conn.executescript(SCHEMA)
+        _sync_tuya_canonical_features(conn)
         bootstrap_columns = {row[1] for row in conn.execute("PRAGMA table_info(bootstrap)")}
         if "setup_password_hash" not in bootstrap_columns:
             conn.execute("ALTER TABLE bootstrap ADD COLUMN setup_password_hash TEXT")
@@ -761,6 +775,7 @@ def initialize() -> None:
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(9,?)", (utcnow(),))
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(10,?)", (utcnow(),))
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(11,?)", (utcnow(),))
+        conn.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(12,?)", (utcnow(),))
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(12,?)", (utcnow(),))
         _upsert_smart_product_catalog(conn, manufacturer="Shelly", protocol="shelly_bluetooth_gateway",
             product_code="family:blu-gateway", product_name="Shelly BLU Gateway (modelo por confirmar)",
@@ -1698,6 +1713,23 @@ def hardware_integrations_status(session: dict[str, Any] = Depends(require_permi
         result = hardware_integrations.public_config()
         with db() as conn:
             telemetry = energy_engine.read_tuya_telemetry(conn, max_age_seconds=3)
+            feature_rows = conn.execute("SELECT canonical_key,display_name,canonical_type,units_json FROM tuya_canonical_features ORDER BY category,display_name COLLATE NOCASE").fetchall()
+        normalized = []
+        for feature in feature_rows:
+            try:
+                units = json.loads(feature["units_json"] or "[]")
+            except (TypeError, json.JSONDecodeError):
+                units = []
+            normalized.append({"code": feature["canonical_key"], "label": feature["display_name"],
+                               "data_type": feature["canonical_type"], "units": units if isinstance(units, list) else []})
+        result.setdefault("tuya", {})["normalized_characteristics"] = normalized
+        for product in result.get("tuya", {}).get("product_catalog", {}).values():
+            if isinstance(product, dict):
+                profile = product.get("dps_profile")
+                if not isinstance(profile, dict):
+                    profile = {}
+                    product["dps_profile"] = profile
+                profile["normalized_characteristics"] = normalized
         for device in result.get("tuya", {}).get("devices", []):
             if not isinstance(device, dict):
                 continue
@@ -3865,17 +3897,12 @@ def tuya_product_dps_description(payload: dict[str, Any], session: dict[str, Any
         if (not isinstance(device_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", device_id)
                 or isinstance(dps_id, bool) or not isinstance(dps_id, int) or not 1 <= dps_id <= 65535
                 or not isinstance(description, str) or not 1 <= len(description.strip()) <= 80
-                or requested_semantic is not None and requested_semantic not in {"voltage", "current", "power", "daily_accumulated_energy", "total_energy", "switch", "countdown", "child_lock", "custom_label"}
+                or requested_semantic is not None and requested_semantic not in {item["code"] for item in tuya_dps_registry.NORMALIZED_CHARACTERISTICS}
                 or requested_unit is not None and (not isinstance(requested_unit, str) or len(requested_unit) > 16)
                 or requested_scale is not None and (isinstance(requested_scale, bool) or not isinstance(requested_scale, (int, float)) or not 1 <= requested_scale <= 1_000_000_000)):
             raise HTTPException(422, "tuya_dps_description_payload_invalid")
-        accepted_units = {"voltage": {"V", "mV"}, "current": {"A", "mA"}, "power": {"W", "kW"},
-                          "daily_accumulated_energy": {"Wh", "kWh"}, "total_energy": {"Wh", "kWh"},
-                          "countdown": {"s"}, "switch": {""}, "child_lock": {""}, "custom_label": {"", "V", "mV", "A", "mA", "W", "kW", "Wh", "kWh", "s"}}
-        if requested_semantic is not None and requested_unit is not None and requested_unit not in accepted_units.get(requested_semantic, set()):
-            raise HTTPException(422, "tuya_dps_unit_not_valid_for_characteristic")
-        if requested_semantic in {"voltage", "current", "power", "daily_accumulated_energy", "total_energy"} and (requested_unit not in accepted_units[requested_semantic] or requested_scale is None):
-            raise HTTPException(422, "tuya_dps_measurement_requires_unit_and_scale")
+        characteristics = {item["code"]: item for item in tuya_dps_registry.NORMALIZED_CHARACTERISTICS}
+        accepted_units = {key: set(item.get("units", [])) for key, item in characteristics.items()}
         config = hardware_integrations.load_config()
         tuya = config.get("tuya") if isinstance(config.get("tuya"), dict) else {}
         device = next((item for item in tuya.get("devices", []) if isinstance(item, dict) and item.get("device_id") == device_id), None)
@@ -3932,12 +3959,13 @@ def tuya_product_dps_description(payload: dict[str, Any], session: dict[str, Any
             raise HTTPException(422, "tuya_dps_not_in_product_schema")
 
         label = description.strip()
-        folded = re.sub(r"[^a-z0-9]+", " ", label.casefold().replace("ç", "c").replace("ã", "a").replace("õ", "o").replace("á", "a").replace("é", "e").replace("ê", "e").replace("í", "i").replace("ó", "o").replace("ú", "u" )).strip()
+        decomposed = unicodedata.normalize("NFKD", label.casefold())
+        folded = re.sub(r"[^a-z0-9]+", " ", "".join(char for char in decomposed if not unicodedata.combining(char))).strip()
         aliases = {
-            "switch": ({"switch", "interruptor", "relay", "rele", "on off", "on off switch"}, ""),
+            "switch": ({"switch", "interruptor", "relay", "rele", "on off", "on off switch", "estado do disjuntor", "estado do interruptor", "estado ligado desligado"}, ""),
             "voltage": ({"voltage", "volt", "volts", "tensao", "tensao eletrica", "voltagem"}, "V"),
             "current": ({"current", "corrente", "corrente eletrica", "amperagem", "ampere", "amperes"}, "A"),
-            "power": ({"power", "potencia", "potencia atual", "potencia ativa", "watt", "watts"}, "W"),
+            "power": ({"power", "potencia", "potencia atual", "potencia ativa", "potencia instantanea", "potencia instantanea atual", "watt", "watts"}, "W"),
             "total_energy": ({"energia total", "energia acumulada", "total energy", "accumulated energy", "energy total"}, "kWh"),
             "daily_accumulated_energy": ({"energia diaria", "consumo diario", "daily energy", "today energy"}, "kWh"),
             "countdown": ({"countdown", "temporizador", "contagem decrescente"}, "s"),
@@ -3947,9 +3975,15 @@ def tuya_product_dps_description(payload: dict[str, Any], session: dict[str, Any
             "power_on_state": ({"power on state", "comportamento apos falha de energia"}, ""),
         }
         inferred_semantic, inferred_unit = next(((key, value[1]) for key, value in aliases.items() if folded in value[0]), ("custom_label", ""))
-        semantic = requested_semantic or inferred_semantic
+        # An explicit standard characteristic wins. If the editor is left on
+        # its descriptive default, recognized labels still become usable
+        # metrics (for example, “Potência instantânea” -> power).
+        semantic = (inferred_semantic if requested_semantic in {None, "custom_label"}
+                    else requested_semantic)
         unit = requested_unit if requested_unit is not None else inferred_unit
-        data_type = "boolean" if semantic in {"switch", "child_lock"} else "integer" if semantic == "countdown" else "enum" if semantic in {"light_mode", "relay_status", "power_on_state"} else "number" if semantic != "custom_label" else "unknown"
+        data_type = str(characteristics.get(semantic, {}).get("data_type") or "unknown")
+        if unit is not None and unit not in accepted_units.get(semantic, set()):
+            raise HTTPException(422, "tuya_dps_unit_not_valid_for_characteristic")
         scale = requested_scale if requested_scale is not None else (reference.get("scale") if isinstance(reference, dict) and isinstance(reference.get("scale"), (int, float)) and not isinstance(reference.get("scale"), bool) else None)
         if scale is None:
             schema_rows = [*(device.get("functions", []) if isinstance(device.get("functions"), list) else []),
@@ -3961,6 +3995,8 @@ def tuya_product_dps_description(payload: dict[str, Any], session: dict[str, Any
                 except json.JSONDecodeError: values = {}
             if isinstance(values, dict) and isinstance(values.get("scale"), int) and not isinstance(values.get("scale"), bool) and 0 <= values["scale"] <= 9:
                 scale = 10 ** values["scale"]
+        if characteristics.get(semantic, {}).get("data_type") == "number" and (unit not in accepted_units.get(semantic, set()) or scale is None):
+            raise HTTPException(422, "tuya_dps_measurement_requires_unit_and_scale")
         product.setdefault("custom_dps_overrides", {})[str(dps_id)] = {
             "label": label, "semantic_code": semantic, "unit": unit or None,
             "data_type": data_type, "scale": scale,
@@ -3990,7 +4026,7 @@ def tuya_product_dps_description(payload: dict[str, Any], session: dict[str, Any
               {"device_id": device_id, "product_id": product_id, "dps_id": dps_id, "semantic_code": semantic})
         return {"saved": True, "product_id": product_id, "dps_id": dps_id,
                 "description": label, "semantic_code": semantic,
-                "unit": unit or None, "scale": scale,
+                "unit": unit or None, "scale": scale, "data_type": data_type,
                 "affected_device_count": sum(1 for item in tuya.get("devices", []) if isinstance(item, dict) and str(item.get("product_id") or "") == product_id),
                 "product_profile": saved.get("tuya", {}).get("product_catalog", {}).get(product_id, {}).get("dps_profile", {})}
 
@@ -4980,7 +5016,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.171"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.172"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

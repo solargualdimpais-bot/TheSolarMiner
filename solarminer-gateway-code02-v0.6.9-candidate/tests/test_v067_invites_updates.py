@@ -488,7 +488,8 @@ def test_owner_can_map_a_dps_from_a_fresh_lan_read_even_when_product_schema_omit
     monkeypatch.setattr(gateway.hardware_integrations, "save_config", lambda value: value)
     monkeypatch.setattr(gateway.energy_engine, "read_tuya_telemetry", lambda conn, *, max_age_seconds: {
         "breaker-1": {"fresh": True, "connection_state": "local_responded",
-                      "status": [{"code": "dps_17", "dps_id": 17, "value": 2301}]}
+                      "status": [{"code": "dps_17", "dps_id": 17, "value": 2301},
+                                 {"code": "dps_19", "dps_id": 19, "value": 1465}]}
     })
 
     mapped = client.post("/api/v1/integrations/tuya/product-dps-description", headers=headers, json={
@@ -500,12 +501,66 @@ def test_owner_can_map_a_dps_from_a_fresh_lan_read_even_when_product_schema_omit
     assert mapped.json()["dps_id"] == 17
     assert config["tuya"]["product_schemas"]["breaker-product"]["custom_dps_overrides"]["17"]["semantic_code"] == "voltage"
 
+    power = client.post("/api/v1/integrations/tuya/product-dps-description", headers=headers, json={
+        "device_id": "breaker-1", "dps_id": 19, "description": "Potência instantânea",
+        "semantic_code": "custom_label", "unit": "W", "scale": 10,
+    })
+    assert power.status_code == 200, power.text
+    assert power.json()["semantic_code"] == "power"
+    assert config["tuya"]["product_schemas"]["breaker-product"]["custom_dps_overrides"]["19"]["semantic_code"] == "power"
+
     unknown = client.post("/api/v1/integrations/tuya/product-dps-description", headers=headers, json={
         "device_id": "breaker-1", "dps_id": 18, "description": "Corrente",
         "semantic_code": "current", "unit": "A", "scale": 1000,
     })
     assert unknown.status_code == 422
     assert unknown.json()["detail"] == "tuya_dps_not_in_product_schema"
+
+
+def test_owner_dps19_power_edit_survives_reload_and_exact_handler_enrichment(client, monkeypatch, tmp_path):
+    from solarminer_gateway import tuya_device_handler_catalog
+    headers = {"Authorization": f"Bearer {owner_session(client)}"}
+    product_id = "ma3oq4onxxwg91ky"
+    handler = tuya_device_handler_catalog.profiles_by_product_id()[product_id]
+    product = tuya_device_handler_catalog.product_schema(handler)
+    product["dps_profile"]["dps"] = [row for row in product["dps_profile"]["dps"]
+                                       if row["dps_id"] != 19]
+    product["dps_profile"]["dps"].append({"dps_id": 19, "semantic_code": "custom_label",
+        "display_name": "DPS 19", "data_type": "integer", "confidence": "EXACT_PRODUCT_HANDLER",
+        "source": handler["source_file"]})
+    monkeypatch.setattr(gateway.hardware_integrations, "_data_dir", lambda: tmp_path)
+    gateway.hardware_integrations.save_config({"tuya": {"devices": [{"device_id": "breaker-19",
+        "name": "Termoacumulador", "product_id": product_id, "category": "dlq",
+        "functions": [], "status_spec": [], "current_status": []}],
+        "product_schemas": {product_id: product}}})
+    monkeypatch.setattr(gateway.energy_engine, "read_tuya_telemetry", lambda conn, *, max_age_seconds: {
+        "breaker-19": {"fresh": True, "connection_state": "local_responded",
+                       "status": [{"code": "dps_19", "dps_id": 19, "value": 1465}]}
+    })
+    mapped = client.post("/api/v1/integrations/tuya/product-dps-description", headers=headers, json={
+        "device_id": "breaker-19", "dps_id": 19, "description": "Potência instantânea",
+        "semantic_code": "custom_label", "unit": "W", "scale": 10,
+    })
+    assert mapped.status_code == 200, mapped.text
+
+    loaded = gateway.hardware_integrations.load_config()
+    saved = loaded["tuya"]["product_schemas"][product_id]
+    assert saved["custom_dps_overrides"]["19"]["semantic_code"] == "power"
+    public = gateway.hardware_integrations.public_config(loaded)["tuya"]
+    row = next(item for item in public["product_catalog"][product_id]["dps_profile"]["dps"]
+               if item["dps_id"] == 19)
+    assert row["display_name"] == "Potência instantânea"
+    assert row["semantic_code"] == "power"
+    assert row["unit"] == "W" and row["scale"] == 10
+    knowledge = next(item for item in public["devices"][0]["dps_knowledge"]["dps"]
+                     if item["dps_id"] == 19)
+    assert knowledge["display_name"] == "Potência instantânea"
+    assert knowledge["semantic_code"] == "power"
+    assert knowledge["confidence"] == "OWNER_CUSTOM"
+    hardware = client.get("/api/v1/integrations/hardware", headers=headers)
+    assert hardware.status_code == 200
+    normalized = hardware.json()["tuya"]["product_catalog"][product_id]["dps_profile"]["normalized_characteristics"]
+    assert {item["code"] for item in normalized} >= {"power", "energy_import", "energy_export", "trip_reason"}
 
 
 def test_tuya_cloud_inventory_sync_stores_local_key_only_on_gateway(client, monkeypatch, tmp_path):

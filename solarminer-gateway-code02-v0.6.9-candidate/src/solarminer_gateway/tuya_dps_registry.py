@@ -13,7 +13,111 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-REGISTRY_VERSION = 5
+REGISTRY_VERSION = 6
+
+# Stable semantic vocabulary used by per-Product-ID DPS maps and the Owner
+# editor. These are labels/types, not claims that a given product implements
+# every feature or that it is safe to write to every datapoint.
+NORMALIZED_CHARACTERISTICS: tuple[dict[str, Any], ...] = (
+    {"code": "custom_label", "label": "Informação descritiva", "data_type": "unknown", "units": []},
+    {"code": "switch", "label": "Estado ON/OFF", "data_type": "boolean", "units": [""]},
+    {"code": "relay_status", "label": "Estado do relé", "data_type": "enum", "units": [""]},
+    {"code": "online_status", "label": "Estado de comunicação", "data_type": "enum", "units": [""]},
+    {"code": "protection_status", "label": "Estado de proteção / disparo", "data_type": "bitmap", "units": [""]},
+    {"code": "fault", "label": "Código de avaria", "data_type": "bitmap", "units": [""]},
+    {"code": "over_voltage", "label": "Proteção contra sobretensão", "data_type": "boolean", "units": [""]},
+    {"code": "under_voltage", "label": "Proteção contra subtensão", "data_type": "boolean", "units": [""]},
+    {"code": "over_current", "label": "Proteção contra sobrecorrente", "data_type": "boolean", "units": [""]},
+    {"code": "over_power", "label": "Proteção contra excesso de potência", "data_type": "boolean", "units": [""]},
+    {"code": "short_circuit", "label": "Proteção contra curto-circuito", "data_type": "boolean", "units": [""]},
+    {"code": "leakage_protection", "label": "Proteção diferencial", "data_type": "boolean", "units": [""]},
+    {"code": "temperature_protection", "label": "Proteção térmica", "data_type": "boolean", "units": [""]},
+    {"code": "phase_loss", "label": "Falta de fase", "data_type": "boolean", "units": [""]},
+    {"code": "phase_imbalance", "label": "Desequilíbrio entre fases", "data_type": "boolean", "units": [""]},
+    {"code": "surge_protection", "label": "Proteção contra sobretensões transitórias", "data_type": "boolean", "units": [""]},
+    {"code": "overload_protection", "label": "Proteção contra sobrecarga", "data_type": "boolean", "units": [""]},
+    {"code": "voltage", "label": "Tensão", "data_type": "number", "units": ["V", "mV"]},
+    {"code": "current", "label": "Corrente", "data_type": "number", "units": ["A", "mA"]},
+    {"code": "power", "label": "Potência instantânea", "data_type": "number", "units": ["W", "kW"]},
+    {"code": "daily_accumulated_energy", "label": "Consumo diário", "data_type": "number", "units": ["Wh", "kWh"]},
+    {"code": "total_energy", "label": "Energia acumulada", "data_type": "number", "units": ["Wh", "kWh"]},
+    {"code": "energy_incremental", "label": "Energia incremental", "data_type": "number", "units": ["Wh", "kWh"]},
+    {"code": "active_power", "label": "Potência ativa", "data_type": "number", "units": ["W", "kW"]},
+    {"code": "apparent_power", "label": "Potência aparente", "data_type": "number", "units": ["VA", "kVA"]},
+    {"code": "reactive_power", "label": "Potência reativa", "data_type": "number", "units": ["var", "kvar"]},
+    {"code": "power_factor", "label": "Fator de potência", "data_type": "number", "units": ["PF", "%"]},
+    {"code": "frequency", "label": "Frequência", "data_type": "number", "units": ["Hz"]},
+    {"code": "energy_import", "label": "Energia importada", "data_type": "number", "units": ["Wh", "kWh"]},
+    {"code": "energy_export", "label": "Energia exportada", "data_type": "number", "units": ["Wh", "kWh"]},
+    {"code": "energy_total", "label": "Energia total", "data_type": "number", "units": ["Wh", "kWh"]},
+    {"code": "energy_daily", "label": "Energia diária", "data_type": "number", "units": ["Wh", "kWh"]},
+    {"code": "energy_session", "label": "Energia da sessão", "data_type": "number", "units": ["Wh", "kWh"]},
+    {"code": "leakage_current", "label": "Corrente de fuga", "data_type": "number", "units": ["mA", "A"]},
+    {"code": "temperature", "label": "Temperatura", "data_type": "number", "units": ["°C", "°F"]},
+    {"code": "humidity", "label": "Humidade", "data_type": "number", "units": ["%"]},
+    {"code": "battery", "label": "Bateria", "data_type": "number", "units": ["%", "V", "mV"]},
+    {"code": "brightness", "label": "Brilho", "data_type": "number", "units": ["%", "lx"]},
+    {"code": "colour_temperature", "label": "Temperatura de cor", "data_type": "number", "units": ["K", "mired"]},
+    {"code": "colour_data", "label": "Cor / dados RGB-HSV", "data_type": "json", "units": [""]},
+    {"code": "light_mode", "label": "Modo de iluminação", "data_type": "enum", "units": [""]},
+    {"code": "light_scene", "label": "Cena de iluminação", "data_type": "enum", "units": [""]},
+    {"code": "countdown", "label": "Temporizador / countdown", "data_type": "integer", "units": ["s"]},
+    {"code": "power_on_state", "label": "Estado após falha elétrica", "data_type": "enum", "units": [""]},
+    {"code": "restart_mode", "label": "Comportamento após falha de alimentação", "data_type": "enum", "units": [""]},
+    {"code": "auto_recovery", "label": "Recuperação automática", "data_type": "boolean", "units": [""]},
+    {"code": "auto_reclosing", "label": "Rearme automático", "data_type": "boolean", "units": [""]},
+    {"code": "trip_reason", "label": "Motivo do disparo", "data_type": "enum", "units": [""]},
+    {"code": "operating_mode", "label": "Modo de funcionamento", "data_type": "enum", "units": [""]},
+    {"code": "indicator_status", "label": "Modo do indicador luminoso", "data_type": "enum", "units": [""]},
+    {"code": "child_lock", "label": "Bloqueio infantil", "data_type": "boolean", "units": [""]},
+    {"code": "test_bit", "label": "Bits de diagnóstico / teste", "data_type": "bitmap", "units": [""]},
+    {"code": "voltage_coefficient", "label": "Coeficiente de calibração da tensão", "data_type": "integer", "units": [""]},
+    {"code": "current_coefficient", "label": "Coeficiente de calibração da corrente", "data_type": "integer", "units": [""]},
+    {"code": "power_coefficient", "label": "Coeficiente de calibração da potência", "data_type": "integer", "units": [""]},
+    {"code": "energy_coefficient", "label": "Coeficiente de calibração da energia", "data_type": "integer", "units": [""]},
+    {"code": "contact", "label": "Contacto aberto/fechado", "data_type": "boolean", "units": [""]},
+    {"code": "motion", "label": "Movimento", "data_type": "boolean", "units": [""]},
+    {"code": "occupancy", "label": "Presença / ocupação", "data_type": "enum", "units": [""]},
+    {"code": "illuminance", "label": "Iluminância", "data_type": "number", "units": ["lx"]},
+    {"code": "pressure", "label": "Pressão", "data_type": "number", "units": ["Pa", "hPa", "kPa"]},
+    {"code": "air_quality", "label": "Qualidade do ar", "data_type": "number", "units": ["ppm", "µg/m³"]},
+    {"code": "smoke", "label": "Fumo", "data_type": "boolean", "units": [""]},
+    {"code": "water_leak", "label": "Fuga de água", "data_type": "boolean", "units": [""]},
+    {"code": "gas", "label": "Gás", "data_type": "number", "units": ["ppm", "%LEL"]},
+    {"code": "fan_speed", "label": "Velocidade da ventoinha", "data_type": "number", "units": ["%", "rpm"]},
+    {"code": "curtain_control", "label": "Comando da cortina / estore", "data_type": "enum", "units": [""]},
+    {"code": "curtain_position", "label": "Posição da cortina / estore", "data_type": "number", "units": ["%"]},
+    {"code": "mode", "label": "Modo de funcionamento", "data_type": "enum", "units": [""]},
+    {"code": "schedule", "label": "Programação / horário", "data_type": "json", "units": [""]},
+)
+
+
+def normalized_characteristics() -> list[dict[str, Any]]:
+    """Return a copy for embedding in each exact Product ID profile."""
+    return [dict(item, units=list(item["units"])) for item in NORMALIZED_CHARACTERISTICS]
+
+
+def sync_canonical_features(conn: Any, updated_at: str) -> int:
+    """Upsert the canonical vocabulary into SQLite without deleting extensions."""
+    saved = 0
+    for item in normalized_characteristics():
+        units = [str(unit)[:24] for unit in item.get("units", []) if isinstance(unit, str)]
+        data_type = str(item.get("data_type") or "unknown")[:24]
+        category = ("measurement" if data_type in {"number", "integer"} else
+                    "diagnostic" if data_type == "bitmap" else
+                    "state_or_control" if data_type in {"boolean", "enum"} else "structured")
+        conn.execute("""INSERT INTO tuya_canonical_features
+            (canonical_key,display_name,category,canonical_unit,canonical_type,units_json,description,source,registry_version,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(canonical_key) DO UPDATE SET
+            display_name=excluded.display_name,category=excluded.category,canonical_unit=excluded.canonical_unit,
+            canonical_type=excluded.canonical_type,units_json=excluded.units_json,description=excluded.description,
+            source=excluded.source,registry_version=excluded.registry_version,updated_at=excluded.updated_at""",
+            (item["code"], str(item.get("label") or item["code"])[:120], category,
+             next((unit for unit in units if unit), "")[:24], data_type, json.dumps(units, ensure_ascii=False),
+             str(item.get("description") or item.get("label") or "")[:240],
+             "SolarMiner normalized characteristic registry", REGISTRY_VERSION, updated_at))
+        saved += 1
+    return saved
 
 
 def _dp(dp_id: int, semantic: str, label: str, data_type: str, *, unit: str | None = None,
@@ -144,23 +248,28 @@ def _moes_device_profile(device: dict[str, Any], raw: dict[int, Any],
 
 @lru_cache(maxsize=1)
 def _community_profiles_by_product_id() -> dict[str, list[dict[str, Any]]]:
-    """Load bundled community DPS references, indexed by exact Tuya product ID."""
-    path = Path(__file__).with_name("tuya_community_catalog.json")
-    try:
-        catalog = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+    """Load bundled community references, always indexed by exact Product ID."""
     result: dict[str, list[dict[str, Any]]] = {}
-    records = catalog.get("records", []) if isinstance(catalog, dict) else []
-    for record in records if isinstance(records, list) else []:
-        if not isinstance(record, dict):
+    preferred_product_ids: set[str] = set()
+    for filename in ("tuya_local_catalog.json", "tuya_community_catalog.json"):
+        try:
+            source_catalog = json.loads(Path(__file__).with_name(filename).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
             continue
-        for product in record.get("products", []) if isinstance(record.get("products"), list) else []:
-            product_id = str(product.get("id") or "").strip() if isinstance(product, dict) else ""
-            if not product_id:
+        records = source_catalog.get("records", []) if isinstance(source_catalog, dict) else []
+        for record in records if isinstance(records, list) else []:
+            if not isinstance(record, dict):
                 continue
-            result.setdefault(product_id, []).append({"record": record, "product": product,
-                                                       "source": catalog.get("source", {})})
+            for product in record.get("products", []) if isinstance(record.get("products"), list) else []:
+                product_id = str(product.get("id") or "").strip() if isinstance(product, dict) else ""
+                if not product_id:
+                    continue
+                if filename == "tuya_community_catalog.json" and product_id in preferred_product_ids:
+                    continue
+                result.setdefault(product_id, []).append({"record": record, "product": product,
+                                                           "source": source_catalog.get("source", {})})
+                if filename == "tuya_local_catalog.json":
+                    preferred_product_ids.add(product_id)
     return result
 
 
@@ -195,6 +304,8 @@ def _community_dp_reference(product_id: str, dp_id: int) -> dict[str, Any] | Non
     result["related_fields"] = sorted({str(item.get("entity_name") or item.get("name") or "")
                                        for item in candidates if item.get("entity_name") or item.get("name")})
     result["reference_labels"] = sorted({label for labels in labels_by_config.values() for label in labels})
+    result["repository"] = candidates[0].get("repository")
+    result["commit"] = candidates[0].get("commit")
     return result
 
 
@@ -351,7 +462,7 @@ DEFINITIONS: tuple[dict[str, Any], ...] = tuple([
         source=_OFFICIAL_SWITCH, write=True),
     _dp(14, "power_on_state", "Power-on state", "enum", enum_values=("off", "on", "memory"),
         confidence="DOCUMENTED", source=_OFFICIAL_SWITCH, write=True),
-    _dp(17, "accumulated_energy", "Energia acumulada", "integer", unit="kWh", scale=1000, confidence="CONFIRMED",
+    _dp(17, "energy_incremental", "Energia incremental (Add Electricity)", "integer", unit="kWh", scale=1000, confidence="CONFIRMED",
         source=_OWNER_NOTES),
     _dp(18, "current", "Current", "integer", unit="A", scale=1000, confidence="CONFIRMED",
         source=_OWNER_NOTES),
@@ -359,7 +470,7 @@ DEFINITIONS: tuple[dict[str, Any], ...] = tuple([
         source=_OWNER_NOTES),
     _dp(20, "voltage", "Voltage", "integer", unit="V", scale=10, confidence="CONFIRMED",
         source=_OWNER_NOTES),
-    *[_dp(i, name, name.replace("_", " ").title(), "integer", confidence="COMMUNITY_REPORTED",
+    *[_dp(i, name, name.replace("_", " ").title(), "bitmap" if name in {"test_bit", "fault"} else "integer", confidence="COMMUNITY_REPORTED",
           source=_COMMUNITY) for i, name in ((21, "test_bit"), (22, "voltage_coefficient"),
           (23, "current_coefficient"), (24, "power_coefficient"), (25, "electricity_coefficient"),
           (26, "fault"))],
@@ -373,7 +484,7 @@ DEFINITIONS: tuple[dict[str, Any], ...] = tuple([
         source=_COMMUNITY, write=True),
     *[_dp(i, "unknown", f"Unknown DPS {i}", "unknown", confidence="UNKNOWN", source="")
       for i in (42, 43, 44)],
-    _dp(66, "online_status", "Online status", "unknown", confidence="COMMUNITY_REPORTED", source=_COMMUNITY),
+    _dp(66, "online_status", "Online status", "unknown", confidence="SUGGESTED", source=_COMMUNITY),
     _dp(107, "switch_type_setting", "Switch type setting", "enum", confidence="CONFIRMED",
         source=_OWNER_NOTES),
     *[_dp(i, f"pair_{pair}_mode", f"Pair K{pair*2-1}/K{pair*2} mode", "enum",
@@ -792,6 +903,7 @@ def product_profile(device: dict[str, Any]) -> dict[str, Any]:
         "confidence": knowledge.get("confidence", "UNKNOWN"),
         "selection_source": knowledge.get("selection_source", "none"),
         "schema_source": str(device.get("schema_source") or "UNKNOWN")[:48],
+        "normalized_characteristics": normalized_characteristics(),
         "dps": schema_dps,
         "functions": _schema_ids(device),
     }

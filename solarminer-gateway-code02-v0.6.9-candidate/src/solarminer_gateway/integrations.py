@@ -28,6 +28,7 @@ from typing import Any, Callable
 
 from . import deye_modbus
 from . import tuya_dps_registry
+from . import tuya_local_catalog
 from . import shelly_integration
 
 # TinyTuya is bundled with the signed Gateway package so local control works
@@ -152,6 +153,31 @@ def load_config() -> dict[str, Any]:
     value = json.loads(raw)
     if not isinstance(value, dict):
         raise ValueError("integration_config_invalid")
+    # Exact Product ID quirks are bundled offline. Enrich the runtime view
+    # without rewriting the user's config or borrowing another product's map.
+    tuya = value.get("tuya")
+    if isinstance(tuya, dict):
+        from . import tuya_device_handler_catalog
+        profiles = _bounded_tuya_product_schemas(tuya.get("product_schemas"))
+        handlers = tuya_device_handler_catalog.profiles_by_product_id()
+        devices = []
+        for item in tuya.get("devices", []):
+            if not isinstance(item, dict):
+                continue
+            product_id = str(item.get("product_id") or "")
+            if product_id in handlers:
+                if product_id not in profiles:
+                    _, profiles[product_id] = tuya_device_handler_catalog.apply_profile(
+                        {"product_id": product_id, "manufacturer": "Tuya"}, {})
+                enriched_device, enriched_schema = tuya_device_handler_catalog.apply_profile(
+                    item, profiles.get(product_id, {}))
+                devices.append(enriched_device)
+                profiles[product_id] = enriched_schema
+            else:
+                devices.append(item)
+        tuya["devices"] = devices
+        if profiles or isinstance(tuya.get("product_schemas"), dict):
+            tuya["product_schemas"] = profiles
     return value
 
 
@@ -198,6 +224,67 @@ def public_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
     tuya = config.get("tuya", {}) if isinstance(config.get("tuya", {}), dict) else {}
     deye_cloud = config.get("deye_cloud", {}) if isinstance(config.get("deye_cloud", {}), dict) else {}
     product_catalog = _bounded_tuya_product_schemas(tuya.get("product_schemas"))
+    # Include offline exact-product profiles in Owner's Product IDs catalogue.
+    from . import tuya_device_handler_catalog
+    for product_id, handler in tuya_device_handler_catalog.profiles_by_product_id().items():
+        if product_id not in product_catalog:
+            product_catalog[product_id] = tuya_device_handler_catalog.product_schema(handler)
+    # Exact Product ID Tuya Local references augment the catalogue as a
+    # separate read-only layer. They never replace cloud schema or owner maps.
+    local_references = tuya_local_catalog.profiles_by_product_id()
+    in_use_product_ids = set(product_catalog)
+    in_use_product_ids.update(str(item.get("product_id") or "") for item in tuya.get("devices", [])
+                               if isinstance(item, dict) and item.get("product_id"))
+    for product_id in in_use_product_ids:
+        reference = local_references.get(product_id)
+        if not reference:
+            continue
+        product = product_catalog.get(product_id)
+        if product is None:
+            product = tuya_local_catalog.product_schema(reference)
+            product_catalog[product_id] = product
+        else:
+            dps_profile = product.get("dps_profile")
+            if not isinstance(dps_profile, dict):
+                dps_profile = {}
+                product["dps_profile"] = dps_profile
+            dps_profile.setdefault("reference_dps", reference.get("dps", []))
+            product.setdefault("reference_source", reference.get("source", {}).get("repository"))
+            product.setdefault("reference_commit", reference.get("source", {}).get("commit"))
+            product.setdefault("reference_license", reference.get("source", {}).get("license"))
+    product_catalog = _bounded_tuya_product_schemas(product_catalog)
+    # Make the normalized characteristic vocabulary part of every PID profile
+    # returned to Owner, including products that only exist in the configured
+    # device inventory and do not yet have a cloud schema.
+    for item in tuya.get("devices", []):
+        if not isinstance(item, dict):
+            continue
+        product_id = str(item.get("product_id") or "")
+        if not product_id:
+            continue
+        product = product_catalog.get(product_id)
+        if not isinstance(product, dict):
+            product = {"protocol": "tuya", "manufacturer": "Tuya",
+                       "product_name": str(item.get("product_name") or item.get("name") or "")[:120],
+                       "category": str(item.get("category") or "")[:64],
+                       "device_kind": str(item.get("device_kind") or "unknown")[:32],
+                       "schema_source": str(item.get("schema_source") or "TUYA_DEVICE"),
+                       "functions": [], "status_spec": [], "dps_profile": {}}
+            product_catalog[product_id] = product
+        dps_profile = product.get("dps_profile")
+        if not isinstance(dps_profile, dict):
+            dps_profile = {}
+            product["dps_profile"] = dps_profile
+        dps_profile["normalized_characteristics"] = tuya_dps_registry.normalized_characteristics()
+    # Offline and imported catalogue PIDs also get the same vocabulary.
+    for product in product_catalog.values():
+        if not isinstance(product, dict):
+            continue
+        dps_profile = product.get("dps_profile")
+        if not isinstance(dps_profile, dict):
+            dps_profile = {}
+            product["dps_profile"] = dps_profile
+        dps_profile["normalized_characteristics"] = tuya_dps_registry.normalized_characteristics()
     category_catalog = _bounded_tuya_product_schemas(tuya.get("category_schemas"))
     public_devices = []
     for item in tuya.get("devices", []):
@@ -216,7 +303,7 @@ def public_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
         "deye_cloud": {"data_center": deye_cloud.get("data_center", "eu"), "app_id": deye_cloud.get("app_id"),
                        "email": deye_cloud.get("email"), "configured": bool(deye_cloud.get("app_id") and deye_cloud.get("app_secret") and deye_cloud.get("email") and deye_cloud.get("password")),
                        "secrets_returned": False},
-        "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "uid": tuya.get("uid"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": public_devices, "product_catalog": product_catalog, "category_catalog": category_catalog, "product_schema_count": len(product_catalog), "category_schema_count": len(category_catalog), "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
+        "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "uid": tuya.get("uid"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": public_devices, "product_catalog": product_catalog, "category_catalog": category_catalog, "normalized_characteristics": tuya_dps_registry.normalized_characteristics(), "product_schema_count": len(product_catalog), "category_schema_count": len(category_catalog), "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
         "shelly": {"devices": [{k: item.get(k) for k in ("device_id", "name", "host", "mac", "model", "generation", "protocol", "firmware") if item.get(k) is not None}
                                 for item in (config.get("shelly", {}).get("devices", []) if isinstance(config.get("shelly"), dict) else [])
                                 if isinstance(item, dict)], "configured": bool(config.get("shelly", {}).get("devices")) if isinstance(config.get("shelly"), dict) else False},
@@ -782,8 +869,45 @@ def _tuya_local_status(device: dict[str, Any]) -> dict[str, Any]:
     # raw DPS identifier so the catalog can resolve it by Product ID; never
     # let whichever schema row happened to be processed last rename a channel.
     code_by_dps = {dp_id: next(iter(codes)) for dp_id, codes in codes_by_dps.items() if len(codes) == 1}
-    status = [{"code": code_by_dps.get(str(dps), f"dps_{dps}"), "dps_id": int(dps) if str(dps).isdigit() else None, "value": value}
-              for dps, value in result["dps"].items()]
+    value_mappings = device.get("handler_value_mappings") if isinstance(device.get("handler_value_mappings"), dict) else {}
+    initial_mappings = device.get("handler_initial_status_mappings") if isinstance(device.get("handler_initial_status_mappings"), dict) else {}
+    type_overrides = device.get("handler_type_overrides") if isinstance(device.get("handler_type_overrides"), dict) else {}
+    status = []
+    for dps, value in result["dps"].items():
+        dps_id = int(dps) if str(dps).isdigit() else None
+        code = code_by_dps.get(str(dps), f"dps_{dps}")
+        normalized = value
+        if dps_id is not None:
+            for mapping_set in (value_mappings, initial_mappings):
+                mapping = mapping_set.get(str(dps_id))
+                if isinstance(mapping, dict):
+                    try:
+                        normalized = mapping.get(str(normalized), mapping.get(normalized, normalized))
+                    except TypeError:
+                        pass
+            # Reproduce the upstream integer inversion quirk for the classes
+            # whose behavior is defined by min/max. Conditional variants are
+            # applied only when their controlling status was observed.
+            type_name = str(type_overrides.get(str(dps_id)) or "")
+            invert = type_name == "InvertedIntegerTypeInformationEx"
+            if type_name == "ForwardModeInvertedIntegerTypeInformationEx":
+                mode = next((raw for code_id, raw in result["dps"].items()
+                             if code_by_dps.get(str(code_id)) == "control_back_mode"), None)
+                invert = mode is not None and str(mode).casefold() != "back"
+            if invert and isinstance(normalized, (int, float)) and not isinstance(normalized, bool):
+                spec = next((entry for entry in [*device.get("functions", []), *device.get("status_spec", [])]
+                             if isinstance(entry, dict) and entry.get("dp_id", entry.get("dpId")) == dps_id), {})
+                values = spec.get("values", {}) if isinstance(spec, dict) else {}
+                if isinstance(values, str):
+                    try: values = json.loads(values)
+                    except json.JSONDecodeError: values = {}
+                limits = values.get("range", values) if isinstance(values, dict) else {}
+                if isinstance(limits, dict) and isinstance(limits.get("min"), (int, float)) and isinstance(limits.get("max"), (int, float)):
+                    normalized = limits["min"] + limits["max"] - normalized
+        row = {"code": code, "dps_id": dps_id, "value": normalized}
+        if normalized != value:
+            row["raw_value"] = value
+        status.append(row)
     return {"device_id": device["device_id"], "name": device.get("name", "Tuya device"),
             "status": status, "connection_state": "local_responded", "source": "TUYA_LAN",
             "trust": "LIVE_UNVERIFIED", "local_protocol": protocol,
@@ -902,7 +1026,8 @@ def _bounded_tuya_product_schemas(value: Any) -> dict[str, dict[str, Any]]:
         functions, statuses = _tuya_schema_entries(profile.get("functions")), _tuya_schema_entries(profile.get("status_spec"))
         custom_overrides = profile.get("custom_dps_overrides") if isinstance(profile.get("custom_dps_overrides"), dict) else {}
         profile_dps = profile.get("dps_profile") if isinstance(profile.get("dps_profile"), dict) else {}
-        if not functions and not statuses and not custom_overrides and not profile_dps.get("dps"):
+        if (not functions and not statuses and not custom_overrides and not profile_dps.get("dps") and not profile_dps.get("reference_dps")
+                and not profile.get("handler_source") and not profile.get("handler_operations")):
             continue
         clean[product_id] = {"protocol": str(profile.get("protocol") or "tuya")[:32],
                              "manufacturer": str(profile.get("manufacturer") or "Tuya")[:64],
@@ -914,12 +1039,35 @@ def _bounded_tuya_product_schemas(value: Any) -> dict[str, dict[str, Any]]:
                              "schema_source": str(profile.get("schema_source") or "TUYA_DEVICE_SPEC")[:48],
                              "functions": functions, "status_spec": statuses,
                              "dps_profile": profile.get("dps_profile") if isinstance(profile.get("dps_profile"), dict) else {},
+                             "handler_source": str(profile.get("handler_source") or "")[:160],
+                             "handler_commit": str(profile.get("handler_commit") or "")[:64],
+                             "handler_license": str(profile.get("handler_license") or "")[:24],
+                             "reference_source": str(profile.get("reference_source") or "")[:160],
+                             "reference_commit": str(profile.get("reference_commit") or "")[:64],
+                             "reference_license": str(profile.get("reference_license") or "")[:24],
+                             "handler_operations": [item for item in profile.get("handler_operations", [])[:128]
+                                                    if isinstance(item, dict)] if isinstance(profile.get("handler_operations"), list) else [],
+                             "handler_value_mappings": profile.get("handler_value_mappings") if isinstance(profile.get("handler_value_mappings"), dict) else {},
+                             "handler_initial_status_mappings": profile.get("handler_initial_status_mappings") if isinstance(profile.get("handler_initial_status_mappings"), dict) else {},
+                             "handler_type_overrides": profile.get("handler_type_overrides") if isinstance(profile.get("handler_type_overrides"), dict) else {},
+                             "handler_unsupported_operations": [str(item)[:120] for item in profile.get("handler_unsupported_operations", [])[:32]
+                                                                 if isinstance(item, str)] if isinstance(profile.get("handler_unsupported_operations"), list) else [],
                              "custom_dps_overrides": {str(key): {"label": str(value.get("label") or "").strip()[:80], "semantic_code": str(value.get("semantic_code") or "custom_label")[:48], "unit": str(value.get("unit") or "")[:16] or None, "data_type": str(value.get("data_type") or "number")[:24], "scale": value.get("scale") if isinstance(value.get("scale"), (int, float)) and not isinstance(value.get("scale"), bool) else None, "write_enabled": bool(value.get("write_enabled")) and str(value.get("semantic_code")) in {"switch", "countdown", "child_lock", "light_mode", "relay_status", "power_on_state"}} for key, value in profile.get("custom_dps_overrides", {}).items() if isinstance(key, str) and key.isdigit() and 1 <= int(key) <= 65535 and isinstance(value, dict) and isinstance(value.get("label"), str) and value["label"].strip()} if isinstance(profile.get("custom_dps_overrides"), dict) else {},
                              "cached_at": int(profile.get("cached_at") or 0)}
-    ordered = sorted(clean.items(), key=lambda pair: pair[1]["cached_at"], reverse=True)[:MAX_TUYA_PRODUCT_SCHEMAS]
+    def preservation_priority(profile: dict[str, Any]) -> tuple[int, int]:
+        dps_profile = profile.get("dps_profile", {}) if isinstance(profile.get("dps_profile"), dict) else {}
+        dps_rows = dps_profile.get("dps", []) if isinstance(dps_profile.get("dps"), list) else []
+        has_owner_map = bool(profile.get("custom_dps_overrides")) or any(
+            isinstance(row, dict) and row.get("confidence") == "OWNER_CUSTOM" for row in dps_rows)
+        has_reference = bool(dps_profile.get("reference_dps")) or bool(profile.get("reference_source"))
+        has_exact_handler = bool(profile.get("handler_source"))
+        return (3 if has_owner_map else 2 if profile.get("cached_at") else 1 if has_reference or has_exact_handler else 0,
+                int(profile.get("cached_at") or 0))
+
+    ordered = sorted(clean.items(), key=lambda pair: preservation_priority(pair[1]), reverse=True)[:MAX_TUYA_PRODUCT_SCHEMAS]
     result = dict(ordered)
     while result and len(json.dumps(result, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > MAX_TUYA_SCHEMA_CATALOG_BYTES:
-        oldest = min(result, key=lambda key: result[key]["cached_at"])
+        oldest = min(result, key=lambda key: preservation_priority(result[key]))
         result.pop(oldest)
     return result
 

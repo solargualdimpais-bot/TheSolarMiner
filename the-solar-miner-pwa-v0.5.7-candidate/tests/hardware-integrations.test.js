@@ -167,6 +167,8 @@ test("Owner DPS editor sends normalized characteristic, unit, and divisor to the
   assert.match(app, /daily_accumulated_energy/);
   assert.match(app, /Informação descritiva · sem cálculo/);
   assert.match(app, /standardDpsLabels/);
+  assert.match(app, /device\.product_profile\?\.normalized_characteristics/);
+  assert.match(app, /updateCharacteristicUnits/);
   assert.match(app, /saveGatewayTuyaProductDpsDescription\(device\.device_id,dpsId,form\.elements\.description\.value,mapping\)/);
   assert.match(auth, /saveGatewayTuyaProductDpsDescription\(deviceId, dpsId, description, mapping = \{\}\)/);
   assert.match(auth, /body\.semantic_code = mapping\.semantic_code/);

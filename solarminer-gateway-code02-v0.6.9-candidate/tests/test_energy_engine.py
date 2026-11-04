@@ -95,6 +95,23 @@ def test_owner_product_dps_mapping_drives_future_live_measurements():
     assert telemetry["metrics"]["power"]["value"] == 85.0
 
 
+def test_owner_product_dps_19_power_mapping_survives_as_live_card_metric():
+    conn = database()
+    observed = datetime.now(timezone.utc).isoformat()
+    devices = [{"device_id": "water-heater", "product_id": "breaker-pid",
+                "functions": [], "status_spec": []}]
+    product_schemas = {"breaker-pid": {"custom_dps_overrides": {"19": {
+        "label": "Potência instantânea", "semantic_code": "power", "unit": "W",
+        "data_type": "number", "scale": 10}}}}
+    status = [{"code": "dps_19", "dps_id": 19, "value": 1465}]
+    energy_engine.persist_tuya_telemetry(conn, [{"device_id": "water-heater", "name": "Termoacumulador",
+        "connection_state": "local_responded", "observed_at": observed, "status": status}],
+        devices, product_schemas)
+    telemetry = energy_engine.read_tuya_telemetry(conn)["water-heater"]
+    assert telemetry["metrics"]["power"]["value"] == 146.5
+    assert telemetry["metrics"]["power"]["unit"] == "W"
+
+
 def test_solar_day_forecast_reports_missing_pv_capacity_as_a_setup_action():
     conn = database()
     result = energy_engine._solar_day_forecast(
