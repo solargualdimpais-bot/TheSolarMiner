@@ -821,7 +821,7 @@ def test_local_network_apply_skips_mac_seen_at_multiple_ips(client, monkeypatch,
         {"device_id": "known-switch", "name": "Disjuntor", "local_mac": "AA:BB:CC:DD:EE:21",
          "local_ip": "192.168.10.20"},
     ]}})
-    report = {"scanned_count": 254, "hosts": [
+    report = {"scanned_count": 254, "responsive_count": 1, "networks": [], "skipped_networks": [], "hosts": [
         {"ip": "192.168.10.21", "mac": "AA:BB:CC:DD:EE:21"},
         {"ip": "192.168.10.31", "mac": "AA:BB:CC:DD:EE:21"},
     ]}

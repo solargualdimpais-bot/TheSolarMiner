@@ -92,7 +92,7 @@ def test_owner_can_check_tesla_presence_from_local_neighbour_cache(client, monke
 def test_shelly_registration_uses_authenticated_owner_and_sqlite_mac_identity(client, monkeypatch):
     owner, private, _ = create_owner(client)
     token = login(client, owner, private).json()["access_token"]
-    monkeypatch.setattr(gateway.hardware_integrations.shelly_integration, "identify_and_read", lambda host: {
+    monkeypatch.setattr(gateway.hardware_integrations.shelly_integration, "identify_and_read", lambda host, **auth: {
         "host": host, "manufacturer": "Shelly", "model": "Plus 1PM", "mac": "AA:BB:CC:DD:EE:30",
         "generation": 2, "protocol": "shelly_rpc", "firmware": "1.4", "capabilities": ["relay", "power"],
         "components": [], "status": {}, "observed_at": time.time(), "command_sent": False})

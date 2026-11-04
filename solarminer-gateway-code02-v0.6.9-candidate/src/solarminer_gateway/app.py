@@ -2841,6 +2841,10 @@ def scan_local_network(session: dict[str, Any] = Depends(require_permission("man
         try:
             report = network_scanner.scan_attached_networks()
             _enrich_shelly_scan(report)
+            report.setdefault("networks", [])
+            report.setdefault("skipped_networks", [])
+            report.setdefault("scanned_count", 0)
+            report.setdefault("responsive_count", len(report.get("hosts", [])))
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             LOG.warning("Local network scan failed (%s)", type(exc).__name__)
             raise HTTPException(502, "local_network_scan_failed") from exc
@@ -3068,8 +3072,9 @@ def save_local_network_device(payload: dict[str, Any],
         conflicted_macs = {str(item.get("mac") or "").strip().upper()
                            for item in report.get("mac_ip_conflicts", []) if isinstance(item, dict)}
         ambiguous_ip = mac in conflicted_macs or any(item.get("mac_ip_conflict") for item in matching_hosts) or len(observed_ips) > 1
-        if ambiguous_ip:
-            raise HTTPException(409, "network_device_mac_has_multiple_live_ips")
+        # Persist the identity/name even if the active scan reports more than
+        # one candidate IP. Never pick one implicitly; a later unique scan may
+        # refresh the address. An explicit IP still has to match this scan.
         current_ip = ""
         if not ambiguous_ip and host.get("ip"):
             try:
