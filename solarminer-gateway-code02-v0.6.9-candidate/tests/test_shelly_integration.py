@@ -43,6 +43,42 @@ def test_gen1_falls_back_to_http_and_extracts_meter_channels(monkeypatch):
     assert "power" in result["capabilities"]
 
 
+def test_gen1_vintage_identifies_light_channel_without_sending_commands(monkeypatch):
+    def rpc(*args, **kwargs):
+        raise RuntimeError("shelly_http_404")
+    def request(host, path, **kwargs):
+        if path == "/shelly":
+            return {"type": "SHBLB-1", "mac": "AA:BB:CC:DD:EE:12", "fw": "1.13"}
+        if path == "/status":
+            return {"lights": [{"ison": True, "brightness": 64}]}
+        raise AssertionError(path)
+    monkeypatch.setattr(shelly, "_rpc", rpc)
+    monkeypatch.setattr(shelly, "_request", request)
+    result = shelly.identify_and_read("192.168.1.25")
+    assert result["generation"] == 1
+    assert result["protocol"] == "shelly_http_gen1"
+    assert result["components"] == [{"component": "light", "id": 0,
+                                      "status": {"ison": True, "brightness": 64}}]
+    assert "dimming" in result["capabilities"]
+    assert result["command_sent"] is False
+
+
+def test_gen1_vintage_light_control_uses_local_api_once_and_verifies(monkeypatch):
+    calls = []
+    def request(host, path, **kwargs):
+        calls.append(path)
+        return {}
+    def read(host, **kwargs):
+        return {"components": [{"component": "light", "id": 0,
+                "status": {"ison": True, "brightness": 72}}], "observed_at": 1.0}
+    monkeypatch.setattr(shelly, "_request", request)
+    monkeypatch.setattr(shelly, "identify_and_read", read)
+    result = shelly.control_light("192.168.1.25", 1, "light", 0, on=True, brightness=72)
+    assert calls == ["/light/0?turn=on&brightness=72"]
+    assert result["command_accepted"] is True
+    assert result["command_confirmed"] is True
+
+
 def test_switch_control_does_not_repeat_command_and_requires_readback(monkeypatch):
     calls = []
     def rpc(host, method, params=None, **auth):

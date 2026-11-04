@@ -608,6 +608,10 @@ export async function registerGatewayShellyBluDevice({ mac, name, device_type = 
   if (typeof device_type !== "string") throw new Error("Tipo de equipamento inválido.");
   return gatewayApi("/api/v1/integrations/shelly/blu/register", { method: "POST", body: { mac: mac.toUpperCase(), bridge_mac: bridge_mac.toUpperCase(), name: name.trim(), device_type } });
 }
+export async function discoverGatewayShellyBluDevices(deviceId) {
+  if (typeof deviceId !== "string" || !deviceId.startsWith("shelly:")) throw new Error("Identificador da ponte Shelly inválido.");
+  return gatewayApi(`/api/v1/integrations/shelly/${encodeURIComponent(deviceId)}/blu/discover`, { method: "POST", body: {} });
+}
 export async function controlGatewayShellySwitch(deviceId, channel, on) {
   if (typeof deviceId !== "string" || !deviceId.startsWith("shelly:")) throw new Error("Identificador Shelly inválido.");
   if (!Number.isInteger(channel) || channel < 0 || channel > 31 || typeof on !== "boolean") throw new Error("Comando Shelly inválido.");

@@ -63,7 +63,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.179"
+PACKAGE_VERSION = "0.6.180"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -529,6 +529,32 @@ def register_shelly_blu_device(payload: dict[str, Any],
         conn.commit()
         return {"device": central, "values": values, "bridge": {"mac": bridge_mac, "name": bridge_row["name"]},
                 "source": "shelly_blu_gateway", "cloud_used": False, "commands_sent": False}
+
+
+def discover_shelly_blu_bridge(device_id: str, session: dict[str, Any]) -> dict[str, Any]:
+    """Scan one registered Shelly BLU bridge for nearby BTHome advertisements."""
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        row = conn.execute("""SELECT mac,name,host,model,device_type FROM shelly_devices
+            WHERE device_id=? AND enabled=1 AND (device_type IN ('smart_blugw','smart_gateway') OR model LIKE '%BLU Gateway%'
+                OR model LIKE '%BLU GW%' OR model LIKE '%BLUGW%' OR model LIKE '%GWF-KZ01%' OR model LIKE '%SNGW-BT01%')""",
+            (device_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "shelly_blu_bridge_not_registered")
+        bridge = dict(row)
+    try:
+        with db() as conn:
+            devices, bridges = _scan_registered_shelly_blu_bridges(
+                conn, duration_seconds=5.0, bridge_macs={bridge["mac"]})
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise HTTPException(502, "shelly_blu_bridge_scan_failed") from exc
+    result = bridges[0] if bridges else {"mac": _inventory_mac(bridge["mac"]), "name": bridge["name"],
+                                         "model": bridge["model"], "state": "unavailable",
+                                         "reason": "bridge_not_scanned"}
+    return {"bridge": result, "devices": devices, "device_count": len(devices),
+            "source": "registered_shelly_blu_bridge", "commands_sent": False}
 
 
 def _unique_lan_ip_for_mac(report: dict[str, Any], mac_value: Any) -> str:
@@ -1653,6 +1679,14 @@ def register_shelly_blu_device_endpoint(payload: dict[str, Any],
 
 
 app.post("/api/v1/integrations/shelly/blu/register")(register_shelly_blu_device_endpoint)
+
+
+def discover_shelly_blu_bridge_endpoint(device_id: str,
+                                         session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    return discover_shelly_blu_bridge(device_id, session)
+
+
+app.post("/api/v1/integrations/shelly/{device_id}/blu/discover")(discover_shelly_blu_bridge_endpoint)
 
 
 def _revalidate_actor(conn: sqlite3.Connection, session: dict[str, Any], permission: str) -> sqlite3.Row:
@@ -5423,7 +5457,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.179"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.180"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

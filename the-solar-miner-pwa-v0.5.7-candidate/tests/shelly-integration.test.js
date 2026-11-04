@@ -38,4 +38,16 @@ test("BLU sensors are discovered and registered through a Shelly bridge by the G
   assert.match(app, /data-shelly-light-on/);
   assert.match(app, /bthome_values/);
   assert.doesNotMatch(backend, /BTHome\.StartDeviceDiscovery/);
+  assert.match(app, /data-shelly-blu-discover/);
+  assert.match(app, /discoverGatewayShellyBluDevices\(bridge\.device_id\)/);
+  assert.match(api, /\/api\/v1\/integrations\/shelly\/\$\{encodeURIComponent\(deviceId\)\}\/blu\/discover/);
+  assert.match(app, /openBluDeviceDetails\(Number\(blu\.dataset\.bluDeviceRow\)\)/);
+  assert.doesNotMatch(app, /openBluDeviceDetails\(index\)[\s\S]{0,900}dialog\.showModal\(\);[\s\S]{0,300}dialog\.showModal\(\)/);
+});
+
+test("Shelly Vintage card opens details and local light control is exposed", () => {
+  assert.match(app, /function openShellyDeviceDetails\(deviceId\)/);
+  assert.match(app, /openShellyDeviceDetails\(smartShellyCard\.dataset\.smartDevice\)/);
+  assert.match(app, /data-shelly-light-on/);
+  assert.match(backend, /endpoint = f"\/light\/\{channel\}"/);
 });

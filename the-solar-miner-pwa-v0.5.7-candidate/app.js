@@ -6,7 +6,7 @@ const PWA_INVITE_LANDING_URL = "https://solargualdimpais-bot.github.io/TheSolarM
 import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classifyEndpoint, inferHostedGatewayEndpoint, buildInviteLandingUrl, readInviteLandingHash, PRESENCE_API_STATUS } from "./gateway-connection.js";
 import { isHeicPhoto } from "./photo-format.js";
 import { addFavoriteId, normalizeFavoriteIds, reorderFavoriteIds } from "./favorite-list.js";
-import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, redeemGatewayInvite, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, readGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayDiagnosticsUpload, saveGatewayDiagnosticsUploadToken, disableGatewayDiagnosticsUpload, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, previewGatewayTuyaProductImport, applyGatewayTuyaProductImport, controlGatewayAntminer, testGatewayAntminerControl, readGatewayAntminerManagement, writeGatewayAntminerManagement, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, controlGatewayTuyaSetting, saveGatewayTuyaProductDpsDescription, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, testGatewayTuyaLanReachability, discoverGatewayTuyaLanDevices, scanGatewayLocalNetwork, readGatewayDeviceInventory, readGatewaySmartProductCatalog, readGatewayShellyDevices, discoverGatewayShellyDevices, registerGatewayShellyDevice, registerGatewayShellyBluDevice, controlGatewayShellySwitch, controlGatewayShellyLight, applyGatewayLocalNetworkMatches, saveGatewayLocalNetworkDevice, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging, readGatewayTeslaLocalPresence } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, redeemGatewayInvite, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, readGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayDiagnosticsUpload, saveGatewayDiagnosticsUploadToken, disableGatewayDiagnosticsUpload, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, previewGatewayTuyaProductImport, applyGatewayTuyaProductImport, controlGatewayAntminer, testGatewayAntminerControl, readGatewayAntminerManagement, writeGatewayAntminerManagement, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, controlGatewayTuyaSetting, saveGatewayTuyaProductDpsDescription, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, testGatewayTuyaLanReachability, discoverGatewayTuyaLanDevices, scanGatewayLocalNetwork, readGatewayDeviceInventory, readGatewaySmartProductCatalog, readGatewayShellyDevices, discoverGatewayShellyDevices, registerGatewayShellyDevice, registerGatewayShellyBluDevice, discoverGatewayShellyBluDevices, controlGatewayShellySwitch, controlGatewayShellyLight, applyGatewayLocalNetworkMatches, saveGatewayLocalNetworkDevice, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging, readGatewayTeslaLocalPresence } from "./gateway-auth.js";
 
 let automationEditingId = "";
 let energyEngineActiveTab="summary";
@@ -344,7 +344,27 @@ async function refreshShellyInventoryStatus({ quiet = false } = {}) {
     const result = await readGatewayShellyDevices();
     state.shellyDevices = Array.isArray(result.devices) ? result.devices : [];
     state.shellyReadings = state.shellyDevices;
-    render();
+    if(!quiet)render();
+    else for(const device of state.shellyDevices){
+      const card=Array.from(document.querySelectorAll('[data-smart-provider="shelly"]')).find(item=>item.dataset.smartDevice===device.device_id);
+      if(!card)continue;
+      const connected=device.connection_state==="connected";
+      const status=card.querySelector(`[data-shelly-status="${CSS.escape(device.device_id)}"]`);
+      if(status)status.textContent=connected?`Última leitura: ${new Date((Number(device.observed_at)||Date.now()/1000)*1000).toLocaleTimeString("pt-PT")}`:device.reason||"Sem comunicação";
+      for(const button of card.querySelectorAll("[data-shelly-switch]")){
+        const component=(device.components||[]).find(item=>["switch","relay"].includes(item.component)&&Number(item.id)===Number(button.dataset.shellyChannel));
+        if(!component)continue;
+        const on=component.status?.output??component.status?.ison;
+        button.dataset.shellyTarget=on===true?"off":"on";button.textContent=`${on===true?"Desligar":"Ligar"} · canal ${Number(component.id)||0}`;button.disabled=!connected;
+      }
+      for(const box of card.querySelectorAll("[data-shelly-light-controls]")){
+        const component=(device.components||[]).find(item=>item.component===box.dataset.shellyComponent&&Number(item.id)===Number(box.dataset.shellyChannel));
+        if(!component)continue;
+        const on=component.status?.output??component.status?.ison;
+        const toggle=box.querySelector("[data-shelly-light-on]");if(toggle){toggle.dataset.shellyTarget=on===true?"off":"on";toggle.textContent=on===true?"Desligar":"Ligar";toggle.disabled=!connected;}
+        const brightness=box.querySelector("[data-shelly-brightness]");if(brightness&&Number.isFinite(Number(component.status?.brightness)))brightness.value=String(component.status.brightness);
+      }
+    }
     return true;
   } catch (error) {
     if (!quiet) showFeatureNotice(`Não foi possível ler os Shelly pela LAN: ${error.message}`);
@@ -1529,6 +1549,21 @@ function renderGatewayUtilityPage(page){
   const emptyInventory=!cards&&!tuyaCards?`<div class="empty-state">Ainda não existem dispositivos registados no Gateway. Os inversores e baterias ficam nas áreas de Energia.</div>`:"";
   return `<div class="page-heading"><div><p class="eyebrow">${page==="devices"?"CONTROLO · GATEWAY":"INVENTÁRIO · GATEWAY"}</p><h1>${page==="casa"?"Casa":"Dispositivos"}</h1>${controlledInventory}</div>${page==="energia"?"":`<button class="button secondary" id="gateway-area-refresh">Atualizar ↻</button>`}</div>${page==="devices"&&sessionInfo().user?.role==="owner"?`<section class="panel"><div class="panel-header"><div><p class="eyebrow">CONFIGURAÇÃO</p><h2>Dispositivos sincronizados</h2></div><button class="button secondary" data-page="owner">Abrir gestão Owner</button></div><p class="field-note">Toca num dispositivo para editar os nomes dos canais e atribuir uma divisão. Estas alterações ficam no Gateway e não mudam nomes na conta Tuya.</p></section>`:""}<div class="equipment-grid">${cards}${tuyaCards}${emptyInventory}</div>`;
 }
+function isShellyBluBridge(device){
+  const identity=[device?.device_type,device?.model,device?.name].filter(Boolean).join(" ").toLowerCase();
+  return ["smart_blugw","smart_gateway"].includes(String(device?.device_type||""))||/blu\s*gateway|blu\s*gw|blugw|gwf-kz01|sngw-bt01/.test(identity);
+}
+function openShellyDeviceDetails(deviceId){
+  const device=state.shellyDevices.find(item=>item.device_id===deviceId);
+  const card=Array.from(document.querySelectorAll('[data-smart-provider="shelly"]')).find(item=>item.dataset.smartDevice===deviceId);
+  if(!device||!card)return;
+  const dialog=document.createElement("dialog"),connected=device.connection_state==="connected";
+  const componentRows=(device.components||[]).map(item=>{const status=item.status||{};return Object.entries(status).filter(([,value])=>value!==null&&value!==undefined&&["string","number","boolean"].includes(typeof value)).slice(0,8).map(([key,value])=>`<div class="detail-item"><small>${esc(key)}</small><strong>${esc(value)}</strong></div>`).join("");}).join("");
+  const actions=card.querySelector(".favorite-device-actions")?.innerHTML||"<p class=\"field-note\">Este equipamento não anunciou controlos suportados.</p>";
+  dialog.className="settings-dialog favorite-device-details";
+  dialog.innerHTML=`<div class="dialog-header"><div><p class="eyebrow">EQUIPAMENTO · SHELLY</p><h2>${esc(device.name||device.model||"Shelly")}</h2></div><button class="icon-button" type="button" data-shelly-detail-close aria-label="Fechar">×</button></div><p>${esc([connected?"Online":"Offline",device.model,device.protocol,device.mac].filter(Boolean).join(" · "))}</p><p class="field-note">Os controlos disponíveis abaixo resultam dos componentes que o próprio Shelly anunciou à última leitura.</p><div class="favorite-device-actions">${actions}</div>${componentRows?`<div class="device-detail-grid">${componentRows}</div>`:""}<p class="field-note" data-shelly-detail-status>${connected?"Ligação local confirmada.":esc(device.reason||"Sem resposta local recente.")}</p>`;
+  $("#page-content").append(dialog);dialog.addEventListener("close",()=>dialog.remove(),{once:true});dialog.showModal();
+}
 function renderDeviceInventoryPage(){
   const user=sessionInfo().user||{},owner=user.role==="owner",devices=normalizeTuyaInventory(state.tuyaDevices),readings=(Array.isArray(state.tuyaReadings)?state.tuyaReadings:[]).map(normalizeTuyaReading).filter(Boolean);
   const readingByDevice=new Map(readings.map(reading=>[reading.device_id,reading]));
@@ -1544,7 +1579,7 @@ function renderDeviceInventoryPage(){
     const bthomeMetrics=(Array.isArray(device.bthome_values)?device.bthome_values:[]).filter(item=>item&&item.value!==null&&item.value!==undefined).slice(0,4).map(item=>({label:String(item.name||"Sensor"),value:item.value,unit:String(item.unit||bthomeUnits[String(item.name||"").toLowerCase()]||"")}));
     const shownMetrics=[...metrics,...bthomeMetrics].slice(0,4);
     const metricMarkup=shownMetrics.length?`<small class="inventory-device-metrics">${shownMetrics.map(item=>`${esc(item.label)} ${esc(Number.isFinite(Number(item.value))?Number(item.value).toLocaleString("pt-PT"):String(item.value))}${item.unit?` ${esc(item.unit)}`:""}`).join(" · ")}</small>`:`<small>${connected?"Sem medições disponíveis":"Sem leitura local recente"}</small>`;
-    return `<article class="favorite-device inventory-device ${connected?"is-confirmed":"is-fault is-pending"}" data-smart-device="${esc(device.device_id)}" data-smart-provider="shelly" tabindex="0" aria-label="${esc(device.name||device.model||"Dispositivo")} · ${connected?"Online":"Offline"}"><span class="favorite-device-icon" aria-hidden="true">⌁</span><div class="favorite-device-info"><strong class="favorite-device-name">${esc(device.name||device.model||"Dispositivo")}</strong><span>${connected?"Online":"Offline"}</span>${metricMarkup}<small data-shelly-status="${esc(device.device_id)}">${connected?`Última leitura: ${new Date((Number(device.observed_at)||Date.now()/1000)*1000).toLocaleTimeString("pt-PT")}`:esc(device.reason||"Sem comunicação")}</small></div><div class="favorite-device-actions">${switchRows}${lightRows}</div></article>`;
+    return `<article class="favorite-device inventory-device ${connected?"is-confirmed":"is-fault is-pending"}" data-smart-device="${esc(device.device_id)}" data-smart-provider="shelly" tabindex="0" aria-label="${esc(device.name||device.model||"Dispositivo")} · ${connected?"Online":"Offline"}"><span class="favorite-device-icon" aria-hidden="true">⌁</span><div class="favorite-device-info"><strong class="favorite-device-name">${esc(device.name||device.model||"Dispositivo")}</strong><span>${connected?"Online":"Offline"}</span>${metricMarkup}<small data-shelly-status="${esc(device.device_id)}">${connected?`Última leitura: ${new Date((Number(device.observed_at)||Date.now()/1000)*1000).toLocaleTimeString("pt-PT")}`:esc(device.reason||"Sem comunicação")}</small></div><div class="favorite-device-actions">${switchRows}${lightRows}${isShellyBluBridge(device)?`<button type="button" class="button secondary" data-shelly-blu-discover="${esc(device.device_id)}">Procurar sensores BLU</button>`:""}</div></article>`;
   }).join("");
   const onlineShelly=shellyDevices.filter(item=>item.connection_state==="connected"),offlineShelly=shellyDevices.filter(item=>item.connection_state!=="connected");
   const networkPending=(Array.isArray(state.gatewayDeviceInventory)?state.gatewayDeviceInventory:[]).filter(item=>item&&item.confirmation_status==="pending"&&item.source_provider==="network");
@@ -3145,7 +3180,6 @@ function openBluDeviceDetails(index){
   $("#network-device-detail-bridge").hidden=true;
   $("#network-device-shelly-credentials").hidden=true;
   $("#network-device-detail-save").disabled=false;
-  dialog.showModal();
 }
 $("#local-network-results").addEventListener("click",event=>{
   const row=event.target.closest("[data-network-device-row]");
@@ -3294,6 +3328,26 @@ $("#page-content").addEventListener("click", async event => {
     finally{if(addScan.isConnected)addScan.disabled=false;}
     return;
   }
+  const bluBridgeDiscover=event.target.closest("[data-shelly-blu-discover]");
+  if(bluBridgeDiscover){
+    if(!ownerCanManageHardware("#device-add-status"))return;
+    const bridge=state.shellyDevices.find(item=>item.device_id===bluBridgeDiscover.dataset.shellyBluDiscover);
+    if(!bridge)return;
+    state.devicesTab="add";render();
+    const status=$("#device-add-status"),results=$("#device-add-results");
+    if(!status||!results)return;
+    results.hidden=true;status.textContent=`A procurar sensores através de ${bridge.name||"esta ponte Shelly BLU"}…`;
+    try{
+      const result=await discoverGatewayShellyBluDevices(bridge.device_id);
+      const report={hosts:[],blu_devices:Array.isArray(result.devices)?result.devices:[],blu_bridges:[result.bridge||{}],
+        networks:[],skipped_networks:[],scanned_count:0,responsive_count:0};
+      renderLocalNetworkResults(report);
+      const count=report.blu_devices.length,reason=result.bridge?.reason;
+      status.textContent=count?`${count} sensor${count===1?"":"es"} encontrado${count===1?"":"s"} por ${bridge.name||"esta ponte"}. Abre uma linha para guardar.`:
+        `A ponte ${bridge.name||"Shelly BLU"} respondeu, mas não foram recebidos anúncios BTHome.${reason?` Estado: ${reason}.`:" Aproxima ou ativa o sensor e tenta novamente."}`;
+    }catch(error){status.textContent=`Não foi possível procurar sensores pela ponte ${bridge.name||"Shelly BLU"}: ${error.message||"o Gateway não respondeu."}`;}
+    return;
+  }
   const addBluRow=event.target.closest("#device-add-results [data-blu-device-row]");
   if(addBluRow){openBluDeviceDetails(Number(addBluRow.dataset.bluDeviceRow));return;}
   const addScanRow=event.target.closest("#device-add-results [data-network-device-row]");
@@ -3336,7 +3390,9 @@ $("#page-content").addEventListener("click", async event => {
   const inventoryCard=event.target.closest("[data-inventory-device]");
   if(inventoryCard&&!event.target.closest("button")){clearTimeout(inventoryCardClickTimer);const deviceId=inventoryCard.dataset.inventoryDevice;inventoryCardClickTimer=setTimeout(()=>{inventoryCardClickTimer=null;openFavoriteDeviceDetails(deviceId,"tuya");},280);return;}
   const smartShellyCard=event.target.closest('[data-smart-provider="shelly"]');
-  if(smartShellyCard&&!event.target.closest("button,input")){return;}
+  if(smartShellyCard&&!event.target.closest("button,input")){openShellyDeviceDetails(smartShellyCard.dataset.smartDevice);return;}
+  const closeShellyDetails=event.target.closest("[data-shelly-detail-close]");
+  if(closeShellyDetails){closeShellyDetails.closest("dialog")?.close();return;}
   const inventoryEquipment=event.target.closest("[data-inventory-equipment]");
   if(inventoryEquipment){openFavoriteDeviceDetails(inventoryEquipment.dataset.inventoryEquipment,"equipment");return;}
   const inventoryRead=event.target.closest("[data-inventory-read]");
