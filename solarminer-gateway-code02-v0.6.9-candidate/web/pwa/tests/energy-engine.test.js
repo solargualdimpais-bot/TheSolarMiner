@@ -1,13 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const gatewayPwa = existsSync(resolve(root, "../../src/solarminer_gateway/app.py"))
-  ? resolve(root, "../../../the-solar-miner-pwa-v0.5.7-candidate")
-  : resolve(root, "../solarminer-gateway-code02-v0.6.9-candidate/web/pwa");
+const gatewayPwa = resolve(root, "../solarminer-gateway-code02-v0.6.9-candidate/web/pwa");
 const read = (base, file) => readFileSync(resolve(base, file), "utf8");
 
 test("Owner PWA uses Gateway readings and keeps equipment associations available", () => {
@@ -44,7 +42,7 @@ test("Owner PWA uses Gateway readings and keeps equipment associations available
   assert.match(app, /Consumo estimado \+1 h/);
   assert.match(app, /SOC estimado \+1 h/);
   assert.match(app, /LIVE_UNVERIFIED/);
-  assert.match(app, /Disjuntor Tuya da mineradora/);
+  assert.match(app, /Disjuntor de alimentação e medição/);
   assert.match(app, /data-miner-breaker-save/);
   assert.match(app, /renderSurplusManager\(\)/);
   assert.match(app, /Consumo estimado/);

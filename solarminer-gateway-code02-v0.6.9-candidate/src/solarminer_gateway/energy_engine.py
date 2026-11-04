@@ -492,7 +492,7 @@ def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, 
         raise ValueError("invalid_minimum_potential_surplus_w")
     if isinstance(reserve_soc, bool) or not isinstance(reserve_soc, (int, float)) or not math.isfinite(reserve_soc) or not 0 <= reserve_soc <= 100:
         raise ValueError("invalid_battery_reserve_soc_percent")
-    if normalized_surplus_manager["priority_profile"] not in {"tesla_home", "tesla_away"}:
+    if normalized_surplus_manager["priority_profile"] not in {"tesla_home", "tesla_away", "custom"}:
         raise ValueError("invalid_surplus_priority_profile")
     result = {"site_location_name": location_name.strip() if isinstance(location_name, str) else None,
               "site_latitude": float(latitude) if latitude is not None else None,
@@ -2560,11 +2560,13 @@ def build_dispatch_plan(current: dict[str, Any], config: dict[str, Any], *, samp
     actions_by_id: dict[str, dict[str, Any]] = {}
     configured_profile = manager.get("priority_profile", "tesla_home")
     presence_state = tesla_presence.get("state") if isinstance(tesla_presence, dict) else None
-    profile = ("tesla_home" if presence_state == "DETECTED" else
+    profile = (configured_profile if configured_profile == "custom" else
+               "tesla_home" if presence_state == "DETECTED" else
                "tesla_away" if presence_state == "NOT_DETECTED" else configured_profile) if manager.get("enabled") else None
     priority_orders = {
         "tesla_home": {"ev_charger": 0, "water_heater": 1, "underfloor_heating": 2, "generic": 3, "miner": 4},
         "tesla_away": {"miner": 0, "water_heater": 1, "underfloor_heating": 2, "generic": 3, "ev_charger": 4},
+        "custom": {"ev_charger": 0, "water_heater": 0, "underfloor_heating": 0, "generic": 0, "miner": 0},
     }
     profile_order = priority_orders.get(profile, {})
     loads = config.get("loads", [])

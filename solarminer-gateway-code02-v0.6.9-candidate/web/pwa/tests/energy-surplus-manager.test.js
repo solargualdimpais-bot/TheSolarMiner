@@ -28,3 +28,10 @@ test("surplus manager separates state, existing loads, device links, priorities 
   assert.match(app, /PROTOCOLOS E MAPAS/);
   assert.match(app, /ORDEM APLICADA PELO GATEWAY/);
 });
+
+test("surplus manager saves per-load priorities and offers a manual ordering profile", () => {
+  assert.match(app, /data-load-priority=/);
+  assert.match(app, /id="surplus-save-priorities"/);
+  assert.match(app, /value="custom"[\s\S]*?Personalizada · usar os números abaixo/);
+  assert.match(app, /saveGatewayEnergyEngineConfig\(\{loads,surplus_manager:surplusManager\}\)/);
+});

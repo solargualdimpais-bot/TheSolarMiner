@@ -961,6 +961,16 @@ def test_forecast_guided_dispatch_respects_profile_actual_surplus_and_manual_ove
     assert away["actions"][0]["load_id"] == "miner"
     assert away["actions"][0]["target_power_w"] <= current["pv_power_w"] - current["load_power_w"] - 100
 
+    custom_loads = [dict(item) for item in config["loads"]]
+    custom_loads[0]["priority"], custom_loads[1]["priority"] = 1, 2
+    custom_config = {**config, "loads": custom_loads,
+                     "surplus_manager": {**config["surplus_manager"], "priority_profile": "custom"}}
+    custom = energy_engine.build_dispatch_plan(current, custom_config, sample_state="LIVE",
+        telemetry_trust="OWNER_COMMISSIONED", forecast_surplus_w=5000,
+        tesla_presence={"state": "DETECTED"})
+    assert custom["effective_priority_profile"] == "custom"
+    assert custom["actions"][0]["load_id"] == "miner"
+
     low_battery = energy_engine.build_dispatch_plan({**current, "battery_soc_percent": 60}, config,
         sample_state="LIVE", telemetry_trust="OWNER_COMMISSIONED", forecast_surplus_w=5000)
     assert low_battery["state"] == "WAITING_FOR_BATTERY_RESERVE"

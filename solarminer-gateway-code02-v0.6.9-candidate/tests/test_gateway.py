@@ -113,9 +113,20 @@ def test_shelly_registration_uses_authenticated_owner_and_sqlite_mac_identity(cl
         assert device["host"] == "192.168.1.31"
         inventory = conn.execute("SELECT last_ip FROM gateway_device_inventory WHERE mac='AA:BB:CC:DD:EE:30'").fetchone()
         assert inventory["last_ip"] == "192.168.1.31"
+    monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: {})
+    monkeypatch.setattr(gateway.network_scanner, "scan_attached_networks", lambda: {
+        "networks": ["192.168.1.0/24"], "skipped_networks": [], "scanned_count": 254,
+        "responsive_count": 1, "hosts": [{"ip": "192.168.1.31", "mac": "AA:BB:CC:DD:EE:30",
+                    "hostname": "shelly-hall", "manufacturer": "Shelly", "model": "Plus 1PM"}],
+        "mac_ip_conflicts": [],
+    })
+    monkeypatch.setattr(gateway, "_enrich_shelly_scan", lambda report: None)
+    scanned = client.post("/api/v1/network/scan", headers=headers)
+    assert scanned.status_code == 200, scanned.text
+    assert scanned.json()["responsive_count"] == 1
+    assert scanned.json()["hosts"][0]["matched_devices"][0]["provider"] == "shelly"
     # The next inventory/read synchronization must project Shelly rows without
     # calling a misspelled helper (the production NameError seen in Gateway logs).
-    monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: {})
     monkeypatch.setattr(gateway.hardware_integrations.shelly_integration, "read_devices", lambda config: [])
     synced = client.post("/api/v1/integrations/shelly/read", headers=headers)
     assert synced.status_code == 200, synced.text

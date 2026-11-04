@@ -32,8 +32,8 @@ test("Gateway administration is on an Owner-only page and live Home uses Gateway
   assert.match(app, /miner_hashrate_5s_ghs/);
   assert.match(app, /miner_power_limit_w/);
   assert.match(app, /data-miner-breaker-save/);
-  assert.match(app, /Potência medida partilhada/);
-  assert.match(app, /Consumo medido/);
+  assert.match(app, /Disjuntor · potência agregada/);
+  assert.match(app, /Disjuntor · potência medida/);
   assert.match(app, /provider === "deye" \|\| provider === "antminer"/);
   assert.doesNotMatch(home[1], /Gestão do Gateway|gateway-update-management|gateway-tailscale-management/);
   assert.match(html, /id="gateway-owner-page" class="owner-admin-page" hidden/);
@@ -88,10 +88,10 @@ test("Owner recovery file parser accepts a generated key and rejects malformed/o
 });
 
 test("new PWA static cache version is changed and USB limitations are documented", () => {
-  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.120-tuya-product-catalog/);
+  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.122-miner-load-priority-manager/);
   assert.match(serviceWorker, /\.\/favorite-list\.js/);
-  assert.match(manifest, /v0\.5\.120/);
-  assert.equal(packageJson.version, "0.5.121");
+  assert.match(manifest, /v0\.5\.122/);
+  assert.equal(packageJson.version, "0.5.122");
   assert.doesNotMatch(html, /gateway-update-refresh|Atualizar estado/);
   assert.doesNotMatch(app, /gateway-update-refresh/);
   const docs = read("OWNER_USB_AND_ACCESS.md");
