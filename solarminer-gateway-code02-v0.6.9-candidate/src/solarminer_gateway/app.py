@@ -63,7 +63,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.177"
+PACKAGE_VERSION = "0.6.178"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -2091,6 +2091,97 @@ def _tuya_devices_sync_work(session: dict[str, Any], cancelled: threading.Event)
             raise HTTPException(503, "tuya_sync_unavailable") from exc
 
 
+def _deye_energy_identity(conn: sqlite3.Connection, deye: dict[str, Any]) -> tuple[str, str | None]:
+    """Prefer the inventoried network MAC over an IP that may change.
+
+    The gateway inventory can have more than one inverter. Use a MAC only when
+    the snapshot carries it or exactly one applicable Deye/inverter MAC can be
+    resolved; otherwise retain the host-based identity rather than merging
+    potentially different physical equipment.
+    """
+    unit_id = deye.get("unit_id", 1)
+    mac = _inventory_mac(deye.get("inventory_mac") or deye.get("local_mac") or deye.get("mac") or "")
+    if not mac:
+        host = str(deye.get("host") or "")
+        try:
+            rows = conn.execute("""SELECT mac,last_ip FROM gateway_device_inventory
+                WHERE mac<>'' AND (device_type='inverter' OR source_provider='deye')""").fetchall()
+        except sqlite3.Error:
+            rows = []
+        matching = {_inventory_mac(row["mac"]) for row in rows
+                    if _inventory_mac(row["mac"]) and str(row["last_ip"] or "") == host}
+        if len(matching) == 1:
+            mac = next(iter(matching))
+        else:
+            unique = {_inventory_mac(row["mac"]) for row in rows if _inventory_mac(row["mac"])}
+            if len(unique) == 1:
+                mac = next(iter(unique))
+    if mac:
+        identity_source = f"deye-mac|{mac}|{unit_id}"
+        return hashlib.sha256(identity_source.encode("utf-8")).hexdigest()[:16], mac
+    identity_source = f"{deye.get('host', '')}|{unit_id}"
+    return hashlib.sha256(identity_source.encode("utf-8")).hexdigest()[:16], None
+
+
+def _merge_legacy_deye_energy_history(conn: sqlite3.Connection, *, category: str,
+                                      equipment_id: str, model: str | None,
+                                      unit_id: Any, identity_mac: str | None) -> int:
+    """Reattach old IP-keyed Deye samples only when the installation is unambiguous.
+
+    Older releases keyed the equipment row by IP and did not retain that IP in
+    its metadata. Require a unique inventoried inverter MAC plus exact model
+    and Modbus unit matches before moving samples; keep the old equipment row
+    as an archived reference for any associated evidence.
+    """
+    if not identity_mac or not model:
+        return 0
+    try:
+        inventory_macs = {_inventory_mac(row[0]) for row in conn.execute(
+            "SELECT DISTINCT mac FROM gateway_device_inventory WHERE mac<>'' AND (device_type='inverter' OR source_provider='deye')")
+            if _inventory_mac(row[0])}
+    except sqlite3.Error:
+        return 0
+    if inventory_macs != {identity_mac}:
+        return 0
+    canonical_model = str(model).strip().casefold()
+    try:
+        canonical_unit = int(unit_id)
+    except (TypeError, ValueError):
+        return 0
+    prefix = "deye-inverter-" if category == "inversores" else "deye-battery-"
+    candidates = conn.execute("""SELECT id,model,config_json FROM energy_equipment
+        WHERE category=? AND protocol='Modbus TCP FC03' AND id LIKE ? AND id<>?""",
+                              (category, prefix + "%", equipment_id)).fetchall()
+    moved = 0
+    for row in candidates:
+        if str(row["model"] or "").strip().casefold() != canonical_model:
+            continue
+        try:
+            legacy_config = json.loads(row["config_json"] or "{}")
+            legacy_unit = int(legacy_config.get("unit_id", 1))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        legacy_mac = _inventory_mac(legacy_config.get("identity_mac") or "")
+        if legacy_unit != canonical_unit or (legacy_mac and legacy_mac != identity_mac):
+            continue
+        old_id = row["id"]
+        conn.execute("""DELETE FROM energy_readings AS old WHERE old.equipment_id=? AND EXISTS(
+            SELECT 1 FROM energy_readings AS current WHERE current.equipment_id=?
+              AND current.field=old.field AND current.observed_at=old.observed_at
+              AND current.source=old.source)""", (old_id, equipment_id))
+        cursor = conn.execute("UPDATE energy_readings SET equipment_id=? WHERE equipment_id=?",
+                              (equipment_id, old_id))
+        moved += max(0, cursor.rowcount)
+        archived_config = {**legacy_config, "identity_mac": identity_mac,
+                           "historical_identity_merged_into": equipment_id}
+        archived_name = "Inversor Deye · identidade antiga" if category == "inversores" else "Bateria Deye · identidade antiga"
+        conn.execute("""UPDATE energy_equipment SET name=?,protocol=?,connection_state='UNKNOWN',
+            config_json=?,status='ARCHIVED',updated_at=? WHERE id=?""",
+            (archived_name, "Modbus TCP FC03 (histórico associado)",
+             json.dumps(archived_config, sort_keys=True, separators=(",", ":")), utcnow(), old_id))
+    return moved
+
+
 def _persist_deye_telemetry(conn: sqlite3.Connection, deye: dict[str, Any] | None) -> int:
     """Store a successful Deye FC03 snapshot in the canonical energy registry."""
     if not isinstance(deye, dict) or deye.get("connection_state") != "mapped_registers_response":
@@ -2098,7 +2189,7 @@ def _persist_deye_telemetry(conn: sqlite3.Connection, deye: dict[str, Any] | Non
     metrics = deye.get("metrics")
     if not isinstance(metrics, list) or not metrics:
         return 0
-    identity = hashlib.sha256(f"{deye.get('host', '')}|{deye.get('unit_id', 1)}".encode("utf-8")).hexdigest()[:16]
+    identity, identity_mac = _deye_energy_identity(conn, deye)
     equipment_by_category = {
         "inversores": (f"deye-inverter-{identity}", "Inversor Deye"),
         "baterias": (f"deye-battery-{identity}", "Bateria Deye"),
@@ -2120,8 +2211,12 @@ def _persist_deye_telemetry(conn: sqlite3.Connection, deye: dict[str, Any] | Non
             "implemented_capabilities": ["FC03 register-map telemetry"],
             "verified_capabilities": [],
             "limitations": ["Candidate register map; exact device firmware and meter/CT semantics are not manufacturer-validated."],
-            "config": {"unit_id": deye.get("unit_id", 1), "trust": "LIVE_UNVERIFIED"},
+            "config": {"unit_id": deye.get("unit_id", 1), "trust": "LIVE_UNVERIFIED",
+                       "identity_mac": identity_mac, "last_communicated_ip": deye.get("host")},
         }, equipment_id=equipment_id)
+        if category in {"inversores", "baterias"}:
+            _merge_legacy_deye_energy_history(conn, category=category, equipment_id=equipment_id,
+                model=deye.get("model"), unit_id=deye.get("unit_id", 1), identity_mac=identity_mac)
         for item in category_metrics:
             energy_registry.add_reading(conn, equipment_id, {
                 "field": item["field"], "value": item["value"], "unit": item.get("unit"),
@@ -5122,7 +5217,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.177"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.178"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

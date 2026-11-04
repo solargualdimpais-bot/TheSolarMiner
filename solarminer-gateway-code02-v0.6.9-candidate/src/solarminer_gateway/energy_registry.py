@@ -90,7 +90,7 @@ def upsert_equipment(conn: sqlite3.Connection, payload: dict[str, Any], equipmen
 def list_equipment(conn: sqlite3.Connection, category: str | None = None) -> list[dict[str, Any]]:
     ensure_schema(conn)
     if category is not None and category not in CATEGORIES: raise ValueError("invalid_energy_category")
-    rows = conn.execute("SELECT * FROM energy_equipment WHERE category=? ORDER BY name,id" if category else "SELECT * FROM energy_equipment ORDER BY category,name,id", (category,) if category else ()).fetchall()
+    rows = conn.execute("SELECT * FROM energy_equipment WHERE category=? AND status<>'ARCHIVED' ORDER BY name,id" if category else "SELECT * FROM energy_equipment WHERE status<>'ARCHIVED' ORDER BY category,name,id", (category,) if category else ()).fetchall()
     result = []
     for row in rows:
         item = equipment_dict(row)

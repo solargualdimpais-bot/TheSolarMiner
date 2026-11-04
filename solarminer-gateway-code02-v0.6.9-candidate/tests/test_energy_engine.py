@@ -257,6 +257,24 @@ def test_single_cloud_station_history_is_merged_into_the_only_modbus_device():
     assert tuple(row) == ("deye-inverter-local", "DEYE_CLOUD_HISTORY")
 
 
+def test_cloud_station_history_stays_separate_when_multiple_local_inverters_exist():
+    conn = database()
+    for equipment_id in ("deye-inverter-local-a", "deye-inverter-local-b"):
+        energy_registry.upsert_equipment(conn, {"category": "inversores", "name": equipment_id,
+            "protocol": "Modbus TCP FC03", "connection_state": "CONNECTED"}, equipment_id=equipment_id)
+    energy_registry.upsert_equipment(conn, {"category": "inversores", "name": "Cloud station",
+        "protocol": "Deye Cloud OpenAPI", "connection_state": "CONNECTED"}, equipment_id="deye-inverter-cloud")
+    energy_registry.add_reading(conn, "deye-inverter-cloud", {
+        "field": "pv_total_power", "value": 1800, "unit": "W",
+        "observed_at": "2026-10-24T12:00:00+00:00",
+        "source": "DEYE_CLOUD_HISTORY", "trust": "LIVE_UNVERIFIED"})
+
+    energy_engine._merge_single_cloud_device_history(conn)
+
+    row = conn.execute("SELECT equipment_id,source FROM energy_readings").fetchone()
+    assert tuple(row) == ("deye-inverter-cloud", "DEYE_CLOUD_HISTORY")
+
+
 def test_cloud_power_and_load_train_solar_reference_when_mppt_samples_are_absent():
     conn = database()
     energy_registry.upsert_equipment(conn, {"category": "inversores", "name": "Inversor",

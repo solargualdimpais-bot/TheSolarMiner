@@ -1080,6 +1080,84 @@ def test_successful_deye_snapshot_is_persisted_for_pwa_energy_pages():
     conn.close()
 
 
+def test_deye_energy_identity_uses_inventoried_mac_across_ip_changes():
+    import json
+    import sqlite3
+    from solarminer_gateway import app as gateway
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    gateway.energy_registry.ensure_schema(conn)
+    conn.execute("""CREATE TABLE gateway_device_inventory(
+        device_key TEXT PRIMARY KEY, source_provider TEXT NOT NULL DEFAULT '',
+        device_type TEXT NOT NULL DEFAULT 'unknown', mac TEXT NOT NULL DEFAULT '',
+        last_ip TEXT NOT NULL DEFAULT '')""")
+    conn.execute("INSERT INTO gateway_device_inventory(device_key,source_provider,device_type,mac,last_ip) VALUES(?,?,?,?,?)",
+                 ("mac:AA:BB:CC:DD:EE:10", "deye", "inverter", "AA:BB:CC:DD:EE:10", "192.168.8.10"))
+
+    def snapshot(host, watts):
+        return {"host": host, "unit_id": 1, "model": "SUN-Deye",
+                "connection_state": "mapped_registers_response", "metrics": [
+                    {"field": "pv_total_power", "value": watts, "unit": "W", "category": "inversores"}]}
+
+    gateway._persist_deye_telemetry(conn, snapshot("192.168.8.10", 1000))
+    first = conn.execute("SELECT id,config_json FROM energy_equipment WHERE category='inversores'").fetchone()
+    assert json.loads(first["config_json"])["identity_mac"] == "AA:BB:CC:DD:EE:10"
+
+    conn.execute("UPDATE gateway_device_inventory SET last_ip='192.168.8.37' WHERE mac='AA:BB:CC:DD:EE:10'")
+    gateway._persist_deye_telemetry(conn, snapshot("192.168.8.37", 1200))
+    equipment = conn.execute("SELECT id FROM energy_equipment WHERE category='inversores'").fetchall()
+    assert [row["id"] for row in equipment] == [first["id"]]
+    readings = conn.execute("SELECT value_json FROM energy_readings WHERE equipment_id=? AND field='pv_total_power' ORDER BY observed_at",
+                            (first["id"],)).fetchall()
+    assert [json.loads(row["value_json"]) for row in readings] == [1000, 1200]
+    conn.close()
+
+
+def test_deye_mac_identity_migrates_only_matching_legacy_ip_history():
+    import json
+    import sqlite3
+    from solarminer_gateway import app as gateway
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    gateway.energy_registry.ensure_schema(conn)
+    conn.execute("""CREATE TABLE gateway_device_inventory(
+        device_key TEXT PRIMARY KEY, source_provider TEXT NOT NULL DEFAULT '',
+        device_type TEXT NOT NULL DEFAULT 'unknown', mac TEXT NOT NULL DEFAULT '',
+        last_ip TEXT NOT NULL DEFAULT '')""")
+    conn.execute("INSERT INTO gateway_device_inventory(device_key,source_provider,device_type,mac,last_ip) VALUES(?,?,?,?,?)",
+                 ("mac:AA:BB:CC:DD:EE:11", "deye", "inverter", "AA:BB:CC:DD:EE:11", "192.168.8.37"))
+    gateway.energy_registry.upsert_equipment(conn, {
+        "category": "inversores", "name": "Inversor Deye antigo", "manufacturer": "Deye",
+        "model": "SUN-15K", "protocol": "Modbus TCP FC03", "connection_state": "UNKNOWN",
+        "config": {"unit_id": 1, "trust": "LIVE_UNVERIFIED"},
+    }, equipment_id="deye-inverter-old-ip-key")
+    gateway.energy_registry.add_reading(conn, "deye-inverter-old-ip-key", {
+        "field": "pv_total_power", "value": 900, "unit": "W",
+        "observed_at": "2026-11-03T12:00:00+00:00", "source": "DEYE_MODBUS_FC03_CANDIDATE_MAP",
+        "trust": "LIVE_UNVERIFIED",
+    })
+    gateway._persist_deye_telemetry(conn, {
+        "host": "192.168.8.37", "unit_id": 1, "model": "SUN-15K",
+        "connection_state": "mapped_registers_response", "metrics": [
+            {"field": "pv_total_power", "value": 1200, "unit": "W", "category": "inversores"}],
+    })
+
+    legacy = conn.execute("SELECT protocol,config_json FROM energy_equipment WHERE id='deye-inverter-old-ip-key'").fetchone()
+    assert legacy["protocol"] == "Modbus TCP FC03 (histórico associado)"
+    assert conn.execute("SELECT status FROM energy_equipment WHERE id='deye-inverter-old-ip-key'").fetchone()[0] == "ARCHIVED"
+    assert json.loads(legacy["config_json"])["historical_identity_merged_into"].startswith("deye-inverter-")
+    canonical_id = json.loads(legacy["config_json"])["historical_identity_merged_into"]
+    assert [item["id"] for item in gateway.energy_registry.list_equipment(conn, "inversores")] == [canonical_id]
+    values = conn.execute("SELECT value_json FROM energy_readings WHERE equipment_id=? AND field='pv_total_power' ORDER BY observed_at",
+                          (canonical_id,)).fetchall()
+    assert [json.loads(row["value_json"]) for row in values] == [900, 1200]
+    conn.close()
+
+
 def test_deye_falls_back_to_read_only_fc03_when_identification_is_unsupported(monkeypatch):
     monkeypatch.setattr(integrations, "probe_tcp", lambda host, port, timeout: {"state": "tcp_reachable", "host": host, "port": port})
     def identify(*_args, **_kwargs):
