@@ -49,3 +49,17 @@ test("historical chart does not backfill future forecasts into missing past meas
   assert.match(app, /return before\?\.value;\};/);
   assert.doesNotMatch(app, /return before\?\.value\?\?after\?\.value/);
 });
+
+test("miner page only shows the named miner tabs, and the situation power comes from its Tuya breaker", () => {
+  assert.match(app, /const equipmentCards=page==="mineradoras"\?"":/);
+  assert.match(app, /function minerAssociatedBreakerReading\(miner, loads, registeredMinerCount\)/);
+  assert.match(app, /telemetry\[load\.id\].*load\.tuya_device_id/);
+  assert.match(app, /Potência · disjuntor Tuya/);
+  assert.match(app, /filter\(item=>!\["miner_power_w","miner_power"\]/);
+});
+
+test("miner commands submenu includes an authenticated power target action", () => {
+  assert.match(app, /data-miner-section="commands"[^`]*Alvo de potência \(W\)/);
+  assert.match(app, /id="antminer-section-apply-watt"/);
+  assert.match(app, /writeGatewayAntminerManagement\("set_power_target",\{watt\}\)/);
+});
