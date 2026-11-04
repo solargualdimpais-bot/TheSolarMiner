@@ -36,7 +36,16 @@ test("periodic energy refresh does not redraw miner and load configuration pages
 });
 
 test("registered miners have individual named tabs and unsupported machines stay read-only", () => {
+  assert.match(app, /registeredMiners\.length\?`<nav class="ws-horizontal-tabs miner-equipment-tabs"/);
   assert.match(app, /data-miner-equipment-select=/);
+  assert.match(app, /data-miner-section="state"/);
+  assert.match(app, /equipmentConnectionIsLive\(activeMiner\)/);
   assert.match(app, /não são apresentados comandos que poderiam atingir outra máquina/);
   assert.match(app, /activeMiner\?\.name/);
+  assert.match(app, /<details class="miner-load-editor" open>/);
+});
+
+test("historical chart does not backfill future forecasts into missing past measurements", () => {
+  assert.match(app, /return before\?\.value;\};/);
+  assert.doesNotMatch(app, /return before\?\.value\?\?after\?\.value/);
 });
