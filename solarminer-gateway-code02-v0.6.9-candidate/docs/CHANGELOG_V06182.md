@@ -1,0 +1,1 @@
+# Gateway 0.6.182`n`n- Confirms the network identity after a fresh scan verifies a unique IP/MAC pair, independent of provider control readiness.`n- Runs a read-only Tuya TCP reachability check on save and returns its result separately from DPS authentication.`n- Added regression coverage for unique network confirmation and Tuya reachability reporting.`n

@@ -1,0 +1,1 @@
+# PWA 0.5.130`n`n- Marks a device identified after a fresh scan confirms a unique IP/MAC pair, independently of Tuya control readiness.`n- Tests Tuya LAN port reachability automatically on save and presents the result separately from DPS availability.`n- Keeps network-identified devices in the Confirmed tab with a clear control-readiness status.`n

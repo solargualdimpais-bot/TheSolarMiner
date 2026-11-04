@@ -840,9 +840,12 @@ def test_network_device_detail_save_uses_mac_and_persists_name(client, monkeypat
     report = {"hosts": [{"ip": "192.168.10.44", "mac": "AA:BB:CC:DD:EE:44",
                          "manufacturer": "Example", "model": "Bridge", "discovery_methods": ["arp_sweep"]}]}
     monkeypatch.setattr(gateway.network_scanner, "scan_attached_networks", lambda: report)
+    monkeypatch.setattr(gateway.hardware_integrations, "probe_tuya_lan_reachability",
+                        lambda ip: {"state": "lan_reachable", "host": ip, "port": 6668, "latency_ms": 3.0})
 
     response = client.post("/api/v1/network/devices/save", headers=headers,
-                           json={"mac": "aa:bb:cc:dd:ee:44", "name": "Bridge da cave", "device_type": "router"})
+                           json={"mac": "aa:bb:cc:dd:ee:44", "name": "Bridge da cave", "device_type": "router",
+                                 "manufacturer": "Tuya", "product_id": "two-gang-dimmer"})
 
     assert response.status_code == 200, response.text
     saved = response.json()
@@ -851,7 +854,8 @@ def test_network_device_detail_save_uses_mac_and_persists_name(client, monkeypat
     assert saved["device"]["device_type"] == "router"
     assert saved["device"]["last_ip"] == "192.168.10.44"
     assert saved["device"]["device_key"] == "mac:AA:BB:CC:DD:EE:44"
-    assert saved["device"]["confirmation_status"] == "pending"
+    assert saved["device"]["confirmation_status"] == "confirmed"
+    assert saved["tuya_lan_probe"]["state"] == "lan_reachable"
     assert saved["ambiguous_ip"] is False
     listed = client.get("/api/v1/device-inventory", headers=headers)
     assert listed.status_code == 200, listed.text

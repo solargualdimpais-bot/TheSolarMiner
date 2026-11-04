@@ -15,10 +15,15 @@ test("Devices has one manufacturer-neutral network discovery flow", () => {
   assert.match(api, /\/api\/v1\/integrations\/shelly\/register/);
 });
 
+test("LAN result dialog tolerates double-clicks and reports save status in Devices onboarding", () => {
+  assert.match(app, /if\(dialog\.open\)return;/);
+  assert.match(app, /statusSelector=\$\("#local-network-status"\)\?"#local-network-status":"#device-add-status"/);
+});
+
 test("Shelly controls go through authenticated Gateway APIs and confirm observed state", () => {
   assert.match(api, /\/api\/v1\/integrations\/shelly\/\$\{encodeURIComponent\(deviceId\)\}\/switch/);
   assert.match(app, /result\.command_confirmed/);
-  assert.match(app, /confirmas que queres \$\{on\?/i);
+  assert.doesNotMatch(app, /confirmas que queres \$\{on\?/i);
 });
 
 test("AP onboarding remains explicitly unimplemented in this LAN delivery", () => {
@@ -50,4 +55,17 @@ test("Shelly Vintage card opens details and local light control is exposed", () 
   assert.match(app, /openShellyDeviceDetails\(smartShellyCard\.dataset\.smartDevice\)/);
   assert.match(app, /data-shelly-light-on/);
   assert.match(backend, /endpoint = f"\/light\/\{channel\}"/);
+  assert.match(app, /data-shelly-expand/);
+  assert.match(app, /data-shelly-settings/);
+  assert.match(app, /data-shelly-brightness-value/);
+  assert.match(api, /readGatewayShellyProductProfiles/);
+  const cardRenderer=app.match(/const shellyCards=list=>list\.map\(device=>\{[\s\S]*?\}\)\.join\(""\);/)?.[0]||"";
+  assert.doesNotMatch(cardRenderer, /range|data-shelly-apply-brightness|Procurar sensores BLU/);
+});
+
+test("Shelly inventory cards use the same compact layout and live only model-confirmed toggles", () => {
+  assert.match(app, /data-shelly-card-state/);
+  assert.match(app, /favorite-expand.*data-shelly-expand/);
+  assert.match(app, /shelly_blu_gateway_gwf_kz01/);
+  assert.match(app, /shelly_vintage_gen1/);
 });

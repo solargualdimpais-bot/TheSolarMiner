@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.128: controlos Shelly Vintage e descoberta BLU pela ponte.",
+  "description": "The Solar Miner PWA v0.5.130: catálogo de perfis Shelly por modelo e controlos uniformes.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",

@@ -57,13 +57,14 @@ from . import site_profile
 from . import integrations as hardware_integrations
 from . import network_scanner
 from . import shelly_credentials
+from . import shelly_product_registry
 from . import update_helper_client
 from . import updates as update_manager
 from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.180"
+PACKAGE_VERSION = "0.6.182"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -204,6 +205,13 @@ CREATE TABLE IF NOT EXISTS smart_product_catalog(
  capabilities_json TEXT NOT NULL DEFAULT '[]', source TEXT NOT NULL DEFAULT '',
  confidence TEXT NOT NULL DEFAULT 'observed', updated_at TEXT NOT NULL,
  PRIMARY KEY(manufacturer,protocol,product_code)
+);
+CREATE TABLE IF NOT EXISTS shelly_product_profiles(
+ manufacturer TEXT NOT NULL, protocol TEXT NOT NULL, product_code TEXT NOT NULL,
+ product_name TEXT NOT NULL, generation INTEGER NOT NULL, device_kind TEXT NOT NULL,
+ capabilities_json TEXT NOT NULL, metrics_json TEXT NOT NULL, commands_json TEXT NOT NULL,
+ settings_sections_json TEXT NOT NULL, sources_json TEXT NOT NULL, confidence TEXT NOT NULL,
+ updated_at TEXT NOT NULL, PRIMARY KEY(manufacturer,protocol,product_code)
 );
 CREATE INDEX IF NOT EXISTS idx_tuya_dps_category ON tuya_product_dps_map(protocol, category, device_kind, product_id);
 CREATE INDEX IF NOT EXISTS idx_shelly_command_history_device_time ON shelly_command_history(device_id,occurred_at DESC);
@@ -928,6 +936,7 @@ def initialize() -> None:
             return
     with db() as conn:
         conn.executescript(SCHEMA)
+        shelly_product_registry.ensure_schema(conn)
         _sync_tuya_canonical_features(conn)
         bootstrap_columns = {row[1] for row in conn.execute("PRAGMA table_info(bootstrap)")}
         if "setup_password_hash" not in bootstrap_columns:
@@ -967,6 +976,11 @@ def initialize() -> None:
             product_code="family:blu-gateway", product_name="Shelly BLU Gateway (modelo por confirmar)",
             device_kind="smart_blugw", capabilities=["bluetooth_gateway"], source="manufacturer_family",
             confidence="family_only")
+        for profile in shelly_product_registry.PROFILES:
+            _upsert_smart_product_catalog(conn, manufacturer=profile["manufacturer"], protocol=profile["protocol"],
+                product_code=profile["product_code"], product_name=profile["product_name"],
+                device_kind=profile["device_kind"], capabilities=profile["capabilities"],
+                source="manufacturer_documented", confidence=profile["confidence"])
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(11,?)", (utcnow(),))
         conn.execute("INSERT OR IGNORE INTO system_state(key,value) VALUES('bootstrap_state','UNINITIALIZED')")
         if not INSTANCE_MARKER.exists():
@@ -2960,6 +2974,18 @@ def read_smart_product_catalog(session: dict[str, Any] = Depends(require_permiss
         return {"products": rows, "product_count": len(rows), "source": "gateway_sqlite"}
 
 
+@app.get("/api/v1/smart-products/shelly-profiles")
+def read_shelly_product_profiles(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Return versioned, source-linked Shelly product capabilities and settings groups."""
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        shelly_product_registry.ensure_schema(conn)
+        profiles = shelly_product_registry.list_profiles(conn)
+        return {"profiles": profiles, "profile_count": len(profiles), "source": "gateway_sqlite"}
+
+
 class _ProductTableParser(HTMLParser):
     """Extract simple HTML tables without executing or rendering source markup."""
     def __init__(self) -> None:
@@ -3925,6 +3951,15 @@ def save_local_network_device(payload: dict[str, Any],
         shelly_detected = str(host.get("manufacturer") or "").casefold() == "shelly" and host.get("protocol") in {"shelly_rpc", "shelly_http_gen1"}
         provider = "tuya" if len(matching_tuya) == 1 else "shelly" if shelly_detected else ""
         provider_device_id = str(matching_tuya[0].get("device_id") or "") if provider == "tuya" else f"shelly:{mac}" if provider == "shelly" else ""
+        tuya_probe = None
+        if manufacturer.casefold() in {"tuya", "moes"} and current_ip:
+            # Read-only TCP check: confirms local Tuya service reachability,
+            # but does not claim that DPS authentication/read succeeded.
+            try:
+                tuya_probe = hardware_integrations.probe_tuya_lan_reachability(current_ip)
+            except Exception as exc:
+                tuya_probe = {"state": "failed", "host": current_ip,
+                              "reason": f"tuya_lan_probe_failed:{type(exc).__name__}"}
         now = utcnow()
         previous = conn.execute("SELECT last_ip,created_at FROM network_device_inventory WHERE mac=?", (mac,)).fetchone()
         last_ip = current_ip or (str(previous["last_ip"]) if previous else "")
@@ -3971,7 +4006,11 @@ def save_local_network_device(payload: dict[str, Any],
             ip=current_ip or last_ip, manufacturer=manufacturer or str(host.get("manufacturer") or ""),
             model=model or str(host.get("model") or ""),
                 product_id=product_id,
-            status="confirmed" if provider == "shelly" or (provider == "tuya" and matching_tuya[0].get("local_verified") is True) else "pending",
+            # Saving a device from a fresh scan confirms its network identity
+            # (MAC, and IP when unique). Connector readiness is tracked
+            # separately by the provider integration and must not keep a
+            # positively identified device in the generic "pending" list.
+            status="confirmed" if current_ip and not ambiguous_ip else "pending",
             name_source="owner", replace_ip=bool(current_ip))
         saved_integrations = hardware_integrations.load_config()
         _sync_gateway_device_inventory(conn, saved_integrations)
@@ -3982,7 +4021,8 @@ def save_local_network_device(payload: dict[str, Any],
         audit(conn, session["user_id"], "network.device.save", mac, "success", {
             "device_type": device_type, "has_current_ip": bool(current_ip), "ambiguous_ip": ambiguous_ip})
         conn.commit()
-        return {"device": central_saved, "ambiguous_ip": ambiguous_ip}
+        return {"device": central_saved, "ambiguous_ip": ambiguous_ip,
+                "tuya_lan_probe": tuya_probe}
 
 
 @app.post("/api/v1/network/scan/apply")
@@ -5457,7 +5497,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.180"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.182"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

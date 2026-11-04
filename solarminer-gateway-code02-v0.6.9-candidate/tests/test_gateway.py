@@ -136,6 +136,20 @@ def test_shelly_registration_uses_authenticated_owner_and_sqlite_mac_identity(cl
                        json={"name": "No auth", "host": "192.168.1.32"}).status_code == 401
 
 
+def test_owner_can_read_shelly_product_profiles_from_gateway_catalog(client):
+    owner, private, _ = create_owner(client)
+    token = login(client, owner, private).json()["access_token"]
+    response = client.get("/api/v1/smart-products/shelly-profiles",
+                          headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["source"] == "gateway_sqlite"
+    assert {item["product_code"] for item in payload["profiles"]} >= {
+        "shelly_vintage_gen1", "shelly_blu_gateway_gwf_kz01"
+    }
+    assert client.get("/api/v1/smart-products/shelly-profiles").status_code == 401
+
+
 @pytest.mark.skipif(os.name != "posix", reason="O terminal PTY do Gateway corre em Linux/POSIX")
 def test_owner_terminal_executes_and_streams_real_gateway_shell(client, tmp_path, monkeypatch):
     owner, private, _ = create_owner(client)

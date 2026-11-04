@@ -588,6 +588,9 @@ export async function readGatewayDeviceInventory() {
 export async function readGatewaySmartProductCatalog() {
   return gatewayApi("/api/v1/smart-products/catalog");
 }
+export async function readGatewayShellyProductProfiles() {
+  return gatewayApi("/api/v1/smart-products/shelly-profiles");
+}
 export async function readGatewayShellyDevices() {
   return gatewayApi("/api/v1/integrations/shelly/read", { method: "POST", body: {} });
 }
