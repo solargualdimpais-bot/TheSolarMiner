@@ -994,7 +994,7 @@ def test_deye_timeout_explains_web_credentials_do_not_authenticate_modbus(monkey
 
 def test_empty_hardware_configuration_is_reported_as_unconfigured():
     result = integrations.collect({})
-    assert result["configuration"] == {"deye": "not_configured", "antminer": "not_configured", "tuya": "not_configured"}
+    assert result["configuration"] == {"deye": "not_configured", "antminer": "not_configured", "tuya": "not_configured", "shelly": "not_configured"}
     assert result["deye"] is None and result["antminer"] is None
     assert result["errors"] == []
 

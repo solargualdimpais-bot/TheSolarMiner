@@ -160,6 +160,20 @@ test("Gateway terminal enables its input after authenticated readiness", () => {
   assert.match(app, /const socket = await openGatewayTerminalSocket\(\);\s*gatewayTerminalSocket = socket;[\s\S]{0,360}setGatewayTerminalConnected\(true\);\s*status\.textContent = "Terminal ligado ao Gateway\."/);
 });
 
+test("Owner DPS editor sends normalized characteristic, unit, and divisor to the Product ID map", () => {
+  const app = read("../app.js");
+  const auth = read("../gateway-auth.js");
+  assert.match(app, /Característica normalizada/);
+  assert.match(app, /daily_accumulated_energy/);
+  assert.match(app, /Informação descritiva · sem cálculo/);
+  assert.match(app, /standardDpsLabels/);
+  assert.match(app, /saveGatewayTuyaProductDpsDescription\(device\.device_id,dpsId,form\.elements\.description\.value,mapping\)/);
+  assert.match(auth, /saveGatewayTuyaProductDpsDescription\(deviceId, dpsId, description, mapping = \{\}\)/);
+  assert.match(auth, /body\.semantic_code = mapping\.semantic_code/);
+  assert.match(auth, /body\.unit = mapping\.unit/);
+  assert.match(auth, /body\.scale = mapping\.scale/);
+});
+
 test("Deye Cloud import explains HTTP 504 as a Gateway or proxy timeout", () => {
   const app = read("../app.js");
   const auth = read("../gateway-auth.js");

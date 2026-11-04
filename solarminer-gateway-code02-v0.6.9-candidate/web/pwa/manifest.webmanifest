@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.115: origem do MAC distinguida entre ARP capturado e vizinhos atuais.",
+  "description": "The Solar Miner PWA v0.5.118: descoberta Shelly local, inventário por MAC e comandos através do Gateway.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",
@@ -16,3 +16,4 @@
   ],
   "categories": ["utilities", "productivity"]
 }
+

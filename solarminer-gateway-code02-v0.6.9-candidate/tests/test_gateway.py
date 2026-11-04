@@ -89,6 +89,31 @@ def test_owner_can_check_tesla_presence_from_local_neighbour_cache(client, monke
     assert client.post("/api/v1/energy/ev/tesla/presence").status_code == 401
 
 
+def test_shelly_registration_uses_authenticated_owner_and_sqlite_mac_identity(client, monkeypatch):
+    owner, private, _ = create_owner(client)
+    token = login(client, owner, private).json()["access_token"]
+    monkeypatch.setattr(gateway.hardware_integrations.shelly_integration, "identify_and_read", lambda host: {
+        "host": host, "manufacturer": "Shelly", "model": "Plus 1PM", "mac": "AA:BB:CC:DD:EE:30",
+        "generation": 2, "protocol": "shelly_rpc", "firmware": "1.4", "capabilities": ["relay", "power"],
+        "components": [], "status": {}, "observed_at": time.time(), "command_sent": False})
+    headers = {"Authorization": f"Bearer {token}"}
+    first = client.post("/api/v1/integrations/shelly/register", headers=headers,
+                        json={"name": "Shelly hall", "host": "192.168.1.30"})
+    assert first.status_code == 200, first.text
+    assert first.json()["device"]["mac"] == "AA:BB:CC:DD:EE:30"
+    second = client.post("/api/v1/integrations/shelly/register", headers=headers,
+                         json={"name": "Shelly hall", "host": "192.168.1.31"})
+    assert second.status_code == 200, second.text
+    with gateway.db() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM shelly_devices WHERE mac='AA:BB:CC:DD:EE:30'").fetchone()[0] == 1
+        device = conn.execute("SELECT host FROM shelly_devices WHERE mac='AA:BB:CC:DD:EE:30'").fetchone()
+        assert device["host"] == "192.168.1.31"
+        inventory = conn.execute("SELECT last_ip FROM gateway_device_inventory WHERE mac='AA:BB:CC:DD:EE:30'").fetchone()
+        assert inventory["last_ip"] == "192.168.1.31"
+    assert client.post("/api/v1/integrations/shelly/register",
+                       json={"name": "No auth", "host": "192.168.1.32"}).status_code == 401
+
+
 @pytest.mark.skipif(os.name != "posix", reason="O terminal PTY do Gateway corre em Linux/POSIX")
 def test_owner_terminal_executes_and_streams_real_gateway_shell(client, tmp_path, monkeypatch):
     owner, private, _ = create_owner(client)
@@ -900,6 +925,23 @@ def test_migration_v2_upgrades_existing_v1_database_without_losing_users(tmp_pat
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 
+def test_owner_dps_semantics_are_persisted_in_product_scoped_sqlite_map():
+    import sqlite3
+    with sqlite3.connect(":memory:") as conn:
+        conn.executescript(gateway.SCHEMA)
+        saved = gateway._persist_tuya_product_dps_map(conn, {"breaker-product": {
+            "product_name": "Energy breaker", "category": "switch", "device_kind": "breaker",
+            "dps_profile": {"dps": [{"dps_id": 18, "function_code": "cur_current",
+                "semantic_code": "current", "display_name": "Corrente", "unit": "mA",
+                "scale": 1, "confidence": "OWNER_CUSTOM"}]},
+            "custom_dps_overrides": {"18": {"label": "Corrente da carga", "semantic_code": "current",
+                "unit": "A", "data_type": "number", "scale": 1000}},
+        }})
+        row = conn.execute("SELECT protocol,product_id,dps_id,semantic_code,description,unit,scale,confidence FROM tuya_product_dps_map").fetchone()
+    assert saved == 1
+    assert row == ("tuya", "breaker-product", 18, "current", "Corrente da carga", "A", 1000.0, "OWNER_CUSTOM")
+
+
 def test_every_existing_protected_route_rejects_direct_unauthenticated_access(client):
     create_owner(client)
     _, public2 = keypair()
@@ -1067,7 +1109,7 @@ def test_sqlite_replace_trigger_and_migration_v2_remain_intact_after_a1b(client)
         conn.rollback()
         versions = [r[0] for r in conn.execute("SELECT version FROM schema_migrations ORDER BY version")]
         triggers = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
-    assert versions == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert versions == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     assert "protect_last_active_owner_replace" in triggers
 
 

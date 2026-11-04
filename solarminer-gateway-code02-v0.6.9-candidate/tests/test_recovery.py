@@ -490,7 +490,7 @@ def test_recovery_schema_migration_is_additive_and_versioned(client):
         versions = [r[0] for r in conn.execute("SELECT version FROM schema_migrations ORDER BY version")]
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert conn.execute("SELECT username FROM users WHERE id=?", (owner["user_id"],)).fetchone()[0] == "owner-a2"
-    assert versions == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert versions == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     assert "owner_recovery_keys" in tables
 
 

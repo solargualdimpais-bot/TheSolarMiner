@@ -46,13 +46,14 @@ from . import energy_engine
 from . import site_profile
 from . import integrations as hardware_integrations
 from . import network_scanner
+from . import shelly_credentials
 from . import update_helper_client
 from . import updates as update_manager
 from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.166"
+PACKAGE_VERSION = "0.6.169"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -137,9 +138,53 @@ CREATE TABLE IF NOT EXISTS device_observations(
 CREATE TABLE IF NOT EXISTS network_device_inventory(
  mac TEXT PRIMARY KEY, name TEXT NOT NULL, device_type TEXT NOT NULL DEFAULT 'unknown',
  manufacturer TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '', last_ip TEXT NOT NULL DEFAULT '',
+ product_id TEXT NOT NULL DEFAULT '',
  source_provider TEXT NOT NULL DEFAULT '', source_device_id TEXT NOT NULL DEFAULT '',
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_seen_at TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS gateway_device_inventory(
+ device_key TEXT PRIMARY KEY, source_provider TEXT NOT NULL DEFAULT '', source_device_id TEXT NOT NULL DEFAULT '',
+ source_links_json TEXT NOT NULL DEFAULT '[]', name TEXT NOT NULL, name_source TEXT NOT NULL DEFAULT 'source',
+ device_type TEXT NOT NULL DEFAULT 'unknown', mac TEXT NOT NULL DEFAULT '', last_ip TEXT NOT NULL DEFAULT '',
+ manufacturer TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '', product_id TEXT NOT NULL DEFAULT '',
+ confirmation_status TEXT NOT NULL DEFAULT 'pending' CHECK(confirmation_status IN ('pending','confirmed')),
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_seen_at TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS shelly_command_history(
+ command_id TEXT PRIMARY KEY, device_id TEXT NOT NULL, channel_id INTEGER NOT NULL,
+ requested_on INTEGER NOT NULL, command_state TEXT NOT NULL, observed_on INTEGER,
+ occurred_at TEXT NOT NULL, completed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS shelly_devices(
+ device_id TEXT PRIMARY KEY, mac TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+ host TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', generation INTEGER NOT NULL,
+ device_type TEXT NOT NULL DEFAULT 'smart',
+ protocol TEXT NOT NULL, firmware TEXT NOT NULL DEFAULT '', capabilities_json TEXT NOT NULL DEFAULT '[]',
+ room TEXT NOT NULL DEFAULT '', auth_ciphertext BLOB NOT NULL DEFAULT X'', enabled INTEGER NOT NULL DEFAULT 1,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_seen_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_shelly_devices_host ON shelly_devices(host);
+CREATE TABLE IF NOT EXISTS tuya_product_dps_map(
+ protocol TEXT NOT NULL DEFAULT 'tuya', manufacturer TEXT NOT NULL DEFAULT 'Tuya',
+ product_id TEXT NOT NULL, product_name TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '',
+ device_kind TEXT NOT NULL DEFAULT 'unknown', dps_id INTEGER NOT NULL, dps_code TEXT NOT NULL DEFAULT '',
+ semantic_code TEXT NOT NULL DEFAULT 'unknown', description TEXT NOT NULL DEFAULT '',
+ data_type TEXT NOT NULL DEFAULT 'unknown', unit TEXT, scale REAL, confidence TEXT NOT NULL DEFAULT 'UNKNOWN',
+ source TEXT NOT NULL DEFAULT '', validation_status TEXT NOT NULL DEFAULT 'reference_only',
+ read_supported INTEGER NOT NULL DEFAULT 1, write_supported INTEGER NOT NULL DEFAULT 0,
+ updated_at TEXT NOT NULL, PRIMARY KEY(protocol, product_id, dps_id)
+);
+CREATE TABLE IF NOT EXISTS smart_product_catalog(
+ manufacturer TEXT NOT NULL, protocol TEXT NOT NULL, product_code TEXT NOT NULL,
+ product_name TEXT NOT NULL DEFAULT '', device_kind TEXT NOT NULL DEFAULT 'smart',
+ capabilities_json TEXT NOT NULL DEFAULT '[]', source TEXT NOT NULL DEFAULT '',
+ confidence TEXT NOT NULL DEFAULT 'observed', updated_at TEXT NOT NULL,
+ PRIMARY KEY(manufacturer,protocol,product_code)
+);
+CREATE INDEX IF NOT EXISTS idx_tuya_dps_category ON tuya_product_dps_map(protocol, category, device_kind, product_id);
+CREATE INDEX IF NOT EXISTS idx_shelly_command_history_device_time ON shelly_command_history(device_id,occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_gateway_device_inventory_mac ON gateway_device_inventory(mac);
+CREATE INDEX IF NOT EXISTS idx_gateway_device_inventory_status ON gateway_device_inventory(confirmation_status, name);
 CREATE INDEX IF NOT EXISTS idx_device_events_device_time ON device_events(device_id, id DESC);
 CREATE TABLE IF NOT EXISTS owner_recovery_keys(
  id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL REFERENCES users(id),
@@ -277,6 +322,292 @@ def local_arp_entries(path: Path = Path("/proc/net/arp")) -> dict[str, str]:
     return entries
 
 
+def _inventory_mac(value: Any) -> str:
+    """Normalize saved MAC aliases to a single uppercase colon form."""
+    if not isinstance(value, str):
+        return ""
+    compact = re.sub(r"[^0-9A-Fa-f]", "", value)
+    if len(compact) != 12 or not re.fullmatch(r"[0-9A-Fa-f]{12}", compact):
+        return ""
+    compact = compact.upper()
+    return ":".join(compact[index:index + 2] for index in range(0, 12, 2))
+
+
+def _enrich_shelly_scan(report: dict[str, Any]) -> None:
+    """Ask announced Shelly hosts for their authoritative full MAC identity."""
+    for host in report.get("hosts", []):
+        if not isinstance(host, dict):
+            continue
+        evidence = " ".join(str(host.get(key) or "") for key in
+                            ("hostname", "friendly_name", "manufacturer", "model")).casefold()
+        if "shelly" not in evidence:
+            continue
+        try:
+            identity = hardware_integrations.shelly_integration.identify_and_read(str(host.get("ip") or ""))
+            shelly_mac = _inventory_mac(identity.get("mac"))
+            arp_mac = _inventory_mac(host.get("mac"))
+            if shelly_mac and (not arp_mac or arp_mac == shelly_mac):
+                host["mac"] = shelly_mac
+                host["mac_source"] = "shelly_device_info"
+                host["manufacturer"] = "Shelly"
+                host["model"] = identity.get("model") or host.get("model")
+                host["shelly_generation"] = identity.get("generation")
+                host["protocol"] = identity.get("protocol")
+                host["shelly_firmware"] = identity.get("firmware")
+                host["discovery_methods"] = sorted(set(host.get("discovery_methods", [])) | {"shelly_device_info"})
+                if "bluetooth" in identity.get("capabilities", []):
+                    try:
+                        bridge = hardware_integrations.shelly_integration.inspect_bluetooth_bridge(str(host.get("ip") or ""))
+                        host["shelly_bluetooth_bridge"] = {
+                            "candidate": bool(bridge.get("bridge_candidate")),
+                            "bthome_discovery_api": bridge.get("bthome_discovery_api", "not_supported"),
+                            "model": bridge.get("model") or identity.get("model"),
+                            "firmware": bridge.get("firmware") or identity.get("firmware"),
+                        }
+                    except (OSError, ValueError, RuntimeError):
+                        host["shelly_bluetooth_bridge"] = {"candidate": True, "bthome_discovery_api": "probe_failed"}
+            elif shelly_mac and arp_mac and shelly_mac != arp_mac:
+                host["identity_conflict"] = {"arp_mac": arp_mac, "device_mac": shelly_mac}
+        except (OSError, ValueError, RuntimeError):
+            continue
+
+
+def _unique_lan_ip_for_mac(report: dict[str, Any], mac_value: Any) -> str:
+    """Return a current private IP only when this scan ties one IP to one MAC."""
+    mac = _inventory_mac(mac_value)
+    if not mac:
+        return ""
+    conflicts = {_inventory_mac(item.get("mac")) for item in report.get("mac_ip_conflicts", [])
+                 if isinstance(item, dict)}
+    if mac in conflicts:
+        return ""
+    ips: set[str] = set()
+    for host in report.get("hosts", []):
+        if not isinstance(host, dict) or _inventory_mac(host.get("mac")) != mac:
+            continue
+        if not host.get("mac_ip_conflict") and host.get("ip"):
+            ips.add(str(host["ip"]).strip())
+        candidates = host.get("ip_candidates", [])
+        if isinstance(candidates, list):
+            ips.update(str(value).strip() for value in candidates if isinstance(value, str) and value.strip())
+    if len(ips) != 1:
+        return ""
+    try:
+        return hardware_integrations._private_ip(next(iter(ips)))
+    except ValueError:
+        return ""
+
+
+def _refresh_deye_host_by_inventory_mac(deye_config: dict[str, Any]) -> dict[str, Any] | None:
+    """Find a uniquely inventoried inverter MAC on the LAN and persist its current IP."""
+    try:
+        with db() as conn:
+            current_config = hardware_integrations.load_config()
+            _sync_gateway_device_inventory(conn, current_config)
+            rows = conn.execute("""SELECT mac,device_key FROM gateway_device_inventory
+                WHERE mac<>'' AND (device_type='inverter' OR source_provider='deye')""").fetchall()
+            by_mac = {_inventory_mac(row["mac"]): row["device_key"] for row in rows if _inventory_mac(row["mac"])}
+            conn.commit()
+        if len(by_mac) != 1:
+            return None
+        mac, device_key = next(iter(by_mac.items()))
+        report = network_scanner.scan_attached_networks()
+        discovered_ip = _unique_lan_ip_for_mac(report, mac)
+        if not discovered_ip:
+            return None
+        latest_config = hardware_integrations.load_config()
+        latest_deye = latest_config.get("deye") if isinstance(latest_config.get("deye"), dict) else {}
+        old_host = str(latest_deye.get("host") or deye_config.get("host") or "")
+        try:
+            old_host = hardware_integrations._private_ip(old_host)
+        except ValueError:
+            old_host = ""
+        latest_deye["host"] = discovered_ip
+        latest_config["deye"] = latest_deye
+        if old_host != discovered_ip:
+            hardware_integrations.save_config(latest_config)
+        with db() as conn:
+            now = utcnow()
+            conn.execute("UPDATE gateway_device_inventory SET last_ip=?,last_seen_at=?,updated_at=? WHERE device_key=?",
+                         (discovered_ip, now, now, device_key))
+            conn.commit()
+        return {**latest_deye, "host": discovered_ip, "inventory_mac": mac,
+                "ip_changed": old_host != discovered_ip}
+    except (OSError, RuntimeError, ValueError, sqlite3.Error, subprocess.SubprocessError) as exc:
+        LOG.warning("Deye IP refresh by inventory MAC failed (%s)", type(exc).__name__)
+        return None
+
+
+def _read_deye_with_inventory_recovery(deye_config: dict[str, Any]) -> dict[str, Any]:
+    """Read Deye once; after failure, find its inventoried MAC and retry the new IP once."""
+    try:
+        snapshot = hardware_integrations.read_deye(deye_config)
+    except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
+        snapshot = {"host": deye_config.get("host"), "port": deye_config.get("port", 502),
+                    "connection_state": "tcp_unreachable", "reason": str(exc)[:120],
+                    "metrics_decoded": False, "trust": "UNAVAILABLE"}
+    if isinstance(snapshot, dict) and snapshot.get("connection_state") == "mapped_registers_response":
+        return snapshot
+    refreshed = _refresh_deye_host_by_inventory_mac(deye_config)
+    if not refreshed:
+        return snapshot if isinstance(snapshot, dict) else {"connection_state": "failed", "metrics_decoded": False}
+    try:
+        retried = hardware_integrations.read_deye(refreshed)
+        retried["ip_refreshed_by_mac"] = bool(refreshed.get("ip_changed"))
+        retried["mac_verified_on_lan"] = True
+        return retried
+    except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
+        return {"host": refreshed["host"], "port": refreshed.get("port", 502),
+                "connection_state": "tcp_unreachable", "reason": str(exc)[:120],
+                "metrics_decoded": False, "trust": "UNAVAILABLE",
+                "ip_refreshed_by_mac": bool(refreshed.get("ip_changed")),
+                "mac_verified_on_lan": True}
+
+
+def _upsert_gateway_inventory_device(conn: sqlite3.Connection, *, provider: str, source_device_id: str,
+                                     name: str, device_type: str = "unknown", mac: str = "", ip: str = "",
+                                     manufacturer: str = "", model: str = "", status: str = "pending",
+                                     name_source: str = "source", replace_ip: bool = False,
+                                     product_id: str = "") -> dict[str, Any]:
+    """Merge a source identity or manually named LAN device into one inventory row."""
+    provider, source_device_id = str(provider or "unknown")[:48], str(source_device_id or "")[:160]
+    mac = _inventory_mac(mac)
+    name, device_type = str(name or "Dispositivo")[:120], str(device_type or "unknown")[:48]
+    manufacturer, model, ip, product_id = str(manufacturer or "")[:120], str(model or "")[:120], str(ip or "")[:64], str(product_id or "")[:128]
+    status = status if status in {"pending", "confirmed"} else "pending"
+    name_source = "owner" if name_source in {"owner", "local"} else "source"
+    current = conn.execute("SELECT * FROM gateway_device_inventory WHERE mac=? LIMIT 1", (mac,)).fetchone() if mac else None
+    if current is None and source_device_id:
+        current = conn.execute("SELECT * FROM gateway_device_inventory WHERE source_provider=? AND source_device_id=? LIMIT 1",
+                               (provider, source_device_id)).fetchone()
+    now = utcnow()
+    if current is None:
+        key = f"mac:{mac}" if mac else f"source:{provider}:{source_device_id or uuid.uuid4().hex}"
+        links = [{"provider": provider, "device_id": source_device_id}] if source_device_id else []
+        conn.execute("""INSERT INTO gateway_device_inventory
+            (device_key,source_provider,source_device_id,source_links_json,name,name_source,device_type,mac,last_ip,
+             manufacturer,model,product_id,confirmation_status,created_at,updated_at,last_seen_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (key, provider, source_device_id, json.dumps(links, separators=(",", ":")), name, name_source,
+             device_type, mac, ip, manufacturer, model, product_id, status, now, now, ""))
+        current = conn.execute("SELECT * FROM gateway_device_inventory WHERE device_key=?", (key,)).fetchone()
+    else:
+        # A source-only record gains its stable MAC key as soon as the MAC is
+        # known. The MAC lookup above prevents creating a second row for it.
+        mac_key = f"mac:{mac}" if mac else ""
+        if mac_key and current["device_key"] != mac_key:
+            conn.execute("UPDATE gateway_device_inventory SET device_key=? WHERE device_key=?",
+                         (mac_key, current["device_key"]))
+            current = conn.execute("SELECT * FROM gateway_device_inventory WHERE device_key=?",
+                                   (mac_key,)).fetchone()
+        try:
+            links = json.loads(current["source_links_json"] or "[]")
+        except (TypeError, ValueError):
+            links = []
+        if not isinstance(links, list):
+            links = []
+        if source_device_id and not any(isinstance(item, dict) and item.get("provider") == provider and
+                                        item.get("device_id") == source_device_id for item in links):
+            links.append({"provider": provider, "device_id": source_device_id})
+        keep_owner_name = current["name_source"] == "owner" and name_source != "owner"
+        resolved_name = current["name"] if keep_owner_name else name
+        resolved_name_source = current["name_source"] if keep_owner_name else name_source
+        resolved_ip = ip if replace_ip and ip else current["last_ip"] or ip
+        resolved_status = "confirmed" if status == "confirmed" else current["confirmation_status"]
+        conn.execute("""UPDATE gateway_device_inventory SET
+            source_provider=CASE WHEN ?='network' AND source_provider<>'' THEN source_provider ELSE ? END,
+            source_device_id=CASE WHEN ?='' THEN source_device_id ELSE ? END,
+            source_links_json=?,name=?,name_source=?,device_type=CASE WHEN ?='unknown' THEN device_type ELSE ? END,
+            mac=CASE WHEN ?='' THEN mac ELSE ? END,last_ip=?,
+            manufacturer=CASE WHEN ?='' THEN manufacturer ELSE ? END,
+            model=CASE WHEN ?='' THEN model ELSE ? END,confirmation_status=?,updated_at=?,
+            product_id=CASE WHEN ?='' THEN product_id ELSE ? END,
+            last_seen_at=CASE WHEN ?<>'' THEN ? ELSE last_seen_at END WHERE device_key=?""",
+            (provider, provider, source_device_id, source_device_id, json.dumps(links, separators=(",", ":")),
+             resolved_name, resolved_name_source, device_type, device_type, mac, mac, resolved_ip,
+             manufacturer, manufacturer, model, model, resolved_status, now, product_id, product_id,
+             now if replace_ip and ip else "", now, current["device_key"]))
+        current = conn.execute("SELECT * FROM gateway_device_inventory WHERE device_key=?", (current["device_key"],)).fetchone()
+    return dict(current)
+
+
+def _upsert_smart_product_catalog(conn: sqlite3.Connection, *, manufacturer: str, protocol: str,
+                                  product_code: str, product_name: str = "", device_kind: str = "smart",
+                                  capabilities: list[str] | None = None, source: str = "observed",
+                                  confidence: str = "observed") -> None:
+    manufacturer, protocol, product_code = str(manufacturer or "").strip()[:80], str(protocol or "").strip()[:48], str(product_code or "").strip()[:128]
+    if not manufacturer or not protocol or not product_code:
+        return
+    caps = sorted({str(value)[:64] for value in (capabilities or []) if isinstance(value, str)})
+    conn.execute("""INSERT INTO smart_product_catalog(manufacturer,protocol,product_code,product_name,device_kind,capabilities_json,source,confidence,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(manufacturer,protocol,product_code) DO UPDATE SET
+        product_name=CASE WHEN excluded.product_name<>'' THEN excluded.product_name ELSE smart_product_catalog.product_name END,
+        device_kind=CASE WHEN excluded.device_kind<>'smart' THEN excluded.device_kind ELSE smart_product_catalog.device_kind END,
+        capabilities_json=CASE WHEN excluded.capabilities_json<>'[]' THEN excluded.capabilities_json ELSE smart_product_catalog.capabilities_json END,
+        source=excluded.source,confidence=excluded.confidence,updated_at=excluded.updated_at""",
+        (manufacturer, protocol, product_code, str(product_name or "")[:120], str(device_kind or "smart")[:64],
+         json.dumps(caps, separators=(",", ":")), str(source or "observed")[:80], str(confidence or "observed")[:40], utcnow()))
+
+
+def _sync_gateway_device_inventory(conn: sqlite3.Connection, config: dict[str, Any]) -> None:
+    """Project saved provider identities into the Gateway's shared inventory."""
+    tuya = config.get("tuya", {}) if isinstance(config.get("tuya"), dict) else {}
+    devices = tuya.get("devices", []) if isinstance(tuya.get("devices"), list) else []
+    for device in devices:
+        if not isinstance(device, dict) or not device.get("device_id"):
+            continue
+        product_name = str(device.get("product_name") or "")
+        manufacturer = str(device.get("manufacturer") or ("Moes" if "moes" in product_name.casefold() else ""))
+        product_id = str(device.get("product_id") or "")
+        tuya_capabilities = [str(value) for value in (device.get("capability_labels") or {}).keys() if isinstance(value, str)]
+        _upsert_smart_product_catalog(conn, manufacturer=manufacturer or "Tuya", protocol="tuya",
+            product_code=product_id, product_name=product_name or str(device.get("model") or ""),
+            device_kind=str(device.get("device_kind_override") or device.get("device_kind") or "smart"),
+            capabilities=tuya_capabilities, source="tuya_cloud_inventory", confidence="cloud_synced")
+        _upsert_gateway_inventory_device(conn, provider="tuya", source_device_id=str(device["device_id"]),
+            name=str(device.get("name") or "Tuya"), device_type=str(device.get("device_kind_override") or device.get("device_kind") or "tuya"),
+            mac=str(device.get("local_mac") or device.get("mac") or device.get("mac_address") or ""),
+            ip=str(device.get("local_ip") or ""), manufacturer=manufacturer,
+            model=str(device.get("model") or product_name),
+            product_id=str(device.get("product_id") or ""),
+            status="confirmed" if device.get("local_verified") is True else "pending",
+            name_source="owner" if device.get("name_source") == "local" else "source")
+    for provider, device_type, default_name in (("deye", "inverter", "Deye inverter"),
+                                                 ("antminer", "miner", "Antminer"),
+                                                 ("tesla", "vehicle", "Tesla")):
+        item = config.get(provider, {}) if isinstance(config.get(provider), dict) else {}
+        if not any(item.get(key) for key in ("host", "local_ip", "local_mac", "model", "name", "vehicle_ids")):
+            continue
+        _upsert_gateway_inventory_device(conn, provider=provider, source_device_id="main",
+            name=str(item.get("name") or item.get("model") or default_name), device_type=device_type,
+            mac=str(item.get("local_mac") or item.get("mac") or ""), ip=str(item.get("local_ip") or item.get("host") or ""),
+            manufacturer=str(item.get("manufacturer") or ""), model=str(item.get("model") or ""),
+            status="confirmed" if item.get("local_verified") is True else "pending")
+    for item in conn.execute("SELECT * FROM shelly_devices WHERE enabled=1").fetchall():
+        try:
+            capabilities = json.loads(item["capabilities_json"] or "[]")
+        except (TypeError, ValueError):
+            capabilities = []
+        shelly_model = str(item["model"] or "")
+        _upsert_smart_product_catalog(conn, manufacturer="Shelly", protocol=str(item["protocol"] or "shelly"),
+            product_code=shelly_model, product_name=shelly_model, device_kind=str(item["device_type"] or "smart"),
+            capabilities=capabilities if isinstance(capabilities, list) else [], source="shelly_device_identification",
+            confidence="device_reported")
+        _upsert_gateway_device_inventory(conn, provider="shelly", source_device_id=str(item["device_id"]),
+            name=str(item["name"] or item["model"] or "Smart device"), device_type=str(item["device_type"] or "smart"),
+            mac=str(item["mac"] or ""), ip=str(item["host"] or ""), manufacturer="Shelly",
+            model=str(item["model"] or ""), status="confirmed" if item["protocol"] else "pending")
+    # Import scanner labels saved by older versions into the central inventory.
+    for item in conn.execute("SELECT * FROM network_device_inventory").fetchall():
+        _upsert_gateway_inventory_device(conn, provider=str(item["source_provider"] or "network"),
+            source_device_id=str(item["source_device_id"] or item["mac"]), name=str(item["name"]),
+            device_type=str(item["device_type"] or "unknown"), mac=str(item["mac"] or ""),
+            ip=str(item["last_ip"] or ""), manufacturer=str(item["manufacturer"] or ""),
+            model=str(item["model"] or ""), status="pending",
+            product_id=str(item["product_id"] or ""),
+            name_source="owner" if not item["source_provider"] or item["source_provider"] == "network" else "source")
+
+
 def ensure_private_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
@@ -314,6 +645,58 @@ def audit(conn: sqlite3.Connection, actor: str | None, action: str, target: str 
                  (utcnow(), actor, action, target, outcome, json.dumps(details or {}, separators=(",", ":"))))
 
 
+def _persist_tuya_product_dps_map(conn: sqlite3.Connection, product_schemas: Any) -> int:
+    """Index product-scoped Tuya DP meanings in SQLite for reuse and inspection."""
+    if not isinstance(product_schemas, dict):
+        return 0
+    saved = 0
+    stamp = utcnow()
+    for product_id, product in product_schemas.items():
+        if not isinstance(product_id, str) or not product_id or not isinstance(product, dict):
+            continue
+        profile = product.get("dps_profile") if isinstance(product.get("dps_profile"), dict) else {}
+        manufacturer = str(product.get("manufacturer") or "Tuya")[:80]
+        product_name = str(product.get("product_name") or "")[:120]
+        _upsert_smart_product_catalog(conn, manufacturer=manufacturer, protocol="tuya", product_code=product_id,
+            product_name=product_name, device_kind=str(product.get("device_kind") or "smart"),
+            capabilities=[str(row.get("semantic_code") or "") for row in (profile.get("dps") if isinstance(profile.get("dps"), list) else []) if isinstance(row, dict)],
+            source="tuya_product_dps_profile", confidence="product_scoped")
+        rows = profile.get("dps") if isinstance(profile.get("dps"), list) else []
+        overrides = product.get("custom_dps_overrides") if isinstance(product.get("custom_dps_overrides"), dict) else {}
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            dps_id = item.get("dps_id")
+            if isinstance(dps_id, bool) or not isinstance(dps_id, int) or not 1 <= dps_id <= 65535:
+                continue
+            override = overrides.get(str(dps_id)) if isinstance(overrides.get(str(dps_id)), dict) else {}
+            scale = override.get("scale", item.get("scale"))
+            if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not math.isfinite(float(scale)):
+                scale = None
+            values = (
+                "tuya", str(product.get("manufacturer") or "Tuya")[:64], product_id[:128],
+                str(product.get("product_name") or "")[:120], str(product.get("category") or "")[:64],
+                str(product.get("device_kind") or "unknown")[:32], dps_id,
+                str(override.get("function_code") or item.get("function_code") or "")[:64],
+                str(override.get("semantic_code") or item.get("semantic_code") or "unknown")[:64],
+                str(override.get("label") or item.get("display_name") or f"DPS {dps_id}")[:80],
+                str(override.get("data_type") or item.get("data_type") or "unknown")[:24],
+                str(override.get("unit") or item.get("unit") or "")[:16] or None, scale,
+                "OWNER_CUSTOM" if override else str(item.get("confidence") or "UNKNOWN")[:32],
+                "Gateway Product ID mapping" if override else str(item.get("source") or "")[:160],
+                str(item.get("validation_status") or "reference_only")[:64],
+                int(bool(item.get("read_supported", True))), int(bool(override.get("write_enabled")) and str(override.get("semantic_code")) in {"switch", "countdown", "child_lock"}), stamp,
+            )
+            conn.execute("""INSERT INTO tuya_product_dps_map(protocol,manufacturer,product_id,product_name,category,device_kind,dps_id,dps_code,semantic_code,description,data_type,unit,scale,confidence,source,validation_status,read_supported,write_supported,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(protocol,product_id,dps_id) DO UPDATE SET
+                manufacturer=excluded.manufacturer,product_name=excluded.product_name,category=excluded.category,device_kind=excluded.device_kind,
+                dps_code=excluded.dps_code,semantic_code=excluded.semantic_code,description=excluded.description,data_type=excluded.data_type,
+                unit=excluded.unit,scale=excluded.scale,confidence=excluded.confidence,source=excluded.source,
+                validation_status=excluded.validation_status,read_supported=excluded.read_supported,write_supported=excluded.write_supported,updated_at=excluded.updated_at""", values)
+            saved += 1
+    return saved
+
+
 def initialize() -> None:
     ensure_private_dir(DB_PATH.parent)
     if INSTANCE_MARKER.exists():
@@ -344,6 +727,15 @@ def initialize() -> None:
         if "account_hash" not in password_attempt_columns:
             conn.execute("ALTER TABLE password_device_attempts ADD COLUMN account_hash TEXT NOT NULL DEFAULT ''")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_password_device_attempts_account_time ON password_device_attempts(account_hash,attempted_at)")
+        network_inventory_columns = {row[1] for row in conn.execute("PRAGMA table_info(network_device_inventory)")}
+        if "product_id" not in network_inventory_columns:
+            conn.execute("ALTER TABLE network_device_inventory ADD COLUMN product_id TEXT NOT NULL DEFAULT ''")
+        gateway_inventory_columns = {row[1] for row in conn.execute("PRAGMA table_info(gateway_device_inventory)")}
+        if "product_id" not in gateway_inventory_columns:
+            conn.execute("ALTER TABLE gateway_device_inventory ADD COLUMN product_id TEXT NOT NULL DEFAULT ''")
+        shelly_columns = {row[1] for row in conn.execute("PRAGMA table_info(shelly_devices)")}
+        if "device_type" not in shelly_columns:
+            conn.execute("ALTER TABLE shelly_devices ADD COLUMN device_type TEXT NOT NULL DEFAULT 'smart'")
         conn.executescript(PRESENCE_SCHEMA)
         conn.executescript(A1_TRIGGERS)
         connector_manager.ensure_schema(conn)
@@ -357,6 +749,15 @@ def initialize() -> None:
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(6,?)", (utcnow(),))
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(7,?)", (utcnow(),))
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(8,?)", (utcnow(),))
+        conn.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(9,?)", (utcnow(),))
+        conn.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(10,?)", (utcnow(),))
+        conn.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(11,?)", (utcnow(),))
+        conn.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(12,?)", (utcnow(),))
+        _upsert_smart_product_catalog(conn, manufacturer="Shelly", protocol="shelly_bluetooth_gateway",
+            product_code="family:blu-gateway", product_name="Shelly BLU Gateway (modelo por confirmar)",
+            device_kind="smart_blugw", capabilities=["bluetooth_gateway"], source="manufacturer_family",
+            confidence="family_only")
+        conn.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(11,?)", (utcnow(),))
         conn.execute("INSERT OR IGNORE INTO system_state(key,value) VALUES('bootstrap_state','UNINITIALIZED')")
         if not INSTANCE_MARKER.exists():
             try:
@@ -500,7 +901,7 @@ async def _energy_sampling_loop() -> None:
         try:
             config = hardware_integrations.load_config().get("deye", {})
             if config.get("host") and config.get("enabled", True):
-                snapshot = await asyncio.to_thread(hardware_integrations.read_deye, config)
+                snapshot = await asyncio.to_thread(_read_deye_with_inventory_recovery, config)
                 if isinstance(snapshot, dict) and snapshot.get("connection_state") == "mapped_registers_response":
                     with _energy_sample_lock:
                         _latest_deye_sample = {**snapshot, "sampled_at": datetime.now(timezone.utc).isoformat(timespec="microseconds")}
@@ -1523,8 +1924,10 @@ def _tuya_devices_sync_work(session: dict[str, Any], cancelled: threading.Event)
             tuya["category_schemas"] = synced.get("category_schemas", tuya.get("category_schemas", {}))
             config["tuya"] = tuya
             hardware_integrations.save_config(config)
+            dps_maps_saved = _persist_tuya_product_dps_map(conn, tuya.get("product_schemas"))
             audit(conn, session["user_id"], "hardware.tuya.sync", "gateway", "success", {
                 "device_count": synced["device_count"],
+                "product_dps_maps": dps_maps_saved,
                 "local_keys_available": synced["local_keys_available"],
                 "schema_failures": synced["schema_failures"],
                 "cloud_pages": synced["pages"],
@@ -1607,10 +2010,13 @@ def _persist_deye_telemetry(conn: sqlite3.Connection, deye: dict[str, Any] | Non
 
 def _persist_antminer_telemetry(conn: sqlite3.Connection, miner: dict[str, Any] | None) -> int:
     """Store only documented, read-only Braiins/CGMiner measurements."""
-    if not isinstance(miner, dict) or miner.get("connection_state") != "api_responded":
-        return 0
-    host = miner.get("host")
+    host = miner.get("host") if isinstance(miner, dict) else None
     if not isinstance(host, str) or not host:
+        return 0
+    equipment_id = f"braiins-antminer-{hashlib.sha256(host.encode('utf-8')).hexdigest()[:16]}"
+    if miner.get("connection_state") != "api_responded":
+        conn.execute("UPDATE energy_equipment SET connection_state='DISCONNECTED',updated_at=? WHERE id=?",
+                     (datetime.now(timezone.utc).isoformat(timespec="microseconds"), equipment_id))
         return 0
     data = miner.get("data") if isinstance(miner.get("data"), dict) else {}
     summary_rows = (data.get("summary") or {}).get("SUMMARY", []) if isinstance(data.get("summary"), dict) else []
@@ -1640,8 +2046,6 @@ def _persist_antminer_telemetry(conn: sqlite3.Connection, miner: dict[str, Any] 
         if gh_value is not None and gh_value >= 0:
             metrics.append((f"miner_hashrate_{suffix}_ghs", round(gh_value, 3), "GH/s", f"SUMMARY.{source_field}"))
 
-    identity = hashlib.sha256(host.encode("utf-8")).hexdigest()[:16]
-    equipment_id = f"braiins-antminer-{identity}"
     observed_at = datetime.now(timezone.utc).isoformat(timespec="microseconds")
     try:
         timestamp = miner.get("observed_at")
@@ -1665,6 +2069,15 @@ def _persist_antminer_telemetry(conn: sqlite3.Connection, miner: dict[str, Any] 
             "evidence": {"api_field": api_field, "control_commands_sent": False},
         })
     return len(metrics)
+
+
+def _mark_antminer_disconnected(conn: sqlite3.Connection, config: dict[str, Any]) -> None:
+    """Do not leave a stale successful miner read labelled as currently connected."""
+    host = config.get("host") if isinstance(config, dict) else None
+    if isinstance(host, str) and host:
+        equipment_id = f"braiins-antminer-{hashlib.sha256(host.encode('utf-8')).hexdigest()[:16]}"
+        conn.execute("UPDATE energy_equipment SET connection_state='DISCONNECTED',updated_at=? WHERE id=?",
+                     (datetime.now(timezone.utc).isoformat(timespec="microseconds"), equipment_id))
 
 
 def _persist_antminer_braiins_tuner(conn: sqlite3.Connection, config: dict[str, Any],
@@ -1748,6 +2161,8 @@ def hardware_integrations_read(session: dict[str, Any] = Depends(require_permiss
             conn.execute("BEGIN")
             result["energy_readings_persisted"] = _persist_deye_telemetry(conn, result.get("deye"))
             result["antminer_energy_readings_persisted"] = _persist_antminer_telemetry(conn, result.get("antminer"))
+            if result.get("antminer") is None:
+                _mark_antminer_disconnected(conn, hardware_integrations.load_config().get("antminer", {}))
             for item in result.get("errors", []):
                 LOG.error("Hardware integration failure provider=%s reason=%s",
                           item.get("provider", "unknown"), item.get("reason", "unknown"))
@@ -2095,15 +2510,337 @@ def tuya_lan_discovery(session: dict[str, Any] = Depends(require_permission("man
             raise HTTPException(500, "tuya_lan_discovery_save_failed") from exc
 
 
+@app.get("/api/v1/device-inventory")
+def read_gateway_device_inventory(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Read the shared inventory, including cloud-synced and manually named devices."""
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        _sync_gateway_device_inventory(conn, hardware_integrations.load_config())
+        rows = [dict(row) for row in conn.execute(
+            "SELECT * FROM gateway_device_inventory ORDER BY CASE confirmation_status WHEN 'pending' THEN 0 ELSE 1 END, name COLLATE NOCASE")]
+        conn.commit()
+        return {"devices": rows, "device_count": len(rows)}
+
+
+@app.get("/api/v1/smart-products/catalog")
+def read_smart_product_catalog(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Return product identities and protocol capabilities known to the local catalog."""
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        rows = [dict(row) for row in conn.execute(
+            "SELECT * FROM smart_product_catalog ORDER BY manufacturer COLLATE NOCASE, product_name COLLATE NOCASE, product_code")]
+        return {"products": rows, "product_count": len(rows), "source": "gateway_sqlite"}
+
+
+@app.post("/api/v1/integrations/shelly/register")
+def register_shelly_device(payload: dict[str, Any],
+                           session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Identify a Shelly locally, verify its MAC, and add it to the shared inventory."""
+    if set(payload) - {"name", "host", "mac", "username", "password", "device_type"}:
+        raise HTTPException(422, "shelly_registration_payload_invalid")
+    name = str(payload.get("name") or "").strip()
+    device_type = str(payload.get("device_type") or "smart").strip().lower()[:64]
+    if not name or len(name) > 120:
+        raise HTTPException(422, "shelly_name_required")
+    try:
+        host = hardware_integrations._private_ip(payload.get("host"))
+    except ValueError as exc:
+        raise HTTPException(422, "shelly_private_ip_required") from exc
+    if payload.get("mac") is not None:
+        expected_mac = _inventory_mac(payload.get("mac"))
+        if not expected_mac:
+            raise HTTPException(422, "shelly_mac_invalid")
+    else:
+        expected_mac = ""
+    username, password = payload.get("username", ""), payload.get("password", "")
+    if (not isinstance(username, str) or not isinstance(password, str)
+            or len(username) > 128 or len(password) > 256):
+        raise HTTPException(422, "shelly_credentials_invalid")
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+    try:
+        reading = hardware_integrations.shelly_integration.identify_and_read(host, username=username, password=password)
+    except (RuntimeError, OSError) as exc:
+        raise HTTPException(502, "shelly_identification_failed") from exc
+    mac = _inventory_mac(reading.get("mac"))
+    if not mac:
+        raise HTTPException(502, "shelly_mac_not_returned_by_device")
+    if expected_mac and expected_mac != mac:
+        raise HTTPException(409, "shelly_mac_does_not_match_device")
+    shelly_device_id = f"shelly:{mac}"
+    try:
+        with db() as conn:
+            actor = _revalidate_actor(conn, session, "manage_gateway")
+            if actor["role"] != "owner":
+                raise HTTPException(403, "owner_required")
+            existing = conn.execute("SELECT device_id FROM shelly_devices WHERE mac=?", (mac,)).fetchone()
+            if existing is None and conn.execute("SELECT COUNT(*) FROM shelly_devices").fetchone()[0] >= 100:
+                raise HTTPException(409, "shelly_device_limit_reached")
+            now = utcnow()
+            capabilities = json.dumps(reading.get("capabilities", []), separators=(",", ":"))
+            auth_ciphertext = shelly_credentials.seal(DATA_DIR, username, password)
+            conn.execute("""INSERT INTO shelly_devices
+                (device_id,mac,name,host,model,generation,device_type,protocol,firmware,capabilities_json,room,auth_ciphertext,enabled,created_at,updated_at,last_seen_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,'',?,1,?,?,?)
+                ON CONFLICT(mac) DO UPDATE SET name=excluded.name,host=excluded.host,model=excluded.model,
+                generation=excluded.generation,device_type=excluded.device_type,protocol=excluded.protocol,firmware=excluded.firmware,
+                capabilities_json=excluded.capabilities_json,
+                auth_ciphertext=CASE WHEN length(excluded.auth_ciphertext)>0 THEN excluded.auth_ciphertext ELSE shelly_devices.auth_ciphertext END,
+                enabled=1,updated_at=excluded.updated_at,last_seen_at=excluded.last_seen_at""",
+                (shelly_device_id, mac, name, host, str(reading.get("model") or "")[:120],
+                 int(reading.get("generation") or 1), device_type, str(reading.get("protocol") or "")[:40],
+                 str(reading.get("firmware") or "")[:80], capabilities, auth_ciphertext, now, now, now))
+            central = _upsert_gateway_inventory_device(conn, provider="shelly", source_device_id=shelly_device_id,
+                name=name, device_type=device_type, mac=mac, ip=host, manufacturer="Shelly",
+                model=str(reading.get("model") or ""), status="confirmed", name_source="owner", replace_ip=True)
+            _upsert_smart_product_catalog(conn, manufacturer="Shelly", protocol=str(reading.get("protocol") or "shelly"),
+                product_code=str(reading.get("model") or ""), product_name=str(reading.get("model") or ""),
+                device_kind=device_type, capabilities=reading.get("capabilities", []),
+                source="shelly_device_identification", confidence="device_reported")
+            audit(conn, session["user_id"], "smart_device.shelly.register", mac, "success", {
+                "generation": reading.get("generation"), "protocol": reading.get("protocol"), "model": reading.get("model")})
+            conn.commit()
+    except HTTPException:
+        raise
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        LOG.warning("Shelly inventory registration failed (%s)", type(exc).__name__)
+        raise HTTPException(500, "shelly_registration_failed") from exc
+    return {"device": central, "reading": reading}
+
+
+@app.post("/api/v1/integrations/shelly/read")
+def read_shelly_devices(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Read registered Shelly devices over the local network; failures are isolated per device."""
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        shelly_rows = [dict(row) for row in conn.execute(
+            "SELECT device_id,name,host,mac,model,generation,protocol,firmware,auth_ciphertext FROM shelly_devices WHERE enabled=1")]
+    shelly_devices, credential_failures = [], []
+    for item in shelly_rows:
+        try:
+            item.update(shelly_credentials.open_credentials(DATA_DIR, item.pop("auth_ciphertext", b"")))
+            shelly_devices.append(item)
+        except ValueError:
+            credential_failures.append({"device_id": item.get("device_id"), "name": item.get("name"),
+                "host": item.get("host"), "manufacturer": "Shelly", "connection_state": "failed",
+                "reason": "shelly_credentials_unavailable", "command_sent": False})
+    # Device I/O is deliberately outside SQLite transactions: a sleeping device
+    # must not hold up unrelated inventory writes.
+    readings = credential_failures + hardware_integrations.shelly_integration.read_devices({"devices": shelly_devices})
+    failed_ids = {item.get("device_id") for item in readings if item.get("connection_state") != "connected"}
+    if failed_ids:
+        try:
+            report = network_scanner.scan_attached_networks()
+            _enrich_shelly_scan(report)
+            by_id = {item.get("device_id"): item for item in shelly_devices}
+            for index, reading in enumerate(readings):
+                if reading.get("device_id") not in failed_ids:
+                    continue
+                saved = by_id.get(reading.get("device_id"), {})
+                mac = _inventory_mac(saved.get("mac"))
+                candidate_ip = _unique_lan_ip_for_mac(report, mac)
+                if not candidate_ip:
+                    continue
+                retry_device = {**saved, "host": candidate_ip}
+                retry = hardware_integrations.shelly_integration.read_devices({"devices": [retry_device]})
+                if retry and retry[0].get("connection_state") == "connected" and _inventory_mac(retry[0].get("mac")) == mac:
+                    readings[index] = retry[0]
+        except Exception as exc:
+            # The original local read result remains authoritative for this
+            # cycle; a failed recovery scan must not erase a saved address.
+            LOG.info("Shelly MAC-based IP recovery unavailable (%s)", type(exc).__name__)
+    now = utcnow()
+    connected_by_mac = {_inventory_mac(item.get("mac")): item for item in readings
+                        if item.get("connection_state") == "connected" and _inventory_mac(item.get("mac"))}
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        _sync_gateway_device_inventory(conn, hardware_integrations.load_config())
+        for mac, reading in connected_by_mac.items():
+            conn.execute("UPDATE shelly_devices SET host=?,last_seen_at=?,updated_at=? WHERE mac=? AND enabled=1",
+                (str(reading.get("host") or "")[:64], now, now, mac))
+            conn.execute("""UPDATE gateway_device_inventory SET last_ip=?,last_seen_at=?,updated_at=?
+                WHERE mac=? AND source_provider='shelly'""",
+                (str(reading.get("host") or "")[:64], now, now, mac))
+        audit(conn, session["user_id"], "smart_device.shelly.read", "shelly_devices",
+              "partial" if any(item.get("connection_state") != "connected" for item in readings) else "success",
+              {"device_count": len(readings), "connected_count": sum(item.get("connection_state") == "connected" for item in readings),
+               "cloud_used": False, "commands_sent": False})
+        conn.commit()
+        return {"devices": readings, "device_count": len(readings),
+                "connected_count": sum(item.get("connection_state") == "connected" for item in readings),
+                "observed_at": now, "source": "local_lan", "cloud_used": False, "commands_sent": False}
+
+
+@app.post("/api/v1/integrations/shelly/discover")
+def discover_shelly_devices(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Return Shelly devices found by the existing attached-LAN scanner, without persisting them."""
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+    try:
+        report = network_scanner.scan_attached_networks()
+        _enrich_shelly_scan(report)
+    except Exception as exc:
+        LOG.warning("Shelly LAN discovery failed (%s)", type(exc).__name__)
+        raise HTTPException(502, "shelly_discovery_failed") from exc
+    found = []
+    for item in report.get("hosts", []):
+        evidence = " ".join(str(item.get(key) or "") for key in ("manufacturer", "model", "friendly_name", "hostname"))
+        if not re.search(r"shelly", evidence, re.I) or not item.get("ip"):
+            continue
+        found.append({key: item.get(key) for key in ("ip", "mac", "mac_source", "manufacturer", "model",
+                      "friendly_name", "hostname", "shelly_generation", "protocol", "shelly_firmware",
+                      "discovery_methods", "identity_conflict") if item.get(key) is not None})
+    found.sort(key=lambda item: str(item.get("ip") or ""))
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        for item in found:
+            if str(item.get("manufacturer") or "").casefold() == "shelly" and item.get("model"):
+                _upsert_smart_product_catalog(conn, manufacturer="Shelly", protocol=str(item.get("protocol") or "shelly"),
+                    product_code=str(item["model"]), product_name=str(item["model"]),
+                    device_kind="smart", capabilities=[], source="shelly_lan_discovery", confidence="discovered_unverified")
+        audit(conn, session["user_id"], "smart_device.shelly.discover", "lan", "success", {
+            "scanned_count": report.get("scanned_count", 0), "found_count": len(found),
+            "cloud_used": False, "devices_registered": False})
+        conn.commit()
+        return {"devices": found, "device_count": len(found), "scanned_count": report.get("scanned_count", 0),
+                "networks": report.get("networks", []), "source": "attached_lan_scanner", "cloud_used": False,
+                "registered": False}
+
+
+@app.post("/api/v1/integrations/shelly/{device_id}/switch")
+def command_shelly_switch(device_id: str, payload: dict[str, Any],
+                          session: dict[str, Any] = Depends(require_permission("operate"))) -> dict[str, Any]:
+    """Send one idempotent relay target state and verify it with a fresh local read."""
+    if set(payload) - {"channel", "on"} or not isinstance(payload.get("on"), bool):
+        raise HTTPException(422, "shelly_switch_command_invalid")
+    channel = payload.get("channel", 0)
+    if isinstance(channel, bool) or not isinstance(channel, int) or not 0 <= channel <= 31:
+        raise HTTPException(422, "shelly_switch_channel_invalid")
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "operate")
+        if actor["role"] not in {"owner", "admin", "operator"}:
+            raise HTTPException(403, "permission_denied")
+        config = hardware_integrations.load_config()
+        device = conn.execute("SELECT * FROM shelly_devices WHERE device_id=? AND enabled=1", (device_id,)).fetchone()
+        if not device:
+            raise HTTPException(404, "shelly_device_not_found")
+        device = dict(device)
+        try:
+            device.update(shelly_credentials.open_credentials(DATA_DIR, device.get("auth_ciphertext")))
+        except ValueError as exc:
+            raise HTTPException(409, "shelly_credentials_unavailable") from exc
+        host = str(device.get("host") or "")
+        try:
+            host = hardware_integrations._private_ip(host)
+        except ValueError as exc:
+            raise HTTPException(422, "shelly_private_ip_required") from exc
+        command_id = str(uuid.uuid4())
+        occurred_at = utcnow()
+        conn.execute("INSERT INTO shelly_command_history(command_id,device_id,channel_id,requested_on,command_state,occurred_at) VALUES(?,?,?,?,?,?)",
+                     (command_id, device_id, channel, int(payload["on"]), "PENDING", occurred_at))
+        conn.commit()
+        try:
+            result = hardware_integrations.shelly_integration.control_switch(
+                host, int(device.get("generation") or 0), channel, payload["on"],
+                username=str(device.get("username") or ""), password=str(device.get("password") or ""))
+            state = str(result.get("command_state") or "UNKNOWN")
+            observed = result.get("observed_on")
+            completed_at = utcnow()
+            conn.execute("UPDATE shelly_command_history SET command_state=?,observed_on=?,completed_at=? WHERE command_id=?",
+                         (state, int(observed) if isinstance(observed, bool) else None, completed_at, command_id))
+            audit(conn, session["user_id"], "smart_device.shelly.switch", device_id,
+                  "confirmed" if state == "CONFIRMED" else "accepted_unconfirmed",
+                  {"command_id": command_id, "channel": channel, "requested_on": payload["on"],
+                   "observed_on": observed if isinstance(observed, bool) else None})
+            conn.commit()
+            return {"command_id": command_id, "command_state": state,
+                    "command_accepted": bool(result.get("command_accepted")),
+                    "command_confirmed": state == "CONFIRMED", "requested_on": payload["on"],
+                    "observed_on": observed if isinstance(observed, bool) else None,
+                    "observed_at": result.get("reading", {}).get("observed_at")}
+        except (RuntimeError, OSError, ValueError) as exc:
+            conn.execute("UPDATE shelly_command_history SET command_state='FAILED',completed_at=? WHERE command_id=?",
+                         (utcnow(), command_id))
+            audit(conn, session["user_id"], "smart_device.shelly.switch", device_id, "failed",
+                  {"command_id": command_id, "channel": channel, "reason": str(exc)[:100]})
+            conn.commit()
+            raise HTTPException(502, "shelly_command_failed") from exc
+
+
+@app.post("/api/v1/integrations/shelly/{device_id}/light")
+def command_shelly_light(device_id: str, payload: dict[str, Any],
+                          session: dict[str, Any] = Depends(require_permission("operate"))) -> dict[str, Any]:
+    """Set a supported Shelly light property over LAN, then verify with a fresh read."""
+    allowed = {"component", "channel", "on", "brightness", "rgb", "white", "color_temperature"}
+    if not isinstance(payload, dict) or set(payload) - allowed or not payload.get("component"):
+        raise HTTPException(422, "shelly_light_command_invalid")
+    component, channel = payload.get("component"), payload.get("channel", 0)
+    if component not in {"light", "rgb", "rgbw", "cct", "color"}:
+        raise HTTPException(422, "shelly_light_component_invalid")
+    if isinstance(channel, bool) or not isinstance(channel, int) or not 0 <= channel <= 31:
+        raise HTTPException(422, "shelly_light_channel_invalid")
+    values = {key: payload[key] for key in ("on", "brightness", "rgb", "white", "color_temperature") if key in payload}
+    if not values:
+        raise HTTPException(422, "shelly_light_command_empty")
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "operate")
+        if actor["role"] not in {"owner", "admin", "operator"}:
+            raise HTTPException(403, "permission_denied")
+        row = conn.execute("SELECT * FROM shelly_devices WHERE device_id=? AND enabled=1", (device_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "shelly_device_not_found")
+    device = dict(row)
+    try:
+        credentials = shelly_credentials.open_credentials(DATA_DIR, device.get("auth_ciphertext"))
+        host = hardware_integrations._private_ip(device.get("host"))
+        result = hardware_integrations.shelly_integration.control_light(
+            host, int(device.get("generation") or 0), str(component), channel,
+            username=str(credentials.get("username") or ""), password=str(credentials.get("password") or ""), **values)
+    except (RuntimeError, OSError, ValueError) as exc:
+        with db() as conn:
+            actor = _revalidate_actor(conn, session, "operate")
+            audit(conn, session["user_id"], "smart_device.shelly.light", device_id, "failed",
+                  {"component": component, "channel": channel, "reason": str(exc)[:100]})
+            conn.commit()
+        raise HTTPException(502, "shelly_light_command_failed") from exc
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "operate")
+        audit(conn, session["user_id"], "smart_device.shelly.light", device_id,
+              "confirmed" if result.get("command_confirmed") else "accepted_unconfirmed",
+              {"component": component, "channel": channel, "requested": values,
+               "command_state": result.get("command_state")})
+        conn.commit()
+    return {"device_id": device_id, "component": component, "channel": channel,
+            "command_accepted": result.get("command_accepted", False),
+            "command_confirmed": result.get("command_confirmed", False),
+            "command_state": result.get("command_state", "UNKNOWN"),
+            "observed_at": result.get("reading", {}).get("observed_at")}
+
+
 @app.post("/api/v1/network/scan")
 def scan_local_network(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
-    """Scan only the Gateway's directly attached private IPv4 networks, read-only."""
+    """Scan attached private networks and refresh saved Tuya IPs for unique MAC/IP matches."""
     with db() as conn:
         actor = _revalidate_actor(conn, session, "manage_gateway")
         if actor["role"] != "owner":
             raise HTTPException(403, "owner_required")
         try:
             report = network_scanner.scan_attached_networks()
+            _enrich_shelly_scan(report)
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             LOG.warning("Local network scan failed (%s)", type(exc).__name__)
             raise HTTPException(502, "local_network_scan_failed") from exc
@@ -2116,20 +2853,34 @@ def scan_local_network(session: dict[str, Any] = Depends(require_permission("man
         for device in tuya.get("devices", []):
             if not isinstance(device, dict) or not isinstance(device.get("device_id"), str):
                 continue
-            mac = str(device.get("local_mac") or "").strip().upper()
+            mac = hardware_integrations._tuya_normalize_mac(device.get("local_mac"))
+            mac = ":".join(mac[index:index + 2] for index in range(0, 12, 2)) if mac else ""
             if re.fullmatch(MAC_RE, mac):
                 identities.setdefault(mac, []).append({"device_id": device["device_id"],
                     "name": str(device.get("name") or "Tuya")[:120], "provider": "tuya",
-                    "device_type": str(device.get("device_kind_override") or device.get("device_kind") or "tuya")[:48]})
+                    "device_type": str(device.get("device_kind_override") or device.get("device_kind") or "tuya")[:48],
+                    "manufacturer": str(device.get("manufacturer") or "")[:120],
+                    "model": str(device.get("model") or device.get("product_name") or "")[:120]})
         for provider, device_type, default_name in (("deye", "inverter", "Deye inverter"),
                                                      ("antminer", "miner", "Antminer"),
                                                      ("tesla", "vehicle", "Tesla")):
             item = config.get(provider, {}) if isinstance(config.get(provider), dict) else {}
-            mac = str(item.get("local_mac") or "").strip().upper()
+            compact_mac = hardware_integrations._tuya_normalize_mac(item.get("local_mac"))
+            mac = ":".join(compact_mac[index:index + 2] for index in range(0, 12, 2)) if compact_mac else ""
             if re.fullmatch(MAC_RE, mac):
                 identities.setdefault(mac, []).append({"device_id": f"{provider}:main",
                     "name": str(item.get("name") or item.get("model") or default_name)[:120],
-                    "provider": provider, "device_type": device_type})
+                    "provider": provider, "device_type": device_type,
+                    "manufacturer": str(item.get("manufacturer") or "")[:120],
+                    "model": str(item.get("model") or "")[:120]})
+        shelly_devices = [dict(row) for row in conn.execute("SELECT * FROM shelly_devices WHERE enabled=1")]
+        shelly_by_mac = {_inventory_mac(item.get("mac")): item for item in shelly_devices if _inventory_mac(item.get("mac"))}
+        for item in shelly_devices:
+            mac = _inventory_mac(item.get("mac"))
+            if mac:
+                identities.setdefault(mac, []).append({"device_id": str(item.get("device_id") or "")[:128],
+                    "name": str(item.get("name") or "Smart device")[:120], "provider": "shelly",
+                    "device_type": "smart", "manufacturer": "Shelly", "model": str(item.get("model") or "")[:120]})
         now = utcnow()
         for mac, refs in identities.items():
             preferred = refs[0]
@@ -2143,37 +2894,101 @@ def scan_local_network(session: dict[str, Any] = Depends(require_permission("man
                 updated_at=excluded.updated_at""",
                 (mac, preferred["name"], preferred["device_type"], preferred["provider"],
                  preferred["device_id"], now, now, ""))
+        for mac, device in shelly_by_mac.items():
+            candidates = ips_by_mac.get(mac, set())
+            if mac not in conflicted_macs and len(candidates) == 1:
+                current_ip = next(iter(candidates))
+                try:
+                    current_ip = hardware_integrations._private_ip(current_ip)
+                except ValueError:
+                    continue
+                if current_ip != device.get("host"):
+                    conn.execute("UPDATE shelly_devices SET host=?,updated_at=?,last_seen_at=? WHERE mac=? AND enabled=1",
+                                 (current_ip, now, now, mac))
+                    conn.execute("UPDATE gateway_device_inventory SET last_ip=?,updated_at=?,last_seen_at=? WHERE mac=? AND source_provider='shelly'",
+                                 (current_ip, now, now, mac))
+        _sync_gateway_device_inventory(conn, config)
         stored = {row["mac"]: dict(row) for row in conn.execute("SELECT * FROM network_device_inventory")}
-        conflicted_macs = {str(item.get("mac") or "").strip().upper()
+        conflicted_macs = {_inventory_mac(item.get("mac"))
                            for item in report.get("mac_ip_conflicts", []) if isinstance(item, dict)}
         ips_by_mac: dict[str, set[str]] = {}
         for host in report["hosts"]:
-            mac = str(host.get("mac") or "").strip().upper()
+            mac = _inventory_mac(host.get("mac"))
             ip = str(host.get("ip") or "").strip()
-            if mac and ip and not host.get("mac_ip_conflict"):
+            if not mac:
+                continue
+            if ip and not host.get("mac_ip_conflict"):
                 ips_by_mac.setdefault(mac, set()).add(ip)
             for candidate in host.get("ip_candidates", []):
                 if isinstance(candidate, str) and candidate:
                     ips_by_mac.setdefault(mac, set()).add(candidate)
+        tuya_devices = tuya.get("devices", []) if isinstance(tuya.get("devices"), list) else []
+        tuya_by_mac: dict[str, list[dict[str, Any]]] = {}
+        for device in tuya_devices:
+            if not isinstance(device, dict):
+                continue
+            mac = _inventory_mac(device.get("local_mac") or device.get("mac") or device.get("mac_address"))
+            if mac:
+                tuya_by_mac.setdefault(mac, []).append(device)
+        configured_ip_updates = 0
+        ambiguous_configured_macs = 0
+        for mac, devices_for_mac in tuya_by_mac.items():
+            candidates = ips_by_mac.get(mac, set())
+            if mac in conflicted_macs or len(candidates) != 1 or len(devices_for_mac) != 1:
+                if mac in ips_by_mac and (mac in conflicted_macs or len(candidates) != 1 or len(devices_for_mac) != 1):
+                    ambiguous_configured_macs += 1
+                continue
+            observed_ip = next(iter(candidates))
+            try:
+                observed_ip = hardware_integrations._private_ip(observed_ip)
+            except ValueError:
+                continue
+            if devices_for_mac[0].get("local_ip") != observed_ip:
+                devices_for_mac[0]["local_ip"] = observed_ip
+                configured_ip_updates += 1
+        if configured_ip_updates:
+            hardware_integrations.save_config(config)
+        report["configured_ip_update_count"] = configured_ip_updates
+        report["ambiguous_configured_mac_count"] = ambiguous_configured_macs
         for host in report["hosts"]:
-            mac = str(host.get("mac") or "").strip().upper()
+            mac = _inventory_mac(host.get("mac"))
             candidates = sorted(ips_by_mac.get(mac, set()))
             if mac and (len(candidates) > 1 or mac in conflicted_macs):
                 host["mac_ip_conflict"] = True
                 host["ip_candidates"] = candidates or list(host.get("ip_candidates", []))
                 host["ip"] = ""
         for host in report["hosts"]:
-            mac = str(host.get("mac") or "").strip().upper()
+            mac = _inventory_mac(host.get("mac"))
             inventory = stored.get(mac)
             refs = identities.get(mac, [])
-            matched: dict[str, Any] = {}
-            if inventory:
-                matched = {"name": inventory["name"], "device_id": inventory["source_device_id"] or None,
-                           "provider": inventory["source_provider"] or "local",
-                           "device_type": inventory["device_type"], "local_mac": mac}
+            central = conn.execute("SELECT * FROM gateway_device_inventory WHERE mac=? LIMIT 1", (mac,)).fetchone() if mac else None
+            if central:
+                matches = [{"name": central["name"], "device_id": central["source_device_id"] or None,
+                            "provider": central["source_provider"] or "local", "device_type": central["device_type"],
+                            "manufacturer": central["manufacturer"], "model": central["model"], "local_mac": mac,
+                            "inventory_key": central["device_key"], "confirmation_status": central["confirmation_status"]}]
             elif refs:
-                matched = {**refs[0], "local_mac": mac}
-            host["matched_devices"] = [matched] if matched else []
+                # Configured cloud-synced devices are the canonical labels when
+                # their saved MAC matches. Preserve multiple references rather
+                # than silently selecting the first configured device.
+                matches = [{**item, "local_mac": mac} for item in refs]
+            elif inventory:
+                matches = [{"name": inventory["name"], "device_id": inventory["source_device_id"] or None,
+                            "provider": inventory["source_provider"] or "local",
+                            "device_type": inventory["device_type"],
+                            "manufacturer": inventory["manufacturer"], "model": inventory["model"],
+                            "local_mac": mac}]
+            else:
+                matches = []
+            host["matched_devices"] = matches
+            if matches:
+                primary = matches[0]
+                if not host.get("friendly_name"):
+                    host["friendly_name"] = primary.get("name") or ""
+                if not host.get("manufacturer"):
+                    host["manufacturer"] = primary.get("manufacturer") or ""
+                if not host.get("model"):
+                    host["model"] = primary.get("model") or ""
             if inventory and mac:
                 if host.get("mac_ip_conflict"):
                     conn.execute("UPDATE network_device_inventory SET last_seen_at=?,updated_at=? WHERE mac=?",
@@ -2185,6 +3000,18 @@ def scan_local_network(session: dict[str, Any] = Depends(require_permission("man
                         observed_ip = ""
                     conn.execute("UPDATE network_device_inventory SET last_seen_at=?,last_ip=CASE WHEN ?<>'' THEN ? ELSE last_ip END,updated_at=? WHERE mac=?",
                                  (now, observed_ip, observed_ip, now, mac))
+            if central and mac:
+                if host.get("mac_ip_conflict"):
+                    conn.execute("UPDATE gateway_device_inventory SET last_seen_at=?,updated_at=? WHERE device_key=?",
+                                 (now, now, central["device_key"]))
+                else:
+                    try:
+                        observed_ip = hardware_integrations._private_ip(str(host.get("ip") or ""))
+                    except ValueError:
+                        observed_ip = ""
+                    if observed_ip:
+                        conn.execute("UPDATE gateway_device_inventory SET last_ip=?,last_seen_at=?,updated_at=? WHERE device_key=?",
+                                     (observed_ip, now, now, central["device_key"]))
         audit(conn, session["user_id"], "network.local_scan", "local_network", "success", {
             "scanned_count": report["scanned_count"], "responsive_count": report["responsive_count"],
             "network_count": len(report["networks"]), "skipped_network_count": len(report["skipped_networks"]),
@@ -2196,25 +3023,35 @@ def scan_local_network(session: dict[str, Any] = Depends(require_permission("man
 @app.post("/api/v1/network/devices/save")
 def save_local_network_device(payload: dict[str, Any],
                               session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
-    """Save or rename a discovered network device with its MAC as stable key."""
-    if set(payload) != {"mac", "name", "device_type"}:
+    """Verify a fresh IP/MAC pair and add or update its shared inventory identity."""
+    allowed = {"mac", "name", "device_type", "manufacturer", "model", "product_id", "ip"}
+    if not isinstance(payload, dict) or set(payload) - allowed or not {"mac", "name", "device_type"}.issubset(payload):
         raise HTTPException(422, "network_device_payload_invalid")
     mac = str(payload.get("mac") or "").strip().upper()
     name = str(payload.get("name") or "").strip()
     device_type = str(payload.get("device_type") or "unknown").strip().lower()
-    if not re.fullmatch(MAC_RE, mac):
+    manufacturer = str(payload.get("manufacturer") or "").strip()[:120]
+    model = str(payload.get("model") or "").strip()[:120]
+    product_id = str(payload.get("product_id") or "").strip()[:128]
+    requested_ip = str(payload.get("ip") or "").strip()
+    if not re.fullmatch(r"(?:[0-9A-F]{2}:){5}[0-9A-F]{2}", mac):
         raise HTTPException(422, "network_device_mac_invalid")
-    if not name or len(name) > 120:
-        raise HTTPException(422, "network_device_name_invalid")
-    allowed_types = {"unknown", "tuya", "inverter", "miner", "router", "vehicle", "computer", "phone", "printer", "other"}
-    if device_type not in allowed_types:
-        raise HTTPException(422, "network_device_type_invalid")
+    if not name or len(name) > 120 or len(device_type) > 64:
+        raise HTTPException(422, "network_device_name_or_type_invalid")
+    if requested_ip:
+        try:
+            requested_ip = hardware_integrations._private_ip(requested_ip)
+        except ValueError as exc:
+            raise HTTPException(422, "network_device_ip_invalid") from exc
+    if not manufacturer:
+        manufacturer = "Não identificado"
     with db() as conn:
         actor = _revalidate_actor(conn, session, "manage_gateway")
         if actor["role"] != "owner":
             raise HTTPException(403, "owner_required")
         try:
             report = network_scanner.scan_attached_networks()
+            _enrich_shelly_scan(report)
         except Exception as exc:
             LOG.warning("Network device verification failed (%s)", type(exc).__name__)
             raise HTTPException(502, "network_device_verification_failed") from exc
@@ -2222,6 +3059,8 @@ def save_local_network_device(payload: dict[str, Any],
                           if str(item.get("mac") or "").strip().upper() == mac]
         if not matching_hosts:
             raise HTTPException(409, "network_device_not_seen_in_current_scan")
+        if requested_ip and not any(str(item.get("ip") or "") == requested_ip for item in matching_hosts):
+            raise HTTPException(409, "network_device_ip_mac_not_confirmed")
         host = matching_hosts[0]
         observed_ips = {str(item.get("ip") or "").strip() for item in matching_hosts if item.get("ip")}
         for item in matching_hosts:
@@ -2229,6 +3068,8 @@ def save_local_network_device(payload: dict[str, Any],
         conflicted_macs = {str(item.get("mac") or "").strip().upper()
                            for item in report.get("mac_ip_conflicts", []) if isinstance(item, dict)}
         ambiguous_ip = mac in conflicted_macs or any(item.get("mac_ip_conflict") for item in matching_hosts) or len(observed_ips) > 1
+        if ambiguous_ip:
+            raise HTTPException(409, "network_device_mac_has_multiple_live_ips")
         current_ip = ""
         if not ambiguous_ip and host.get("ip"):
             try:
@@ -2239,24 +3080,34 @@ def save_local_network_device(payload: dict[str, Any],
         tuya = config.get("tuya", {}) if isinstance(config.get("tuya"), dict) else {}
         matching_tuya = [item for item in tuya.get("devices", []) if isinstance(item, dict)
                          and str(item.get("local_mac") or "").strip().upper() == mac]
-        provider = "tuya" if len(matching_tuya) == 1 else ""
-        provider_device_id = str(matching_tuya[0].get("device_id") or "") if provider else ""
+        known_product_ids = {str(item.get("product_id") or "").strip() for item in matching_tuya if item.get("product_id")}
+        if len(known_product_ids) > 1 or (product_id and known_product_ids and product_id not in known_product_ids):
+            raise HTTPException(409, "tuya_product_id_conflicts_with_mac_inventory")
+        if not product_id and len(known_product_ids) == 1:
+            product_id = next(iter(known_product_ids))
+        shelly_detected = str(host.get("manufacturer") or "").casefold() == "shelly" and host.get("protocol") in {"shelly_rpc", "shelly_http_gen1"}
+        provider = "tuya" if len(matching_tuya) == 1 else "shelly" if shelly_detected else ""
+        provider_device_id = str(matching_tuya[0].get("device_id") or "") if provider == "tuya" else f"shelly:{mac}" if provider == "shelly" else ""
         now = utcnow()
         previous = conn.execute("SELECT last_ip,created_at FROM network_device_inventory WHERE mac=?", (mac,)).fetchone()
         last_ip = current_ip or (str(previous["last_ip"]) if previous else "")
         created_at = str(previous["created_at"]) if previous else now
         conn.execute("""INSERT INTO network_device_inventory
-            (mac,name,device_type,manufacturer,model,last_ip,source_provider,source_device_id,created_at,updated_at,last_seen_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(mac) DO UPDATE SET
+            (mac,name,device_type,manufacturer,model,last_ip,product_id,source_provider,source_device_id,created_at,updated_at,last_seen_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(mac) DO UPDATE SET
             name=excluded.name,device_type=excluded.device_type,
             manufacturer=CASE WHEN excluded.manufacturer<>'' THEN excluded.manufacturer ELSE network_device_inventory.manufacturer END,
             model=CASE WHEN excluded.model<>'' THEN excluded.model ELSE network_device_inventory.model END,
             last_ip=CASE WHEN excluded.last_ip<>'' THEN excluded.last_ip ELSE network_device_inventory.last_ip END,
+            product_id=CASE WHEN excluded.product_id<>'' THEN excluded.product_id ELSE network_device_inventory.product_id END,
             source_provider=CASE WHEN excluded.source_provider<>'' THEN excluded.source_provider ELSE network_device_inventory.source_provider END,
             source_device_id=CASE WHEN excluded.source_device_id<>'' THEN excluded.source_device_id ELSE network_device_inventory.source_device_id END,
             updated_at=excluded.updated_at,last_seen_at=excluded.last_seen_at""",
-            (mac, name, device_type, str(host.get("manufacturer") or "")[:120], str(host.get("model") or "")[:120],
-             last_ip, provider, provider_device_id, created_at, now, now))
+            (mac, name, device_type, manufacturer or str(host.get("manufacturer") or "")[:120], model or str(host.get("model") or "")[:120],
+             last_ip, product_id, provider, provider_device_id, created_at, now, now))
+        if product_id and manufacturer.casefold() in {"tuya", "moes"}:
+            _upsert_smart_product_catalog(conn, manufacturer=manufacturer, protocol="tuya", product_code=product_id,
+                product_name=model, device_kind=device_type, source="owner_identified_product", confidence="user_declared")
         if provider:
             for item in matching_tuya:
                 item["name"] = name
@@ -2264,12 +3115,35 @@ def save_local_network_device(payload: dict[str, Any],
                 item["local_name"] = name
                 if current_ip:
                     item["local_ip"] = current_ip
-            hardware_integrations.save_config(config)
+            if provider == "tuya":
+                hardware_integrations.save_config(config)
+            else:
+                shelly_generation = int(host.get("shelly_generation") or 1)
+                now = utcnow()
+                conn.execute("""INSERT INTO shelly_devices
+                    (device_id,mac,name,host,model,generation,protocol,firmware,capabilities_json,room,enabled,created_at,updated_at,last_seen_at)
+                    VALUES(?,?,?,?,?,?,?,?,'[]','',1,?,?,?)
+                    ON CONFLICT(mac) DO UPDATE SET name=excluded.name,host=excluded.host,model=excluded.model,
+                    generation=excluded.generation,protocol=excluded.protocol,firmware=excluded.firmware,
+                    enabled=1,updated_at=excluded.updated_at,last_seen_at=excluded.last_seen_at""",
+                    (provider_device_id, mac, name, current_ip or str(host.get("ip") or ""),
+                     str(host.get("model") or "")[:120], shelly_generation,
+                     str(host.get("protocol") or "")[:40], str(host.get("shelly_firmware") or "")[:80], now, now, now))
+        central_saved = _upsert_gateway_inventory_device(conn, provider=provider or "network",
+            source_device_id=provider_device_id or mac, name=name, device_type=device_type, mac=mac,
+            ip=current_ip or last_ip, manufacturer=manufacturer or str(host.get("manufacturer") or ""),
+            model=model or str(host.get("model") or ""),
+                product_id=product_id,
+            status="confirmed" if provider == "shelly" or (provider == "tuya" and matching_tuya[0].get("local_verified") is True) else "pending",
+            name_source="owner", replace_ip=bool(current_ip))
+        saved_integrations = hardware_integrations.load_config()
+        _sync_gateway_device_inventory(conn, saved_integrations)
+        central_saved = dict(conn.execute("SELECT * FROM gateway_device_inventory WHERE device_key=?",
+                                         (central_saved["device_key"],)).fetchone())
         audit(conn, session["user_id"], "network.device.save", mac, "success", {
             "device_type": device_type, "has_current_ip": bool(current_ip), "ambiguous_ip": ambiguous_ip})
         conn.commit()
-        saved = dict(conn.execute("SELECT * FROM network_device_inventory WHERE mac=?", (mac,)).fetchone())
-        return {"device": saved, "ambiguous_ip": ambiguous_ip}
+        return {"device": central_saved, "ambiguous_ip": ambiguous_ip}
 
 
 @app.post("/api/v1/network/scan/apply")
@@ -2392,6 +3266,13 @@ def hardware_provider_read(provider: str, payload: dict[str, Any] | None = None,
             raise
         except (OSError, ValueError, RuntimeError, json.JSONDecodeError, sqlite3.Error) as exc:
             conn.rollback()
+            if provider == "antminer":
+                try:
+                    with db() as offline_conn:
+                        _mark_antminer_disconnected(offline_conn, item)
+                        offline_conn.commit()
+                except sqlite3.Error:
+                    pass
             LOG.error("Hardware provider read failed provider=%s (%s)", provider, type(exc).__name__)
             raise HTTPException(503, f"{provider}_read_unavailable") from exc
 
@@ -2610,13 +3491,25 @@ def tuya_product_dps_description(payload: dict[str, Any], session: dict[str, Any
     """Save a trusted, owner-edited DPS meaning for every device sharing one exact Product ID."""
     with db() as conn:
         _require_owner(session, conn)
-        if not isinstance(payload, dict) or set(payload) != {"device_id", "dps_id", "description"}:
+        allowed_payload = {"device_id", "dps_id", "description", "semantic_code", "unit", "scale"}
+        if not isinstance(payload, dict) or set(payload) - allowed_payload or not {"device_id", "dps_id", "description"}.issubset(payload):
             raise HTTPException(422, "tuya_dps_description_payload_invalid")
         device_id, dps_id, description = payload.get("device_id"), payload.get("dps_id"), payload.get("description")
+        requested_semantic, requested_unit, requested_scale = payload.get("semantic_code"), payload.get("unit"), payload.get("scale")
         if (not isinstance(device_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", device_id)
                 or isinstance(dps_id, bool) or not isinstance(dps_id, int) or not 1 <= dps_id <= 65535
-                or not isinstance(description, str) or not 1 <= len(description.strip()) <= 80):
+                or not isinstance(description, str) or not 1 <= len(description.strip()) <= 80
+                or requested_semantic is not None and requested_semantic not in {"voltage", "current", "power", "daily_accumulated_energy", "total_energy", "switch", "countdown", "child_lock", "custom_label"}
+                or requested_unit is not None and (not isinstance(requested_unit, str) or len(requested_unit) > 16)
+                or requested_scale is not None and (isinstance(requested_scale, bool) or not isinstance(requested_scale, (int, float)) or not 1 <= requested_scale <= 1_000_000_000)):
             raise HTTPException(422, "tuya_dps_description_payload_invalid")
+        accepted_units = {"voltage": {"V", "mV"}, "current": {"A", "mA"}, "power": {"W", "kW"},
+                          "daily_accumulated_energy": {"Wh", "kWh"}, "total_energy": {"Wh", "kWh"},
+                          "countdown": {"s"}, "switch": {""}, "child_lock": {""}, "custom_label": {"", "V", "mV", "A", "mA", "W", "kW", "Wh", "kWh", "s"}}
+        if requested_semantic is not None and requested_unit is not None and requested_unit not in accepted_units.get(requested_semantic, set()):
+            raise HTTPException(422, "tuya_dps_unit_not_valid_for_characteristic")
+        if requested_semantic in {"voltage", "current", "power", "daily_accumulated_energy", "total_energy"} and (requested_unit not in accepted_units[requested_semantic] or requested_scale is None):
+            raise HTTPException(422, "tuya_dps_measurement_requires_unit_and_scale")
         config = hardware_integrations.load_config()
         tuya = config.get("tuya") if isinstance(config.get("tuya"), dict) else {}
         device = next((item for item in tuya.get("devices", []) if isinstance(item, dict) and item.get("device_id") == device_id), None)
@@ -2637,6 +3530,9 @@ def tuya_product_dps_description(payload: dict[str, Any], session: dict[str, Any
                        "status_spec": device.get("status_spec", []) if isinstance(device.get("status_spec"), list) else [],
                        "dps_profile": tuya_dps_registry.product_profile(device), "custom_dps_overrides": {},
                        "cached_at": int(time.time())}
+        product.setdefault("protocol", "tuya")
+        product.setdefault("manufacturer", "Tuya")
+        product.setdefault("device_kind", str(device.get("device_kind") or device.get("category") or "unknown")[:32])
         recognized: set[int] = set()
         for rows in (device.get("current_status"), device.get("functions"), device.get("status_spec"),
                      product.get("functions"), product.get("status_spec")):
@@ -2675,9 +3571,11 @@ def tuya_product_dps_description(payload: dict[str, Any], session: dict[str, Any
             "relay_status": ({"relay status", "estado do rele"}, ""),
             "power_on_state": ({"power on state", "comportamento apos falha de energia"}, ""),
         }
-        semantic, unit = next(((key, value[1]) for key, value in aliases.items() if folded in value[0]), ("custom_label", ""))
+        inferred_semantic, inferred_unit = next(((key, value[1]) for key, value in aliases.items() if folded in value[0]), ("custom_label", ""))
+        semantic = requested_semantic or inferred_semantic
+        unit = requested_unit if requested_unit is not None else inferred_unit
         data_type = "boolean" if semantic in {"switch", "child_lock"} else "integer" if semantic == "countdown" else "enum" if semantic in {"light_mode", "relay_status", "power_on_state"} else "number" if semantic != "custom_label" else "unknown"
-        scale = reference.get("scale") if isinstance(reference, dict) and isinstance(reference.get("scale"), (int, float)) and not isinstance(reference.get("scale"), bool) else None
+        scale = requested_scale if requested_scale is not None else (reference.get("scale") if isinstance(reference, dict) and isinstance(reference.get("scale"), (int, float)) and not isinstance(reference.get("scale"), bool) else None)
         if scale is None:
             schema_rows = [*(device.get("functions", []) if isinstance(device.get("functions"), list) else []),
                            *(device.get("status_spec", []) if isinstance(device.get("status_spec"), list) else [])]
@@ -2691,7 +3589,7 @@ def tuya_product_dps_description(payload: dict[str, Any], session: dict[str, Any
         product.setdefault("custom_dps_overrides", {})[str(dps_id)] = {
             "label": label, "semantic_code": semantic, "unit": unit or None,
             "data_type": data_type, "scale": scale,
-            "write_enabled": semantic in {"switch", "countdown", "child_lock", "light_mode", "relay_status", "power_on_state"},
+            "write_enabled": semantic in {"switch", "countdown", "child_lock"},
         }
         if reference is None:
             reference = {"dps_id": dps_id, "confidence": "OWNER_CUSTOM", "source": "Gateway Product ID mapping"}
@@ -2702,7 +3600,7 @@ def tuya_product_dps_description(payload: dict[str, Any], session: dict[str, Any
                           "unit": unit or reference.get("unit"), "data_type": data_type,
                           "scale": scale if scale is not None else reference.get("scale"),
                           "confidence": "OWNER_CUSTOM", "source": "Gateway Product ID mapping",
-                          "write_supported": semantic in {"switch", "countdown", "child_lock", "light_mode", "relay_status", "power_on_state"}})
+                          "write_supported": semantic in {"switch", "countdown", "child_lock"}})
         product["dps_profile"] = profile
         tuya["product_schemas"] = profiles
         config["tuya"] = tuya
@@ -2710,6 +3608,7 @@ def tuya_product_dps_description(payload: dict[str, Any], session: dict[str, Any
             saved = hardware_integrations.save_config(config)
         except (OSError, ValueError) as exc:
             raise HTTPException(500, "tuya_product_dps_description_save_failed") from exc
+        _persist_tuya_product_dps_map(conn, saved.get("tuya", {}).get("product_schemas", {}))
         audit(conn, session["user_id"], "hardware.tuya.dps_description", f"{product_id}:{dps_id}", "success",
               {"device_id": device_id, "product_id": product_id, "dps_id": dps_id, "semantic_code": semantic})
         return {"saved": True, "product_id": product_id, "dps_id": dps_id,
@@ -3704,7 +4603,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.166"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.169"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(
@@ -4537,4 +5436,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 

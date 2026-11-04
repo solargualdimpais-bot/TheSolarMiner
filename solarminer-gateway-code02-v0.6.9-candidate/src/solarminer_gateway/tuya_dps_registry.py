@@ -13,7 +13,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-REGISTRY_VERSION = 4
+REGISTRY_VERSION = 5
 
 
 def _dp(dp_id: int, semantic: str, label: str, data_type: str, *, unit: str | None = None,
@@ -42,6 +42,104 @@ def _dp(dp_id: int, semantic: str, label: str, data_type: str, *, unit: str | No
 _OFFICIAL_SWITCH = "Tuya Developer Platform: Smart Switch Product Function Definition"
 _OWNER_NOTES = "Owner-provided device observations in the supplied DPS proposal"
 _COMMUNITY = "Community-reported Tuya DPS template; device-specific validation required"
+
+# Read-only device identity profiles for the two MOES panels discussed with the
+# owner. These deliberately live outside the generic preset/write-routing
+# tables: identifying a DPS map is not permission to transmit a value.
+_MOES_MINIPAD_MARKER = "moes_ccptyeuln_beta"
+_MOES_CCP_S01_PRODUCT_IDS = {"z1fcxdrpiazyjaky"}
+_MOES_DEVICE_PROFILES: dict[str, dict[str, Any]] = {
+    "moes_minipad": {
+        "label": "MOES / EKAZA MiniPad · painel central Zigbee",
+        "signature": "DPS 90 = Moes_CCPTYEULN_beta (assinatura observada neste dispositivo)",
+        "source": "Owner observation + make-all/tuya-local issue #5418",
+        "source_url": "https://github.com/make-all/tuya-local/issues/5418",
+        "match_scope": "exact_dps_90_value",
+        "dps": {
+            1: ("up_channel", "Canal de comunicação ascendente", "raw"),
+            2: ("down_channel", "Canal de comunicação descendente", "raw"),
+            78: ("wake_up", "Ativação por palavra-chave", "boolean"),
+            79: ("wake_word_language", "Idioma da palavra-chave", "enum"),
+            80: ("speaker_volume", "Volume do altifalante", "integer"),
+            81: ("microphone_enabled", "Microfone ativo", "boolean"),
+            82: ("speaker_playback", "Reprodução do altifalante", "raw"),
+            83: ("speaker_mode", "Modo de áudio", "enum"),
+            84: ("bluetooth_enabled", "Bluetooth ativo", "boolean"),
+            85: ("previous_track", "Faixa anterior", "raw"),
+            86: ("next_track", "Faixa seguinte", "raw"),
+            87: ("playback_mode", "Modo de reprodução", "enum"),
+            88: ("alarm", "Alarme", "raw"),
+            89: ("alert", "Alerta", "raw"),
+            90: ("avs_product_id", "Identificador de produto AVS", "string"),
+            91: ("avs_serial_number", "Número de série AVS", "string"),
+            92: ("avs_auth_challenge", "Desafio de autenticação AVS", "string"),
+            93: ("avs_auth_code", "Código de autenticação AVS", "string"),
+            94: ("avs_redirect_url", "Endereço de retorno AVS", "string"),
+            95: ("avs_client_id", "Identificador de cliente AVS", "string"),
+            96: ("alexa_service_state", "Estado do serviço Alexa", "enum"),
+            97: ("alexa_account_binding", "Associação da conta Alexa", "enum"),
+            98: ("alexa_login_operation", "Operação de início de sessão Alexa", "boolean"),
+            99: ("locale", "Idioma do sistema", "enum"),
+        },
+    },
+    "moes_ccp_s01": {
+        "label": "MOES CCP-S01 · painel de 3,5 polegadas",
+        "signature": "Product ID CCP-S01 conhecido ou DPS 1, 2, 201–208 e pelo menos dois relés (3, 16, 17)",
+        "source": "make-all/tuya-local issue #2396 and moes_controlpanel.yaml",
+        "source_url": "https://github.com/make-all/tuya-local/blob/main/custom_components/tuya_local/devices/moes_controlpanel.yaml",
+        "match_scope": "exact_product_id_or_composite_dps_signature",
+        "dps": {
+            1: ("up_channel", "Canal de comunicação ascendente", "raw"),
+            2: ("down_channel", "Canal de comunicação descendente", "raw"),
+            3: ("relay_3", "Relé 3", "boolean"),
+            16: ("relay_1", "Relé 1", "boolean"),
+            17: ("relay_2", "Relé 2", "boolean"),
+            36: ("backlight", "Luz de fundo", "boolean"),
+            37: ("indicator_mode", "Modo do indicador", "enum"),
+            38: ("power_on_state", "Estado geral após falha de energia", "enum"),
+            39: ("relay_1_power_on_state", "Estado inicial do relé 1", "enum"),
+            40: ("relay_2_power_on_state", "Estado inicial do relé 2", "enum"),
+            41: ("relay_3_power_on_state", "Estado inicial do relé 3", "enum"),
+            201: ("ir_send", "Envio de infravermelhos · formato por validar", "raw"),
+            202: ("ir_receive", "Receção/aprendizagem de infravermelhos", "raw"),
+            203: ("voice_volume", "Volume de voz", "integer"),
+            204: ("microphone_enabled", "Microfone ativo", "boolean"),
+            205: ("voice_playback", "Reprodução de voz", "raw"),
+            206: ("bluetooth_voice_playback", "Reprodução Bluetooth", "raw"),
+            207: ("alarm_clock", "Alarme de voz", "raw"),
+            208: ("voice_control_group", "Grupo de controlo de voz", "raw"),
+        },
+    },
+}
+
+
+def _moes_device_profile(device: dict[str, Any], raw: dict[int, Any],
+                         schema: dict[str, int], available: set[int]) -> dict[str, Any] | None:
+    """Recognize the two known panels without broad or write-capable matching."""
+    marker = str(raw.get(90) or "").strip().casefold()
+    product_id = str(device.get("product_id") or "").strip().casefold()
+    if marker == _MOES_MINIPAD_MARKER:
+        key = "moes_minipad"
+    elif product_id in _MOES_CCP_S01_PRODUCT_IDS:
+        key = "moes_ccp_s01"
+    elif ({1, 2, *range(201, 209)}.issubset(available) and
+          len(available.intersection({3, 16, 17})) >= 2):
+        key = "moes_ccp_s01"
+    else:
+        return None
+    profile = _MOES_DEVICE_PROFILES[key]
+    return {"profile_id": key, "profile_label": profile["label"],
+            "signature": profile["signature"], "match_scope": profile["match_scope"],
+            "confidence": "OBSERVED_SIGNATURE" if key == "moes_minipad" or product_id not in _MOES_CCP_S01_PRODUCT_IDS else "EXACT_PRODUCT_ID",
+            "source": profile["source"], "source_url": profile["source_url"],
+            "write_authorized": False,
+            "dps": [{"dps_id": dp_id, "semantic_code": spec[0], "display_name": spec[1],
+                     "data_type": spec[2], "raw_value": raw.get(dp_id),
+                     "read_supported": bool(dp_id in raw or dp_id in schema.values()),
+                     "write_supported": False,
+                     "confidence": "OBSERVED_SIGNATURE" if dp_id == 90 and key == "moes_minipad" else "COMMUNITY_REFERENCE",
+                     "source": profile["source"]}
+                    for dp_id, spec in profile["dps"].items()]}
 
 
 @lru_cache(maxsize=1)
@@ -121,7 +219,7 @@ def _community_dp_ids(product_id: str) -> set[int]:
 # Category references describe/read; they never authorize a command by themselves.
 _DLQ_SCHEMA_CONCEPTS: dict[str, dict[str, Any]] = {
     "switch": {"semantic_code": "switch", "display_name": "Interruptor", "data_type": "boolean"},
-    "daily_energy": {"semantic_code": "daily_energy", "display_name": "Consumo diário", "data_type": "raw", "unit": "kWh"},
+    "daily_energy": {"semantic_code": "daily_energy", "display_name": "Consumo hoje", "data_type": "raw", "unit": "kWh"},
     "month_energy": {"semantic_code": "monthly_energy", "display_name": "Consumo mensal", "data_type": "raw", "unit": "kWh"},
     "total_ele": {"semantic_code": "total_energy", "display_name": "Energia total", "data_type": "integer", "unit": "kWh", "scale": 1},
     "total_forward_energy": {"semantic_code": "total_forward_energy", "display_name": "Energia ativa total", "data_type": "integer", "unit": "kWh", "scale": 2},
@@ -253,7 +351,7 @@ DEFINITIONS: tuple[dict[str, Any], ...] = tuple([
         source=_OFFICIAL_SWITCH, write=True),
     _dp(14, "power_on_state", "Power-on state", "enum", enum_values=("off", "on", "memory"),
         confidence="DOCUMENTED", source=_OFFICIAL_SWITCH, write=True),
-    _dp(17, "daily_accumulated_energy", "Accumulated energy", "integer", confidence="CONFIRMED",
+    _dp(17, "accumulated_energy", "Energia acumulada", "integer", unit="kWh", scale=1000, confidence="CONFIRMED",
         source=_OWNER_NOTES),
     _dp(18, "current", "Current", "integer", unit="A", scale=1000, confidence="CONFIRMED",
         source=_OWNER_NOTES),
@@ -451,6 +549,7 @@ def analyze_device(device: dict[str, Any], status: list[dict[str, Any]] | None =
             dp_id = entry.get("dp_id", entry.get("dpId"))
             if isinstance(dp_id, int) and not isinstance(dp_id, bool) and dp_id > 0:
                 schema_entry_by_id[dp_id] = entry
+    device_profile = _moes_device_profile(device, raw, schema, available)
     observed = []
     # Community DPS enrich the detail view for the exact Product ID only.
     # They are intentionally excluded from preset scoring and command routing.
@@ -614,6 +713,17 @@ def analyze_device(device: dict[str, Any], status: list[dict[str, Any]] | None =
                          "read_supported": bool(dp_id in raw or schema_by_id.get(dp_id)),
                          "write_supported": custom_switch_writable,
                          "community_reference": community_reference if known and community_reference else None})
+    if device_profile:
+        rows_by_id = {int(item["dps_id"]): item for item in observed}
+        for profile_row in device_profile["dps"]:
+            dp_id = int(profile_row["dps_id"])
+            existing = rows_by_id.get(dp_id, {})
+            rows_by_id[dp_id] = {**existing, **profile_row,
+                                 "raw_value": raw.get(dp_id),
+                                 "read_supported": bool(dp_id in raw or schema_by_id.get(dp_id)),
+                                 "write_supported": False,
+                                 "validation_status": "suggestion_only"}
+        observed = [rows_by_id[dp_id] for dp_id in sorted(rows_by_id)]
     dynamic_entities = []
     if selected_key == "six_channel_hybrid":
         for pair, dp_id in enumerate((113, 114, 115), start=1):
@@ -633,6 +743,9 @@ def analyze_device(device: dict[str, Any], status: list[dict[str, Any]] | None =
             "schema_source": str(device.get("schema_source") or "UNKNOWN")[:48],
             "functions": schema, "preset_id": selected_key,
             "preset_label": PRESETS[selected_key]["label"] if selected_key else None,
+            "device_profile": device_profile,
+            "profile_label": device_profile["profile_label"] if device_profile else None,
+            "profile_signature": device_profile["signature"] if device_profile else None,
             "preset_scope": PRESETS[selected_key]["scope"] if selected_key else None,
             "confidence": "CONFIRMED" if selected_key and category == "qccdz" else "OWNER_CONFIRMED" if selected_key else "SUGGESTED" if top and top.get("eligible") else "UNKNOWN",
             "selection_source": "confirmed_category" if category == "qccdz" else "kg_category_and_six_channels" if kg_six_channel_signature and selected_key == "six_channel_hybrid" else "owner_selected" if selected_key else "signature_suggestion" if top and top.get("eligible") else "none",

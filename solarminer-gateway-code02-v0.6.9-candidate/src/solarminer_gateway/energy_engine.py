@@ -135,11 +135,13 @@ def persist_tuya_telemetry(conn: sqlite3.Connection, readings: list[dict[str, An
             dps_knowledge = tuya_dps_registry.analyze_device(device, reading["status"])
             confirmed_semantics = {item["dps_id"]: item for item in dps_knowledge.get("dps", [])
                                    if item.get("confidence") == "CONFIRMED" or
-                                   item.get("confidence") == "OWNER_CUSTOM" and item.get("semantic_code") in {"current", "voltage", "power", "daily_accumulated_energy"}}
+                                   item.get("confidence") == "OWNER_CUSTOM" and item.get("semantic_code") in {"current", "voltage", "power", "daily_accumulated_energy", "daily_energy"} or
+                                   item.get("validation_status") == "category_reference_product_schema_resolved"}
             metrics: dict[str, dict[str, Any]] = {}
             raw_status = []
             registry_metric_fields = {"current": "current", "active_power": "power", "power": "power",
-                                      "voltage": "voltage", "daily_accumulated_energy": "energy"}
+                                      "voltage": "voltage", "daily_accumulated_energy": "energy",
+                                      "daily_energy": "energy"}
             patterns = {
                 "voltage": (r"(^|_)(cur_)?voltage($|_)", r"voltage|tension|tensao"),
                 "current": (r"(^|_)(cur_)?current($|_)", r"current|corrente"),
@@ -171,8 +173,20 @@ def persist_tuya_telemetry(conn: sqlite3.Connection, readings: list[dict[str, An
                         dp_id = None
                 definition = confirmed_semantics.get(dp_id) if isinstance(dp_id, int) else None
                 field = registry_metric_fields.get(definition.get("semantic_code")) if definition else None
-                if field and definition.get("unit") and isinstance(definition.get("scale"), (int, float)) and definition["scale"] > 0:
-                    numeric /= float(definition["scale"])
+                if field and definition.get("unit") and isinstance(definition.get("scale"), (int, float)):
+                    category_schema = definition.get("validation_status") == "category_reference_product_schema_resolved"
+                    scale_value = float(definition["scale"])
+                    if category_schema and 0 <= scale_value <= 9:
+                        numeric /= 10 ** int(scale_value)
+                    elif not category_schema and scale_value > 0:
+                        numeric /= scale_value
+                    else:
+                        continue
+                    source_unit = str(definition.get("unit") or "").strip().casefold()
+                    if field == "current" and source_unit in {"ma", "milliamp", "milliamps"}:
+                        numeric /= 1000.0
+                    elif field == "energy" and source_unit == "wh":
+                        numeric /= 1000.0
                     canonical_unit = {"voltage": "V", "current": "A", "power": "W", "energy": "kWh"}[field]
                     metrics[field] = {"code": code, "dps_id": dp_id, "value": round(numeric, 6),
                                       "unit": canonical_unit, "observed_at": observed_at,

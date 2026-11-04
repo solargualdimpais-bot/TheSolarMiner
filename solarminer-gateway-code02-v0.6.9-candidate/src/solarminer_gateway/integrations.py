@@ -28,6 +28,7 @@ from typing import Any, Callable
 
 from . import deye_modbus
 from . import tuya_dps_registry
+from . import shelly_integration
 
 # TinyTuya is bundled with the signed Gateway package so local control works
 # without an installer-time network dependency. It is used only for LAN I/O.
@@ -216,6 +217,9 @@ def public_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
                        "email": deye_cloud.get("email"), "configured": bool(deye_cloud.get("app_id") and deye_cloud.get("app_secret") and deye_cloud.get("email") and deye_cloud.get("password")),
                        "secrets_returned": False},
         "tuya": {"region": tuya.get("region"), "client_id": tuya.get("client_id"), "uid": tuya.get("uid"), "device_ids": [x.get("device_id") for x in tuya.get("devices", []) if isinstance(x, dict)], "devices": public_devices, "product_catalog": product_catalog, "category_catalog": category_catalog, "product_schema_count": len(product_catalog), "category_schema_count": len(category_catalog), "configured": bool(tuya.get("client_id") and tuya.get("client_secret"))},
+        "shelly": {"devices": [{k: item.get(k) for k in ("device_id", "name", "host", "mac", "model", "generation", "protocol", "firmware") if item.get(k) is not None}
+                                for item in (config.get("shelly", {}).get("devices", []) if isinstance(config.get("shelly"), dict) else [])
+                                if isinstance(item, dict)], "configured": bool(config.get("shelly", {}).get("devices")) if isinstance(config.get("shelly"), dict) else False},
         "secrets_returned": False,
     }
 
@@ -253,7 +257,7 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
     if "tesla" in payload:
         raise ValueError("tesla_config_must_use_ev_api")
     old = existing if existing is not None else load_config()
-    result: dict[str, Any] = {k: old.get(k, {}) for k in ("deye", "antminer", "tuya", "deye_cloud")}
+    result: dict[str, Any] = {k: old.get(k, {}) for k in ("deye", "antminer", "tuya", "deye_cloud", "shelly")}
     result["tesla"] = old.get("tesla", {})
     if "deye" in payload:
         item = payload["deye"]
@@ -900,7 +904,9 @@ def _bounded_tuya_product_schemas(value: Any) -> dict[str, dict[str, Any]]:
         profile_dps = profile.get("dps_profile") if isinstance(profile.get("dps_profile"), dict) else {}
         if not functions and not statuses and not custom_overrides and not profile_dps.get("dps"):
             continue
-        clean[product_id] = {"category": str(profile.get("category") or "")[:64],
+        clean[product_id] = {"protocol": str(profile.get("protocol") or "tuya")[:32],
+                             "manufacturer": str(profile.get("manufacturer") or "Tuya")[:64],
+                             "category": str(profile.get("category") or "")[:64],
                              "product_name": str(profile.get("product_name") or "")[:120],
                              "device_kind": str(profile.get("device_kind") or "unknown")[:32],
                              "channel_count": max(0, min(64, _safe_channel_count(profile.get("channel_count")))),
@@ -2289,7 +2295,7 @@ def deye_cloud_history(config: dict[str, Any], station_id: str | int, *, days: i
 
 
 def collect(config: dict[str, Any]) -> dict[str, Any]:
-    result: dict[str, Any] = {"deye": None, "antminer": None, "tuya": [], "errors": [],
+    result: dict[str, Any] = {"deye": None, "antminer": None, "tuya": [], "shelly": [], "errors": [],
                               "configuration": {"deye": "configured" if config.get("deye", {}).get("host") else "not_configured",
                                                 "antminer": "configured" if config.get("antminer", {}).get("host") else "not_configured"},
                               "collected_at": time.time()}
@@ -2324,6 +2330,15 @@ def collect(config: dict[str, Any]) -> dict[str, Any]:
         except Exception as exc: result["errors"].append({"provider": "tuya", "reason": str(exc)[:160]})
     else:
         result["configuration"]["tuya"] = "not_configured"
+    shelly_config = config.get("shelly", {}) if isinstance(config.get("shelly"), dict) else {}
+    if shelly_config.get("devices"):
+        result["shelly"] = shelly_integration.read_devices(shelly_config)
+        result["configuration"]["shelly"] = "configured"
+        result["errors"].extend({"provider": "shelly", "device_id": item.get("device_id"),
+                                "reason": item.get("reason", "shelly_read_failed")}
+                               for item in result["shelly"] if item.get("connection_state") != "connected")
+    else:
+        result["configuration"]["shelly"] = "not_configured"
     return result
 
 

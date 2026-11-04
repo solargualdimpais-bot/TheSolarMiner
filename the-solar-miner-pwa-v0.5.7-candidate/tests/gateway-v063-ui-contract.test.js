@@ -36,13 +36,13 @@ test("Modem tab hosts the local LAN scanner without restoring modem APIs", () =>
   assert.ok(modemPanel);
   assert.doesNotMatch(tuyaPanel, /huawei|modem/i);
   assert.match(modemPanel, /id="local-network-scan"/);
-  assert.match(modemPanel, /id="local-network-apply"/);
+  assert.doesNotMatch(modemPanel, /local-network-apply|Guardar IPs dos devices reconhecidos/);
   assert.match(modemPanel, /id="local-network-results"/);
   assert.doesNotMatch(`${modemPanel}\n${app}`, /huawei|Pesquisar modem/i);
   assert.doesNotMatch(gatewayApp, /@app\.post\("\/api\/v1\/integrations\/huawei\/(?:clients|probe|client-label)/);
   assert.match(gatewayApp, /@app\.post\("\/api\/v1\/network\/scan"\)/);
   assert.match(gatewayApp, /@app\.post\("\/api\/v1\/network\/scan\/apply"\)/);
-  assert.match(app, /applyGatewayLocalNetworkMatches\(\)/);
+  assert.match(app, /configured_ip_update_count/);
   assert.match(app, /dispositivos que responderam/);
   assert.match(app, /Router de saída indicado pela rota/);
 });
@@ -155,7 +155,7 @@ test("PV string and AQS dialogs intercept native form submits before the browser
 
 test("Devices navigation is immediate and background inventory refreshes patch only changed device cards", () => {
   assert.match(app, /enteringDevices=page==="devices"&&state\.page!=="devices"/);
-  assert.match(app, /if\(enteringDevices&&sessionInfo\(\)\.user\?\.role==="owner"\)void refreshTuyaInventoryStatus\(\)/);
+  assert.match(app, /if\(enteringDevices&&sessionInfo\(\)\.user\?\.role==="owner"\)\{refreshGatewayReadings\(\);void refreshTuyaInventoryStatus\(\);void refreshShellyInventoryStatus\(\{quiet:true\}\);void refreshSmartProductCatalog\(\);\}/);
   assert.match(app, /window\.scrollTo\(\{top:0,behavior:"auto"\}\)/);
   assert.match(app, /if\(changed&&\["devices","inicio"\]\.includes\(state\.page\)\)changedSet\.forEach\(deviceId=>\{updateVisibleTuyaCard\(deviceId\);updateOpenTuyaDeviceDialog\(deviceId\);\}\)/);
   assert.match(app, /current\.replaceWith\(updated\)/);
@@ -268,6 +268,9 @@ test("LAN discovery tries the local neighbor cache after broadcast errors", () =
 test("USB release rollback verification includes the installed Gateway release", () => {
   const rollbackLoops = workflow.match(/for VERSION in[^\n]+/g) || [];
   assert.equal(rollbackLoops.length, 2);
-for (const loop of rollbackLoops) assert.match(loop, /0\.6\.112 0\.6\.113 0\.6\.114 0\.6\.115 0\.6\.116 0\.6\.117 0\.6\.118 0\.6\.119 0\.6\.120 0\.6\.121 0\.6\.122 0\.6\.123 0\.6\.124 0\.6\.125 0\.6\.126 0\.6\.127 0\.6\.128 0\.6\.129 0\.6\.130 0\.6\.131 0\.6\.132 0\.6\.133 0\.6\.134 0\.6\.135; do/);
+for (const loop of rollbackLoops) {
+  assert.match(loop, /0\.6\.112 0\.6\.113 0\.6\.114 0\.6\.115 0\.6\.116 0\.6\.117 0\.6\.118 0\.6\.119 0\.6\.120 0\.6\.121 0\.6\.122 0\.6\.123 0\.6\.124 0\.6\.125 0\.6\.126 0\.6\.127 0\.6\.128 0\.6\.129 0\.6\.130 0\.6\.131 0\.6\.132 0\.6\.133 0\.6\.134 0\.6\.135/);
+  assert.match(loop, /0\.6\.139 0\.6\.140 0\.6\.141 0\.6\.142 0\.6\.143 0\.6\.145 0\.6\.146 0\.6\.147 0\.6\.148 0\.6\.149 0\.6\.150 0\.6\.151 0\.6\.152 0\.6\.153 0\.6\.154 0\.6\.155 0\.6\.156 0\.6\.157 0\.6\.158 0\.6\.159 0\.6\.160 0\.6\.161 0\.6\.162 0\.6\.163 0\.6\.164 0\.6\.165 0\.6\.166; do/);
+}
 });
 

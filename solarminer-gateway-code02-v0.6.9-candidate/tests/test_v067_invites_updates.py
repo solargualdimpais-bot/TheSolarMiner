@@ -714,7 +714,7 @@ def test_tinytuya_lan_scanner_is_exported_by_bundled_package():
     assert callable(gateway.hardware_integrations.tinytuya.deviceScan)
 
 
-def test_local_network_scan_matches_known_tuya_by_mac_and_apply_updates_only_matching_ip(client, monkeypatch, tmp_path):
+def test_local_network_scan_matches_known_tuya_by_mac_and_updates_unique_ip_automatically(client, monkeypatch, tmp_path):
     headers = {"Authorization": f"Bearer {owner_session(client)}"}
     monkeypatch.setattr(gateway.hardware_integrations, "_data_dir", lambda: tmp_path)
     gateway.hardware_integrations.save_config({"tuya": {"devices": [
@@ -734,14 +734,18 @@ def test_local_network_scan_matches_known_tuya_by_mac_and_apply_updates_only_mat
 
     scanned = client.post("/api/v1/network/scan", headers=headers, json={})
     assert scanned.status_code == 200, scanned.text
-    assert scanned.json()["hosts"][0]["matched_devices"] == [
-        {"device_id": "known-switch", "name": "Luz do jardim", "provider": "tuya",
-         "device_type": "tuya", "local_mac": "AA:BB:CC:DD:EE:21"},
-    ]
+    match = scanned.json()["hosts"][0]["matched_devices"][0]
+    assert {key: match[key] for key in ("device_id", "name", "provider", "device_type", "local_mac")} == {
+        "device_id": "known-switch", "name": "Luz do jardim", "provider": "tuya",
+        "device_type": "tuya", "local_mac": "AA:BB:CC:DD:EE:21"}
+    assert match["inventory_key"] == "mac:AA:BB:CC:DD:EE:21"
+    assert scanned.json()["configured_ip_update_count"] == 1
+    saved = gateway.hardware_integrations.load_config()["tuya"]["devices"]
+    assert saved[0]["local_ip"] == "192.168.10.21"
 
     applied = client.post("/api/v1/network/scan/apply", headers=headers, json={})
     assert applied.status_code == 200, applied.text
-    assert applied.json()["updated_count"] == 1
+    assert applied.json()["updated_count"] == 0
     saved = gateway.hardware_integrations.load_config()["tuya"]["devices"]
     assert saved[0]["local_ip"] == "192.168.10.21"
     assert saved[1]["local_ip"] == "192.168.10.22"
@@ -762,7 +766,14 @@ def test_network_device_detail_save_uses_mac_and_persists_name(client, monkeypat
     assert saved["device"]["name"] == "Bridge da cave"
     assert saved["device"]["device_type"] == "router"
     assert saved["device"]["last_ip"] == "192.168.10.44"
+    assert saved["device"]["device_key"] == "mac:AA:BB:CC:DD:EE:44"
+    assert saved["device"]["confirmation_status"] == "pending"
     assert saved["ambiguous_ip"] is False
+    listed = client.get("/api/v1/device-inventory", headers=headers)
+    assert listed.status_code == 200, listed.text
+    pending = [item for item in listed.json()["devices"] if item["mac"] == "AA:BB:CC:DD:EE:44"]
+    assert len(pending) == 1
+    assert pending[0]["name"] == "Bridge da cave"
 
 
 def test_network_device_detail_save_never_updates_ambiguous_ip(client, monkeypatch):
@@ -815,6 +826,11 @@ def test_local_network_apply_skips_mac_seen_at_multiple_ips(client, monkeypatch,
         {"ip": "192.168.10.31", "mac": "AA:BB:CC:DD:EE:21"},
     ]}
     monkeypatch.setattr(gateway.network_scanner, "scan_attached_networks", lambda: report)
+
+    scanned = client.post("/api/v1/network/scan", headers=headers, json={})
+    assert scanned.status_code == 200, scanned.text
+    assert scanned.json()["configured_ip_update_count"] == 0
+    assert gateway.hardware_integrations.load_config()["tuya"]["devices"][0]["local_ip"] == "192.168.10.20"
 
     applied = client.post("/api/v1/network/scan/apply", headers=headers, json={})
 

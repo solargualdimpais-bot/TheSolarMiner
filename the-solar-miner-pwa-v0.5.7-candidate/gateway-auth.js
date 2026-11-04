@@ -524,9 +524,24 @@ export async function controlGatewayTuyaSetting(deviceId, code, value) {
   if (typeof deviceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(deviceId) || typeof code !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(code) || !["boolean", "number", "string"].includes(typeof value) || (typeof value === "number" && !Number.isInteger(value))) throw new Error("Definição Tuya inválida.");
   return gatewayApi("/api/v1/integrations/tuya/setting", { method: "POST", body: { device_id: deviceId, code, value } });
 }
-export async function saveGatewayTuyaProductDpsDescription(deviceId, dpsId, description) {
+export async function saveGatewayTuyaProductDpsDescription(deviceId, dpsId, description, mapping = {}) {
   if (typeof deviceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(deviceId) || !Number.isInteger(dpsId) || dpsId < 1 || dpsId > 65535 || typeof description !== "string" || !description.trim() || description.trim().length > 80) throw new Error("Descrição DPS inválida.");
-  return gatewayApi("/api/v1/integrations/tuya/product-dps-description", { method: "POST", body: { device_id: deviceId, dps_id: dpsId, description: description.trim() } });
+  const allowedSemantics = new Set(["voltage", "current", "power", "daily_accumulated_energy", "total_energy", "switch", "countdown", "child_lock", "custom_label"]);
+  if (!mapping || typeof mapping !== "object" || Array.isArray(mapping) || Object.keys(mapping).some(key => !["semantic_code", "unit", "scale"].includes(key))) throw new Error("Mapa DPS inválido.");
+  const body = { device_id: deviceId, dps_id: dpsId, description: description.trim() };
+  if (mapping.semantic_code !== undefined) {
+    if (typeof mapping.semantic_code !== "string" || !allowedSemantics.has(mapping.semantic_code)) throw new Error("Característica DPS inválida.");
+    body.semantic_code = mapping.semantic_code;
+  }
+  if (mapping.unit !== undefined) {
+    if (typeof mapping.unit !== "string" || mapping.unit.length > 16) throw new Error("Unidade DPS inválida.");
+    body.unit = mapping.unit;
+  }
+  if (mapping.scale !== undefined) {
+    if (typeof mapping.scale !== "number" || !Number.isFinite(mapping.scale) || mapping.scale < 1 || mapping.scale > 1_000_000_000) throw new Error("Escala DPS inválida.");
+    body.scale = mapping.scale;
+  }
+  return gatewayApi("/api/v1/integrations/tuya/product-dps-description", { method: "POST", body });
 }
 export async function readGatewayTuyaDeviceEvents(deviceId, limit = 100) {
   if (typeof deviceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(deviceId) || !Number.isInteger(limit) || limit < 1 || limit > 500) throw new Error("Dispositivo inválido.");
@@ -559,14 +574,51 @@ export async function scanGatewayLocalNetwork() {
     throw error;
   }
 }
+export async function readGatewayDeviceInventory() {
+  return gatewayApi("/api/v1/device-inventory");
+}
+export async function readGatewaySmartProductCatalog() {
+  return gatewayApi("/api/v1/smart-products/catalog");
+}
+export async function readGatewayShellyDevices() {
+  return gatewayApi("/api/v1/integrations/shelly/read", { method: "POST", body: {} });
+}
+export async function discoverGatewayShellyDevices() {
+  return gatewayApi("/api/v1/integrations/shelly/discover", { method: "POST", body: {} });
+}
+export async function registerGatewayShellyDevice({ name, host, mac = "", device_type = "smart", username = "", password = "" }) {
+  if (typeof name !== "string" || !name.trim() || name.trim().length > 120) throw new Error("Indica um nome até 120 caracteres.");
+  if (typeof host !== "string" || !host.trim()) throw new Error("Indica o IP local do equipamento Shelly.");
+  if (typeof username !== "string" || username.length > 128 || typeof password !== "string" || password.length > 256) throw new Error("Credenciais Shelly inválidas.");
+  if (mac && !/^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$/i.test(mac)) throw new Error("MAC inválido.");
+  return gatewayApi("/api/v1/integrations/shelly/register", { method: "POST", body: { name: name.trim(), host: host.trim(), ...(mac ? { mac: mac.toUpperCase() } : {}), device_type, username, password } });
+}
+export async function controlGatewayShellySwitch(deviceId, channel, on) {
+  if (typeof deviceId !== "string" || !deviceId.startsWith("shelly:")) throw new Error("Identificador Shelly inválido.");
+  if (!Number.isInteger(channel) || channel < 0 || channel > 31 || typeof on !== "boolean") throw new Error("Comando Shelly inválido.");
+  return gatewayApi(`/api/v1/integrations/shelly/${encodeURIComponent(deviceId)}/switch`, { method: "POST", body: { channel, on } });
+}
+export async function controlGatewayShellyLight(deviceId, component, channel, settings) {
+  if (typeof deviceId !== "string" || !deviceId || !["light", "rgb", "rgbw", "cct", "color"].includes(component)) throw new Error("Shelly light component is invalid");
+  if (!Number.isInteger(channel) || channel < 0 || channel > 31 || !settings || typeof settings !== "object") throw new Error("Shelly light settings are invalid");
+  const body = { component, channel };
+  if (typeof settings.on === "boolean") body.on = settings.on;
+  if (settings.brightness !== undefined) { if (!Number.isInteger(settings.brightness) || settings.brightness < 0 || settings.brightness > 100) throw new Error("Brightness must be between 0 and 100"); body.brightness = settings.brightness; }
+  if (settings.rgb !== undefined) { if (!Array.isArray(settings.rgb) || settings.rgb.length !== 3 || settings.rgb.some(value => !Number.isInteger(value) || value < 0 || value > 255)) throw new Error("RGB values must be between 0 and 255"); body.rgb = settings.rgb; }
+  if (settings.white !== undefined) { if (!Number.isInteger(settings.white) || settings.white < 0 || settings.white > 255) throw new Error("White channel must be between 0 and 255"); body.white = settings.white; }
+  if (settings.color_temperature !== undefined) { if (!Number.isInteger(settings.color_temperature) || settings.color_temperature < 2000 || settings.color_temperature > 10000) throw new Error("Color temperature is out of range"); body.color_temperature = settings.color_temperature; }
+  if (Object.keys(body).length === 2) throw new Error("Choose a light setting first");
+  return gatewayApi(`/api/v1/integrations/shelly/${encodeURIComponent(deviceId)}/light`, { method: "POST", body });
+}
 export async function applyGatewayLocalNetworkMatches() {
   return gatewayApi("/api/v1/network/scan/apply", { method: "POST", body: {} });
 }
-export async function saveGatewayLocalNetworkDevice({ mac, name, device_type }) {
+export async function saveGatewayLocalNetworkDevice({ mac, ip = "", name, device_type, manufacturer = "", model = "", product_id = "" }) {
   if (typeof mac !== "string" || !/^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$/i.test(mac)) throw new Error("MAC inválido.");
   if (typeof name !== "string" || !name.trim() || name.trim().length > 120) throw new Error("Indica um nome até 120 caracteres.");
   if (typeof device_type !== "string") throw new Error("Tipo de equipamento inválido.");
-  return gatewayApi("/api/v1/network/devices/save", { method: "POST", body: { mac: mac.toUpperCase(), name: name.trim(), device_type } });
+  if (ip && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(ip)) throw new Error("IP inválido.");
+  return gatewayApi("/api/v1/network/devices/save", { method: "POST", body: { mac: mac.toUpperCase(), ...(ip ? { ip } : {}), name: name.trim(), device_type, manufacturer, model, product_id } });
 }
 export async function readGatewayTeslaEvConfig() {
   return gatewayApi("/api/v1/energy/ev/tesla");

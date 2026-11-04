@@ -20,5 +20,5 @@ test("local network scan exposes repeated MAC conflicts and hides their IP save 
   assert.match(source, /MAC em vários IPs/);
   assert.match(source, /IP ambíguo:/);
   assert.match(source, /conflicts\.has\(String\(host\.mac\)\.toUpperCase\(\)\)/);
-  assert.match(source, /ambiguous_mac_count/);
+  assert.match(source, /ambiguous_configured_mac_count/);
 });

@@ -1,5 +1,5 @@
 Package: solarminer-gateway
-Version: 0.6.166
+Version: 0.6.169
 Depends: dpkg, python3 (>= 3.13), python3-venv, python3-pydantic (>= 2), python3-fastapi (>= 0.115.11), python3-uvicorn, python3-argon2, python3-cryptography, openssl, nginx, adduser, ca-certificates, curl, util-linux, iproute2, iputils-ping
 Section: net
 Priority: optional
@@ -8,4 +8,5 @@ Maintainer: SolarMiner Gateway Maintainers
 Description: SolarMiner Gateway local identity, authentication and connector management service
  The local authority for owner bootstrap, user/device identity, authentication,
  authorization, audit, signed updates and Owner-controlled local energy devices.
+
 
