@@ -26,9 +26,16 @@ test("AP onboarding remains explicitly unimplemented in this LAN delivery", () =
   assert.doesNotMatch(app, /fetch\(["']http:\/\/192\.168\.33\.1/);
 });
 
-test("BLU bridge compatibility is only reported after the Gateway probes the model-specific API", () => {
-  assert.match(app, /deteção de sensores Bluetooth sem IP ainda não está concluída/);
-  assert.match(app, /o procedimento de descoberta deste modelo ainda precisa de validação/);
+test("BLU sensors are discovered and registered through a Shelly bridge by the Gateway", () => {
+  assert.match(app, /report\.blu_devices/);
+  assert.match(app, /openBluDeviceDetails/);
+  assert.match(api, /\/api\/v1\/integrations\/shelly\/blu\/register/);
   assert.match(backend, /def inspect_bluetooth_bridge/);
+  assert.match(backend, /BLE\.Scanner\.start/);
+  assert.match(backend, /Script\.Create/);
+  assert.match(backend, /Script\.Delete/);
+  assert.match(backend, /def discover_bluetooth_devices/);
+  assert.match(app, /data-shelly-light-on/);
+  assert.match(app, /bthome_values/);
   assert.doesNotMatch(backend, /BTHome\.StartDeviceDiscovery/);
 });

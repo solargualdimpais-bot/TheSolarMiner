@@ -1,9 +1,9 @@
 {
   "name": "the-solar-miner-pwa-demo",
-  "version": "0.5.126",
+  "version": "0.5.127",
   "private": true,
   "type": "module",
-  "description": "The Solar Miner PWA v0.5.126 adds saved load registration and editable energy priorities",
+  "description": "The Solar Miner PWA v0.5.127 adds Shelly BLU discovery and capability-based controls",
   "scripts": {
     "test": "node --test tests/*.test.js",
     "serve": "python3 -m http.server 4173 --bind 127.0.0.1"

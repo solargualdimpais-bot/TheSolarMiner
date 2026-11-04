@@ -6,11 +6,14 @@ import json
 import re
 import concurrent.futures
 import threading
+import time
+import uuid
 import urllib.error
 import urllib.request
 from typing import Any
 
 _DEVICE_IO_LIMIT = threading.BoundedSemaphore(8)
+_BLU_DISCOVERY_LOCK = threading.Lock()
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -293,8 +296,10 @@ def inspect_bluetooth_bridge(host: str, *, username: str = "", password: str = "
     """Read-only capability probe; never changes pairing or bridge configuration."""
     reading = identify_and_read(host, username=username, password=password)
     components = reading.get("components", [])
+    model_evidence = " ".join(str(reading.get(key) or "") for key in ("model", "device_id")).casefold()
+    known_gateway_model = any(token in model_evidence for token in ("blu gateway", "blugw", "gwf-kz01", "sngw-bt01"))
     has_ble = "bluetooth" in reading.get("capabilities", []) or any(
-        isinstance(item, dict) and item.get("component") == "ble" for item in components)
+        isinstance(item, dict) and item.get("component") == "ble" for item in components) or known_gateway_model
     try:
         _rpc(host, "BTHome.GetStatus", username=username, password=password)
         bthome_api = True
@@ -309,6 +314,110 @@ def inspect_bluetooth_bridge(host: str, *, username: str = "", password: str = "
             "bthome_discovery_api": "available" if bthome_api else "not_supported",
             "model": reading.get("model"), "firmware": reading.get("firmware"),
             "generation": reading.get("generation"), "mac": reading.get("mac"), "host": reading.get("host")}
+
+
+def discover_bluetooth_devices(host: str, *, username: str = "", password: str = "",
+                               duration_seconds: float = 5.0) -> dict[str, Any]:
+    """Discover Shelly BLU advertisements through a compatible Shelly BLE bridge.
+
+    The bridge runs a uniquely named, short-lived scanner script. Existing user
+    scripts are never read, overwritten, stopped, or deleted. The temporary slot
+    is removed in a finally block, including on scan or parsing failures.
+    """
+    host = _host(host)
+    try:
+        duration_seconds = max(2.0, min(8.0, float(duration_seconds)))
+    except (TypeError, ValueError):
+        duration_seconds = 5.0
+    bridge = inspect_bluetooth_bridge(host, username=username, password=password)
+    model = str(bridge.get("model") or "")
+    if not bridge.get("bridge_candidate") or int(bridge.get("generation") or 0) < 2:
+        return {"bridge": bridge, "supported": False, "devices": [], "reason": "bluetooth_scanner_not_supported"}
+
+    script_id: int | None = None
+    with _BLU_DISCOVERY_LOCK:
+        try:
+            script_list = _rpc(host, "Script.List", username=username, password=password)
+            scripts = script_list.get("scripts", [])
+            if not isinstance(scripts, list):
+                raise RuntimeError("shelly_script_list_invalid")
+            managed = [item for item in scripts if isinstance(item, dict)
+                       and str(item.get("name") or "").startswith("SolarMiner BLE scan ")]
+            if any(item.get("running") is True for item in managed):
+                return {"bridge": bridge, "supported": False, "devices": [], "reason": "bluetooth_scan_already_running"}
+            for item in managed:
+                stale_id = item.get("id")
+                if item.get("running") is not True and isinstance(stale_id, int) and not isinstance(stale_id, bool):
+                    try:
+                        _rpc(host, "Script.Delete", {"id": stale_id}, username=username, password=password)
+                    except (RuntimeError, OSError, ValueError):
+                        pass
+            if sum(1 for item in scripts if isinstance(item, dict) and item.get("running") is True) >= 3:
+                return {"bridge": bridge, "supported": False, "devices": [], "reason": "bluetooth_script_slots_busy"}
+            created = _rpc(host, "Script.Create", {"name": f"SolarMiner BLE scan {uuid.uuid4().hex[:8]}"},
+                           username=username, password=password)
+            script_id = created.get("id")
+            if isinstance(script_id, bool) or not isinstance(script_id, int) or script_id < 0:
+                raise RuntimeError("shelly_script_create_invalid")
+            scan_ms = int(duration_seconds * 1000)
+            script_code = f'''var SolarMinerBleResults = {{}};
+BLE.Scanner.start({{duration_ms:{scan_ms},active:true}}, function(event, result) {{
+  if (event !== BLE.Scanner.SCAN_RESULT || !result || !result.addr) return;
+  var name = String(result.local_name || "");
+  var serviceData = result.service_data || result.serviceData || {{}};
+  var bthome = serviceData.fcd2 || serviceData.FCD2 || "";
+  var shellyName = /^SB[A-Z0-9_-]{{2,}}/i.test(name) || /^Shelly BLU/i.test(name);
+  if (!shellyName && !bthome) return;
+  var address = String(result.addr).toUpperCase();
+  var values = null;
+  if (bthome && typeof BTHome !== "undefined") {{ try {{ values = BTHome.parseData(String(bthome), address); }} catch (_) {{ values = null; }} }}
+  SolarMinerBleResults[address] = {{mac:address,name:name,rssi:Number(result.rssi)||null,
+    service_data:String(bthome||""),values:values,manufacturer:shellyName?"Shelly":"BTHome",observed_at:Date.now()}};
+}});
+'''
+            _rpc(host, "Script.PutCode", {"id": script_id, "code": script_code}, username=username, password=password)
+            _rpc(host, "Script.Start", {"id": script_id}, username=username, password=password)
+            time.sleep(duration_seconds + 0.4)
+            evaluated = _rpc(host, "Script.Eval", {"id": script_id, "code": "JSON.stringify(SolarMinerBleResults)"},
+                             username=username, password=password)
+            encoded = evaluated.get("result", "{}")
+            if not isinstance(encoded, str) or len(encoded) > 65536:
+                raise RuntimeError("shelly_ble_scan_response_invalid")
+            try:
+                found = json.loads(encoded)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("shelly_ble_scan_response_invalid") from exc
+            if not isinstance(found, dict):
+                raise RuntimeError("shelly_ble_scan_response_invalid")
+            devices = []
+            for mac, item in found.items():
+                normalized = _normalize_mac(mac)
+                if not normalized or not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "Shelly BLU")[:80]
+                devices.append({"mac": normalized, "name": name, "model": name,
+                                "manufacturer": "Shelly" if item.get("manufacturer") == "Shelly" else "BTHome",
+                                "protocol": "shelly_blu_bthome" if item.get("manufacturer") == "Shelly" else "bthome",
+                                "device_type": "smart_sensor", "rssi": item.get("rssi"),
+                                "values": item.get("values") if isinstance(item.get("values"), list) else [],
+                                "bridge_mac": bridge.get("mac"), "bridge_host": host,
+                                "bridge_model": model, "discovery_method": "shelly_blu_gateway_ble"})
+            return {"bridge": bridge, "supported": True, "devices": devices, "reason": ""}
+        except RuntimeError as exc:
+            reason = str(exc)
+            if reason in {"shelly_rpc_method_not_found", "shelly_rpc_rejected"}:
+                reason = "bluetooth_scanner_not_supported"
+            return {"bridge": bridge, "supported": False, "devices": [], "reason": reason}
+        finally:
+            if script_id is not None:
+                try:
+                    _rpc(host, "Script.Stop", {"id": script_id}, username=username, password=password)
+                except (RuntimeError, OSError, ValueError):
+                    pass
+                try:
+                    _rpc(host, "Script.Delete", {"id": script_id}, username=username, password=password)
+                except (RuntimeError, OSError, ValueError):
+                    pass
 
 
 def _normalize_mac(value: Any) -> str:

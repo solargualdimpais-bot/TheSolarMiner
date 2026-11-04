@@ -63,7 +63,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.178"
+PACKAGE_VERSION = "0.6.179"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -88,6 +88,8 @@ _dispatch_lock = threading.Lock()
 _dispatch_last_sent: dict[str, tuple[str, float]] = {}
 _deye_history_jobs_lock = threading.Lock()
 _deye_history_jobs: dict[str, dict[str, Any]] = {}
+_shelly_blu_read_cache_lock = threading.Lock()
+_shelly_blu_read_cache: dict[tuple[str, ...], tuple[float, list[dict[str, Any]], list[dict[str, Any]]]] = {}
 
 ROLES = {"owner", "admin", "operator", "viewer"}
 PERMISSIONS = {
@@ -172,6 +174,11 @@ CREATE TABLE IF NOT EXISTS shelly_devices(
  protocol TEXT NOT NULL, firmware TEXT NOT NULL DEFAULT '', capabilities_json TEXT NOT NULL DEFAULT '[]',
  room TEXT NOT NULL DEFAULT '', auth_ciphertext BLOB NOT NULL DEFAULT X'', enabled INTEGER NOT NULL DEFAULT 1,
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_seen_at TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS shelly_blu_devices(
+ mac TEXT PRIMARY KEY, name TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', device_type TEXT NOT NULL DEFAULT 'smart_sensor',
+ bridge_mac TEXT NOT NULL, bridge_host TEXT NOT NULL, last_rssi INTEGER, values_json TEXT NOT NULL DEFAULT '[]',
+ last_seen_at TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_shelly_devices_host ON shelly_devices(host);
 CREATE TABLE IF NOT EXISTS tuya_product_dps_map(
@@ -387,6 +394,141 @@ def _enrich_shelly_scan(report: dict[str, Any]) -> None:
                 host["identity_conflict"] = {"arp_mac": arp_mac, "device_mac": shelly_mac}
         except (OSError, ValueError, RuntimeError):
             continue
+
+
+def _scan_registered_shelly_blu_bridges(conn: sqlite3.Connection, *, duration_seconds: float = 5.0,
+                                        bridge_macs: set[str] | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Read nearby BLU advertisements through already registered local gateways."""
+    rows = conn.execute("""SELECT mac,name,host,model,device_type,auth_ciphertext FROM shelly_devices
+        WHERE enabled=1 AND (device_type IN ('smart_blugw','smart_gateway') OR model LIKE '%BLU Gateway%'
+            OR model LIKE '%BLU GW%' OR model LIKE '%BLUGW%' OR model LIKE '%GWF-KZ01%' OR model LIKE '%SNGW-BT01%')
+        ORDER BY name COLLATE NOCASE LIMIT 8""").fetchall()
+    if bridge_macs is not None:
+        wanted = {_inventory_mac(value) for value in bridge_macs if _inventory_mac(value)}
+        rows = [row for row in rows if _inventory_mac(row["mac"]) in wanted]
+    devices: dict[str, dict[str, Any]] = {}
+    bridges: list[dict[str, Any]] = []
+    for row in rows:
+        bridge_mac = _inventory_mac(row["mac"])
+        try:
+            credentials = shelly_credentials.open_credentials(DATA_DIR, row["auth_ciphertext"] or b"")
+            result = hardware_integrations.shelly_integration.discover_bluetooth_devices(
+                str(row["host"] or ""), username=str(credentials.get("username") or ""),
+                password=str(credentials.get("password") or ""), duration_seconds=duration_seconds)
+        except (OSError, RuntimeError, ValueError) as exc:
+            bridges.append({"mac": bridge_mac, "name": str(row["name"] or "Shelly BLU Gateway")[:120],
+                            "state": "unavailable", "reason": str(exc)[:100]})
+            continue
+        bridge = result.get("bridge") if isinstance(result.get("bridge"), dict) else {}
+        bridges.append({"mac": bridge_mac or _inventory_mac(bridge.get("mac")),
+                        "name": str(row["name"] or "Shelly BLU Gateway")[:120],
+                        "model": str(bridge.get("model") or row["model"] or "")[:120],
+                        "state": "scanned" if result.get("supported") else "unsupported",
+                        "reason": str(result.get("reason") or "")[:100]})
+        for item in result.get("devices", []) if isinstance(result.get("devices"), list) else []:
+            if not isinstance(item, dict):
+                continue
+            mac = _inventory_mac(item.get("mac"))
+            if not mac:
+                continue
+            current = devices.get(mac)
+            if current is None or (int(item.get("rssi") or -127) > int(current.get("rssi") or -127)):
+                devices[mac] = {**item, "bridge_mac": bridge_mac or _inventory_mac(item.get("bridge_mac")),
+                                "bridge_host": str(row["host"] or item.get("bridge_host") or "")[:64],
+                                "bridge_name": str(row["name"] or "Shelly BLU Gateway")[:120]}
+    return list(devices.values()), bridges
+
+
+def _read_shelly_blu_bridges_cached(conn: sqlite3.Connection, bridge_macs: set[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Bound live BLE polling to one bridge scan per cache window."""
+    key = tuple(sorted({_inventory_mac(value) for value in bridge_macs if _inventory_mac(value)}))
+    if not key:
+        return [], []
+    with _shelly_blu_read_cache_lock:
+        cached = _shelly_blu_read_cache.get(key)
+        now = time.monotonic()
+        if cached and now - cached[0] < 8.0:
+            return cached[1], cached[2]
+        devices, bridges = _scan_registered_shelly_blu_bridges(
+            conn, duration_seconds=2.0, bridge_macs=set(key))
+        _shelly_blu_read_cache.clear()
+        _shelly_blu_read_cache[key] = (time.monotonic(), devices, bridges)
+        return devices, bridges
+
+
+def register_shelly_blu_device(payload: dict[str, Any],
+                               session: dict[str, Any]) -> dict[str, Any]:
+    """Verify a Shelly BLU sensor through its registered bridge and add it to inventory."""
+    if not isinstance(payload, dict) or set(payload) - {"mac", "name", "device_type", "bridge_mac"}:
+        raise HTTPException(422, "shelly_blu_registration_payload_invalid")
+    mac, bridge_mac = _inventory_mac(payload.get("mac")), _inventory_mac(payload.get("bridge_mac"))
+    name = str(payload.get("name") or "").strip()
+    device_type = str(payload.get("device_type") or "smart_sensor").strip().lower()[:48]
+    if not mac or not bridge_mac:
+        raise HTTPException(422, "shelly_blu_mac_invalid")
+    if not name or len(name) > 120:
+        raise HTTPException(422, "shelly_blu_name_required")
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        bridge_row = conn.execute("""SELECT mac,name,host,model,device_type,auth_ciphertext FROM shelly_devices
+            WHERE mac=? AND enabled=1 AND (device_type IN ('smart_blugw','smart_gateway') OR model LIKE '%BLU Gateway%'
+                OR model LIKE '%BLU GW%' OR model LIKE '%BLUGW%' OR model LIKE '%GWF-KZ01%' OR model LIKE '%SNGW-BT01%')""",
+            (bridge_mac,)).fetchone()
+        if not bridge_row:
+            raise HTTPException(404, "shelly_blu_bridge_not_registered")
+        try:
+            credentials = shelly_credentials.open_credentials(DATA_DIR, bridge_row["auth_ciphertext"] or b"")
+            scan = hardware_integrations.shelly_integration.discover_bluetooth_devices(
+                str(bridge_row["host"] or ""), username=str(credentials.get("username") or ""),
+                password=str(credentials.get("password") or ""))
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise HTTPException(502, "shelly_blu_bridge_scan_failed") from exc
+        observed = next((item for item in scan.get("devices", []) if isinstance(item, dict)
+                         and _inventory_mac(item.get("mac")) == mac), None)
+        if not observed:
+            raise HTTPException(409, "shelly_blu_device_not_seen_through_bridge")
+        conn.execute("BEGIN IMMEDIATE")
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        now = utcnow()
+        values = observed.get("values") if isinstance(observed.get("values"), list) else []
+        conn.execute("""INSERT INTO shelly_blu_devices
+            (mac,name,model,device_type,bridge_mac,bridge_host,last_rssi,values_json,last_seen_at,enabled,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,1,?,?) ON CONFLICT(mac) DO UPDATE SET name=excluded.name,
+            model=CASE WHEN excluded.model<>'' THEN excluded.model ELSE shelly_blu_devices.model END,
+            device_type=excluded.device_type,bridge_mac=excluded.bridge_mac,bridge_host=excluded.bridge_host,
+            last_rssi=excluded.last_rssi,values_json=excluded.values_json,last_seen_at=excluded.last_seen_at,
+            enabled=1,updated_at=excluded.updated_at""",
+            (mac, name, str(observed.get("model") or "")[:120], device_type, bridge_mac,
+             str(bridge_row["host"] or "")[:64], observed.get("rssi"), json.dumps(values, separators=(",", ":")),
+             now, now, now))
+        source_id = f"shelly-blu:{mac}"
+        conn.execute("""INSERT INTO network_device_inventory
+            (mac,name,device_type,manufacturer,model,last_ip,source_provider,source_device_id,created_at,updated_at,last_seen_at)
+            VALUES(?,?,?,'Shelly',?,'','shelly_blu',?,?,?,?) ON CONFLICT(mac) DO UPDATE SET
+            name=excluded.name,device_type=excluded.device_type,manufacturer='Shelly',model=excluded.model,
+            source_provider='shelly_blu',source_device_id=excluded.source_device_id,
+            updated_at=excluded.updated_at,last_seen_at=excluded.last_seen_at""",
+            (mac, name, device_type, str(observed.get("model") or "")[:120], source_id, now, now, now))
+        central = _upsert_gateway_inventory_device(conn, provider="shelly_blu", source_device_id=source_id,
+            name=name, device_type=device_type, mac=mac, manufacturer="Shelly",
+            model=str(observed.get("model") or ""), status="confirmed", name_source="owner")
+        _upsert_smart_product_catalog(conn, manufacturer="Shelly", protocol="shelly_blu",
+            product_code=str(observed.get("model") or "Shelly BLU sensor"),
+            product_name=str(observed.get("model") or "Shelly BLU sensor"), device_kind=device_type,
+            capabilities=[str(value.get("name") or "") for value in values if isinstance(value, dict)],
+            source="shelly_blu_advertisement", confidence="device_reported")
+        _sync_gateway_device_inventory(conn, hardware_integrations.load_config())
+        central = dict(conn.execute("SELECT * FROM gateway_device_inventory WHERE device_key=?",
+                                    (central["device_key"],)).fetchone())
+        audit(conn, session["user_id"], "smart_device.shelly_blu.register", mac, "success",
+              {"bridge_mac": bridge_mac, "model": observed.get("model"), "value_count": len(values)})
+        conn.commit()
+        return {"device": central, "values": values, "bridge": {"mac": bridge_mac, "name": bridge_row["name"]},
+                "source": "shelly_blu_gateway", "cloud_used": False, "commands_sent": False}
 
 
 def _unique_lan_ip_for_mac(report: dict[str, Any], mac_value: Any) -> str:
@@ -1503,6 +1645,14 @@ def require_permission(permission: str):
             raise HTTPException(403, "permission_denied")
         return session
     return dependency
+
+
+def register_shelly_blu_device_endpoint(payload: dict[str, Any],
+                                        session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    return register_shelly_blu_device(payload, session)
+
+
+app.post("/api/v1/integrations/shelly/blu/register")(register_shelly_blu_device_endpoint)
 
 
 def _revalidate_actor(conn: sqlite3.Connection, session: dict[str, Any], permission: str) -> sqlite3.Row:
@@ -3227,7 +3377,59 @@ def read_shelly_devices(session: dict[str, Any] = Depends(require_permission("ma
     # Device I/O is deliberately outside SQLite transactions: a sleeping device
     # must not hold up unrelated inventory writes.
     readings = credential_failures + hardware_integrations.shelly_integration.read_devices({"devices": shelly_devices})
-    failed_ids = {item.get("device_id") for item in readings if item.get("connection_state") != "connected"}
+    with db() as conn:
+        blu_rows = [dict(row) for row in conn.execute(
+            "SELECT mac,name,model,device_type,bridge_mac,bridge_host,last_rssi,values_json,last_seen_at FROM shelly_blu_devices WHERE enabled=1")]
+        blu_bridges = [dict(row) for row in conn.execute("""SELECT mac,name,host,model,device_type,auth_ciphertext FROM shelly_devices
+            WHERE enabled=1 AND (device_type IN ('smart_blugw','smart_gateway') OR model LIKE '%BLU Gateway%'
+                OR model LIKE '%BLU GW%' OR model LIKE '%BLUGW%' OR model LIKE '%GWF-KZ01%' OR model LIKE '%SNGW-BT01%')""")]
+    if blu_rows and blu_bridges:
+        try:
+            required_bridge_macs = {_inventory_mac(item.get("bridge_mac")) for item in blu_rows
+                                    if _inventory_mac(item.get("bridge_mac"))}
+            with db() as conn:
+                observed_blu, _ = _read_shelly_blu_bridges_cached(conn, required_bridge_macs)
+            observed_by_mac = {_inventory_mac(item.get("mac")): item for item in observed_blu if _inventory_mac(item.get("mac"))}
+            for item in blu_rows:
+                mac = _inventory_mac(item.get("mac"))
+                found = observed_by_mac.get(mac)
+                if found:
+                    values = found.get("values") if isinstance(found.get("values"), list) else []
+                    item.update({"last_rssi": found.get("rssi"), "values_json": json.dumps(values, separators=(",", ":")),
+                                 "last_seen_at": utcnow(), "bridge_host": found.get("bridge_host") or item.get("bridge_host")})
+                    with db() as conn:
+                        conn.execute("UPDATE shelly_blu_devices SET last_rssi=?,values_json=?,last_seen_at=?,bridge_host=?,updated_at=? WHERE mac=?",
+                            (item["last_rssi"], item["values_json"], item["last_seen_at"], item["bridge_host"], item["last_seen_at"], mac))
+                    values_display = [{"name": str(value.get("name") or "Sensor")[:64], "value": value.get("val"),
+                                       "unit": str(value.get("unit") or "")[:16]} for value in values if isinstance(value, dict)]
+                    readings.append({"device_id": f"shelly-blu:{mac}", "name": item["name"], "model": item["model"],
+                        "mac": mac, "host": item["bridge_host"], "manufacturer": "Shelly", "protocol": "shelly_blu_bthome",
+                        "connection_state": "connected", "components": [{"component": "bthome", "id": 0, "status": {}}],
+                        "capabilities": sorted({str(value.get("name")) for value in values if isinstance(value, dict) and value.get("name")} ),
+                        "bthome_values": values_display, "rssi": item["last_rssi"], "observed_at": time.time(),
+                        "bridge_mac": item["bridge_mac"], "command_sent": False})
+                else:
+                    try:
+                        old_values = json.loads(item.get("values_json") or "[]")
+                    except (TypeError, ValueError):
+                        old_values = []
+                    readings.append({"device_id": f"shelly-blu:{mac}", "name": item["name"], "model": item["model"],
+                        "mac": mac, "host": item["bridge_host"], "manufacturer": "Shelly", "protocol": "shelly_blu_bthome",
+                        "connection_state": "failed", "reason": "blu_advertisement_not_seen", "components": [],
+                        "capabilities": [], "bthome_values": old_values, "rssi": item.get("last_rssi"),
+                        "observed_at": time.time(), "bridge_mac": item["bridge_mac"], "command_sent": False})
+        except Exception as exc:
+            LOG.info("Shelly BLU reading unavailable (%s)", type(exc).__name__)
+    elif blu_rows:
+        for item in blu_rows:
+            mac = _inventory_mac(item.get("mac"))
+            readings.append({"device_id": f"shelly-blu:{mac}", "name": item["name"], "model": item["model"],
+                "mac": mac, "host": item["bridge_host"], "manufacturer": "Shelly", "protocol": "shelly_blu_bthome",
+                "connection_state": "failed", "reason": "bluetooth_bridge_unavailable", "components": [],
+                "capabilities": [], "bthome_values": [], "observed_at": time.time(),
+                "bridge_mac": item["bridge_mac"], "command_sent": False})
+    failed_ids = {item.get("device_id") for item in readings if item.get("connection_state") != "connected"
+                  and not str(item.get("device_id") or "").startswith("shelly-blu:")}
     if failed_ids:
         try:
             report = network_scanner.scan_attached_networks()
@@ -3433,6 +3635,9 @@ def scan_local_network(session: dict[str, Any] = Depends(require_permission("man
         try:
             report = network_scanner.scan_attached_networks()
             _enrich_shelly_scan(report)
+            blu_devices, blu_bridges = _scan_registered_shelly_blu_bridges(conn)
+            report["blu_devices"] = blu_devices
+            report["blu_bridges"] = blu_bridges
             report.setdefault("networks", [])
             report.setdefault("skipped_networks", [])
             report.setdefault("scanned_count", 0)
@@ -3611,6 +3816,7 @@ def scan_local_network(session: dict[str, Any] = Depends(require_permission("man
         audit(conn, session["user_id"], "network.local_scan", "local_network", "success", {
             "scanned_count": report["scanned_count"], "responsive_count": report["responsive_count"],
             "network_count": len(report["networks"]), "skipped_network_count": len(report["skipped_networks"]),
+            "blu_device_count": len(report.get("blu_devices", [])), "blu_bridge_count": len(report.get("blu_bridges", [])),
         })
         conn.commit()
         return report
@@ -5217,7 +5423,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.178"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.179"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

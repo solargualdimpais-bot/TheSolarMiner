@@ -6,7 +6,7 @@ const PWA_INVITE_LANDING_URL = "https://solargualdimpais-bot.github.io/TheSolarM
 import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classifyEndpoint, inferHostedGatewayEndpoint, buildInviteLandingUrl, readInviteLandingHash, PRESENCE_API_STATUS } from "./gateway-connection.js";
 import { isHeicPhoto } from "./photo-format.js";
 import { addFavoriteId, normalizeFavoriteIds, reorderFavoriteIds } from "./favorite-list.js";
-import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, redeemGatewayInvite, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, readGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayDiagnosticsUpload, saveGatewayDiagnosticsUploadToken, disableGatewayDiagnosticsUpload, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, previewGatewayTuyaProductImport, applyGatewayTuyaProductImport, controlGatewayAntminer, testGatewayAntminerControl, readGatewayAntminerManagement, writeGatewayAntminerManagement, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, controlGatewayTuyaSetting, saveGatewayTuyaProductDpsDescription, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, testGatewayTuyaLanReachability, discoverGatewayTuyaLanDevices, scanGatewayLocalNetwork, readGatewayDeviceInventory, readGatewaySmartProductCatalog, readGatewayShellyDevices, discoverGatewayShellyDevices, registerGatewayShellyDevice, controlGatewayShellySwitch, controlGatewayShellyLight, applyGatewayLocalNetworkMatches, saveGatewayLocalNetworkDevice, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging, readGatewayTeslaLocalPresence } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, redeemGatewayInvite, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, readGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayDiagnosticsUpload, saveGatewayDiagnosticsUploadToken, disableGatewayDiagnosticsUpload, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, previewGatewayTuyaProductImport, applyGatewayTuyaProductImport, controlGatewayAntminer, testGatewayAntminerControl, readGatewayAntminerManagement, writeGatewayAntminerManagement, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, controlGatewayTuyaSetting, saveGatewayTuyaProductDpsDescription, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, testGatewayTuyaLanReachability, discoverGatewayTuyaLanDevices, scanGatewayLocalNetwork, readGatewayDeviceInventory, readGatewaySmartProductCatalog, readGatewayShellyDevices, discoverGatewayShellyDevices, registerGatewayShellyDevice, registerGatewayShellyBluDevice, controlGatewayShellySwitch, controlGatewayShellyLight, applyGatewayLocalNetworkMatches, saveGatewayLocalNetworkDevice, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging, readGatewayTeslaLocalPresence } from "./gateway-auth.js";
 
 let automationEditingId = "";
 let energyEngineActiveTab="summary";
@@ -1538,9 +1538,12 @@ function renderDeviceInventoryPage(){
   const shellyCards=list=>list.map(device=>{
     const connected=device.connection_state==="connected",components=Array.isArray(device.components)?device.components:[];
     const switchRows=components.filter(item=>["switch","relay"].includes(item.component)).map(item=>{const current=item.status?.output??item.status?.ison;return `<button type="button" class="button ${current===true?"secondary":"primary"}" data-shelly-switch="${esc(device.device_id)}" data-shelly-channel="${Number(item.id)||0}" data-shelly-target="${current===true?"off":"on"}" ${!connected?"disabled":""}>${current===true?"Desligar":"Ligar"} · canal ${Number(item.id)||0}</button>`;}).join("");
-    const lightRows=components.filter(item=>["light","rgb","rgbw","cct","color"].includes(item.component)).map(item=>{const status=item.status||{},component=item.component,channel=Number(item.id)||0,brightness=Number.isInteger(status.brightness)?status.brightness:50,colorCapable=["rgb","rgbw","color"].includes(component)&&(Array.isArray(status.rgb)||["red","green","blue"].every(key=>Number.isFinite(Number(status[key]))));const initialRgb=Array.isArray(status.rgb)?status.rgb:[status.red||0,status.green||0,status.blue||0],hex="#"+initialRgb.map(value=>Math.max(0,Math.min(255,Number(value)||0)).toString(16).padStart(2,"0")).join("");return `<div class="smart-light-controls" data-shelly-light-controls="${esc(device.device_id)}" data-shelly-component="${esc(component)}" data-shelly-channel="${channel}">${Number.isInteger(status.brightness)||["light","rgb","rgbw","cct","color"].includes(component)?`<label>Brilho <input type="range" min="0" max="100" value="${brightness}" data-shelly-brightness></label><button type="button" class="button secondary" data-shelly-apply-brightness ${!connected?"disabled":""}>Aplicar</button>`:""}${colorCapable?`<label>Cor <input type="color" value="${hex}" data-shelly-color></label><button type="button" class="button secondary" data-shelly-apply-color ${!connected?"disabled":""}>Aplicar</button>`:""}${component==="cct"&&(Number.isFinite(Number(status.ct))||Number.isFinite(Number(status.temp)))?`<label>Temperatura da cor (K) <input type="number" min="2000" max="10000" step="100" value="${Number(status.ct||status.temp)||4000}" data-shelly-ct></label><button type="button" class="button secondary" data-shelly-apply-ct ${!connected?"disabled":""}>Aplicar</button>`:""}</div>`;}).join("");
+    const lightRows=components.filter(item=>["light","rgb","rgbw","cct","color"].includes(item.component)).map(item=>{const status=item.status||{},component=item.component,channel=Number(item.id)||0,brightness=Number.isInteger(status.brightness)?status.brightness:50,currentOn=typeof status.output==="boolean"?status.output:typeof status.ison==="boolean"?status.ison:null,colorCapable=["rgb","rgbw","color"].includes(component)&&(Array.isArray(status.rgb)||["red","green","blue"].every(key=>Number.isFinite(Number(status[key]))));const initialRgb=Array.isArray(status.rgb)?status.rgb:[status.red||0,status.green||0,status.blue||0],hex="#"+initialRgb.map(value=>Math.max(0,Math.min(255,Number(value)||0)).toString(16).padStart(2,"0")).join("");return `<div class="smart-light-controls" data-shelly-light-controls="${esc(device.device_id)}" data-shelly-component="${esc(component)}" data-shelly-channel="${channel}">${currentOn!==null?`<button type="button" class="button ${currentOn?"secondary":"primary"}" data-shelly-light-on="${esc(device.device_id)}" data-shelly-component="${esc(component)}" data-shelly-channel="${channel}" data-shelly-target="${currentOn?"off":"on"}" ${!connected?"disabled":""}>${currentOn?"Desligar":"Ligar"} · luz ${channel}</button>`:""}${Number.isInteger(status.brightness)||["light","rgb","rgbw","cct","color"].includes(component)?`<label>Brilho <input type="range" min="0" max="100" value="${brightness}" data-shelly-brightness></label><button type="button" class="button secondary" data-shelly-apply-brightness ${!connected?"disabled":""}>Aplicar</button>`:""}${colorCapable?`<label>Cor <input type="color" value="${hex}" data-shelly-color></label><button type="button" class="button secondary" data-shelly-apply-color ${!connected?"disabled":""}>Aplicar</button>`:""}${component==="cct"&&(Number.isFinite(Number(status.ct))||Number.isFinite(Number(status.temp)))?`<label>Temperatura da cor (K) <input type="number" min="2000" max="10000" step="100" value="${Number(status.ct||status.temp)||4000}" data-shelly-ct></label><button type="button" class="button secondary" data-shelly-apply-ct ${!connected?"disabled":""}>Aplicar</button>`:""}</div>`;}).join("");
     const metrics=components.flatMap(item=>{const status=item.status||{},values=[];for(const [key,label,unit] of [["apower","Potência","W"],["power","Potência","W"],["voltage","Tensão","V"],["current","Corrente","A"],["aenergy","Energia","Wh"],["total","Energia","Wh"]]){const raw=key==="aenergy"?status.aenergy?.total:status[key];if(raw!==null&&raw!==undefined&&raw!==""&&Number.isFinite(Number(raw))){const normalized=Number(raw);if(!values.some(row=>row.label===label))values.push({label,value:normalized,unit});}}return values;}).slice(0,4);
-    const metricMarkup=metrics.length?`<small class="inventory-device-metrics">${metrics.map(item=>`${esc(item.label)} ${esc(Number(item.value).toLocaleString("pt-PT"))} ${item.unit}`).join(" · ")}</small>`:`<small>${connected?"Sem medições disponíveis":"Sem leitura local recente"}</small>`;
+    const bthomeUnits={temperature:"°C",humidity:"%",battery:"%",illuminance:"lx",voltage:"V",current:"A",power:"W",energy:"kWh",moisture:"%",pressure:"hPa",co2:"ppm",pm2_5:"µg/m³"};
+    const bthomeMetrics=(Array.isArray(device.bthome_values)?device.bthome_values:[]).filter(item=>item&&item.value!==null&&item.value!==undefined).slice(0,4).map(item=>({label:String(item.name||"Sensor"),value:item.value,unit:String(item.unit||bthomeUnits[String(item.name||"").toLowerCase()]||"")}));
+    const shownMetrics=[...metrics,...bthomeMetrics].slice(0,4);
+    const metricMarkup=shownMetrics.length?`<small class="inventory-device-metrics">${shownMetrics.map(item=>`${esc(item.label)} ${esc(Number.isFinite(Number(item.value))?Number(item.value).toLocaleString("pt-PT"):String(item.value))}${item.unit?` ${esc(item.unit)}`:""}`).join(" · ")}</small>`:`<small>${connected?"Sem medições disponíveis":"Sem leitura local recente"}</small>`;
     return `<article class="favorite-device inventory-device ${connected?"is-confirmed":"is-fault is-pending"}" data-smart-device="${esc(device.device_id)}" data-smart-provider="shelly" tabindex="0" aria-label="${esc(device.name||device.model||"Dispositivo")} · ${connected?"Online":"Offline"}"><span class="favorite-device-icon" aria-hidden="true">⌁</span><div class="favorite-device-info"><strong class="favorite-device-name">${esc(device.name||device.model||"Dispositivo")}</strong><span>${connected?"Online":"Offline"}</span>${metricMarkup}<small data-shelly-status="${esc(device.device_id)}">${connected?`Última leitura: ${new Date((Number(device.observed_at)||Date.now()/1000)*1000).toLocaleTimeString("pt-PT")}`:esc(device.reason||"Sem comunicação")}</small></div><div class="favorite-device-actions">${switchRows}${lightRows}</div></article>`;
   }).join("");
   const onlineShelly=shellyDevices.filter(item=>item.connection_state==="connected"),offlineShelly=shellyDevices.filter(item=>item.connection_state!=="connected");
@@ -1561,7 +1564,7 @@ function renderDeviceInventoryPage(){
   let content="";
   if(activeTab==="confirmed")content=confirmedDevices.length||equipmentCards||onlineShelly.length?`<div class="favorite-device-grid inventory-device-grid">${cards(confirmedDevices)}${equipmentCards}${shellyCards(onlineShelly)}</div>`:`<div class="empty-state">Ainda não há equipamentos confirmados por uma leitura local válida.</div>`;
   else if(activeTab==="pending")content=pendingDevices.length||networkPending.length||offlineShelly.length?`<div class="favorite-device-grid inventory-device-grid">${cards(pendingDevices)}${shellyCards(offlineShelly)}${networkPending.map(item=>`<article class="favorite-device inventory-device is-pending" data-network-inventory-device="${esc(item.device_key)}"><span class="favorite-device-icon" aria-hidden="true">⌁</span><span class="favorite-device-info"><strong>${esc(item.name||"Dispositivo de rede")}</strong><span>Por confirmar · descoberto na rede</span><small>IP ${esc(item.last_ip||"—")} · MAC ${esc(item.mac||"—")}</small><small>${esc([item.manufacturer,item.model].filter(Boolean).join(" · ")||"Fabricante e modelo por identificar")}</small></span></article>`).join("")}</div>`:`<div class="empty-state">Não há dispositivos por confirmar neste momento.</div>`;
-  else content=`<section class="panel"><h2>Adicionar equipamento</h2><p>O Gateway procura na rede e reconhece automaticamente os equipamentos que consegue identificar. Não precisas de escolher a ligação ou o protocolo.</p><div class="dialog-actions"><button id="device-add-scan" class="button primary" type="button" ${owner?"":"disabled"}>Procurar equipamentos</button></div><p class="field-note" id="device-add-status" role="status">Quando encontrar um equipamento, abre a linha para confirmar o nome, fabricante e modelo. A deteção de sensores Bluetooth sem IP ainda não está concluída; o Gateway verifica a compatibilidade da ponte sem alterar a sua configuração. A configuração inicial pela rede Wi-Fi própria do dispositivo ainda não está disponível.</p><div id="device-add-results" class="local-network-results" aria-live="polite" hidden></div></section><section class="panel"><h2>Equipamentos já conhecidos</h2>${shellyDevices.length?`<div class="favorite-device-grid inventory-device-grid">${shellyCards(shellyDevices)}</div>`:`<p class="field-note">Os equipamentos encontrados e guardados aparecem no inventário Devices.</p>`}</section>`;
+  else content=`<section class="panel"><h2>Adicionar equipamento</h2><p>O Gateway procura na rede e reconhece automaticamente os equipamentos que consegue identificar. Não precisas de escolher a ligação ou o protocolo.</p><div class="dialog-actions"><button id="device-add-scan" class="button primary" type="button" ${owner?"":"disabled"}>Procurar equipamentos</button></div><p class="field-note" id="device-add-status" role="status">Quando encontrar um equipamento, abre a linha para confirmar o nome, fabricante e modelo. Sensores Shelly BLU são procurados pelo Gateway através das pontes compatíveis já registadas; não precisas de Bluetooth no telemóvel. A configuração inicial pela rede Wi-Fi própria do dispositivo ainda não está disponível.</p><div id="device-add-results" class="local-network-results" aria-live="polite" hidden></div></section><section class="panel"><h2>Equipamentos já conhecidos</h2>${shellyDevices.length?`<div class="favorite-device-grid inventory-device-grid">${shellyCards(shellyDevices)}</div>`:`<p class="field-note">Os equipamentos encontrados e guardados aparecem no inventário Devices.</p>`}</section>`;
   return `<div class="page-heading"><div><p class="eyebrow">CONTROLO · GATEWAY</p><h1>Dispositivos</h1><p>Toca num cartão para ver o resumo; faz duplo clique no nome para editar.</p></div><button class="button secondary" id="gateway-area-refresh">Atualizar ↻</button></div>${tabs}<section class="device-inventory-content home-favorites" data-device-tab-content="${activeTab}">${content}</section>`;
 }
 function renderGatewayHousePage(){
@@ -3059,6 +3062,8 @@ function renderLocalNetworkResults(report){
     const ipLabel=host.mac_ip_conflict?`IP ambíguo: ${(host.ip_candidates||[]).map(esc).join(", ")}`:esc(host.ip);
     return `<tr${conflict?' class="warning-row"':''} tabindex="0" data-network-device-row="${index}" aria-label="Abrir detalhes de ${esc(host.friendly_name||host.hostname||host.ip||host.mac||"dispositivo")}"><td>${ipLabel}${host.is_router?' <span class="source-tag">Router</span>':''}</td><td>${esc(host.mac||"MAC não visível")}${conflict?' <span class="source-tag">MAC em vários IPs</span>':''}</td><td>${esc(host.friendly_name||host.hostname||"—")}</td><td>${esc(host.manufacturer||"—")}</td><td>${esc(host.model||"—")}</td><td>${matches}</td><td>${esc(methods)}</td><td>${(host.open_ports||[]).map(port=>esc(port)).join(", ")||"—"}</td></tr>`;
   }).join("");
+  const bluetoothRows=(report.blu_devices||[]).map((device,index)=>`<tr tabindex="0" data-blu-device-row="${index}" aria-label="Abrir ${esc(device.name||device.model||device.mac)}"><td>Via ponte · ${esc(device.bridge_name||device.bridge_model||"Shelly BLU Gateway")}</td><td>${esc(device.mac)}</td><td>${esc(device.name||"Sensor Bluetooth")}</td><td>${esc(device.manufacturer||"Shelly")}</td><td>${esc(device.model||"Shelly BLU")}</td><td>Sensor Bluetooth · ${esc(device.rssi??"—")} dBm</td><td>Bluetooth pela ponte</td><td>—</td></tr>`).join("");
+  const bridgeNotes=(report.blu_bridges||[]).map(item=>`${esc(item.name||"Ponte Shelly")}: ${item.state==="scanned"?"pesquisa concluída":item.reason||"não disponível"}`).join(" · ");
   const networks=(report.networks||[]).map(item=>`${esc(item.network)} · ${esc(item.interface)}`).join("; ")||"Nenhuma rede local IPv4 encontrada.";
   const interfaceAddresses=(report.interface_addresses||[]).map(item=>`${esc(item.interface)}: ${esc(item.address)} · ${esc(item.network)}`).join("; ");
   const skipped=(report.skipped_networks||[]).length?` Redes ignoradas por exceder o limite de ${esc(report.address_limit)} endereços: ${(report.skipped_networks||[]).map(esc).join(", ")}.`:"";
@@ -3068,14 +3073,17 @@ function renderLocalNetworkResults(report){
   const conflictNote=conflicts.size?`<p class="field-note" role="status">${conflicts.size} MAC(s) aparecem associados a vários IPs. Esses casos não serão guardados automaticamente; confirma a causa antes de corrigir a associação.</p>`:"";
   const box=(state.page==="devices"&&$("#device-add-results"))||$("#local-network-results");
   const routers=(report.router_ips||[]).map(esc).join(", ")||"Não identificado pela tabela de rotas do Gateway.";
-  box.innerHTML=`<p class="field-note">Redes verificadas: ${networks}. Endereços verificados: ${esc(report.scanned_count)}; dispositivos que responderam: ${esc(report.responsive_count)}. Router de saída indicado pela rota: ${routers}.${skipped}</p>${interfaceAddresses?`<p class="field-note">IPv4 atribuídos às interfaces: ${interfaceAddresses}.</p>`:""}${scanError?`<p class="field-note" role="status">${scanError}</p>`:""}${scanWarnings?`<p class="field-note" role="status">${scanWarnings}</p>`:""}${conflictNote}<div class="diagnostic-table-wrap"><table class="diagnostic-table"><thead><tr><th>IP</th><th>MAC</th><th>Nome / hostname</th><th>Fabricante</th><th>Modelo</th><th>Device reconhecido</th><th>Detetado por</th><th>Portas abertas</th></tr></thead><tbody>${hostRows||'<tr><td colspan="8">Nenhum dispositivo respondeu nesta pesquisa.</td></tr>'}</tbody></table></div><p class="field-note">Faz duplo clique numa linha para identificar ou renomear o equipamento; ao guardar, o MAC entra no inventário central e aparece em Devices → Por confirmar se ainda não estiver associado. A pesquisa usa ARP Ethernet ativo, ICMP, TCP, SSDP/UPnP e mDNS/DNS-SD nas redes diretamente ligadas ao Gateway. Firewalls, isolamento Wi-Fi, VLANs, sub-redes atrás de routers e dispositivos desligados podem ocultar equipamentos. Fabricante e modelo só aparecem quando anunciados localmente ou encontrados na base OUI local.</p>`;
+  box.innerHTML=`<p class="field-note">Redes verificadas: ${networks}. Endereços verificados: ${esc(report.scanned_count)}; dispositivos que responderam: ${esc(report.responsive_count)}. Router de saída indicado pela rota: ${routers}.${skipped}</p>${interfaceAddresses?`<p class="field-note">IPv4 atribuídos às interfaces: ${interfaceAddresses}.</p>`:""}${scanError?`<p class="field-note" role="status">${scanError}</p>`:""}${scanWarnings?`<p class="field-note" role="status">${scanWarnings}</p>`:""}${conflictNote}<div class="diagnostic-table-wrap"><table class="diagnostic-table"><thead><tr><th>IP</th><th>MAC</th><th>Nome / hostname</th><th>Fabricante</th><th>Modelo</th><th>Device reconhecido</th><th>Detetado por</th><th>Portas abertas</th></tr></thead><tbody>${hostRows||'<tr><td colspan="8">Nenhum dispositivo respondeu nesta pesquisa.</td></tr>'}${bluetoothRows}</tbody></table></div>${bridgeNotes?`<p class="field-note">Pontes Bluetooth: ${bridgeNotes}.</p>`:""}<p class="field-note">Faz duplo clique numa linha LAN ou Bluetooth para identificar ou renomear o equipamento; ao guardar, o MAC entra no inventário central e aparece em Devices. A pesquisa LAN usa ARP ativo, ICMP, TCP, SSDP/UPnP e mDNS/DNS-SD. Sensores Shelly BLU são procurados pelo Gateway através das pontes registadas; a PWA não usa Bluetooth.</p>`;
   box.hidden=false;
   return matchedMacs.size;
 }
-function openLocalNetworkDeviceDetails(index){
-  const host=lastLocalNetworkScanReport?.hosts?.[index];
+function openLocalNetworkDeviceDetails(index,hostOverride=null){
+  const host=hostOverride||lastLocalNetworkScanReport?.hosts?.[index];
   if(!host)return;
   const dialog=$("#network-device-detail-dialog");
+  dialog.dataset.transport=host.transport||"lan";
+  $("#network-device-detail-ip-label").hidden=false;$("#network-device-detail-ip-input").hidden=false;
+  $("#network-device-detail-bridge").hidden=false;
   const ip=host.mac_ip_conflict?`Ambíguo: ${(host.ip_candidates||[]).join(", ")||"vários IPs"}`:(host.ip||"—");
   const match=(host.matched_devices||[])[0]||{};
   $("#network-device-detail-ip").textContent=ip;
@@ -3116,31 +3124,65 @@ function openLocalNetworkDeviceDetails(index){
   $("#network-device-detail-detected-manufacturer").textContent=host.manufacturer||"—";
   $("#network-device-detail-detected-model").textContent=host.model||"—";
   const bridge=host.shelly_bluetooth_bridge;
-  const bridgeStatus=bridge?.bthome_discovery_api==="available"?"Ponte local identificada; o procedimento de descoberta deste modelo ainda precisa de validação.":bridge?.candidate?"Ponte Bluetooth identificada; este modelo não expõe a API local que o Gateway verificou.":"Não foi identificada uma ponte de sensores compatível neste endereço.";
+  const bridgeStatus=bridge?.bthome_discovery_api==="available"?"Ponte Bluetooth local confirmada.":bridge?.candidate?"A ponte foi identificada, mas não suporta o método de pesquisa BLE do Gateway.":"Não foi identificada uma ponte de sensores compatível neste endereço.";
   if($("#network-device-detail-bridge"))$("#network-device-detail-bridge").textContent=bridgeStatus;
   $("#network-device-detail-recognized").textContent=match.name?(match.device_id?`${match.name} · ${match.device_id}`:match.name):"Ainda não associado a um equipamento guardado.";
   $("#network-device-detail-save").disabled=false;
   dialog.dataset.hostIndex=String(index);
   dialog.showModal();
 }
+function openBluDeviceDetails(index){
+  const device=lastLocalNetworkScanReport?.blu_devices?.[index];
+  if(!device)return;
+  const host={transport:"blu",ip:"",mac:device.mac,manufacturer:device.manufacturer==="Shelly"?"Shelly":"",model:device.model||"Shelly BLU",protocol:device.protocol,
+    discovery_methods:["shelly_blu_gateway_ble"],friendly_name:device.name||device.model||"Sensor Shelly BLU",device_type:device.device_type||"smart_sensor",
+    bridge_mac:device.bridge_mac,bridge_name:device.bridge_name,matched_devices:[{device_type:device.device_type||"smart_sensor"}]};
+  openLocalNetworkDeviceDetails(-1,host);
+  const dialog=$("#network-device-detail-dialog");dialog.dataset.transport="blu";dialog.dataset.bluMac=device.mac;dialog.dataset.bridgeMac=device.bridge_mac||"";
+  $("#network-device-detail-ip-label").hidden=true;$("#network-device-detail-ip-input").hidden=true;
+  $("#network-device-detail-ip").textContent=`Sensor recebido pela ponte ${device.bridge_name||"Shelly BLU Gateway"}; não tem IP próprio.`;
+  $("#network-device-detail-mac-source").textContent="Anúncio Bluetooth recebido pela ponte Shelly";
+  $("#network-device-detail-bridge").hidden=true;
+  $("#network-device-shelly-credentials").hidden=true;
+  $("#network-device-detail-save").disabled=false;
+  dialog.showModal();
+}
 $("#local-network-results").addEventListener("click",event=>{
   const row=event.target.closest("[data-network-device-row]");
   if(row)openLocalNetworkDeviceDetails(Number(row.dataset.networkDeviceRow));
+  const blu=event.target.closest("[data-blu-device-row]");
+  if(blu)openBluDeviceDetails(Number(blu.dataset.bluDeviceRow));
 });
 $("#local-network-results").addEventListener("keydown",event=>{
   if(!["Enter"," "].includes(event.key))return;
   const row=event.target.closest("[data-network-device-row]");
-  if(!row)return;
-  event.preventDefault();openLocalNetworkDeviceDetails(Number(row.dataset.networkDeviceRow));
+  if(row){event.preventDefault();openLocalNetworkDeviceDetails(Number(row.dataset.networkDeviceRow));return;}
+  const blu=event.target.closest("[data-blu-device-row]");
+  if(blu){event.preventDefault();openBluDeviceDetails(Number(blu.dataset.bluDeviceRow));}
 });
 $("#network-device-detail-close").addEventListener("click",()=>$("#network-device-detail-dialog").close());
 $("#network-device-detail-cancel").addEventListener("click",()=>$("#network-device-detail-dialog").close());
 $("#network-device-detail-save").addEventListener("click",async event=>{
   const button=event.currentTarget,dialog=$("#network-device-detail-dialog"),status=$("#local-network-status");
-  const host=lastLocalNetworkScanReport?.hosts?.[Number(dialog.dataset.hostIndex)];
+  const host=dialog.dataset.transport==="blu"?
+    (lastLocalNetworkScanReport?.blu_devices||[]).find(item=>String(item.mac||"").toUpperCase()===String(dialog.dataset.bluMac||"").toUpperCase()):
+    lastLocalNetworkScanReport?.hosts?.[Number(dialog.dataset.hostIndex)];
   const manufacturer=$("#network-device-detail-manufacturer").value;
   const ip=$("#network-device-detail-ip-input").value.trim(),mac=$("#network-device-detail-mac-input").value.trim().toUpperCase();
   const deviceType=$("#network-device-detail-type").value,model=$("#network-device-detail-model").value.trim(),productId=$("#network-device-detail-product-id").value.trim();
+  if(dialog.dataset.transport==="blu"){
+    if(!ownerCanManageHardware("#local-network-status"))return;
+    button.disabled=true;button.textContent="A confirmar pela ponte…";
+    try{const saved=await registerGatewayShellyBluDevice({mac:host.mac,name:$("#network-device-detail-name").value||host.friendly_name,device_type:deviceType,bridge_mac:host.bridge_mac});
+      host.matched_devices=[{name:saved.device.name,device_id:saved.device.source_device_id,provider:"shelly_blu",device_type:saved.device.device_type,manufacturer:"Shelly",model:saved.device.model}];
+      try{const inventory=await readGatewayDeviceInventory();state.gatewayDeviceInventory=Array.isArray(inventory.devices)?inventory.devices:[];}catch{/* Sensor registration succeeded; refresh the common inventory later. */}
+      await refreshShellyInventoryStatus({quiet:true});
+      renderLocalNetworkResults(lastLocalNetworkScanReport);status.textContent=`Sensor guardado no inventário pelo MAC ${saved.device.mac}; ponte ${saved.bridge.name}.`;
+      dialog.close();
+    }catch(error){status.textContent=`Não foi possível registar o sensor Bluetooth: ${error.message||"a ponte não confirmou o dispositivo."}`;}
+    finally{button.disabled=false;button.textContent="Guardar equipamento";}
+    return;
+  }
   if(!ip||!mac){status.textContent="Preenche o IP e o MAC. O Gateway voltará a confirmar o par antes de guardar.";return;}
   if(["Tuya","MOES"].includes(manufacturer)&&!productId){status.textContent="Para adicionar como Tuya/MOES com suporte ao mapa, indica o Product ID exato. Sem ele não aplico nem infiro nenhum mapa DPS.";return;}
   if(manufacturer==="Shelly"){
@@ -3246,12 +3288,14 @@ $("#page-content").addEventListener("click", async event => {
   if(addScan){
     if(!ownerCanManageHardware("#device-add-status"))return;
     const status=$("#device-add-status"),results=$("#device-add-results");
-    addScan.disabled=true;results.hidden=true;status.textContent="A procurar equipamentos na rede e a identificar as pontes disponíveis…";
-    try{const report=await scanGatewayLocalNetwork();const matches=renderLocalNetworkResults(report);status.textContent=`Pesquisa concluída: ${Number(report.responsive_count)||0} equipamentos responderam; ${matches} já correspondem ao inventário. Abre uma linha para identificar e guardar.`;}
+    addScan.disabled=true;results.hidden=true;status.textContent="A procurar equipamentos na rede e sensores através das pontes registadas…";
+    try{const report=await scanGatewayLocalNetwork();const matches=renderLocalNetworkResults(report);status.textContent=`Pesquisa concluída: ${Number(report.responsive_count)||0} equipamentos LAN e ${(report.blu_devices||[]).length} sensores Bluetooth; ${matches} já correspondem ao inventário. Abre uma linha para guardar.`;}
     catch(error){status.textContent=`Não foi possível concluir a pesquisa: ${error.message||"o Gateway não respondeu."}`;}
     finally{if(addScan.isConnected)addScan.disabled=false;}
     return;
   }
+  const addBluRow=event.target.closest("#device-add-results [data-blu-device-row]");
+  if(addBluRow){openBluDeviceDetails(Number(addBluRow.dataset.bluDeviceRow));return;}
   const addScanRow=event.target.closest("#device-add-results [data-network-device-row]");
   if(addScanRow){openLocalNetworkDeviceDetails(Number(addScanRow.dataset.networkDeviceRow));return;}
   const shellyDiscover=event.target.closest("#shelly-discover");
@@ -3269,16 +3313,17 @@ $("#page-content").addEventListener("click", async event => {
     try{const result=await controlGatewayShellySwitch(deviceId,channel,on);if(label)label.textContent=result.command_confirmed?`Comando confirmado · canal ${channel} ${result.observed_on?"ligado":"desligado"}`:`Comando aceite sem confirmação física · ${result.command_state||"estado desconhecido"}`;await refreshShellyInventoryStatus({quiet:true});}
     catch(error){if(label)label.textContent=`Falha no comando: ${error.message}`;shellySwitch.disabled=false;}return;
   }
-  const shellyLightButton=event.target.closest("[data-shelly-apply-brightness], [data-shelly-apply-color], [data-shelly-apply-ct]");
+  const shellyLightButton=event.target.closest("[data-shelly-light-on], [data-shelly-apply-brightness], [data-shelly-apply-color], [data-shelly-apply-ct]");
   if(shellyLightButton){
     if(!ownerCanManageHardware("#shelly-register-status"))return;
     const box=shellyLightButton.closest("[data-shelly-light-controls]"),deviceId=box?.dataset.shellyLightControls,component=box?.dataset.shellyComponent,channel=Number(box?.dataset.shellyChannel),device=state.shellyDevices.find(item=>item.device_id===deviceId);
     if(!device||!box)return;
     const settings={};
+    if(shellyLightButton.hasAttribute("data-shelly-light-on"))settings.on=shellyLightButton.dataset.shellyTarget==="on";
     if(shellyLightButton.hasAttribute("data-shelly-apply-brightness"))settings.brightness=Number(box.querySelector("[data-shelly-brightness]")?.value);
     if(shellyLightButton.hasAttribute("data-shelly-apply-color")){const hex=box.querySelector("[data-shelly-color]")?.value||"#000000";settings.rgb=[1,3,5].map(index=>parseInt(hex.slice(index,index+2),16));}
     if(shellyLightButton.hasAttribute("data-shelly-apply-ct"))settings.color_temperature=Number(box.querySelector("[data-shelly-ct]")?.value);
-    const summary=settings.rgb?`cor RGB ${settings.rgb.join(", ")}`:settings.color_temperature?`${settings.color_temperature} K`: `brilho ${settings.brightness}%`;
+    const summary=typeof settings.on==="boolean"?`luz ${settings.on?"ligada":"desligada"}`:settings.rgb?`cor RGB ${settings.rgb.join(", ")}`:settings.color_temperature?`${settings.color_temperature} K`: `brilho ${settings.brightness}%`;
     if(!window.confirm(`Aplicar ${summary} ao equipamento ${device.name||"selecionado"}?`))return;
     shellyLightButton.disabled=true;const label=$(`[data-shelly-status="${CSS.escape(deviceId)}"]`);if(label)label.textContent="A aplicar e a verificar a luz…";
     try{const result=await controlGatewayShellyLight(deviceId,component,channel,settings);if(label)label.textContent=result.command_confirmed?`Alteração confirmada · canal ${channel}`:`Ordem aceite; estado ainda não confirmado · canal ${channel}`;await refreshShellyInventoryStatus({quiet:true});}

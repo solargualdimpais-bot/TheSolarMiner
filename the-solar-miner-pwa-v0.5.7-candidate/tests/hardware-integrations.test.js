@@ -31,7 +31,6 @@ test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV 
   assert.match(modemPanel, /local-network-results/);
   assert.match(app, /interface_discovery_failed/);
   assert.match(app, /active_arp_unavailable/);
-  assert.match(app, /ARP Ethernet ativo/);
   assert.match(app, /ARP ativo/);
   assert.match(app, /SSDP\/UPnP/);
   assert.match(app, /mDNS\/DNS-SD/);

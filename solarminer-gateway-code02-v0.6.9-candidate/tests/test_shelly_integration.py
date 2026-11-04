@@ -115,3 +115,48 @@ def test_bluetooth_bridge_probe_does_not_assume_bthome_api(monkeypatch):
     result = shelly.inspect_bluetooth_bridge("192.168.1.41")
     assert result["bridge_candidate"] is True
     assert result["bthome_discovery_api"] == "not_supported"
+
+
+def test_bluetooth_discovery_uses_and_removes_only_its_temporary_script(monkeypatch):
+    calls = []
+    monkeypatch.setattr(shelly, "identify_and_read", lambda *args, **kwargs: {
+        "host": "192.168.1.40", "model": "Shelly BLU Gateway", "firmware": "1.7.0",
+        "generation": 2, "mac": "AA:BB:CC:DD:EE:40", "capabilities": ["bluetooth"],
+        "components": [{"component": "ble", "id": 0, "status": {}}]})
+    def rpc(host, method, params=None, **auth):
+        calls.append((method, params))
+        if method == "BTHome.GetStatus":
+            return {"errors": []}
+        if method == "Script.List":
+            return {"scripts": [{"id": 1, "name": "user-script", "running": True}]}
+        if method == "Script.Create":
+            return {"id": 2}
+        if method == "Script.Eval":
+            return {"result": '{"AA:BB:CC:DD:EE:01":{"name":"SBHT-003C","rssi":-58,"manufacturer":"Shelly","values":[{"name":"temperature","val":21.5}]}}'}
+        return {}
+    monkeypatch.setattr(shelly, "_rpc", rpc)
+    monkeypatch.setattr(shelly.time, "sleep", lambda _: None)
+    result = shelly.discover_bluetooth_devices("192.168.1.40", duration_seconds=2)
+    assert result["supported"] is True
+    assert result["devices"][0]["mac"] == "AA:BB:CC:DD:EE:01"
+    assert result["devices"][0]["model"] == "SBHT-003C"
+    assert result["devices"][0]["values"][0]["name"] == "temperature"
+    assert [method for method, _ in calls] == ["BTHome.GetStatus", "Script.List", "Script.Create",
+        "Script.PutCode", "Script.Start", "Script.Eval", "Script.Stop", "Script.Delete"]
+    assert all(params is None or params.get("id") != 1 for _, params in calls)
+
+
+def test_bluetooth_discovery_does_not_stop_scripts_when_all_slots_are_busy(monkeypatch):
+    calls = []
+    monkeypatch.setattr(shelly, "inspect_bluetooth_bridge", lambda *args, **kwargs: {
+        "bridge_candidate": True, "generation": 2, "mac": "AA:BB:CC:DD:EE:40", "model": "Shelly BLU Gateway"})
+    def rpc(host, method, params=None, **auth):
+        calls.append(method)
+        if method == "Script.List":
+            return {"scripts": [{"id": i, "running": True} for i in (1, 2, 3)]}
+        return {}
+    monkeypatch.setattr(shelly, "_rpc", rpc)
+    result = shelly.discover_bluetooth_devices("192.168.1.40")
+    assert result["supported"] is False
+    assert result["reason"] == "bluetooth_script_slots_busy"
+    assert calls == ["Script.List"]
