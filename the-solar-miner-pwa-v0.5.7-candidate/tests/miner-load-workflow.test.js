@@ -63,3 +63,11 @@ test("miner commands submenu includes an authenticated power target action", () 
   assert.match(app, /id="antminer-section-apply-watt"/);
   assert.match(app, /writeGatewayAntminerManagement\("set_power_target",\{watt\}\)/);
 });
+
+test("Tuya toggle keeps Home and Devices in place through command confirmation", () => {
+  assert.match(app, /const recentTuyaSwitchCommands=new Map\(\)/);
+  assert.match(app, /recentTuyaSwitchCommands\.set\(device\.device_id,requestedAt\+5_000\)/);
+  assert.match(app, /for\(const deviceId of deviceIds\)\{updateVisibleTuyaCard\(deviceId\);updateOpenTuyaDeviceDialog\(deviceId\);\}/);
+  assert.match(app, /finally\{favoriteControlPending\.delete\(deviceId\);document\.querySelectorAll\(`\[data-favorite-toggle=/);
+  assert.doesNotMatch(app, /finally\{favoriteControlPending\.delete\(deviceId\);updateVisibleTuyaCard\(deviceId\);\}/);
+});

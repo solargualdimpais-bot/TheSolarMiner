@@ -22,6 +22,7 @@ let houseView={tab:"overview",floorId:null,roomId:null,planEditing:false};
 let housePlanPointer=null;
 let lastTuyaReadAt=0;
 const pendingTuyaSwitchStates=new Map();
+const recentTuyaSwitchCommands=new Map();
 let operationDialogResolve=null;
 let gatewayUpdateNotice=null;
 let gatewayAutoUpdateSuppressed=false;
@@ -266,6 +267,15 @@ function classifyGatewayReadings(items, allowedAgeMs = 5 * 60 * 1000) {
   return Date.now() - Math.max(...times) > allowedAgeMs ? "STALE" : "LIVE";
 }
 function renderAfterLiveRefresh() {
+  const now=Date.now(),recentIds=new Set([...recentTuyaSwitchCommands].filter(([,expiresAt])=>expiresAt>now).map(([deviceId])=>deviceId));
+  for(const [deviceId,expiresAt] of recentTuyaSwitchCommands)if(expiresAt<=now)recentTuyaSwitchCommands.delete(deviceId);
+  const activeDialog=document.querySelector('dialog[open][data-tuya-device-id]');
+  if((recentIds.size||activeDialog)&&["inicio","devices"].includes(state.page)){
+    state.pendingLiveRender=false;
+    const deviceIds=new Set([...recentIds,...favoriteControlPending,...(activeDialog?[activeDialog.dataset.tuyaDeviceId]:[])]);
+    for(const deviceId of deviceIds){updateVisibleTuyaCard(deviceId);updateOpenTuyaDeviceDialog(deviceId);}
+    return;
+  }
   if (document.querySelector("dialog[open]")) { state.pendingLiveRender = true; return; }
   state.pendingLiveRender = false;
   render();
@@ -830,6 +840,7 @@ async function setTuyaSwitchGroup(device,desired){
 async function sendTuyaSwitchCommand(device,code,desired){
   const pendingCodes=code==="switch_all"&&tuyaSwitchChannelCodes(device).length>1&&!tuyaSwitchCodeHasLocalMapping(device,"switch_all")?tuyaSwitchChannelCodes(device):[code];
   const requestedAt=Date.now();
+  recentTuyaSwitchCommands.set(device.device_id,requestedAt+5_000);
   for(const pendingCode of pendingCodes)pendingTuyaSwitchStates.set(`${device.device_id}::${pendingCode}`,{deviceId:device.device_id,code:pendingCode,value:desired,requestedAt});
   updateVisibleTuyaCard(device.device_id);updateOpenTuyaDeviceDialog(device.device_id);
   try{return code==="switch_all"?await setTuyaSwitchGroup(device,desired):{results:[await controlGatewayTuyaSwitch(device.device_id,desired,code)],codes:[code]};}
@@ -1734,7 +1745,7 @@ $('#page-content').addEventListener('click',async e=>{
       await sendTuyaSwitchCommand(device,code,!current);
       showFeatureNotice("Ordem enviada. O estado será atualizado pelo próximo varrimento LAN.");
     }catch(error){showFeatureNotice(`Falha no controlo LAN: ${error.message}`);}
-    finally{favoriteControlPending.delete(deviceId);updateVisibleTuyaCard(deviceId);}
+    finally{favoriteControlPending.delete(deviceId);document.querySelectorAll(`[data-favorite-toggle="${CSS.escape(deviceId)}"]`).forEach(button=>{button.disabled=false;button.removeAttribute("aria-busy");});}
     return;
   }
   const remove=e.target.closest('[data-favorite-remove]');if(remove){workspace.prefs.favoriteDeviceIds=(workspace.prefs.favoriteDeviceIds||[]).filter(id=>id!==remove.dataset.favoriteRemove);saveDemoWorkspace();render();return;}

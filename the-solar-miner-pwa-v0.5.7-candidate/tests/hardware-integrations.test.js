@@ -112,9 +112,11 @@ test("Antminer power command result exposes Braiins-applied watts, including a c
   assert.equal(parseWatt({operation:"set_power_target", data:{watt:"not-a-wattage"}}), null);
 });
 
-test("periodic Gateway refresh preserves open dialogs and renders updated data after closing", () => {
+test("periodic Gateway refresh preserves unrelated dialogs and patches Tuya control cards in place", () => {
   const app = read("../app.js");
-  assert.match(app, /function renderAfterLiveRefresh\(\)\s*\{\s*if \(document\.querySelector\("dialog\[open\]"\)\) \{ state\.pendingLiveRender = true;/);
+  assert.match(app, /function renderAfterLiveRefresh\(\)\s*\{\s*const now=Date\.now\(\),recentIds=new Set/);
+  assert.match(app, /if\(\(recentIds\.size\|\|activeDialog\)&&\["inicio","devices"\]\.includes\(state\.page\)\)/);
+  assert.match(app, /if \(document\.querySelector\("dialog\[open\]"\)\) \{ state\.pendingLiveRender = true;/);
   assert.match(app, /document\.addEventListener\("close", \(\) => \{\s*if \(state\.pendingLiveRender && !document\.querySelector\("dialog\[open\]"\)\)/);
   assert.equal((app.match(/renderAfterLiveRefresh\(\);/g) || []).length, 2);
 });

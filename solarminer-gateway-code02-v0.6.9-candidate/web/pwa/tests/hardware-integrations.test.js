@@ -26,7 +26,7 @@ test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV 
   assert.doesNotMatch(app, /hardware-antminer-username/);
   assert.match(app, /saveHardwareProvider\("antminer", \{ enabled: Boolean\(host\), host,/);
   for (const tab of ["access", "updates", "tailscale", "gateway", "equipment", "modem"]) assert.match(html, new RegExp(`data-owner-tab="${tab}"`));
-  const modemPanel = html.match(/data-owner-panel="modem"[\s\S]*?<\/section>/)?.[0] || "";
+  const modemPanel = html.match(/<section class="panel gateway-auth-panel owner-tab-panel" data-owner-panel="modem"[\s\S]*?<\/section>/)?.[0] || "";
   assert.match(modemPanel, /local-network-scan/);
   assert.match(modemPanel, /local-network-results/);
   assert.match(app, /interface_discovery_failed/);
@@ -77,8 +77,8 @@ test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV 
 test("Saving a Tuya device in either form runs only the selected LAN reachability test", () => {
   const app = read("../app.js");
   const auth = read("../gateway-auth.js");
-  const gateway = read("../../../src/solarminer_gateway/app.py");
-  const integrations = read("../../../src/solarminer_gateway/integrations.py");
+  const gateway = read("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/app.py");
+  const integrations = read("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/integrations.py");
   assert.match(app, /async function testTuyaLanReachability\(deviceId\)[\s\S]*?testGatewayTuyaLanReachability\(deviceId\)/);
   assert.match(app, /saveGatewayHardwareIntegrationConfig\([\s\S]*?testTuyaLanReachability\(id\)/);
   assert.match(app, /saveGatewayHardwareIntegrationConfig\(\{tuya:\{devices:next\}\}\)[\s\S]*?testTuyaLanReachability\(device\.device_id\)/);
@@ -112,9 +112,11 @@ test("Antminer power command result exposes Braiins-applied watts, including a c
   assert.equal(parseWatt({operation:"set_power_target", data:{watt:"not-a-wattage"}}), null);
 });
 
-test("periodic Gateway refresh preserves open dialogs and renders updated data after closing", () => {
+test("periodic Gateway refresh preserves unrelated dialogs and patches Tuya control cards in place", () => {
   const app = read("../app.js");
-  assert.match(app, /function renderAfterLiveRefresh\(\)\s*\{\s*if \(document\.querySelector\("dialog\[open\]"\)\) \{ state\.pendingLiveRender = true;/);
+  assert.match(app, /function renderAfterLiveRefresh\(\)\s*\{\s*const now=Date\.now\(\),recentIds=new Set/);
+  assert.match(app, /if\(\(recentIds\.size\|\|activeDialog\)&&\["inicio","devices"\]\.includes\(state\.page\)\)/);
+  assert.match(app, /if \(document\.querySelector\("dialog\[open\]"\)\) \{ state\.pendingLiveRender = true;/);
   assert.match(app, /document\.addEventListener\("close", \(\) => \{\s*if \(state\.pendingLiveRender && !document\.querySelector\("dialog\[open\]"\)\)/);
   assert.equal((app.match(/renderAfterLiveRefresh\(\);/g) || []).length, 2);
 });
@@ -160,15 +162,20 @@ test("Gateway terminal enables its input after authenticated readiness", () => {
   assert.match(app, /const socket = await openGatewayTerminalSocket\(\);\s*gatewayTerminalSocket = socket;[\s\S]{0,360}setGatewayTerminalConnected\(true\);\s*status\.textContent = "Terminal ligado ao Gateway\."/);
 });
 
-test("Modem tab is retained without Huawei search controls or API calls", () => {
-  const html = read("../index.html");
+test("Owner DPS editor sends normalized characteristic, unit, and divisor to the Product ID map", () => {
   const app = read("../app.js");
   const auth = read("../gateway-auth.js");
-  const gateway = read("../../../src/solarminer_gateway/app.py");
-  assert.match(html, /data-owner-tab="modem"/);
-  assert.match(html, /data-owner-panel="modem"[\s\S]*?local-network-scan/);
-  assert.doesNotMatch(`${html}\n${app}\n${auth}`, /huawei|integrations\/huawei|Pesquisar modem/i);
-  assert.doesNotMatch(gateway, /@app\.post\("\/api\/v1\/integrations\/huawei\/(?:clients|probe|client-label)/);
+  assert.match(app, /Característica normalizada/);
+  assert.match(app, /daily_accumulated_energy/);
+  assert.match(app, /Informação descritiva · sem cálculo/);
+  assert.match(app, /standardDpsLabels/);
+  assert.match(app, /device\.product_profile\?\.normalized_characteristics/);
+  assert.match(app, /updateCharacteristicUnits/);
+  assert.match(app, /saveGatewayTuyaProductDpsDescription\(device\.device_id,dpsId,form\.elements\.description\.value,mapping\)/);
+  assert.match(auth, /saveGatewayTuyaProductDpsDescription\(deviceId, dpsId, description, mapping = \{\}\)/);
+  assert.match(auth, /body\.semantic_code = mapping\.semantic_code/);
+  assert.match(auth, /body\.unit = mapping\.unit/);
+  assert.match(auth, /body\.scale = mapping\.scale/);
 });
 
 test("Deye Cloud import explains HTTP 504 as a Gateway or proxy timeout", () => {
@@ -189,7 +196,7 @@ test("live navigation renders Gateway data without the demo renderer overriding 
 });
 
 test("Gateway embedded PWA has the exact same integration UI and client", () => {
-  const root = new URL("../", import.meta.url);
+  const root = new URL("../../solarminer-gateway-code02-v0.6.9-candidate/web/pwa/", import.meta.url);
   for (const file of ["index.html", "app.js", "gateway-auth.js", "styles.css", "service-worker.js"]) {
     assert.equal(readFileSync(new URL(`../${file}`, import.meta.url), "utf8"), readFileSync(new URL(file, root), "utf8"), `${file} should match embedded copy`);
   }

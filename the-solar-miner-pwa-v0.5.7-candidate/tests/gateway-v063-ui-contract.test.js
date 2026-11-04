@@ -159,7 +159,7 @@ test("Devices navigation is immediate and background inventory refreshes patch o
   assert.match(app, /window\.scrollTo\(\{top:0,behavior:"auto"\}\)/);
   assert.match(app, /if\(changed&&\["devices","inicio"\]\.includes\(state\.page\)\)changedSet\.forEach\(deviceId=>\{updateVisibleTuyaCard\(deviceId\);updateOpenTuyaDeviceDialog\(deviceId\);\}\)/);
   assert.match(app, /current\.replaceWith\(updated\)/);
-  assert.match(app, /favoriteControlPending\.delete\(deviceId\);updateVisibleTuyaCard\(deviceId\)/);
+  assert.match(app, /favoriteControlPending\.delete\(deviceId\);document\.querySelectorAll\(`\[data-favorite-toggle=/);
   assert.doesNotMatch(app, /state\.page==="energia"\s*\|\|\s*!Number\.isFinite\(lastRefresh\)/);
   assert.match(app, /const readingByDevice=new Map\(readings\.map\(reading=>\[reading\.device_id,reading\]\)\)/);
   assert.match(app, /catch \(error\) \{\s*console\.error\(`Could not render SolarMiner page: \$\{state\.page\}`/);
