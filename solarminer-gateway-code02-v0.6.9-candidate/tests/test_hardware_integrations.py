@@ -1,5 +1,6 @@
 import json
 import hashlib
+import threading
 
 import pytest
 
@@ -1419,6 +1420,35 @@ def test_tuya_read_refreshes_stale_ip_by_exact_mac_and_persists_new_ip(monkeypat
     assert result[0]["connection_state"] == "local_responded"
     assert result[0]["ip_refreshed_by_mac"] is True
     assert saved == [({"relay-1": "3.4"}, {"relay-1": "192.168.8.200"})]
+
+
+def test_tuya_read_delivers_each_completed_device_before_slowest_finishes(monkeypatch):
+    slow_started = threading.Event()
+    release_slow = threading.Event()
+    delivered = []
+
+    def local_status(device):
+        if device["device_id"] == "slow":
+            slow_started.set()
+            assert release_slow.wait(2)
+        else:
+            assert slow_started.wait(2)
+        return {"device_id": device["device_id"], "name": device["name"],
+                "connection_state": "local_responded", "status": [{"code": "switch", "value": True}]}
+
+    monkeypatch.setattr(integrations, "_tuya_local_status", local_status)
+
+    def on_reading(reading):
+        delivered.append(reading["device_id"])
+        if reading["device_id"] == "fast":
+            release_slow.set()
+
+    devices = [{"device_id": "slow", "name": "Slow", "local_key": "12345678", "local_ip": "192.168.8.10"},
+               {"device_id": "fast", "name": "Fast", "local_key": "12345678", "local_ip": "192.168.8.11"}]
+    results = integrations.read_tuya({"devices": devices}, on_reading=on_reading)
+
+    assert delivered == ["fast", "slow"]
+    assert [item["device_id"] for item in results] == ["slow", "fast"]
 
 
 def test_tuya_read_marks_offline_and_discards_ip_when_mac_is_not_found(monkeypatch):

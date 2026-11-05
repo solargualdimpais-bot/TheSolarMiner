@@ -466,10 +466,14 @@ def test_tuya_event_collector_polls_devices_even_without_a_pwa_request(tmp_path,
     monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: {"tuya": config})
     monkeypatch.setattr(gateway.hardware_integrations, "save_config", lambda _config: None)
     observed = []
-    def read_tuya(selected):
+    def read_tuya(selected, *, on_reading=None):
         observed.extend(item["device_id"] for item in selected["devices"])
-        return [{"device_id": "lan-ready", "name": "Relay", "connection_state": "local_responded",
-                 "status": [{"code": "switch_1", "value": True}]}]
+        readings = [{"device_id": "lan-ready", "name": "Relay", "connection_state": "local_responded",
+                     "status": [{"code": "switch_1", "value": True}]}]
+        if on_reading:
+            for reading in readings:
+                on_reading(reading)
+        return readings
     monkeypatch.setattr(gateway.hardware_integrations, "read_tuya", read_tuya)
 
     assert gateway._collect_tuya_device_events_once() == 2
@@ -493,10 +497,14 @@ def test_tuya_event_collector_marks_a_failed_device_offline_without_rewriting_st
     saved = []
     monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: {"tuya": config})
     monkeypatch.setattr(gateway.hardware_integrations, "save_config", lambda value: saved.append(value))
-    monkeypatch.setattr(gateway.hardware_integrations, "read_tuya", lambda _selected: [{
-        "device_id": "lan-offline", "name": "Breaker", "connection_state": "failed",
-        "reason": "tuya_local_ip_not_found_for_mac", "status": [],
-    }])
+    def read_tuya(_selected, *, on_reading=None):
+        readings = [{"device_id": "lan-offline", "name": "Breaker", "connection_state": "failed",
+                     "reason": "tuya_local_ip_not_found_for_mac", "status": []}]
+        if on_reading:
+            for reading in readings:
+                on_reading(reading)
+        return readings
+    monkeypatch.setattr(gateway.hardware_integrations, "read_tuya", read_tuya)
 
     gateway._collect_tuya_device_events_once()
 

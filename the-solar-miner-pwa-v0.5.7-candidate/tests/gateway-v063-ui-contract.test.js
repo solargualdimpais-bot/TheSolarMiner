@@ -184,8 +184,13 @@ test("Devices navigation is immediate and background inventory refreshes patch o
 
 test("Home Tuya favorites keep optimistic state until a matching LAN reading and patch controls in place", () => {
   assert.match(app, /observed!==pending\.value\)continue/);
+  assert.match(app, /value:pendingTuyaSwitchStates\.get\(`\$\{id\}::\$\{code\}`\)\?\.value\?\?tuyaSwitchState/);
+  assert.match(app, /pending=pendingTuyaSwitchStates\.get\(`\$\{deviceId\}::\$\{code\}`\),value=pending\?\.value\?\?tuyaSwitchState/);
   assert.match(app, /currentToggle\.className=nextToggle\.className/);
   assert.doesNotMatch(app, /current\.replaceWith\(updated\)/);
+  const homeRefresh = app.slice(app.indexOf("function refreshHomeLiveCards()"), app.indexOf("function renderAfterLiveRefresh()"));
+  assert.doesNotMatch(homeRefresh, /current\.innerHTML\s*=/);
+  assert.doesNotMatch(homeRefresh, /currentValue\.innerHTML\s*=/);
   const start = app.indexOf("function confirmTuyaCommandInBackground(");
   const end = app.indexOf("async function sendGatewayTuyaSetting", start);
   const confirmation = app.slice(start, end);
@@ -305,6 +310,6 @@ test("USB release rollback verification includes prior Gateway releases", () => 
   assert.equal(rollbackLoops.length, 2);
   for (const loop of rollbackLoops) {
     assert.match(loop, /0\.6\.112 0\.6\.113 0\.6\.114 0\.6\.115 0\.6\.116 0\.6\.117 0\.6\.118 0\.6\.119 0\.6\.120 0\.6\.121 0\.6\.122 0\.6\.123 0\.6\.124 0\.6\.125 0\.6\.126 0\.6\.127 0\.6\.128 0\.6\.129 0\.6\.130 0\.6\.131 0\.6\.132 0\.6\.133 0\.6\.134 0\.6\.135/);
-  assert.match(loop, /0\.6\.139 0\.6\.140 0\.6\.141 0\.6\.142 0\.6\.143 0\.6\.145 0\.6\.146 0\.6\.147 0\.6\.148 0\.6\.149 0\.6\.150 0\.6\.151 0\.6\.152 0\.6\.153 0\.6\.154 0\.6\.155 0\.6\.156 0\.6\.157 0\.6\.158 0\.6\.159 0\.6\.160 0\.6\.161 0\.6\.162 0\.6\.163 0\.6\.164 0\.6\.165 0\.6\.166 0\.6\.169 0\.6\.171 0\.6\.172 0\.6\.173 0\.6\.174 0\.6\.175 0\.6\.176 0\.6\.177 0\.6\.188 0\.6\.189 0\.6\.190 0\.6\.191; do/);
+  assert.match(loop, /0\.6\.139 0\.6\.140 0\.6\.141 0\.6\.142 0\.6\.143 0\.6\.145 0\.6\.146 0\.6\.147 0\.6\.148 0\.6\.149 0\.6\.150 0\.6\.151 0\.6\.152 0\.6\.153 0\.6\.154 0\.6\.155 0\.6\.156 0\.6\.157 0\.6\.158 0\.6\.159 0\.6\.160 0\.6\.161 0\.6\.162 0\.6\.163 0\.6\.164 0\.6\.165 0\.6\.166 0\.6\.169 0\.6\.171 0\.6\.172 0\.6\.173 0\.6\.174 0\.6\.175 0\.6\.176 0\.6\.177 0\.6\.188 0\.6\.189 0\.6\.190 0\.6\.191 0\.6\.192; do/);
   }
 });

@@ -17,7 +17,7 @@ import sys
 import socket
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -914,7 +914,7 @@ def _tuya_local_status(device: dict[str, Any]) -> dict[str, Any]:
             "local_ip": device.get("local_ip", ""), "observed_at": time.time()}
 
 
-def read_tuya(config: dict[str, Any]) -> list[dict[str, Any]]:
+def read_tuya(config: dict[str, Any], *, on_reading: Callable[[dict[str, Any]], None] | None = None) -> list[dict[str, Any]]:
     """Read Tuya device status over LAN only; never fall back to Tuya Cloud."""
     devices = [item for item in config.get("devices", [])
                if isinstance(item, dict) and isinstance(item.get("device_id"), str)]
@@ -933,17 +933,30 @@ def read_tuya(config: dict[str, Any]) -> list[dict[str, Any]]:
                     "source": "TUYA_LAN", "trust": "UNAVAILABLE",
                     "latency_ms": round((time.perf_counter() - started) * 1000, 1)}
 
-    # Keep polling a large home bounded and return rows in their configured order.
+    # Keep polling bounded. Consumers may persist each completed response before
+    # the slowest device finishes; retryable IP failures are deferred until the
+    # MAC-based recovery below has had a chance to replace them.
+    retryable_indexes = set()
     with ThreadPoolExecutor(max_workers=min(8, len(devices)), thread_name_prefix="tuya-lan") as pool:
-        results = list(pool.map(read_one, devices))
+        futures = {pool.submit(read_one, item): index for index, item in enumerate(devices)}
+        results = [{} for _ in devices]
+        for future in as_completed(futures):
+            index = futures[future]
+            result = future.result()
+            results[index] = result
+            reason = str(result.get("reason", ""))
+            retryable = (result.get("connection_state") == "failed"
+                         and (reason.startswith("tuya_protocol_probe_failed:")
+                              or reason == "tuya_local_ip_unresolved_from_mac")
+                         and _tuya_normalize_mac(devices[index].get("local_mac")))
+            if retryable:
+                retryable_indexes.add(index)
+            elif on_reading is not None:
+                on_reading(result)
     # A stale configured IP is tried first. If that complete read fails, perform
     # one LAN scan for this poll, match by exact MAC, persist only unique matches,
     # then retry those devices once at the newly discovered address.
-    failed_indexes = [index for index, result in enumerate(results)
-                      if result.get("connection_state") == "failed"
-                      and (str(result.get("reason", "")).startswith("tuya_protocol_probe_failed:")
-                           or result.get("reason") == "tuya_local_ip_unresolved_from_mac")
-                      and _tuya_normalize_mac(devices[index].get("local_mac"))]
+    failed_indexes = sorted(retryable_indexes)
     refreshed_ips: dict[str, str | None] = {}
     cleared_ip_devices: set[str] = set()
     if failed_indexes:
@@ -986,6 +999,9 @@ def read_tuya(config: dict[str, Any]) -> list[dict[str, Any]]:
                                       "source": "TUYA_LAN", "trust": "UNAVAILABLE",
                                       "local_ip": new_ip, "ip_refreshed_by_mac": new_ip != current_ip,
                                       "latency_ms": round((time.perf_counter() - started) * 1000, 1)}
+    if on_reading is not None:
+        for index in failed_indexes:
+            on_reading(results[index])
     selected = {item["device_id"]: item["local_protocol"] for item in results
                 if item.get("connection_state") == "local_responded" and item.get("local_protocol") in _TUYA_PROTOCOL_FALLBACKS}
     local_ips: dict[str, str | None] = {item["device_id"]: item["local_ip"] for item in results

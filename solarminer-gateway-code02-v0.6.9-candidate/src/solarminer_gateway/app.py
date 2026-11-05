@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.192"
+PACKAGE_VERSION = "0.6.193"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -1472,11 +1472,19 @@ def _collect_tuya_device_events_once() -> int:
                and (item.get("local_ip") or item.get("local_mac"))]
     if not devices:
         return 0
-    readings = hardware_integrations.read_tuya({**config, "devices": devices})
-    with db() as conn:
-        recorded = _persist_tuya_device_events(conn, readings)
-        energy_engine.persist_tuya_telemetry(conn, readings, devices, config.get("product_schemas", {}))
-        conn.commit()
+    recorded = 0
+
+    def persist_completed_reading(reading: dict[str, Any]) -> None:
+        nonlocal recorded
+        # Persist each device independently as its LAN response arrives. A slow
+        # or retrying device must not hold back fresh telemetry from its peers.
+        with db() as conn:
+            recorded += _persist_tuya_device_events(conn, [reading])
+            energy_engine.persist_tuya_telemetry(conn, [reading], devices, config.get("product_schemas", {}))
+            conn.commit()
+
+    readings = hardware_integrations.read_tuya(
+        {**config, "devices": devices}, on_reading=persist_completed_reading)
     if _update_tuya_device_records(integration_config, readings, record_status=False):
         hardware_integrations.save_config(integration_config)
     return recorded
@@ -6037,7 +6045,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.192"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.193"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(
