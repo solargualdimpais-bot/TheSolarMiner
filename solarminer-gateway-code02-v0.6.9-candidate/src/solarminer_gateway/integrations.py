@@ -73,7 +73,7 @@ DEYE_CLOUD_BASES = {
 MAX_CONFIG_BYTES = 1_048_576
 MAX_TUYA_DEVICES = 200
 MAX_TUYA_PRODUCT_SCHEMAS = 200
-MAX_TUYA_SCHEMA_CATALOG_BYTES = 524_288
+MAX_TUYA_SCHEMA_CATALOG_BYTES = 262_144
 CGMINER_COMMANDS = ("summary", "stats", "devs")
 CGMINER_OPTIONAL_READ_COMMANDS = ("tunerstatus",)
 _TESLA_EV_READ_LOCK = threading.Lock()
@@ -1316,9 +1316,9 @@ def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Eve
         category_profile = category_schemas.get(category) if isinstance(category, str) else None
         if isinstance(category_profile, dict):
             # Category schemas are a reference only. They never become this
-            # device's switch map or confirmed telemetry specification.
-            item["category_functions"] = category_profile.get("functions", [])
-            item["category_status_spec"] = category_profile.get("status_spec", [])
+            # device's switch map or confirmed telemetry specification. Keep
+            # the reference once in category_schemas instead of duplicating
+            # potentially large lists into every device record.
             item["category_schema_source"] = "TUYA_CATEGORY_REFERENCE"
         profile = classify_tuya_device(item)
         bool_functions = [entry for entry in item.get("functions", [])

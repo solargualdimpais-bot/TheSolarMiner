@@ -664,6 +664,8 @@ def test_tuya_sync_imports_local_key_and_device_capabilities(monkeypatch):
     assert "current_status" not in device
     assert "/v1.0/iot-03/devices/tuya_1/status" not in calls
     assert device["category_schema_source"] == "TUYA_CATEGORY_REFERENCE"
+    assert "category_functions" not in device
+    assert "category_status_spec" not in device
     assert result["category_schemas"]["cz"]["status_spec"][0]["code"] == "cur_power"
     assert calls[0] == "/v1.0/token?grant_type=1"
 
