@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -208,15 +208,15 @@ def create_app(*, api_key: str | None = None) -> FastAPI:
                 return SessionResult(ready=False)
             return SessionResult(ready=True, code=session.code, error=session.error)
 
-    @app.delete("/v1/sessions/{state}", status_code=204)
+    @app.delete("/v1/sessions/{state}", status_code=204, response_class=Response)
     def complete_session(
         state: str,
         authorization: str | None = Header(default=None),
-    ) -> None:
+    ) -> Response:
         state_hash, _ = require_session(state, authorization.removeprefix("Bearer ") if authorization else None)
         with lock:
             sessions.pop(state_hash, None)
-        return None
+        return Response(status_code=204)
 
     return app
 
