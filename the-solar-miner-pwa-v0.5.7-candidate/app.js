@@ -1277,8 +1277,9 @@ function renderAqsSection(config,isOwner){
   return `<section class="panel detail-panel aqs-management-panel"><div class="panel-header"><div><p class="eyebrow">ÁGUA QUENTE SANITÁRIA</p><h2>Termoacumuladores</h2></div>${isOwner?`<button class="button primary" id="aqs-add" type="button">+ Adicionar AQS</button>`:""}</div><p class="field-note">Cada AQS guarda fabricante, volume, potência nominal e, opcionalmente, um canal de disjuntor Tuya. A configuração não comanda o equipamento.</p>${cards.length?`<div class="equipment-grid aqs-card-grid">${cards.join("")}</div>`:`<div class="empty-state">Ainda não há AQS registadas.${isOwner?" Adiciona uma para configurar os dados e o disjuntor.":""}</div>`}${isOwner?renderAqsDialog():""}</section>`;
 }
 function renderEvSection(config,isOwner){
-  return `<section class="panel detail-panel"><div class="panel-header"><div><p class="eyebrow">VEÍCULO ELÉTRICO · TESLA FLEET</p><h2>Ligação e leituras do veículo</h2></div><span class="source-tag">${isOwner?"OWNER":"LEITURA"}</span></div><p>Esta ligação consulta a API Tesla para ler o estado do veículo. Não envia comandos de carregamento.</p>${isOwner?`<div class="ws-config-grid"><label class="feature-field">Região<select id="ev-tesla-region"><option value="europe">Europa</option><option value="north_america">América do Norte</option><option value="china">China</option></select></label><label class="feature-field">Client ID Fleet<input id="ev-tesla-client-id" maxlength="256" autocomplete="off"></label><label class="feature-field">Refresh token Fleet<input id="ev-tesla-refresh-token" type="password" maxlength="4096" autocomplete="new-password"></label><label class="feature-field">ID do veículo ou VIN<input id="ev-tesla-vehicle-id" maxlength="128" autocomplete="off"></label></div><div class="ws-actions"><button class="button primary" id="ev-tesla-fleet-save" type="button">Guardar ligação Tesla</button><button class="button secondary" id="ev-tesla-read" type="button">Ler estado do veículo</button></div><div class="connection-result" id="ev-tesla-status" role="status" aria-live="polite">A consultar a configuração Tesla…</div><div class="ws-config-grid"><label class="feature-field">MAC Wi-Fi do veículo<input id="ev-tesla-local-mac" maxlength="17" placeholder="AA:BB:CC:11:22:33" autocomplete="off"></label></div><div class="ws-actions"><button class="button secondary" id="ev-tesla-save" type="button">Guardar MAC local</button><button class="button secondary" id="ev-tesla-presence" type="button">Verificar presença na rede</button></div><div class="connection-result" id="ev-tesla-presence-status" role="status" aria-live="polite">Presença local ainda não consultada.</div><pre id="ev-tesla-result" class="connection-result" hidden></pre>`:`<div class="empty-state">A configuração e leitura Tesla estão disponíveis apenas ao Owner.</div>`}</section>`;
+  return `<section class="panel detail-panel"><div class="panel-header"><div><p class="eyebrow">VEÍCULO ELÉTRICO · TESLA FLEET</p><h2>Estado e presença do veículo</h2></div><span class="source-tag">${isOwner?"OWNER":"LEITURA"}</span></div><p>A ligação Tesla Fleet é configurada em Owner → Equipamentos → Tesla Fleet. Esta área mostra leituras e presença local; ainda não envia comandos de carregamento.</p><div class="ws-actions">${isOwner?`<button class="button primary" id="ev-tesla-read" type="button">Ler estado do veículo</button>`:""}</div><div class="connection-result" id="ev-tesla-read-status" role="status" aria-live="polite">A leitura Fleet só está disponível ao Owner autenticado.</div>${isOwner?`<div class="ws-config-grid"><label class="feature-field">MAC Wi-Fi do veículo<input id="ev-tesla-local-mac" maxlength="17" placeholder="AA:BB:CC:11:22:33" autocomplete="off"></label></div><div class="ws-actions"><button class="button secondary" id="ev-tesla-save" type="button">Guardar MAC local</button><button class="button secondary" id="ev-tesla-presence" type="button">Verificar presença na rede</button></div><div class="connection-result" id="ev-tesla-presence-status" role="status" aria-live="polite">Presença local ainda não consultada.</div><pre id="ev-tesla-result" class="connection-result" hidden></pre>`:`<div class="empty-state">A configuração e leitura Tesla estão disponíveis apenas ao Owner.</div>`}</section>`;
 }
+
 function openPvStringDialog(item=null){
   const dialog=$("#pv-string-dialog"),form=$("#pv-string-form");if(!dialog||!form)return;
   dialog.dataset.returnPage=state.page;
@@ -2751,9 +2752,9 @@ function updateSessionUi() {
     }
     if (hardwarePanel) {
       hardwarePanel.hidden = info.user.role !== "owner";
-      if (info.user.role === "owner") refreshHardwareIntegrationConfig().catch(error => {
+      if (info.user.role === "owner") { refreshHardwareIntegrationConfig().catch(error => {
         $("#deye-status").textContent = `Não foi possível carregar a configuração: ${error.message}`;
-      });
+      }); refreshTeslaEvConfig().catch(error => { const target = $("#ev-tesla-status"); if (target) target.textContent = `Não foi possível carregar Tesla Fleet: ${error.message}`; }); }
     }
   } else {
     gatewayOwnerAutoCheckStarted=false;
@@ -3350,29 +3351,22 @@ async function sendTuyaSwitch(deviceId, on, button) {
 }
 
 async function refreshTeslaEvConfig() {
-  const status = $("#ev-tesla-status"), info = sessionInfo();
-  if (!status) return;
+  const info = sessionInfo(), status = $("#ev-tesla-status"), readStatus = $("#ev-tesla-read-status");
   const save = $("#ev-tesla-fleet-save"), read = $("#ev-tesla-read"), presence = $("#ev-tesla-presence");
   if (!info.authenticated || info.user.role !== "owner") {
-    status.textContent = "Só o Owner autenticado pode configurar e consultar o Tesla.";
-    if (save) save.disabled = true;
-    if (read) read.disabled = true;
-    if (presence) presence.disabled = true;
-    return;
+    if (status) status.textContent = "Só o Owner autenticado pode configurar Tesla Fleet.";
+    if (readStatus) readStatus.textContent = "A leitura Tesla está disponível apenas ao Owner autenticado.";
+    if (save) save.disabled = true; if (read) read.disabled = true; if (presence) presence.disabled = true; return;
   }
-  if (save) save.disabled = false;
-  if (read) read.disabled = false;
+  if (save) save.disabled = false; if (read) read.disabled = false; if (presence) presence.disabled = false;
   const config = await readGatewayTeslaEvConfig();
-  $("#ev-tesla-local-mac").value = config.local_mac || "";
-  const presenceStatus = $("#ev-tesla-presence-status");
-  if (presenceStatus && config.local_presence) presenceStatus.textContent = teslaPresenceText(config.local_presence);
-  $("#ev-tesla-region").value = config.region || "europe";
-  $("#ev-tesla-client-id").value = config.client_id || "";
-  $("#ev-tesla-refresh-token").value = "";
-  $("#ev-tesla-vehicle-id").value = (config.vehicle_ids || [])[0] || "";
-  status.textContent = config.configured
-    ? "Tesla configurado no Gateway. O refresh token é privado. Esta ligação só lê o estado de carga."
-    : "Tesla ainda não configurado. Indica a aplicação Fleet autorizada e o veículo.";
+  const localMac = $("#ev-tesla-local-mac"); if (localMac) localMac.value = config.local_mac || "";
+  const presenceStatus = $("#ev-tesla-presence-status"); if (presenceStatus && config.local_presence) presenceStatus.textContent = teslaPresenceText(config.local_presence);
+  const region = $("#ev-tesla-region"), client = $("#ev-tesla-client-id"), token = $("#ev-tesla-refresh-token"), vehicle = $("#ev-tesla-vehicle-id");
+  if (region) region.value = config.region || "europe"; if (client) client.value = config.client_id || "";
+  if (token) token.value = ""; if (vehicle) vehicle.value = (config.vehicle_ids || [])[0] || "";
+  const message = config.configured ? "Tesla Fleet configurado no Gateway. O token é privado e não é devolvido à PWA." : "Tesla Fleet ainda não configurado. Indica a aplicação Fleet autorizada e o veículo.";
+  if (status) status.textContent = message; if (readStatus) readStatus.textContent = config.configured ? "Ligação Tesla Fleet pronta para consultar o estado do veículo." : message;
 }
 
 function teslaPresenceText(result) {
@@ -3498,7 +3492,7 @@ $("#page-content").addEventListener("click", async event => {
   const checkPresence = event.target.closest("#ev-tesla-presence");
   if (!save && !read && !saveLocal && !checkPresence) return;
   event.preventDefault();
-  const info = sessionInfo(), status = $("#ev-tesla-status"), output = $("#ev-tesla-result"), presenceStatus = $("#ev-tesla-presence-status");
+  const info = sessionInfo(), status = save ? $("#ev-tesla-status") : $("#ev-tesla-read-status") || $("#ev-tesla-status"), output = $("#ev-tesla-result"), presenceStatus = $("#ev-tesla-presence-status");
   if (!info.authenticated || info.user.role !== "owner") {
     status.textContent = "Só o Owner autenticado pode gerir a ligação Tesla.";
     return;
@@ -3510,14 +3504,14 @@ $("#page-content").addEventListener("click", async event => {
   output.hidden = true;
   try {
     if (save) {
-      const vehicleId = $("#ev-tesla-vehicle-id").value.trim();
+      const vehicleId = $("#ev-tesla-vehicle-id")?.value.trim() || "";
       if (!vehicleId) throw new Error("Indica o ID Tesla ou VIN do veículo.");
       const config = await saveGatewayTeslaEvConfig({
         region: $("#ev-tesla-region").value,
         client_id: $("#ev-tesla-client-id").value.trim(),
         refresh_token: $("#ev-tesla-refresh-token").value,
         vehicle_ids: [vehicleId],
-        local_mac: $("#ev-tesla-local-mac").value.trim(),
+        local_mac: $("#ev-tesla-local-mac")?.value.trim() || "",
       });
       $("#ev-tesla-refresh-token").value = "";
       status.textContent = config.configured

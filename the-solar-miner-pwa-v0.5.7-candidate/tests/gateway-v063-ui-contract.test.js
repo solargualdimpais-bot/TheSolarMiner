@@ -96,13 +96,15 @@ test("AQS breaker options show one Tuya device name and select its configured pr
   assert.match(app, /\$\{esc\(device\.name\)\}<\/option>/);
 });
 
-test("EV page renders the Tesla Fleet and local-presence controls used by its handlers", () => {
+test("Tesla Fleet credentials live under Owner equipment while EV shows reads and local presence", () => {
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  assert.match(html, /data-owner-device="tesla"[^>]*>Tesla Fleet/);
+  assert.match(html, /data-device-panel="tesla"[\s\S]*?id="ev-tesla-refresh-token"/);
+  assert.match(html, /id="ev-tesla-fleet-save"/);
   assert.match(app, /function renderEvSection\(config,isOwner\)/);
-  for (const id of ["ev-tesla-region", "ev-tesla-client-id", "ev-tesla-refresh-token", "ev-tesla-vehicle-id", "ev-tesla-fleet-save", "ev-tesla-read", "ev-tesla-local-mac", "ev-tesla-save", "ev-tesla-presence"]) {
-    assert.ok(app.includes(`id="${id}"`), `missing ${id}`);
-  }
+  assert.match(app, /Owner → Equipamentos → Tesla Fleet/);
+  for (const id of ["ev-tesla-read", "ev-tesla-local-mac", "ev-tesla-save", "ev-tesla-presence", "ev-tesla-read-status"]) assert.ok(app.includes('id="' + id + '"'), 'missing ' + id);
   assert.match(app, /page==="ev"\?renderEvSection\(config,isOwner\)/);
-  assert.match(app, /Esta ligação consulta a API Tesla para ler o estado do veículo\. Não envia comandos de carregamento\./);
 });
 
 test("Favorite commands use the cached state and never trigger a LAN read", () => {

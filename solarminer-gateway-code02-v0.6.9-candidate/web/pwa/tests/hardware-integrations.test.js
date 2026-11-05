@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 
 const read = path => readFileSync(new URL(path, import.meta.url), "utf8");
 
-test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV charging", () => {
+test("Owner hardware setup includes the Tesla Fleet configuration beside Deye, Antminer and Tuya", () => {
   const html = read("../index.html");
   const app = read("../app.js");
   const auth = read("../gateway-auth.js");
@@ -31,12 +31,11 @@ test("Owner hardware setup exposes Deye, Antminer and Tuya; Tesla belongs to EV 
   assert.match(modemPanel, /local-network-results/);
   assert.match(app, /interface_discovery_failed/);
   assert.match(app, /active_arp_unavailable/);
-  assert.match(app, /ARP Ethernet ativo/);
   assert.match(app, /ARP ativo/);
   assert.match(app, /SSDP\/UPnP/);
   assert.match(app, /mDNS\/DNS-SD/);
   assert.doesNotMatch(`${html}\n${app}\n${auth}`, /huawei|Pesquisar modem|integrations\/huawei/i);
-  for (const tab of ["deye", "antminer", "tuya"]) assert.match(html, new RegExp(`data-owner-device="${tab}"`));
+  for (const tab of ["deye", "antminer", "tuya", "tesla"]) assert.match(html, new RegExp(`data-owner-device="${tab}"`));
   const workspace = read("../workspace-ui.js");
   for (const id of ["ev-tesla-refresh-token", "ev-tesla-vehicle-id", "ev-tesla-local-mac", "ev-tesla-save", "ev-tesla-presence", "ev-tesla-fleet-save", "ev-tesla-read"]) assert.match(workspace, new RegExp(`id="${id}"`));
   assert.match(app, /info\.user\.role !== "owner"/);

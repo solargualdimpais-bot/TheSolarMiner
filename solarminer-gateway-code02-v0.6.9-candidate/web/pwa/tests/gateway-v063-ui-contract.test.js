@@ -96,13 +96,15 @@ test("AQS breaker options show one Tuya device name and select its configured pr
   assert.match(app, /\$\{esc\(device\.name\)\}<\/option>/);
 });
 
-test("EV page renders the Tesla Fleet and local-presence controls used by its handlers", () => {
+test("Tesla Fleet credentials live under Owner equipment while EV shows reads and local presence", () => {
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  assert.match(html, /data-owner-device="tesla"[^>]*>Tesla Fleet/);
+  assert.match(html, /data-device-panel="tesla"[\s\S]*?id="ev-tesla-refresh-token"/);
+  assert.match(html, /id="ev-tesla-fleet-save"/);
   assert.match(app, /function renderEvSection\(config,isOwner\)/);
-  for (const id of ["ev-tesla-region", "ev-tesla-client-id", "ev-tesla-refresh-token", "ev-tesla-vehicle-id", "ev-tesla-fleet-save", "ev-tesla-read", "ev-tesla-local-mac", "ev-tesla-save", "ev-tesla-presence"]) {
-    assert.ok(app.includes(`id="${id}"`), `missing ${id}`);
-  }
+  assert.match(app, /Owner → Equipamentos → Tesla Fleet/);
+  for (const id of ["ev-tesla-read", "ev-tesla-local-mac", "ev-tesla-save", "ev-tesla-presence", "ev-tesla-read-status"]) assert.ok(app.includes('id="' + id + '"'), 'missing ' + id);
   assert.match(app, /page==="ev"\?renderEvSection\(config,isOwner\)/);
-  assert.match(app, /Esta ligação consulta a API Tesla para ler o estado do veículo\. Não envia comandos de carregamento\./);
 });
 
 test("Favorite commands use the cached state and never trigger a LAN read", () => {
@@ -271,7 +273,7 @@ test("USB release rollback verification includes the installed Gateway release",
   assert.equal(rollbackLoops.length, 2);
 for (const loop of rollbackLoops) {
   assert.match(loop, /0\.6\.112 0\.6\.113 0\.6\.114 0\.6\.115 0\.6\.116 0\.6\.117 0\.6\.118 0\.6\.119 0\.6\.120 0\.6\.121 0\.6\.122 0\.6\.123 0\.6\.124 0\.6\.125 0\.6\.126 0\.6\.127 0\.6\.128 0\.6\.129 0\.6\.130 0\.6\.131 0\.6\.132 0\.6\.133 0\.6\.134 0\.6\.135/);
-  assert.match(loop, /0\.6\.139 0\.6\.140 0\.6\.141 0\.6\.142 0\.6\.143 0\.6\.145 0\.6\.146 0\.6\.147 0\.6\.148 0\.6\.149 0\.6\.150 0\.6\.151 0\.6\.152 0\.6\.153 0\.6\.154 0\.6\.155 0\.6\.156 0\.6\.157 0\.6\.158 0\.6\.159 0\.6\.160 0\.6\.161 0\.6\.162 0\.6\.163 0\.6\.164 0\.6\.165 0\.6\.166 0\.6\.169 0\.6\.171 0\.6\.172; do/);
+  assert.match(loop, /0\.6\.139 0\.6\.140 0\.6\.141 0\.6\.142 0\.6\.143 0\.6\.145 0\.6\.146 0\.6\.147 0\.6\.148 0\.6\.149 0\.6\.150 0\.6\.151 0\.6\.152 0\.6\.153 0\.6\.154 0\.6\.155 0\.6\.156 0\.6\.157 0\.6\.158 0\.6\.159 0\.6\.160 0\.6\.161 0\.6\.162 0\.6\.163 0\.6\.164 0\.6\.165 0\.6\.166 0\.6\.169 0\.6\.171 0\.6\.172 0\.6\.173 0\.6\.174 0\.6\.175 0\.6\.176 0\.6\.177; do/);
 }
 });
 

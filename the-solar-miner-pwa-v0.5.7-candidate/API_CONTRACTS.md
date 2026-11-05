@@ -16,7 +16,7 @@ O Owner pode testar um interruptor registado através de `POST /api/v1/integrati
 
 ## Navegação Owner e operações individuais por equipamento
 
-A área Owner tem separadores para Acessos, Atualizações, Tailscale, Gateway e Equipamentos. Dentro de Equipamentos, Deye, Antminer e Tuya/MOES também são separados. Cada botão de guardar envia apenas a configuração daquele fornecedor por `PUT /api/v1/integrations/hardware`, preservando os restantes blocos no Gateway. As leituras usam `POST /api/v1/integrations/hardware/{provider}/read` e consultam apenas o fornecedor selecionado; Tuya aceita `device_id` opcional para limitar a leitura a um dispositivo. Estes endpoints exigem Owner e não enviam comandos de controlo. Os comandos Tuya e Braiins continuam em ações próprias com confirmação explícita.
+A área Owner tem separadores para Acessos, Atualizações, Tailscale, Gateway e Equipamentos. Dentro de Equipamentos, Deye, Antminer, Tuya/MOES e Tesla Fleet também são separados. Tesla Fleet usa a configuração privada da API Tesla existente; o EV mantém apenas leituras e presença local. Cada botão de guardar envia apenas a configuração daquele fornecedor por `PUT /api/v1/integrations/hardware`, preservando os restantes blocos no Gateway. As leituras usam `POST /api/v1/integrations/hardware/{provider}/read` e consultam apenas o fornecedor selecionado; Tuya aceita `device_id` opcional para limitar a leitura a um dispositivo. Estes endpoints exigem Owner e não enviam comandos de controlo. Os comandos Tuya e Braiins continuam em ações próprias com confirmação explícita.
 
 ## Engine energético e meteorologia (Gateway 0.6.46)
 
