@@ -2415,9 +2415,9 @@ document.querySelector(".owner-device-tabs")?.addEventListener("click", event =>
     selectOwnerDevice(tab.dataset.ownerDevice);
     if (tab.dataset.ownerDevice === "tesla") {
       const origin = window.location.origin;
-      const callback = `${origin}/api/integration/tesla/callback`;
+      const callback = teslaGatewayCallbackUrl();
       const developerUrl = $("#ev-tesla-help-developer-url"); if (developerUrl) developerUrl.value = "https://developer.tesla.com/";
-  for (const id of ["ev-tesla-origin", "ev-tesla-help-origin"]) { const field = $("#" + id); if (field) field.value = origin; }
+      for (const id of ["ev-tesla-origin", "ev-tesla-help-origin"]) { const field = $("#" + id); if (field) field.value = origin; }
       for (const id of ["ev-tesla-callback", "ev-tesla-help-callback"]) { const field = $("#" + id); if (field) field.value = callback; }
     }
   }
@@ -2426,6 +2426,12 @@ let teslaOAuthPopup = null;
 let teslaOAuthState = "";
 let teslaOAuthOrigin = "";
 let teslaHelpStep = 0;
+function teslaGatewayCallbackUrl() {
+  try {
+    const gatewayUrl = sessionInfo().gatewayUrl;
+    return gatewayUrl ? new URL("/api/integration/tesla/callback", gatewayUrl).toString() : "";
+  } catch { return ""; }
+}
 function showTeslaHelpStep(step) {
   teslaHelpStep = Math.max(0, Math.min(6, step));
   document.querySelectorAll("[data-tesla-help-step]").forEach(panel => { panel.hidden = Number(panel.dataset.teslaHelpStep) !== teslaHelpStep; });
@@ -2435,7 +2441,7 @@ function showTeslaHelpStep(step) {
   if (next) next.textContent = teslaHelpStep === 6 ? "Concluir" : "Seguinte";
 }
 $("#ev-tesla-help-open")?.addEventListener("click", () => {
-  const origin = window.location.origin, callback = `${origin}/api/integration/tesla/callback`;
+  const origin = window.location.origin, callback = teslaGatewayCallbackUrl();
   const developerUrl = $("#ev-tesla-help-developer-url"); if (developerUrl) developerUrl.value = "https://developer.tesla.com/";
   for (const id of ["ev-tesla-origin", "ev-tesla-help-origin"]) { const field = $("#" + id); if (field) field.value = origin; }
   for (const id of ["ev-tesla-callback", "ev-tesla-help-callback"]) { const field = $("#" + id); if (field) field.value = callback; }
@@ -2466,6 +2472,8 @@ $("#ev-tesla-oauth-start")?.addEventListener("click", async event => {
   button.disabled = true; status.textContent = "A preparar a autorização segura com a Tesla…";
   try {
     const flow = await startGatewayTeslaOAuth({region: $("#ev-tesla-region").value, client_id: clientId, client_secret: clientSecret, local_mac: mac});
+    const expectedCallback = teslaGatewayCallbackUrl();
+    if (!expectedCallback || flow.redirect_uri !== expectedCallback) throw new Error("O endereço de retorno mudou. Atualiza o Redirect URI no portal Tesla com o valor mostrado no guia e tenta novamente.");
     $("#ev-tesla-client-secret").value = "";
     teslaOAuthPopup = popup; teslaOAuthState = flow.state; teslaOAuthOrigin = window.location.origin;
     popup.location.replace(flow.authorize_url);

@@ -64,7 +64,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.187"
+PACKAGE_VERSION = "0.6.188"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -4729,9 +4729,21 @@ def ev_tesla_oauth_start(payload: dict[str, Any], request: Request,
             raise HTTPException(422, "invalid_tesla_region")
         if not valid_origin or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
             raise HTTPException(400, "tesla_oauth_requires_https_pwa_origin")
+        gateway_url = request.url
+        gateway_origin = f"{gateway_url.scheme}://{gateway_url.netloc}"
+        try:
+            parsed_gateway = urlsplit(gateway_origin)
+            _ = parsed_gateway.port
+            valid_gateway_origin = (parsed_gateway.scheme == "https" and bool(parsed_gateway.hostname)
+                                    and not parsed_gateway.username and not parsed_gateway.password
+                                    and not parsed_gateway.path and not parsed_gateway.query and not parsed_gateway.fragment)
+        except ValueError:
+            valid_gateway_origin = False
+        if not valid_gateway_origin:
+            raise HTTPException(400, "tesla_oauth_requires_public_https_gateway_origin")
         if local_mac and not MAC_RE.fullmatch(local_mac):
             raise HTTPException(422, "invalid_tesla_local_mac")
-        callback = f"{origin}/api/integration/tesla/callback"
+        callback = f"{gateway_origin}/api/integration/tesla/callback"
         state = secrets.token_urlsafe(32)
         with _tesla_oauth_pending_lock:
             now = time.time()
@@ -5797,7 +5809,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.187"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.188"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

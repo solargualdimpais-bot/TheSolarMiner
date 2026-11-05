@@ -97,19 +97,19 @@ def test_tesla_oauth_start_uses_current_https_origin_and_minimal_read_scopes(cli
     owner, private, _ = create_owner(client)
     token = login(client, owner, private).json()["access_token"]
     gateway._tesla_oauth_pending.clear()
-    response = client.post("/api/v1/energy/ev/tesla/oauth/start", headers={
+    response = client.post("https://gateway.example/api/v1/energy/ev/tesla/oauth/start", headers={
         "Authorization": f"Bearer {token}", "Origin": "https://solarminer.example",
     }, json={"region": "europe", "client_id": "client-123", "client_secret": "secret-value",
              "local_mac": "AA:BB:CC:DD:EE:01"})
     assert response.status_code == 200, response.text
     result = response.json()
     query = parse_qs(urlsplit(result["authorize_url"]).query)
-    assert query["redirect_uri"] == ["https://solarminer.example/api/integration/tesla/callback"]
+    assert query["redirect_uri"] == ["https://gateway.example/api/integration/tesla/callback"]
     assert query["scope"] == ["openid offline_access vehicle_device_data"]
     assert result["allowed_origin"] == "https://solarminer.example"
     assert "secret-value" not in response.text
     assert gateway._tesla_oauth_pending[result["state"]]["client_secret"] == "secret-value"
-    assert client.post("/api/v1/energy/ev/tesla/oauth/start", headers={
+    assert client.post("https://gateway.example/api/v1/energy/ev/tesla/oauth/start", headers={
         "Authorization": f"Bearer {token}", "Origin": "http://solarminer.example",
     }, json={"region": "europe", "client_id": "client-123", "client_secret": "secret-value"}).status_code == 400
 
@@ -118,7 +118,7 @@ def test_tesla_oauth_callback_exchanges_code_persists_rotating_token_and_posts_s
     owner, private, _ = create_owner(client)
     token = login(client, owner, private).json()["access_token"]
     gateway._tesla_oauth_pending.clear()
-    start = client.post("/api/v1/energy/ev/tesla/oauth/start", headers={
+    start = client.post("https://gateway.example/api/v1/energy/ev/tesla/oauth/start", headers={
         "Authorization": f"Bearer {token}", "Origin": "https://solarminer.example",
     }, json={"region": "europe", "client_id": "client-123", "client_secret": "secret-value"}).json()
     config = {}
