@@ -627,27 +627,25 @@ function liveHomeMetric(label, value, unit, icon, detail, extra = "", targetPage
   return `<button type="button" class="metric-card home-metric-link" data-page="${esc(targetPage)}" aria-label="Abrir área ${esc(label)}"><span class="metric-top"><span>${esc(label)}</span><span class="metric-symbol">${icon}</span></span><span class="metric-value">${esc(formatted)} <small>${esc(unit)}</small></span><span class="metric-sub">${esc(detail)}</span>${extra}</button>`;
 }
 function liveSolarHomeMetric() {
-  const equipment = state.equipment.find(item => item.category === "inversores" && !isSimulated(item));
-  const reading = liveMetricReading(equipment, "pv_total_power");
-  return liveHomeMetric("Painéis", reading?.value, reading?.unit || "W", "ϟ",
-    reading ? `Produção FV · ${reading.trust || "UNKNOWN"}` : "Sem leitura de produção FV do Gateway", "", "paineis-solares");
+  const current = state.energyEngine?.current || {};
+  const value = current.pv_power_w;
+  return liveHomeMetric("Painéis", value, "W", "ϟ",
+    Number.isFinite(value) ? "Produção FV · Engine energético" : "Sem leitura de produção FV do Gateway", "", "paineis-solares");
 }
 function liveBatteryHomeMetric() {
-  const equipment = state.equipment.find(item => item.category === "baterias" && !isSimulated(item));
+  const current = state.energyEngine?.current || {};
   // Home and Energy must show the same operational SOC. The Deye-reported
   // percentage remains available in the engine diagnostics, but is not the
   // Gateway's voltage-anchor plus signed-power estimate.
   const integratedSoc = state.energyEngine?.current?.battery_soc_percent;
   const soc = typeof integratedSoc === "number" && Number.isFinite(integratedSoc) ? {value:integratedSoc,trust:"Estimativa integrada do Gateway"} : null;
-  const rawPower = liveMetricReading(equipment, "battery_output_power");
-  // The Deye candidate map reports negative while charging and positive while discharging.
-  // Home presents the user-requested convention: charge positive, discharge negative.
-  const signedPower = typeof rawPower?.value === "number" ? -rawPower.value : null;
+  // Match Energy's displayed convention and value exactly.
+  const signedPower = typeof current.battery_power_w === "number" ? -current.battery_power_w : null;
   const flowClass = signedPower === null ? "" : signedPower < 0 ? "discharge" : signedPower > 0 ? "charge" : "idle";
   const flowLabel = signedPower === null ? "Potência da bateria sem leitura"
-    : `${signedPower > 0 ? "+" : ""}${new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 1 }).format(signedPower)} ${rawPower.unit || "W"} · ${signedPower < 0 ? "a descarregar" : signedPower > 0 ? "a carregar" : "sem fluxo"}`;
+    : `${signedPower > 0 ? "+" : ""}${new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 1 }).format(signedPower)} W · ${signedPower < 0 ? "a descarregar" : signedPower > 0 ? "a carregar" : "sem fluxo"}`;
   const formattedSoc = typeof soc?.value === "number" ? new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 1 }).format(soc.value) : "—";
-  const trust = soc?.trust || rawPower?.trust || "UNKNOWN";
+  const trust = soc?.trust || "UNKNOWN";
   return `<button type="button" class="metric-card home-metric-link" data-page="baterias" aria-label="Abrir área Baterias"><span class="metric-top"><span>Bateria</span><span class="metric-symbol">▤</span></span><span class="metric-value">${esc(formattedSoc)} <small>${soc ? "%" : ""}</small></span><span class="metric-sub">${esc(soc ? trust : "Estimativa do Gateway indisponível")}</span><span class="metric-sub battery-flow ${flowClass}">${esc(flowLabel)}</span></button>`;
 }
 function liveMinerHomeMetric() {
@@ -4185,10 +4183,10 @@ hydrateWorkspacePhotos();
 if (sessionInfo().authenticated) refreshGatewayReadings();
 setInterval(() => {
   const lastRefresh=Date.parse(state.lastUpdated||"");
-  if (document.visibilityState === "visible" && !["mineradoras","gestao-excedentes"].includes(state.page) && sessionInfo().authenticated && !state.refreshing && (!Number.isFinite(lastRefresh) || Date.now()-lastRefresh>=30_000)) {
+  if (document.visibilityState === "visible" && !["mineradoras","gestao-excedentes"].includes(state.page) && sessionInfo().authenticated && !state.refreshing && (!Number.isFinite(lastRefresh) || Date.now()-lastRefresh>=3_000)) {
     refreshGatewayReadings();
   }
-}, 10_000);
+}, 1_000);
 setInterval(() => { void refreshTuyaInventoryStatus(); },1_500);
 setInterval(() => {
   const info=sessionInfo();

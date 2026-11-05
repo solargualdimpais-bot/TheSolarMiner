@@ -6,7 +6,7 @@ const PWA_INVITE_LANDING_URL = "https://solargualdimpais-bot.github.io/TheSolarM
 import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classifyEndpoint, inferHostedGatewayEndpoint, buildInviteLandingUrl, readInviteLandingHash, PRESENCE_API_STATUS } from "./gateway-connection.js";
 import { isHeicPhoto } from "./photo-format.js";
 import { addFavoriteId, normalizeFavoriteIds, reorderFavoriteIds } from "./favorite-list.js";
-import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, redeemGatewayInvite, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, readGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayDiagnosticsUpload, saveGatewayDiagnosticsUploadToken, disableGatewayDiagnosticsUpload, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, previewGatewayTuyaProductImport, applyGatewayTuyaProductImport, controlGatewayAntminer, testGatewayAntminerControl, readGatewayAntminerManagement, writeGatewayAntminerManagement, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, controlGatewayTuyaSetting, saveGatewayTuyaProductDpsDescription, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, testGatewayTuyaLanReachability, discoverGatewayTuyaLanDevices, scanGatewayLocalNetwork, readGatewayDeviceInventory, readGatewaySmartProductCatalog, readGatewayShellyProductProfiles, readGatewayShellyDevices, discoverGatewayShellyDevices, registerGatewayShellyDevice, registerGatewayShellyBluDevice, discoverGatewayShellyBluDevices, controlGatewayShellySwitch, controlGatewayShellyLight, applyGatewayLocalNetworkMatches, saveGatewayLocalNetworkDevice, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, startGatewayTeslaOAuth, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging, readGatewayTeslaLocalPresence } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, redeemGatewayInvite, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, readGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayDiagnosticsUpload, saveGatewayDiagnosticsUploadToken, disableGatewayDiagnosticsUpload, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, previewGatewayTuyaProductImport, applyGatewayTuyaProductImport, controlGatewayAntminer, testGatewayAntminerControl, readGatewayAntminerManagement, writeGatewayAntminerManagement, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, controlGatewayTuyaSetting, saveGatewayTuyaProductDpsDescription, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, testGatewayTuyaLanReachability, discoverGatewayTuyaLanDevices, scanGatewayLocalNetwork, readGatewayDeviceInventory, readGatewaySmartProductCatalog, readGatewayShellyProductProfiles, readGatewayShellyDevices, discoverGatewayShellyDevices, registerGatewayShellyDevice, registerGatewayShellyBluDevice, discoverGatewayShellyBluDevices, controlGatewayShellySwitch, controlGatewayShellyLight, applyGatewayLocalNetworkMatches, saveGatewayLocalNetworkDevice, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, startGatewayTeslaOAuth, completeGatewayTeslaOAuth, saveGatewayTeslaRelay, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging, readGatewayTeslaLocalPresence } from "./gateway-auth.js";
 
 let automationEditingId = "";
 let energyEngineActiveTab="summary";
@@ -627,27 +627,25 @@ function liveHomeMetric(label, value, unit, icon, detail, extra = "", targetPage
   return `<button type="button" class="metric-card home-metric-link" data-page="${esc(targetPage)}" aria-label="Abrir área ${esc(label)}"><span class="metric-top"><span>${esc(label)}</span><span class="metric-symbol">${icon}</span></span><span class="metric-value">${esc(formatted)} <small>${esc(unit)}</small></span><span class="metric-sub">${esc(detail)}</span>${extra}</button>`;
 }
 function liveSolarHomeMetric() {
-  const equipment = state.equipment.find(item => item.category === "inversores" && !isSimulated(item));
-  const reading = liveMetricReading(equipment, "pv_total_power");
-  return liveHomeMetric("Painéis", reading?.value, reading?.unit || "W", "ϟ",
-    reading ? `Produção FV · ${reading.trust || "UNKNOWN"}` : "Sem leitura de produção FV do Gateway", "", "paineis-solares");
+  const current = state.energyEngine?.current || {};
+  const value = current.pv_power_w;
+  return liveHomeMetric("Painéis", value, "W", "ϟ",
+    Number.isFinite(value) ? "Produção FV · Engine energético" : "Sem leitura de produção FV do Gateway", "", "paineis-solares");
 }
 function liveBatteryHomeMetric() {
-  const equipment = state.equipment.find(item => item.category === "baterias" && !isSimulated(item));
+  const current = state.energyEngine?.current || {};
   // Home and Energy must show the same operational SOC. The Deye-reported
   // percentage remains available in the engine diagnostics, but is not the
   // Gateway's voltage-anchor plus signed-power estimate.
   const integratedSoc = state.energyEngine?.current?.battery_soc_percent;
   const soc = typeof integratedSoc === "number" && Number.isFinite(integratedSoc) ? {value:integratedSoc,trust:"Estimativa integrada do Gateway"} : null;
-  const rawPower = liveMetricReading(equipment, "battery_output_power");
-  // The Deye candidate map reports negative while charging and positive while discharging.
-  // Home presents the user-requested convention: charge positive, discharge negative.
-  const signedPower = typeof rawPower?.value === "number" ? -rawPower.value : null;
+  // Match Energy's displayed convention and value exactly.
+  const signedPower = typeof current.battery_power_w === "number" ? -current.battery_power_w : null;
   const flowClass = signedPower === null ? "" : signedPower < 0 ? "discharge" : signedPower > 0 ? "charge" : "idle";
   const flowLabel = signedPower === null ? "Potência da bateria sem leitura"
-    : `${signedPower > 0 ? "+" : ""}${new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 1 }).format(signedPower)} ${rawPower.unit || "W"} · ${signedPower < 0 ? "a descarregar" : signedPower > 0 ? "a carregar" : "sem fluxo"}`;
+    : `${signedPower > 0 ? "+" : ""}${new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 1 }).format(signedPower)} W · ${signedPower < 0 ? "a descarregar" : signedPower > 0 ? "a carregar" : "sem fluxo"}`;
   const formattedSoc = typeof soc?.value === "number" ? new Intl.NumberFormat("pt-PT", { maximumFractionDigits: 1 }).format(soc.value) : "—";
-  const trust = soc?.trust || rawPower?.trust || "UNKNOWN";
+  const trust = soc?.trust || "UNKNOWN";
   return `<button type="button" class="metric-card home-metric-link" data-page="baterias" aria-label="Abrir área Baterias"><span class="metric-top"><span>Bateria</span><span class="metric-symbol">▤</span></span><span class="metric-value">${esc(formattedSoc)} <small>${soc ? "%" : ""}</small></span><span class="metric-sub">${esc(soc ? trust : "Estimativa do Gateway indisponível")}</span><span class="metric-sub battery-flow ${flowClass}">${esc(flowLabel)}</span></button>`;
 }
 function liveMinerHomeMetric() {
@@ -1516,7 +1514,7 @@ function renderGatewayArea(page) {
   const batteryBanks=config.battery_banks||[];
   const batteryTelemetry=["battery_voltage","battery_temperature"].map(field=>readings[field]).filter(Boolean);
   const batteryEquipmentCard=page==="baterias"?`<section class="panel detail-panel gateway-area-device"><div class="panel-header"><div><p class="eyebrow">RESUMO AGREGADO DO GATEWAY</p><h2>Bateria Deye · conjunto</h2></div><span class="source-tag">${batteryBanks.filter(bank=>bank.active!==false).length} ONLINE</span></div><p class="field-note">Este resumo representa o conjunto ligado ao inversor Deye. O Gateway combina as leituras agregadas de tensão e carga/descarga com a capacidade dos bancos online. Faz duplo clique num banco para editar ou remover.</p>${batteryBanks.length?`<div class="battery-available-kwh"><small>Capacidade nominal dos bancos online</small><strong>${battery.battery_capacity_kwh!=null&&Number.isFinite(Number(battery.battery_capacity_kwh))?`${esc(new Intl.NumberFormat("pt-PT",{maximumFractionDigits:1}).format(Number(battery.battery_capacity_kwh)))} kWh`:"—"}</strong></div><div class="battery-bank-summary">${batteryBanks.map((bank,index)=>`<button class="detail-item battery-bank-card" type="button" data-battery-bank-edit="${esc(bank.id)}" aria-label="${esc(bank.name||`Banco ${index+1}`)}, ${bank.active===false?"offline":"online"}, duplo clique para editar"><small>${esc(bank.name||`Banco ${index+1}`)} · ${bank.active===false?"OFFLINE":"ONLINE"}</small><strong>${esc(new Intl.NumberFormat("pt-PT",{maximumFractionDigits:1}).format(Number(bank.capacity_kwh)||0))} kWh</strong><span>Duplo clique para editar</span></button>`).join("")}</div>`:`<div class="empty-state">Ainda não configuraste bancos. O Owner pode adicionar um banco.</div>`}${batteryTelemetry.length?`<div class="device-detail-grid telemetry-grid">${batteryTelemetry.map(value=>`<div class="detail-item"><small>${esc(value.evidence?.label||value.field)} · inversor</small><strong>${esc(formatReading(value).value)} ${esc(value.unit||"")}</strong></div>`).join("")}</div>`:""}<div class="battery-available-kwh"><small>Energia disponível até ao SOC de corte · estimativa do Gateway</small><strong>${engine.current?.battery_energy_available_kwh_above_minimum!=null&&Number.isFinite(Number(engine.current.battery_energy_available_kwh_above_minimum))?`${esc(new Intl.NumberFormat("pt-PT",{maximumFractionDigits:2}).format(Number(engine.current.battery_energy_available_kwh_above_minimum)))} kWh`:"A aguardar estimativa do Gateway"}</strong></div></section>`:"";
-  const equipmentCards=page==="mineradoras"?"":page==="baterias"?batteryEquipmentCard:page==="paineis-solares"?`${panelReadings||`<div class="empty-state">O Deye ainda não forneceu leituras de MPPT.</div>`}${renderPvStringsSection(config,isOwner)}`:page==="aqs"?renderAqsSection(config,isOwner):page==="ev"?renderEvSection(config,isOwner):`${items.map(item=>`<section class="panel detail-panel gateway-area-device" ${page==="inversores"?`data-energy-equipment="${esc(item.id)}" tabindex="0" role="button" aria-label="Abrir ${esc(item.name)}"`:""}><div class="panel-header"><div><p class="eyebrow">${page==="inversores"?"INVERSOR":"EQUIPAMENTO"}</p><h2>${esc(item.name)}</h2></div><span class="source-tag">${esc(item.connection_state||item.status||"UNKNOWN")}</span></div><div class="device-detail-grid"><div class="detail-item"><small>Ligação</small><strong>${esc(item.connection_state||"Desconhecida")}</strong></div><div class="detail-item"><small>Última comunicação</small><strong>${esc(timeLabel(item.last_communication_at))}</strong></div><div class="detail-item"><small>Protocolo</small><strong>${esc(item.protocol||"Não indicado")}</strong></div></div>${deyeReadings}${item.readings?.length&&page!=="inversores"&&page!=="paineis-solares"?`<div class="device-detail-grid telemetry-grid">${item.readings.map(value=>`<div class="detail-item"><small>${esc(value.evidence?.label||value.field)}</small><strong>${esc(formatReading(value).value)} ${esc(value.unit||"")}</strong></div>`).join("")}</div>`:""}</section>`).join("")}${page==="mineradoras"?renderAntminerManagementPanel(isOwner):""}`;
+  const equipmentCards=page==="baterias"?batteryEquipmentCard:page==="paineis-solares"?`${panelReadings||`<div class="empty-state">O Deye ainda não forneceu leituras de MPPT.</div>`}${renderPvStringsSection(config,isOwner)}`:page==="aqs"?renderAqsSection(config,isOwner):page==="ev"?renderEvSection(config,isOwner):`${items.map(item=>`<section class="panel detail-panel gateway-area-device" ${page==="inversores"?`data-energy-equipment="${esc(item.id)}" tabindex="0" role="button" aria-label="Abrir ${esc(item.name)}"`:""}><div class="panel-header"><div><p class="eyebrow">${page==="inversores"?"INVERSOR":"EQUIPAMENTO"}</p><h2>${esc(item.name)}</h2></div><span class="source-tag">${esc(item.connection_state||item.status||"UNKNOWN")}</span></div><div class="device-detail-grid"><div class="detail-item"><small>Ligação</small><strong>${esc(item.connection_state||"Desconhecida")}</strong></div><div class="detail-item"><small>Última comunicação</small><strong>${esc(timeLabel(item.last_communication_at))}</strong></div><div class="detail-item"><small>Protocolo</small><strong>${esc(item.protocol||"Não indicado")}</strong></div></div>${deyeReadings}${item.readings?.length&&page!=="inversores"&&page!=="paineis-solares"?`<div class="device-detail-grid telemetry-grid">${item.readings.map(value=>`<div class="detail-item"><small>${esc(value.evidence?.label||value.field)}</small><strong>${esc(formatReading(value).value)} ${esc(value.unit||"")}</strong></div>`).join("")}</div>`:""}</section>`).join("")}${page==="mineradoras"?renderAntminerManagementPanel(isOwner):""}`;
   const description=page==="paineis-solares"?"Strings configuradas e leituras fotovoltaicas agregadas por MPPT.":page==="inversores"?"Estado do inversor, tensões de saída e potência entregue às cargas.":page==="baterias"?"SOC, potência assinada e limites que o Gateway observou.":page==="aqs"?"Termoacumuladores, potência nominal e associação opcional a um canal Tuya.":"Dados e leituras atuais fornecidos pelo Gateway autenticado.";
   const solarDay=engine.forecast?.solar_day||{};
   const solarDayCard=page==="energia"?`<article class="ws-kpi solar-day-forecast-card"><small>Produção solar prevista até ao fim do dia</small><strong>${solarDay.state==="ESTIMATED"&&Number.isFinite(Number(solarDay.estimated_total_kwh))?esc(new Intl.NumberFormat("pt-PT",{maximumFractionDigits:1}).format(Number(solarDay.estimated_total_kwh))):"—"} <em>kWh</em></strong><span>${solarDay.state==="ESTIMATED"?`${esc(new Intl.NumberFormat("pt-PT",{maximumFractionDigits:1}).format(Number(solarDay.actual_today_kwh)||0))} kWh produzidos · ${esc(new Intl.NumberFormat("pt-PT",{maximumFractionDigits:1}).format(Number(solarDay.remaining_estimate_kwh)||0))} kWh previstos · recalcula em até 10 min`:`Previsão indisponível: ${esc(solarDay.reason||"a aguardar dados do Gateway")}${solarDay.reason?.includes("potência nominal FV")?" Abre Owner → Produção → Previsão solar adaptativa e indica a potência total dos painéis em kWp.":""}`}</span></article>`:"";
@@ -1571,7 +1569,7 @@ function renderGatewayUtilityPage(page){
 }
 function isShellyBluBridge(device){
   const identity=[device?.device_type,device?.model,device?.name].filter(Boolean).join(" ").toLowerCase();
-  return ["smart_blugw","smart_gateway"].includes(String(device?.device_type||""))||/blu\s*gateway|blu\s*gw|blugw|gwf-kz01|sngw-bt01/.test(identity);
+  return ["smart_blugw","smart_gateway"].includes(String(device?.device_type||""))||/blu\s*gateway|blu\s*gw|blugw|gwf-kz01|sn[\s-]*gw[\s-]*bt01|sngw-bt01/.test(identity);
 }
 function openShellyDeviceDetails(deviceId){
   const device=state.shellyDevices.find(item=>item.device_id===deviceId);
@@ -2425,9 +2423,13 @@ document.querySelector(".owner-device-tabs")?.addEventListener("click", event =>
 let teslaOAuthPopup = null;
 let teslaOAuthState = "";
 let teslaOAuthOrigin = "";
+let teslaOAuthRelayMode = false;
+let teslaOAuthCompleting = false;
+let teslaConfiguredCallback = "";
 let teslaHelpStep = 0;
 function teslaGatewayCallbackUrl() {
   try {
+    if (teslaConfiguredCallback) return teslaConfiguredCallback;
     const gatewayUrl = sessionInfo().gatewayUrl;
     return gatewayUrl ? new URL("/api/integration/tesla/callback", gatewayUrl).toString() : "";
   } catch { return ""; }
@@ -2460,6 +2462,22 @@ for (const [buttonId, inputId] of [["ev-tesla-copy-origin", "ev-tesla-help-origi
     catch { $("#" + inputId)?.select(); $("#ev-tesla-help-count").textContent = developerLink ? "Endereço selecionado. Copia-o e cola-o no browser; o guia fica aberto no SolarMiner." : "Endereço selecionado. Copia-o e cola-o no campo correspondente da Tesla Developer."; }
   });
 }
+document.querySelector("#gateway-hardware-management")?.addEventListener("click", async event => {
+  const button = event.target.closest("#ev-tesla-relay-save"); if (!button) return;
+  event.preventDefault();
+  const status = $("#ev-tesla-relay-status"), url = $("#ev-tesla-relay-url").value.trim(), key = $("#ev-tesla-relay-key").value;
+  const info = sessionInfo();
+  if (!info.authenticated || info.user.role !== "owner") { status.textContent = "Só o Owner autenticado pode configurar o relay."; return; }
+  if (!url || !key) { status.textContent = "Indica o domínio HTTPS da VM e a chave gerada durante a instalação."; return; }
+  button.disabled = true; status.textContent = "A testar ligação HTTPS à VM…";
+  try {
+    const result = await saveGatewayTeslaRelay({relay_url: url, api_key: key});
+    $("#ev-tesla-relay-key").value = "";
+    status.textContent = "Relay ligado e autenticado. Callback Tesla confirmado: " + result.oauth_redirect_uri;
+    await refreshTeslaEvConfig();
+  } catch (error) { status.textContent = "Relay não guardado: " + error.message + ". Confirma domínio, certificado, porta HTTPS e chave."; }
+  finally { button.disabled = false; }
+});
 $("#ev-tesla-oauth-start")?.addEventListener("click", async event => {
   const button = event.currentTarget, status = $("#ev-tesla-status"), info = sessionInfo();
   if (!info.authenticated || info.user.role !== "owner") { status.textContent = "Só o Owner autenticado pode autorizar Tesla Fleet."; return; }
@@ -2472,10 +2490,12 @@ $("#ev-tesla-oauth-start")?.addEventListener("click", async event => {
   button.disabled = true; status.textContent = "A preparar a autorização segura com a Tesla…";
   try {
     const flow = await startGatewayTeslaOAuth({region: $("#ev-tesla-region").value, client_id: clientId, client_secret: clientSecret, local_mac: mac});
-    const expectedCallback = teslaGatewayCallbackUrl();
-    if (!expectedCallback || flow.redirect_uri !== expectedCallback) throw new Error("O endereço de retorno mudou. Atualiza o Redirect URI no portal Tesla com o valor mostrado no guia e tenta novamente.");
+    const callback = new URL(flow.redirect_uri);
+    if (callback.protocol !== "https:" || !["/oauth/callback", "/api/integration/tesla/callback"].includes(callback.pathname)) throw new Error("O Gateway devolveu um callback Tesla inválido.");
+    teslaConfiguredCallback = flow.redirect_uri;
+    for (const id of ["ev-tesla-callback", "ev-tesla-help-callback"]) { const field = $("#" + id); if (field) field.value = flow.redirect_uri; }
     $("#ev-tesla-client-secret").value = "";
-    teslaOAuthPopup = popup; teslaOAuthState = flow.state; teslaOAuthOrigin = window.location.origin;
+    teslaOAuthPopup = popup; teslaOAuthState = flow.state; teslaOAuthOrigin = callback.origin; teslaOAuthRelayMode = Boolean(flow.relay_mode);
     popup.location.replace(flow.authorize_url);
     status.textContent = "Autoriza a conta na janela Tesla. Esta página mantém-se aberta.";
   } catch (error) {
@@ -2485,11 +2505,21 @@ $("#ev-tesla-oauth-start")?.addEventListener("click", async event => {
 window.addEventListener("message", async event => {
   const result = event.data;
   if (!teslaOAuthPopup || event.source !== teslaOAuthPopup || event.origin !== teslaOAuthOrigin
-      || !result || result.type !== "solarminer-tesla-oauth-result" || result.state !== teslaOAuthState) return;
-  teslaOAuthPopup = null; teslaOAuthState = "";
+      || !result || result.state !== teslaOAuthState) return;
+  let finalResult = result;
+  if (result.type === "solarminer-tesla-relay" && teslaOAuthRelayMode) {
+    if (teslaOAuthCompleting) return;
+    teslaOAuthCompleting = true;
+    try { finalResult = await completeGatewayTeslaOAuth(teslaOAuthState); }
+    catch (error) { $("#ev-tesla-status").textContent = `Recebi o retorno Tesla, mas o Gateway não concluiu a autorização: ${error.message}`; return; }
+    finally { teslaOAuthCompleting = false; }
+    if (!finalResult.ready) { $("#ev-tesla-status").textContent = "Retorno recebido. A aguardar o código seguro no Gateway…"; return; }
+  }
+  if (!finalResult || finalResult.type !== "solarminer-tesla-oauth-result" || finalResult.state !== teslaOAuthState) return;
+  teslaOAuthPopup = null; teslaOAuthState = ""; teslaOAuthRelayMode = false;
   const status = $("#ev-tesla-status");
-  if (!result.ok) { status.textContent = result.message || "A autorização Tesla falhou."; return; }
-  const select = $("#ev-tesla-vehicle-select"), vehicles = Array.isArray(result.vehicles) ? result.vehicles : [];
+  if (!finalResult.ok) { status.textContent = finalResult.message || "A autorização Tesla falhou."; return; }
+  const select = $("#ev-tesla-vehicle-select"), vehicles = Array.isArray(finalResult.vehicles) ? finalResult.vehicles : [];
   select.replaceChildren(new Option("Seleciona o veículo Tesla", ""));
   for (const vehicle of vehicles) {
     if (!vehicle || !/^\d+$/.test(String(vehicle.id))) continue;
@@ -2499,6 +2529,16 @@ window.addEventListener("message", async event => {
   $("#ev-tesla-vehicle-save-wrap").hidden = vehicles.length === 0;
   status.textContent = vehicles.length ? "Conta Tesla autorizada. Escolhe o veículo e guarda a seleção." : "Conta autorizada, mas a Tesla não devolveu veículos elegíveis para esta conta.";
 });
+setInterval(async () => {
+  if (!teslaOAuthPopup || !teslaOAuthRelayMode || teslaOAuthCompleting || document.visibilityState !== "visible") return;
+  teslaOAuthCompleting = true;
+  try {
+    const result = await completeGatewayTeslaOAuth(teslaOAuthState);
+    if (!result.ready || result.state !== teslaOAuthState) return;
+    window.dispatchEvent(new MessageEvent("message", {data: result, origin: teslaOAuthOrigin, source: teslaOAuthPopup}));
+  } catch { /* A relay can be temporarily unreachable; retry while the Owner returns to the PWA. */ }
+  finally { teslaOAuthCompleting = false; }
+}, 2000);
 $("#ev-tesla-vehicle-save")?.addEventListener("click", async event => {
   const button = event.currentTarget, status = $("#ev-tesla-status"), vehicleId = $("#ev-tesla-vehicle-select").value;
   if (!vehicleId) { status.textContent = "Escolhe primeiro um veículo Tesla."; return; }
@@ -3462,7 +3502,10 @@ async function refreshTeslaEvConfig() {
   }
   if (save) save.disabled = false; if (read) read.disabled = false; if (presence) presence.disabled = false;
   const config = await readGatewayTeslaEvConfig();
+  teslaConfiguredCallback = config.oauth_redirect_uri || "";
+  for (const id of ["ev-tesla-callback", "ev-tesla-help-callback"]) { const field = $("#" + id); if (field) field.value = teslaGatewayCallbackUrl(); }
   const localMac = $("#ev-tesla-local-mac"); if (localMac) localMac.value = config.local_mac || "";
+  const relayUrl = $("#ev-tesla-relay-url"), relayStatus = $("#ev-tesla-relay-status"); if (relayUrl && config.relay_url) relayUrl.value = config.relay_url; if (relayStatus) relayStatus.textContent = config.relay_configured ? "Relay HTTPS configurado. A chave fica privada no Gateway." : "Relay ainda não configurado. A VM e o certificado HTTPS são necessários antes do OAuth.";
   const presenceStatus = $("#ev-tesla-presence-status"); if (presenceStatus && config.local_presence) presenceStatus.textContent = teslaPresenceText(config.local_presence);
   const region = $("#ev-tesla-region"), client = $("#ev-tesla-client-id"), token = $("#ev-tesla-refresh-token"), vehicle = $("#ev-tesla-vehicle-id");
   if (region) region.value = config.region || "europe"; if (client) client.value = config.client_id || "";
@@ -3515,7 +3558,7 @@ $("#page-content").addEventListener("click", async event => {
   if(addScan){
     if(!ownerCanManageHardware("#device-add-status"))return;
     const status=$("#device-add-status"),results=$("#device-add-results");
-    addScan.disabled=true;results.hidden=true;status.textContent="A procurar equipamentos na rede e sensores através das pontes registadas…";
+    addScan.disabled=true;results.hidden=true;status.textContent="A procurar na rede e a ouvir as pontes Shelly BLU até 30 segundos. Mantém o sensor perto da ponte e ativa-o durante a procura; em sensores com botão, carrega uma vez.";
     try{const report=await scanGatewayLocalNetwork();const matches=renderLocalNetworkResults(report);status.textContent=`Pesquisa concluída: ${Number(report.responsive_count)||0} equipamentos LAN e ${(report.blu_devices||[]).length} sensores Bluetooth; ${matches} já correspondem ao inventário. Abre uma linha para guardar.`;}
     catch(error){status.textContent=`Não foi possível concluir a pesquisa: ${error.message||"o Gateway não respondeu."}`;}
     finally{if(addScan.isConnected)addScan.disabled=false;}
@@ -3529,7 +3572,7 @@ $("#page-content").addEventListener("click", async event => {
     state.devicesTab="add";render();
     const status=$("#device-add-status"),results=$("#device-add-results");
     if(!status||!results)return;
-    results.hidden=true;status.textContent=`A procurar sensores através de ${bridge.name||"esta ponte Shelly BLU"}…`;
+    results.hidden=true;status.textContent=`A ouvir ${bridge.name||"esta ponte Shelly BLU"} até 30 segundos. Mantém o sensor perto da ponte e ativa-o durante a procura; em sensores com botão, carrega uma vez.`;
     try{
       const result=await discoverGatewayShellyBluDevices(bridge.device_id);
       const report={hosts:[],blu_devices:Array.isArray(result.devices)?result.devices:[],blu_bridges:[result.bridge||{}],
@@ -3537,7 +3580,7 @@ $("#page-content").addEventListener("click", async event => {
       renderLocalNetworkResults(report);
       const count=report.blu_devices.length,reason=result.bridge?.reason;
       status.textContent=count?`${count} sensor${count===1?"":"es"} encontrado${count===1?"":"s"} por ${bridge.name||"esta ponte"}. Abre uma linha para guardar.`:
-        `A ponte ${bridge.name||"Shelly BLU"} respondeu, mas não foram recebidos anúncios BTHome.${reason?` Estado: ${reason}.`:" Aproxima ou ativa o sensor e tenta novamente."}`;
+        `A ponte ${bridge.name||"Shelly BLU"} respondeu, mas não recebeu anúncios do sensor. A pesquisa já dura até 30 segundos; aproxima e ativa o sensor durante a procura.${reason?` Diagnóstico: ${reason.replaceAll("_"," ")}.`:""}`;
     }catch(error){status.textContent=`Não foi possível procurar sensores pela ponte ${bridge.name||"Shelly BLU"}: ${error.message||"o Gateway não respondeu."}`;}
     return;
   }
@@ -4140,10 +4183,10 @@ hydrateWorkspacePhotos();
 if (sessionInfo().authenticated) refreshGatewayReadings();
 setInterval(() => {
   const lastRefresh=Date.parse(state.lastUpdated||"");
-  if (document.visibilityState === "visible" && !["mineradoras","gestao-excedentes"].includes(state.page) && sessionInfo().authenticated && !state.refreshing && (!Number.isFinite(lastRefresh) || Date.now()-lastRefresh>=30_000)) {
+  if (document.visibilityState === "visible" && !["mineradoras","gestao-excedentes"].includes(state.page) && sessionInfo().authenticated && !state.refreshing && (!Number.isFinite(lastRefresh) || Date.now()-lastRefresh>=3_000)) {
     refreshGatewayReadings();
   }
-}, 10_000);
+}, 1_000);
 setInterval(() => { void refreshTuyaInventoryStatus(); },1_500);
 setInterval(() => {
   const info=sessionInfo();

@@ -68,22 +68,14 @@ test("Owner hardware setup includes the Tesla Fleet configuration beside Deye, A
   assert.ok(app.includes("updateOperationDialog({title:`${title} · falhou`"));
   assert.match(auth, /\/api\/v1\/energy\/ev\/tesla\/read/);
   assert.match(auth, /\/api\/v1\/energy\/ev\/tesla\/presence/);
-  assert.match(auth, /\/api\/v1\/energy\/ev\/tesla\/oauth\/start/);
-  assert.match(html, /id="ev-tesla-help-dialog"[\s\S]*?data-tesla-help-step="6"/);
-  assert.match(html, /id="ev-tesla-copy-developer"/);
-  assert.match(html, /Para manter este guia aberto[\s\S]*seletor de aplicações/i);
-  assert.match(html, /GitHub Pages não tem o endpoint de callback/);
-  assert.match(html, /https:\/\/developer\.tesla\.com\/docs\/fleet-api\/authentication\/third-party-tokens/);
-  assert.match(html, /Allowed Origin/);
-  assert.match(html, /Redirect URI/);
-  assert.match(html, /vehicle_device_data/);
-  assert.match(app, /window\.location\.origin/);
-  assert.match(app, /event\.source !== teslaOAuthPopup/);
-  assert.match(app, /result\.state !== teslaOAuthState/);
-  assert.match(app, /ev-tesla-help-prev/);
-  assert.match(app, /ev-tesla-help-next/);
-  assert.match(app, /ev-tesla-copy-developer/);
-  assert.match(app, /new URL\("\/api\/integration\/tesla\/callback", gatewayUrl\)/);
+  assert.match(auth, /\/api\/v1\/energy\/ev\/tesla\/oauth\/complete/);
+  assert.match(auth, /saveGatewayTeslaRelay/);
+  assert.match(auth, /\/api\/v1\/energy\/ev\/tesla\/relay/);
+  assert.match(app, /completeGatewayTeslaOAuth/);
+  assert.match(app, /Relay ligado e autenticado/);
+  assert.match(app, /#ev-tesla-relay-key/);
+  assert.match(app, /flow\.relay_mode/);
+  assert.match(app, /config\.oauth_redirect_uri/);
   assert.match(app, /readGatewayTeslaLocalPresence/);
   assert.doesNotMatch(app, /hardware-tesla-(?:region|client-id|refresh-token|vehicles)/);
   assert.doesNotMatch(auth, /tuya.*localStorage/i);
@@ -210,8 +202,7 @@ test("live navigation renders Gateway data without the demo renderer overriding 
   assert.match(app, /Gateway ainda não forneceu equipamentos ou leituras/);
 });
 
-test("Gateway package embeds the maintained PWA source tree", () => {
-  const root = new URL("../../solarminer-gateway-code02-v0.6.9-candidate/", import.meta.url);
-  const build = readFileSync(new URL("packaging/build-deb.sh", root), "utf8");
-  assert.match(build, /cp -R "\$ROOT\/web\/pwa\/\." "\$STAGE\/usr\/share\/solarminer\/pwa\//);
+test("Gateway package embeds the source PWA assets used by the release build", () => {
+  const build = read("../../solarminer-gateway-code02-v0.6.9-candidate/packaging/build-deb.sh");
+  assert.match(build, /cp -R "\$ROOT\/web\/pwa\/\." "\$STAGE\/usr\/share\/solarminer\/pwa\/"/);
 });

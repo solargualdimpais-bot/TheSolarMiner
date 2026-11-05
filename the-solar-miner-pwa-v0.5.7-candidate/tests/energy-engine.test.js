@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const gatewayPwa = resolve(root, "../solarminer-gateway-code02-v0.6.9-candidate/web/pwa");
 const read = (base, file) => readFileSync(resolve(base, file), "utf8");
 
 test("Owner PWA uses Gateway readings and keeps equipment associations available", () => {
@@ -62,8 +61,7 @@ test("Energy Engine is focused on measurement, readings and history", () => {
   assert.match(app, /function renderSurplusManager\(\)/);
 });
 
-test("Gateway package embeds its maintained PWA source", () => {
-  const build = read(gatewayPwa, "../../packaging/build-deb.sh");
-  assert.match(build, /cp -R "\$ROOT\/web\/pwa\/\." "\$STAGE\/usr\/share\/solarminer\/pwa\//);
-  assert.ok(read(gatewayPwa, "app.js").length > 0);
+test("Gateway package embeds the maintained PWA source", () => {
+  const build = read(resolve(root, "../solarminer-gateway-code02-v0.6.9-candidate"), "packaging/build-deb.sh");
+  assert.ok(build.includes('cp -R "$ROOT/web/pwa/." "$STAGE/usr/share/solarminer/pwa/'));
 });

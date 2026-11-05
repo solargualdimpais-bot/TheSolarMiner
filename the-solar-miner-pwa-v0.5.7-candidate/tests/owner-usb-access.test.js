@@ -28,6 +28,9 @@ test("Gateway administration is on an Owner-only page and live Home uses Gateway
   assert.match(home[1], /liveBatteryHomeMetric\(\)/);
   assert.match(home[1], /liveMinerHomeMetric\(\)/);
   assert.match(app, /liveHomeMetric\("Painéis"/);
+  assert.match(app, /function liveSolarHomeMetric\(\) \{[\s\S]*?state\.energyEngine\?\.current[\s\S]*?current\.pv_power_w/);
+  assert.match(app, /function liveBatteryHomeMetric\(\) \{[\s\S]*?current\.battery_power_w/);
+  assert.match(app, /Date\.now\(\)-lastRefresh>=3_000/);
   assert.match(app, /battery_output_power/);
   assert.match(app, /miner_hashrate_5s_ghs/);
   assert.match(app, /miner_power_limit_w/);
@@ -88,10 +91,10 @@ test("Owner recovery file parser accepts a generated key and rejects malformed/o
 });
 
 test("new PWA static cache version is changed and USB limitations are documented", () => {
-  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.136-tesla-oauth-gateway-callback/);
+  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.139-energy-engine-home-cards/);
   assert.match(serviceWorker, /\.\/favorite-list\.js/);
-  assert.match(manifest, /v0\.5\.136/);
-  assert.equal(packageJson.version, "0.5.136");
+  assert.match(manifest, /v0\.5\.139/);
+  assert.equal(packageJson.version, "0.5.139");
   assert.doesNotMatch(html, /gateway-update-refresh|Atualizar estado/);
   assert.doesNotMatch(app, /gateway-update-refresh/);
   const docs = read("OWNER_USB_AND_ACCESS.md");

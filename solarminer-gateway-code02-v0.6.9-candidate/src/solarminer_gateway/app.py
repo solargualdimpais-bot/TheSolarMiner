@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.189"
+PACKAGE_VERSION = "0.6.190"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -82,11 +82,11 @@ LOG = logging.getLogger("solarminer.gateway")
 logging.basicConfig(level=os.environ.get("SOLARMINER_LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
 install_error_queue_handler()
 
-# The live Deye sample is refreshed every 30 seconds. Only one sample per
-# minute is written to SQLite; the most recent half-minute sample stays in
-# memory for the authenticated energy API and is lost safely on restart.
+# Deye telemetry is sampled frequently for the live SOC estimator, while only
+# every third sample is written to SQLite to limit durable history growth.
 _energy_sample_lock = threading.Lock()
 _latest_deye_sample: dict[str, Any] | None = None
+_recent_deye_samples: list[dict[str, Any]] = []
 _dispatch_lock = threading.Lock()
 _dispatch_last_sent: dict[str, tuple[str, float]] = {}
 _deye_history_jobs_lock = threading.Lock()
@@ -1145,11 +1145,11 @@ def initialize() -> None:
         LOG.warning("Secure owner bootstrap is pending; token expires in 15 minutes and is available only to the local operator")
 
 
-def _energy_sample_interval_seconds() -> int:
+def _energy_sample_interval_seconds() -> float:
     try:
-        return max(30, min(3600, int(os.environ.get("SOLARMINER_ENERGY_SAMPLE_SECONDS", "30"))))
+        return max(3.0, min(3600.0, float(os.environ.get("SOLARMINER_ENERGY_SAMPLE_SECONDS", "3"))))
     except (TypeError, ValueError):
-        return 30
+        return 3.0
 
 
 def _prune_historical_records(now_utc: datetime | None = None) -> dict[str, int]:
@@ -1208,10 +1208,11 @@ async def _history_retention_loop() -> None:
 
 
 async def _energy_sampling_loop() -> None:
-    """Read Deye telemetry every 30s; persist a representative sample each minute."""
+    """Read Deye telemetry every 3s; persist a representative sample every 9s."""
     global _latest_deye_sample
     interval = _energy_sample_interval_seconds()
-    last_persisted_minute: int | None = None
+    persist_interval = 9.0
+    last_persisted_bucket: int | None = None
     next_sample_at = asyncio.get_running_loop().time()
     while True:
         try:
@@ -1220,16 +1221,22 @@ async def _energy_sampling_loop() -> None:
                 snapshot = await asyncio.to_thread(_read_deye_with_inventory_recovery, config)
                 if isinstance(snapshot, dict) and snapshot.get("connection_state") == "mapped_registers_response":
                     with _energy_sample_lock:
-                        _latest_deye_sample = {**snapshot, "sampled_at": datetime.now(timezone.utc).isoformat(timespec="microseconds")}
-                    # Keep minute-resolution durable history, while serving
-                    # the intervening 30-second reading from memory.
-                    minute_bucket = int(time.time() // 60)
-                    if minute_bucket != last_persisted_minute:
+                        sample = {**snapshot, "sampled_at": datetime.now(timezone.utc).isoformat(timespec="microseconds")}
+                        _latest_deye_sample = sample
+                        _recent_deye_samples.append(sample)
+                        # Bound RAM use and keep enough high-rate samples for
+                        # the SOC integrator to bridge persisted samples.
+                        if len(_recent_deye_samples) > 240:
+                            del _recent_deye_samples[:-240]
+                    # The SOC estimator sees every three-second sample in RAM;
+                    # SQLite receives only one representative sample per 9s.
+                    persist_bucket = int(time.time() // persist_interval)
+                    if persist_bucket != last_persisted_bucket:
                         with db() as conn:
                             conn.execute("BEGIN")
                             count = _persist_deye_telemetry(conn, snapshot)
                             conn.commit()
-                        last_persisted_minute = minute_bucket
+                        last_persisted_bucket = persist_bucket
                         if not count:
                             LOG.warning("Periodic Deye sample returned no mapped readings")
                 else:
@@ -1237,6 +1244,7 @@ async def _energy_sampling_loop() -> None:
             else:
                 with _energy_sample_lock:
                     _latest_deye_sample = None
+                    _recent_deye_samples.clear()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -1256,7 +1264,8 @@ def _run_automatic_dispatch() -> dict[str, Any]:
     with db() as conn:
         with _energy_sample_lock:
             sample = dict(_latest_deye_sample) if _latest_deye_sample else None
-        summary = energy_engine.build_summary(conn, latest_sample=sample)
+            recent_samples = [dict(item) for item in _recent_deye_samples]
+        summary = energy_engine.build_summary(conn, latest_sample=sample, recent_samples=recent_samples)
         plan = summary["dispatch"]
         config = summary["configuration"]
         if plan.get("state") not in {"PLAN_READY", "WAITING_FOR_BATTERY", "WAITING_FOR_BATTERY_RESERVE"}:
@@ -1508,6 +1517,7 @@ async def lifespan(_: FastAPI):
     hardware_integrations.remove_legacy_huawei_config()
     with _energy_sample_lock:
         _latest_deye_sample = None
+        _recent_deye_samples.clear()
     sampler = asyncio.create_task(_energy_sampling_loop(), name="solarminer-energy-sampler")
     dispatcher = asyncio.create_task(_energy_dispatch_loop(), name="solarminer-energy-dispatcher")
     tesla_presence = asyncio.create_task(_tesla_presence_loop(), name="solarminer-tesla-presence")
@@ -1926,8 +1936,9 @@ def energy_engine_summary(history_hours: int = 24, history_until: datetime | Non
     with db() as conn:
         with _energy_sample_lock:
             latest_sample = dict(_latest_deye_sample) if _latest_deye_sample else None
+            recent_samples = [dict(item) for item in _recent_deye_samples]
         result = energy_engine.build_summary(conn, history_hours, latest_sample=latest_sample,
-                                             history_until=history_until_utc)
+                                             history_until=history_until_utc, recent_samples=recent_samples)
         result["sampling_interval_seconds"] = _energy_sample_interval_seconds()
         result["persistence_interval_seconds"] = 60
         result["live_sample_at"] = latest_sample.get("sampled_at") if latest_sample else None
@@ -6022,7 +6033,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.189"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.190"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

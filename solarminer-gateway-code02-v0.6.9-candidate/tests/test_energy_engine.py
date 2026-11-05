@@ -534,6 +534,45 @@ def test_gateway_battery_soc_integrates_signed_power_from_rolling_voltage_peak()
     assert charged == 100.0
 
 
+def test_full_charge_anchor_accepts_voltage_ceiling_while_battery_supports_house_load():
+    anchor_at = datetime.now(timezone.utc)-timedelta(minutes=12)
+    voltage = [{"observed_at": (anchor_at-timedelta(minutes=2)).isoformat(), "value": 54.8}]
+    power = [{"observed_at": (anchor_at-timedelta(minutes=2)).isoformat(), "value": -600.0}]
+    for minute in range(11):
+        stamp = anchor_at+timedelta(minutes=minute)
+        voltage.append({"observed_at": stamp.isoformat(), "value": 55.0})
+        # Positive output is discharge to household loads, not continued charge.
+        power.append({"observed_at": stamp.isoformat(), "value": 150.0})
+    estimated, details = energy_engine._estimate_battery_soc(
+        voltage, power, 10.0, 0.0, 100.0, as_of=anchor_at+timedelta(minutes=10))
+    assert estimated is not None and estimated > 99.0
+    assert details["anchor_at"] == anchor_at.isoformat()
+
+
+def test_persistent_soc_reanchors_at_voltage_ceiling_even_if_house_load_has_started():
+    conn = database()
+    anchor_at = datetime.now(timezone.utc)-timedelta(minutes=12)
+    voltage = [{"observed_at": (anchor_at-timedelta(minutes=2)).isoformat(), "value": 54.8}]
+    power = [{"observed_at": (anchor_at-timedelta(minutes=2)).isoformat(), "value": -600.0}]
+    for minute in range(11):
+        stamp = anchor_at+timedelta(minutes=minute)
+        voltage.append({"observed_at": stamp.isoformat(), "value": 55.0})
+        power.append({"observed_at": stamp.isoformat(), "value": 150.0})
+    conn.execute("INSERT INTO system_state(key,value) VALUES(?,?)", (
+        energy_engine.BATTERY_ESTIMATOR_STATE_KEY,
+        json.dumps({"estimator_version": 2, "anchor_at": (anchor_at-timedelta(hours=2)).isoformat(),
+                    "voltage_max_v": 54.5, "anchor_source": "GATEWAY_LOCAL_VOLTAGE_AND_SIGNED_POWER",
+                    "integrated_net_discharge_kwh": 5.0,
+                    "last_power_at": (anchor_at-timedelta(minutes=3)).isoformat(),
+                    "last_power_w": -600.0, "last_sample_count": 2, "needs_reanchor": False}),
+    ))
+    soc, details = energy_engine._estimate_battery_soc_persistent(
+        conn, voltage, power, 10.0, 0.0, 100.0, as_of=anchor_at+timedelta(minutes=10))
+    assert soc is not None and soc > 99.0
+    assert details["anchor_at"] == anchor_at.isoformat()
+    assert details["voltage_max_30d_v"] == 55.0
+
+
 def test_battery_full_voltage_plateau_infers_top_only_after_charge_taper():
     now = datetime.now(timezone.utc).replace(microsecond=0)
     anchor = now-timedelta(minutes=10)
@@ -549,6 +588,20 @@ def test_battery_full_voltage_plateau_infers_top_only_after_charge_taper():
     assert inferred["voltage_ceiling_v"] == 55.0
     assert energy_engine._battery_full_voltage_plateau(voltage, power, 54.5, 5.0, as_of=now) is None
     assert energy_engine._battery_full_voltage_plateau(voltage, power, 55.0, 15.0, as_of=now) is None
+
+
+def test_battery_full_voltage_plateau_survives_house_load_after_charge_tapers():
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    anchor = now-timedelta(minutes=10)
+    voltage = [{"observed_at": (anchor-timedelta(minutes=3)).isoformat(), "value": 54.7}]
+    power = [{"observed_at": (anchor-timedelta(minutes=3)).isoformat(), "value": -600.0}]
+    for minute in range(11):
+        stamp = anchor+timedelta(minutes=minute)
+        voltage.append({"observed_at": stamp.isoformat(), "value": 55.0})
+        power.append({"observed_at": stamp.isoformat(), "value": 150.0})
+    inferred = energy_engine._battery_full_voltage_plateau(voltage, power, 55.0, 0.0, as_of=now)
+    assert inferred is not None
+    assert inferred["state"] == "INFERRED_FULL_FROM_VOLTAGE_PLATEAU"
 
 
 def test_persisted_battery_voltage_anchor_survives_rolling_history_window():
@@ -1013,15 +1066,15 @@ def test_forecast_guided_dispatch_fails_closed_without_forecast():
     assert result["actions"] == []
 
 
-def test_energy_sampler_interval_defaults_to_30_seconds_and_never_goes_below_30(monkeypatch):
+def test_energy_sampler_interval_defaults_to_three_seconds_and_never_goes_below_three(monkeypatch):
     from solarminer_gateway import app as gateway
 
     monkeypatch.delenv("SOLARMINER_ENERGY_SAMPLE_SECONDS", raising=False)
-    assert gateway._energy_sample_interval_seconds() == 30
-    monkeypatch.setenv("SOLARMINER_ENERGY_SAMPLE_SECONDS", "10")
-    assert gateway._energy_sample_interval_seconds() == 30
-    monkeypatch.setenv("SOLARMINER_ENERGY_SAMPLE_SECONDS", "45")
-    assert gateway._energy_sample_interval_seconds() == 45
+    assert gateway._energy_sample_interval_seconds() == 3
+    monkeypatch.setenv("SOLARMINER_ENERGY_SAMPLE_SECONDS", "1.5")
+    assert gateway._energy_sample_interval_seconds() == 3
+    monkeypatch.setenv("SOLARMINER_ENERGY_SAMPLE_SECONDS", "4.5")
+    assert gateway._energy_sample_interval_seconds() == 4.5
 
 
 def test_background_sampler_persists_snapshot_without_pwa_request(tmp_path, monkeypatch):

@@ -2046,11 +2046,13 @@ def _estimate_battery_soc(voltage_history: list[dict[str, Any]], power_history: 
                           capacity_kwh: float | None, minimum_soc: float, maximum_soc: float,
                           as_of: datetime | None = None
                           ) -> tuple[float | None, dict[str, Any]]:
-    """Estimate SOC only after a high-voltage charge has settled near zero power.
+    """Estimate SOC after a high-voltage charge reaches a stable voltage ceiling.
 
     Deye convention: positive battery_output_power is discharge; negative is charge.
     A voltage peak alone is not a full-charge event: it must follow active charge
-    and remain within 0.15 V of the 90-day ceiling at <=20 W for ten minutes.
+    and remain within 0.15 V of the learned 90-day ceiling for ten minutes,
+    after meaningful charging has stopped. The battery may then be discharging
+    to house loads while it remains at the ceiling.
     """
     unavailable = {"state": "UNAVAILABLE", "voltage_max_30d_v": None, "anchor_at": None,
                    "integrated_net_discharge_kwh": None, "sample_count": len(power_history)}
@@ -2088,7 +2090,14 @@ def _estimate_battery_soc(voltage_history: list[dict[str, Any]], power_history: 
     confirmed_anchor: tuple[datetime, float] | None = None
     for stamp, power in powers:
         nearest = min(voltage_by_time, key=lambda item: abs((item[0] - stamp).total_seconds()), default=None)
-        if nearest and abs((nearest[0] - stamp).total_seconds()) <= 120 and nearest[1] >= peak_voltage - 0.15 and abs(power) <= 20:
+        # Positive output is discharge. A battery that has just reached the
+        # learned voltage ceiling can already be supporting house loads while
+        # its voltage remains at the top. Requiring near-zero *net* power here
+        # discarded those valid top-of-charge observations and kept the old
+        # persisted anchor. Reject substantial ongoing charge, but allow a
+        # discharge during the voltage plateau. Negative values are charging,
+        # so exclude only meaningful ongoing charge.
+        if nearest and abs((nearest[0] - stamp).total_seconds()) <= 120 and nearest[1] >= peak_voltage - 0.15 and power >= -20:
             if stable and (stamp - stable[-1][0]).total_seconds() > 150:
                 stable = []
             stable.append((stamp, nearest[1]))
@@ -2333,11 +2342,12 @@ def _battery_full_voltage_plateau(voltage_history: list[dict[str, Any]],
                                   current_voltage: float | None,
                                   current_charge_power: float | None,
                                   as_of: datetime | None = None) -> dict[str, Any] | None:
-    """Infer a full-charge event only from a sustained local voltage ceiling and taper.
+    """Infer a full-charge event from a sustained local voltage ceiling and taper.
 
     This is display/diagnostic evidence, not a replacement for SOC integration:
     imported Cloud samples are filtered by the caller, and we require an earlier
-    charging interval plus ten minutes at the learned voltage ceiling.
+    charging interval plus ten minutes at the learned voltage ceiling after
+    charging tapers. Net discharge to house loads is compatible with this event.
     """
     if (current_voltage is None or current_charge_power is None
             or abs(current_charge_power) > 10):
@@ -2377,7 +2387,10 @@ def _battery_full_voltage_plateau(voltage_history: list[dict[str, Any]],
         if stamp < now-timedelta(minutes=20) or voltage < local_peak-0.15:
             continue
         nearest = min(parsed_power, key=lambda item: abs((item[0]-stamp).total_seconds()), default=None)
-        if nearest and abs((nearest[0]-stamp).total_seconds()) <= 120 and abs(nearest[1]) <= 10:
+        # Positive battery output means the home is drawing from a recently
+        # full pack; that must not hide a stable voltage ceiling. Strong charge
+        # is still excluded because its voltage can be temporarily elevated.
+        if nearest and abs((nearest[0]-stamp).total_seconds()) <= 120 and nearest[1] >= -20:
             if recent and (stamp-recent[-1][0]).total_seconds() > 150:
                 recent = []
             recent.append((stamp, voltage))
@@ -2684,7 +2697,8 @@ def build_dispatch_plan(current: dict[str, Any], config: dict[str, Any], *, samp
 
 def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
                   latest_sample: dict[str, Any] | None = None,
-                  history_until: datetime | None = None) -> dict[str, Any]:
+                  history_until: datetime | None = None,
+                  recent_samples: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     energy_registry.ensure_schema(conn)
     _ensure_solar_forecast_history(conn)
     _merge_single_cloud_device_history(conn)
@@ -2697,20 +2711,25 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
                    next((e for e in battery_candidates if e.get("readings")), None))
     inverter_readings = _reading_map(inverter["readings"] if inverter else [])
     battery_readings = _reading_map(battery["readings"] if battery else [])
-    # A fresh half-minute sample is held in RAM between durable minute writes.
-    # It may update the live card, but never changes historical rows or trust.
+    # High-rate samples are held in RAM between durable writes. They feed live
+    # SOC integration but do not change durable history or telemetry trust.
+    live_samples = [sample for sample in (recent_samples or []) if isinstance(sample, dict)]
     if isinstance(latest_sample, dict) and isinstance(latest_sample.get("metrics"), list):
-        sampled_at = latest_sample.get("sampled_at")
-        for metric in latest_sample["metrics"]:
-            if not isinstance(metric, dict) or not isinstance(metric.get("field"), str):
-                continue
-            target = inverter_readings if metric.get("category") == "inversores" else battery_readings if metric.get("category") == "baterias" else None
-            if target is None or isinstance(metric.get("value"), bool) or not isinstance(metric.get("value"), (int, float)):
-                continue
-            target[metric["field"]] = {"field": metric["field"], "value": metric["value"],
-                                        "unit": metric.get("unit"), "observed_at": sampled_at,
-                                        "source": "DEYE_MODBUS_FC03_CANDIDATE_MAP", "trust": "LIVE_UNVERIFIED",
-                                        "evidence": {"register": metric.get("register"), "label": metric.get("label")}}
+        if not live_samples or live_samples[-1].get("sampled_at") != latest_sample.get("sampled_at"):
+            live_samples.append(latest_sample)
+    for live_sample in live_samples:
+        if isinstance(live_sample.get("metrics"), list):
+            sampled_at = live_sample.get("sampled_at")
+            for metric in live_sample["metrics"]:
+                if not isinstance(metric, dict) or not isinstance(metric.get("field"), str):
+                    continue
+                target = inverter_readings if metric.get("category") == "inversores" else battery_readings if metric.get("category") == "baterias" else None
+                if target is None or isinstance(metric.get("value"), bool) or not isinstance(metric.get("value"), (int, float)):
+                    continue
+                target[metric["field"]] = {"field": metric["field"], "value": metric["value"],
+                                            "unit": metric.get("unit"), "observed_at": sampled_at,
+                                            "source": "DEYE_MODBUS_FC03_CANDIDATE_MAP", "trust": "LIVE_UNVERIFIED",
+                                            "evidence": {"register": metric.get("register"), "label": metric.get("label")}}
     config = get_config(conn)
     presence_row = conn.execute("SELECT value FROM system_state WHERE key='energy_tesla_presence'").fetchone()
     try:
@@ -2758,9 +2777,9 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
     autonomy_cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat(timespec="microseconds")
     autonomy_load_history = _series(conn, [inverter["id"]] if inverter else [], "load_total_power",
                                     autonomy_cutoff, limit=12000)
-    if isinstance(latest_sample, dict) and isinstance(latest_sample.get("metrics"), list):
-        sampled_at = latest_sample.get("sampled_at")
-        for metric in latest_sample["metrics"]:
+    for live_sample in live_samples:
+        sampled_at = live_sample.get("sampled_at")
+        for metric in live_sample.get("metrics", []):
             if (isinstance(metric, dict) and metric.get("category") == "inversores"
                     and metric.get("field") == "load_total_power"
                     and isinstance(metric.get("value"), (int, float)) and not isinstance(metric.get("value"), bool)):
@@ -2776,9 +2795,9 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
     # Timestamped Cloud voltage and signed power may seed the full-charge event
     # and integration when the Deye SOC percentage itself is not used. Their
     # trust remains LIVE_UNVERIFIED and gaps still fail closed.
-    if isinstance(latest_sample, dict) and isinstance(latest_sample.get("metrics"), list):
-        sample_time = latest_sample.get("sampled_at")
-        for metric in latest_sample["metrics"]:
+    for live_sample in live_samples:
+        sample_time = live_sample.get("sampled_at")
+        for metric in live_sample.get("metrics", []):
             if (isinstance(metric, dict) and metric.get("category") == "baterias"
                     and metric.get("field") in {"battery_voltage", "battery_output_power"}
                     and isinstance(metric.get("value"), (int, float)) and not isinstance(metric.get("value"), bool)):
