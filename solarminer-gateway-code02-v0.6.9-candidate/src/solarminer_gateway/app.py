@@ -64,7 +64,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.184"
+PACKAGE_VERSION = "0.6.185"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -591,8 +591,37 @@ def _unique_lan_ip_for_mac(report: dict[str, Any], mac_value: Any) -> str:
         return ""
 
 
+def _lan_ips_for_mac(report: dict[str, Any], mac_value: Any) -> list[str]:
+    """Return every private IP candidate attributed to a MAC, including conflicts."""
+    mac = _inventory_mac(mac_value)
+    if not mac:
+        return []
+    candidates: set[str] = set()
+    for host in report.get("hosts", []):
+        if not isinstance(host, dict) or _inventory_mac(host.get("mac")) != mac:
+            continue
+        if host.get("ip"):
+            candidates.add(str(host["ip"]).strip())
+        values = host.get("ip_candidates", [])
+        if isinstance(values, list):
+            candidates.update(str(value).strip() for value in values if isinstance(value, str) and value.strip())
+    for conflict in report.get("mac_ip_conflicts", []):
+        if not isinstance(conflict, dict) or _inventory_mac(conflict.get("mac")) != mac:
+            continue
+        values = conflict.get("ip_candidates", conflict.get("ips", []))
+        if isinstance(values, list):
+            candidates.update(str(value).strip() for value in values if isinstance(value, str) and value.strip())
+    valid = set()
+    for value in candidates:
+        try:
+            valid.add(hardware_integrations._private_ip(value))
+        except ValueError:
+            continue
+    return sorted(valid)
+
+
 def _refresh_deye_host_by_inventory_mac(deye_config: dict[str, Any]) -> dict[str, Any] | None:
-    """Find a uniquely inventoried inverter MAC on the LAN and persist its current IP."""
+    """Resolve an inverter MAC to the sole IP candidate that answers the Deye Modbus probe."""
     try:
         with db() as conn:
             current_config = hardware_integrations.load_config()
@@ -605,9 +634,25 @@ def _refresh_deye_host_by_inventory_mac(deye_config: dict[str, Any]) -> dict[str
             return None
         mac, device_key = next(iter(by_mac.items()))
         report = network_scanner.scan_attached_networks()
-        discovered_ip = _unique_lan_ip_for_mac(report, mac)
-        if not discovered_ip:
+        candidates = _lan_ips_for_mac(report, mac)
+        if not candidates:
             return None
+        responsive: list[tuple[str, dict[str, Any]]] = []
+        for candidate in candidates:
+            try:
+                probe = hardware_integrations.read_deye({**deye_config, "host": candidate})
+            except (OSError, RuntimeError, TimeoutError, ValueError):
+                continue
+            state = str(probe.get("connection_state") or "") if isinstance(probe, dict) else ""
+            if state in {"mapped_registers_response", "modbus_identity_response", "modbus_register_probe_response",
+                         "modbus_exception_response"}:
+                responsive.append((candidate, probe))
+        # A duplicated MAC is resolved only when exactly one address speaks Modbus.
+        # If both answer (or neither does), preserve the current configuration.
+        if len(responsive) != 1:
+            LOG.warning("Deye IP recovery not applied: %s Modbus-responsive candidates for inventoried MAC", len(responsive))
+            return None
+        discovered_ip, verified_snapshot = responsive[0]
         latest_config = hardware_integrations.load_config()
         latest_deye = latest_config.get("deye") if isinstance(latest_config.get("deye"), dict) else {}
         old_host = str(latest_deye.get("host") or deye_config.get("host") or "")
@@ -625,7 +670,7 @@ def _refresh_deye_host_by_inventory_mac(deye_config: dict[str, Any]) -> dict[str
                          (discovered_ip, now, now, device_key))
             conn.commit()
         return {**latest_deye, "host": discovered_ip, "inventory_mac": mac,
-                "ip_changed": old_host != discovered_ip}
+                "ip_changed": old_host != discovered_ip, "verified_snapshot": verified_snapshot}
     except (OSError, RuntimeError, ValueError, sqlite3.Error, subprocess.SubprocessError) as exc:
         LOG.warning("Deye IP refresh by inventory MAC failed (%s)", type(exc).__name__)
         return None
@@ -645,7 +690,7 @@ def _read_deye_with_inventory_recovery(deye_config: dict[str, Any]) -> dict[str,
     if not refreshed:
         return snapshot if isinstance(snapshot, dict) else {"connection_state": "failed", "metrics_decoded": False}
     try:
-        retried = hardware_integrations.read_deye(refreshed)
+        retried = refreshed.pop("verified_snapshot", None) or hardware_integrations.read_deye(refreshed)
         retried["ip_refreshed_by_mac"] = bool(refreshed.get("ip_changed"))
         retried["mac_verified_on_lan"] = True
         return retried
@@ -4245,7 +4290,7 @@ def hardware_provider_read(provider: str, payload: dict[str, Any] | None = None,
             if provider == "deye":
                 if not item.get("host"):
                     raise HTTPException(409, "deye_not_configured")
-                result: dict[str, Any] = {"deye": hardware_integrations.read_deye(item)}
+                result: dict[str, Any] = {"deye": _read_deye_with_inventory_recovery(item)}
                 metrics_saved = _persist_deye_telemetry(conn, result["deye"])
                 result["energy_readings_persisted"] = metrics_saved
             elif provider == "antminer":
@@ -5631,7 +5676,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.184"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.185"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

@@ -101,10 +101,22 @@ test("Tesla Fleet credentials live under Owner equipment while EV shows reads an
   assert.match(html, /data-owner-device="tesla"[^>]*>Tesla Fleet/);
   assert.match(html, /data-device-panel="tesla"[\s\S]*?id="ev-tesla-refresh-token"/);
   assert.match(html, /id="ev-tesla-fleet-save"/);
+  assert.match(html, /id="ev-tesla-local-mac"/);
   assert.match(app, /function renderEvSection\(config,isOwner\)/);
   assert.match(app, /Owner → Equipamentos → Tesla Fleet/);
-  for (const id of ["ev-tesla-read", "ev-tesla-local-mac", "ev-tesla-save", "ev-tesla-presence", "ev-tesla-read-status"]) assert.ok(app.includes('id="' + id + '"'), 'missing ' + id);
+  for (const id of ["ev-tesla-read", "ev-tesla-presence", "ev-tesla-read-status"]) assert.ok(app.includes('id="' + id + '"'), 'missing ' + id);
   assert.match(app, /page==="ev"\?renderEvSection\(config,isOwner\)/);
+});
+
+test("Tesla Fleet save is handled by the static Owner panel, reports outcomes, and refreshes MAC inventory", () => {
+  assert.match(app, /document\.querySelector\("#gateway-hardware-management"\)\?\.addEventListener\("click"/);
+  assert.match(app, /event\.target\.closest\("#ev-tesla-fleet-save"\)/);
+  assert.match(app, /A guardar a configuração Fleet e a associar o MAC ao inventário/);
+  assert.match(app, /Não foi possível guardar a ligação Tesla Fleet/);
+  assert.match(app, /Configuração guardada, mas o teste Fleet falhou/);
+  assert.match(app, /readGatewayDeviceInventory\(\)/);
+  assert.match(app, /readGatewayTeslaEvCharging\(\)/);
+  assert.match(app, /MAC foi guardado/);
 });
 
 test("Favorite commands use the cached state and never trigger a LAN read", () => {

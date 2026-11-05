@@ -92,6 +92,55 @@ def test_owner_can_check_tesla_presence_from_local_neighbour_cache(client, monke
     assert client.post("/api/v1/energy/ev/tesla/presence").status_code == 401
 
 
+def test_deye_ip_recovery_selects_only_the_ambiguous_mac_candidate_that_answers_modbus(client, monkeypatch):
+    mac = "AA:BB:CC:DD:EE:84"
+    config = {"deye": {"host": "192.168.8.84", "port": 502, "unit_id": 1,
+                       "model": "SUN-15K-SG05LP3-EU-SM2", "local_mac": mac}}
+    monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: config)
+    monkeypatch.setattr(gateway.hardware_integrations, "save_config", lambda value: config.update(value))
+    monkeypatch.setattr(gateway.network_scanner, "scan_attached_networks", lambda: {
+        "hosts": [{"ip": "192.168.8.84", "mac": mac, "mac_ip_conflict": True,
+                    "ip_candidates": ["192.168.8.84", "192.168.8.200"]}],
+        "mac_ip_conflicts": [{"mac": mac, "ip_candidates": ["192.168.8.84", "192.168.8.200"]}],
+    })
+    probes = []
+
+    def read_deye(candidate):
+        host = candidate["host"]
+        probes.append(host)
+        if host.endswith(".200"):
+            return {"host": host, "connection_state": "mapped_registers_response",
+                    "metrics_decoded": True, "metrics": [{"field": "pv_power", "value": 321}]}
+        return {"host": host, "connection_state": "mapped_register_read_failed", "metrics_decoded": False}
+
+    monkeypatch.setattr(gateway.hardware_integrations, "read_deye", read_deye)
+    result = gateway._read_deye_with_inventory_recovery(dict(config["deye"]))
+    assert result["host"] == "192.168.8.200"
+    assert result["connection_state"] == "mapped_registers_response"
+    assert result["ip_refreshed_by_mac"] is True
+    assert result["mac_verified_on_lan"] is True
+    assert config["deye"]["host"] == "192.168.8.200"
+    assert probes.count("192.168.8.84") == 2  # initial read, then candidate validation
+    assert probes.count("192.168.8.200") == 1
+
+
+def test_deye_ip_recovery_does_not_change_config_when_multiple_ambiguous_ips_answer(client, monkeypatch):
+    mac = "AA:BB:CC:DD:EE:85"
+    config = {"deye": {"host": "192.168.8.84", "port": 502, "unit_id": 1,
+                       "model": "SUN-15K-SG05LP3-EU-SM2", "local_mac": mac}}
+    monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: config)
+    monkeypatch.setattr(gateway.hardware_integrations, "save_config", lambda value: config.update(value))
+    monkeypatch.setattr(gateway.network_scanner, "scan_attached_networks", lambda: {
+        "hosts": [{"ip": "192.168.8.84", "mac": mac, "ip_candidates": ["192.168.8.84", "192.168.8.200"]}],
+        "mac_ip_conflicts": [{"mac": mac, "ip_candidates": ["192.168.8.84", "192.168.8.200"]}],
+    })
+    monkeypatch.setattr(gateway.hardware_integrations, "read_deye", lambda candidate: {
+        "host": candidate["host"], "connection_state": "mapped_registers_response", "metrics_decoded": True})
+    result = gateway._refresh_deye_host_by_inventory_mac(dict(config["deye"]))
+    assert result is None
+    assert config["deye"]["host"] == "192.168.8.84"
+
+
 def test_shelly_registration_uses_authenticated_owner_and_sqlite_mac_identity(client, monkeypatch):
     owner, private, _ = create_owner(client)
     token = login(client, owner, private).json()["access_token"]

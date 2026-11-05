@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.132: catálogo de perfis Shelly por modelo e controlos uniformes.",
+  "description": "The Solar Miner PWA v0.5.133: confirmação Tesla Fleet e inventário ligado ao MAC.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",
