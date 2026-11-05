@@ -6,7 +6,7 @@ const PWA_INVITE_LANDING_URL = "https://solargualdimpais-bot.github.io/TheSolarM
 import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classifyEndpoint, inferHostedGatewayEndpoint, buildInviteLandingUrl, readInviteLandingHash, PRESENCE_API_STATUS } from "./gateway-connection.js";
 import { isHeicPhoto } from "./photo-format.js";
 import { addFavoriteId, normalizeFavoriteIds, reorderFavoriteIds } from "./favorite-list.js";
-import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, redeemGatewayInvite, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, readGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayDiagnosticsUpload, saveGatewayDiagnosticsUploadToken, disableGatewayDiagnosticsUpload, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, previewGatewayTuyaProductImport, applyGatewayTuyaProductImport, controlGatewayAntminer, testGatewayAntminerControl, readGatewayAntminerManagement, writeGatewayAntminerManagement, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, controlGatewayTuyaSetting, saveGatewayTuyaProductDpsDescription, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, testGatewayTuyaLanReachability, discoverGatewayTuyaLanDevices, scanGatewayLocalNetwork, readGatewayDeviceInventory, readGatewaySmartProductCatalog, readGatewayShellyProductProfiles, readGatewayShellyDevices, discoverGatewayShellyDevices, registerGatewayShellyDevice, registerGatewayShellyBluDevice, discoverGatewayShellyBluDevices, controlGatewayShellySwitch, controlGatewayShellyLight, applyGatewayLocalNetworkMatches, saveGatewayLocalNetworkDevice, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging, readGatewayTeslaLocalPresence } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, redeemGatewayInvite, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, readGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayDiagnosticsUpload, saveGatewayDiagnosticsUploadToken, disableGatewayDiagnosticsUpload, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, previewGatewayTuyaProductImport, applyGatewayTuyaProductImport, controlGatewayAntminer, testGatewayAntminerControl, readGatewayAntminerManagement, writeGatewayAntminerManagement, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, controlGatewayTuyaSetting, saveGatewayTuyaProductDpsDescription, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, testGatewayTuyaLanReachability, discoverGatewayTuyaLanDevices, scanGatewayLocalNetwork, readGatewayDeviceInventory, readGatewaySmartProductCatalog, readGatewayShellyProductProfiles, readGatewayShellyDevices, discoverGatewayShellyDevices, registerGatewayShellyDevice, registerGatewayShellyBluDevice, discoverGatewayShellyBluDevices, controlGatewayShellySwitch, controlGatewayShellyLight, applyGatewayLocalNetworkMatches, saveGatewayLocalNetworkDevice, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, startGatewayTeslaOAuth, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging, readGatewayTeslaLocalPresence } from "./gateway-auth.js";
 
 let automationEditingId = "";
 let energyEngineActiveTab="summary";
@@ -2411,7 +2411,98 @@ document.querySelector(".owner-tabs")?.addEventListener("click", event => {
 });
 document.querySelector(".owner-device-tabs")?.addEventListener("click", event => {
   const tab = event.target.closest("[data-owner-device]");
-  if (tab) selectOwnerDevice(tab.dataset.ownerDevice);
+  if (tab) {
+    selectOwnerDevice(tab.dataset.ownerDevice);
+    if (tab.dataset.ownerDevice === "tesla") {
+      const origin = window.location.origin;
+      const callback = `${origin}/api/integration/tesla/callback`;
+      for (const id of ["ev-tesla-origin", "ev-tesla-help-origin"]) { const field = $("#" + id); if (field) field.value = origin; }
+      for (const id of ["ev-tesla-callback", "ev-tesla-help-callback"]) { const field = $("#" + id); if (field) field.value = callback; }
+    }
+  }
+});
+let teslaOAuthPopup = null;
+let teslaOAuthState = "";
+let teslaOAuthOrigin = "";
+let teslaHelpStep = 0;
+function showTeslaHelpStep(step) {
+  teslaHelpStep = Math.max(0, Math.min(6, step));
+  document.querySelectorAll("[data-tesla-help-step]").forEach(panel => { panel.hidden = Number(panel.dataset.teslaHelpStep) !== teslaHelpStep; });
+  const count = $("#ev-tesla-help-count"); if (count) count.textContent = `Passo ${teslaHelpStep + 1} de 7`;
+  const prev = $("#ev-tesla-help-prev"), next = $("#ev-tesla-help-next");
+  if (prev) prev.disabled = teslaHelpStep === 0;
+  if (next) next.textContent = teslaHelpStep === 6 ? "Concluir" : "Seguinte";
+}
+$("#ev-tesla-help-open")?.addEventListener("click", () => {
+  const origin = window.location.origin, callback = `${origin}/api/integration/tesla/callback`;
+  for (const id of ["ev-tesla-origin", "ev-tesla-help-origin"]) { const field = $("#" + id); if (field) field.value = origin; }
+  for (const id of ["ev-tesla-callback", "ev-tesla-help-callback"]) { const field = $("#" + id); if (field) field.value = callback; }
+  showTeslaHelpStep(0); $("#ev-tesla-help-dialog")?.showModal();
+});
+$("#ev-tesla-help-close")?.addEventListener("click", () => $("#ev-tesla-help-dialog")?.close());
+$("#ev-tesla-help-prev")?.addEventListener("click", () => showTeslaHelpStep(teslaHelpStep - 1));
+$("#ev-tesla-help-next")?.addEventListener("click", () => {
+  if (teslaHelpStep === 6) $("#ev-tesla-help-dialog")?.close(); else showTeslaHelpStep(teslaHelpStep + 1);
+});
+for (const [buttonId, inputId] of [["ev-tesla-copy-origin", "ev-tesla-help-origin"], ["ev-tesla-copy-callback", "ev-tesla-help-callback"]]) {
+  $("#" + buttonId)?.addEventListener("click", async () => {
+    const value = $("#" + inputId)?.value || "";
+    try { await navigator.clipboard.writeText(value); $("#ev-tesla-help-count").textContent = "Copiado. Cola o endereço no campo correspondente da Tesla Developer."; }
+    catch { $("#" + inputId)?.select(); $("#ev-tesla-help-count").textContent = "Selecionado. Copia o endereço e cola-o no campo correspondente da Tesla Developer."; }
+  });
+}
+$("#ev-tesla-oauth-start")?.addEventListener("click", async event => {
+  const button = event.currentTarget, status = $("#ev-tesla-status"), info = sessionInfo();
+  if (!info.authenticated || info.user.role !== "owner") { status.textContent = "Só o Owner autenticado pode autorizar Tesla Fleet."; return; }
+  const clientId = $("#ev-tesla-client-id").value.trim(), clientSecret = $("#ev-tesla-client-secret").value;
+  const mac = $("#ev-tesla-local-mac").value.trim().toUpperCase();
+  if (!clientId || !clientSecret) { status.textContent = "Preenche o Client ID e o Client Secret da aplicação Tesla Developer."; return; }
+  if (mac && !/^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac)) { status.textContent = "O MAC deve ter o formato AA:BB:CC:11:22:33."; return; }
+  const popup = window.open("about:blank", "solarminerTeslaOAuth", "popup,width=600,height=760");
+  if (!popup) { status.textContent = "O browser bloqueou a janela Tesla. Permite pop-ups para esta PWA e tenta novamente."; return; }
+  button.disabled = true; status.textContent = "A preparar a autorização segura com a Tesla…";
+  try {
+    const flow = await startGatewayTeslaOAuth({region: $("#ev-tesla-region").value, client_id: clientId, client_secret: clientSecret, local_mac: mac});
+    $("#ev-tesla-client-secret").value = "";
+    teslaOAuthPopup = popup; teslaOAuthState = flow.state; teslaOAuthOrigin = window.location.origin;
+    popup.location.replace(flow.authorize_url);
+    status.textContent = "Autoriza a conta na janela Tesla. Esta página mantém-se aberta.";
+  } catch (error) {
+    popup.close(); status.textContent = "Não foi possível iniciar OAuth Tesla: " + error.message;
+  } finally { button.disabled = false; }
+});
+window.addEventListener("message", async event => {
+  const result = event.data;
+  if (!teslaOAuthPopup || event.source !== teslaOAuthPopup || event.origin !== teslaOAuthOrigin
+      || !result || result.type !== "solarminer-tesla-oauth-result" || result.state !== teslaOAuthState) return;
+  teslaOAuthPopup = null; teslaOAuthState = "";
+  const status = $("#ev-tesla-status");
+  if (!result.ok) { status.textContent = result.message || "A autorização Tesla falhou."; return; }
+  const select = $("#ev-tesla-vehicle-select"), vehicles = Array.isArray(result.vehicles) ? result.vehicles : [];
+  select.replaceChildren(new Option("Seleciona o veículo Tesla", ""));
+  for (const vehicle of vehicles) {
+    if (!vehicle || !/^\d+$/.test(String(vehicle.id))) continue;
+    const suffix = vehicle.vin_suffix ? ` · VIN …${vehicle.vin_suffix}` : "";
+    select.add(new Option(`${vehicle.name || "Tesla"}${suffix}`, String(vehicle.id)));
+  }
+  $("#ev-tesla-vehicle-save-wrap").hidden = vehicles.length === 0;
+  status.textContent = vehicles.length ? "Conta Tesla autorizada. Escolhe o veículo e guarda a seleção." : "Conta autorizada, mas a Tesla não devolveu veículos elegíveis para esta conta.";
+});
+$("#ev-tesla-vehicle-save")?.addEventListener("click", async event => {
+  const button = event.currentTarget, status = $("#ev-tesla-status"), vehicleId = $("#ev-tesla-vehicle-select").value;
+  if (!vehicleId) { status.textContent = "Escolhe primeiro um veículo Tesla."; return; }
+  button.disabled = true; status.textContent = "A guardar o veículo autorizado no Gateway…";
+  try {
+    $("#ev-tesla-vehicle-id").value = vehicleId;
+    const clientId = $("#ev-tesla-client-id").value.trim(), mac = $("#ev-tesla-local-mac").value.trim().toUpperCase();
+    const config = await saveGatewayTeslaEvConfig({region: $("#ev-tesla-region").value, client_id: clientId, vehicle_ids: [vehicleId], ...(mac ? {local_mac: mac} : {})});
+    if (!config.configured) throw new Error("O Gateway não confirmou a configuração Fleet.");
+    status.textContent = "Veículo Tesla guardado. A testar leitura Fleet…";
+    const result = await readGatewayTeslaEvCharging();
+    const inventory = await readGatewayDeviceInventory(); state.gatewayDeviceInventory = Array.isArray(inventory.devices) ? inventory.devices : [];
+    status.textContent = `Ligação guardada e testada: ${(result.vehicles || []).length} veículo(s) consultado(s). O refresh token fica privado no Gateway; não foram enviados comandos ao carro.`;
+  } catch (error) { status.textContent = "Não foi possível guardar/testar o veículo: " + error.message; }
+  finally { button.disabled = false; }
 });
 $("#owner-open-gateway")?.addEventListener("click", () => $("#gateway-dialog").showModal());
 $("#owner-gateway-status").textContent = "Configura e autentica a ligação pelo botão acima.";

@@ -5,6 +5,7 @@ import os
 import time
 import zipfile
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
@@ -90,6 +91,63 @@ def test_owner_can_check_tesla_presence_from_local_neighbour_cache(client, monke
     assert response.json()["state"] == "DETECTED"
     assert response.json()["ip"] == "192.168.8.100"
     assert client.post("/api/v1/energy/ev/tesla/presence").status_code == 401
+
+
+def test_tesla_oauth_start_uses_current_https_origin_and_minimal_read_scopes(client):
+    owner, private, _ = create_owner(client)
+    token = login(client, owner, private).json()["access_token"]
+    gateway._tesla_oauth_pending.clear()
+    response = client.post("/api/v1/energy/ev/tesla/oauth/start", headers={
+        "Authorization": f"Bearer {token}", "Origin": "https://solarminer.example",
+    }, json={"region": "europe", "client_id": "client-123", "client_secret": "secret-value",
+             "local_mac": "AA:BB:CC:DD:EE:01"})
+    assert response.status_code == 200, response.text
+    result = response.json()
+    query = parse_qs(urlsplit(result["authorize_url"]).query)
+    assert query["redirect_uri"] == ["https://solarminer.example/api/integration/tesla/callback"]
+    assert query["scope"] == ["openid offline_access vehicle_device_data"]
+    assert result["allowed_origin"] == "https://solarminer.example"
+    assert "secret-value" not in response.text
+    assert gateway._tesla_oauth_pending[result["state"]]["client_secret"] == "secret-value"
+    assert client.post("/api/v1/energy/ev/tesla/oauth/start", headers={
+        "Authorization": f"Bearer {token}", "Origin": "http://solarminer.example",
+    }, json={"region": "europe", "client_id": "client-123", "client_secret": "secret-value"}).status_code == 400
+
+
+def test_tesla_oauth_callback_exchanges_code_persists_rotating_token_and_posts_safe_vehicles(client, monkeypatch):
+    owner, private, _ = create_owner(client)
+    token = login(client, owner, private).json()["access_token"]
+    gateway._tesla_oauth_pending.clear()
+    start = client.post("/api/v1/energy/ev/tesla/oauth/start", headers={
+        "Authorization": f"Bearer {token}", "Origin": "https://solarminer.example",
+    }, json={"region": "europe", "client_id": "client-123", "client_secret": "secret-value"}).json()
+    config = {}
+    calls = []
+
+    def fake_http(url, *, token=None, form=None):
+        calls.append((url, token, form))
+        if form:
+            assert form["grant_type"] == "authorization_code"
+            assert form["client_secret"] == "secret-value"
+            assert form["redirect_uri"] == start["redirect_uri"]
+            return {"access_token": "access-token", "refresh_token": "refresh-token-rotated"}
+        assert token == "access-token"
+        return {"response": [{"id_s": "987654321", "display_name": "My Tesla", "vin": "VIN000000000000000ABCD"}]}
+
+    monkeypatch.setattr(gateway.hardware_integrations, "_tesla_http", fake_http)
+    monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: config)
+    monkeypatch.setattr(gateway.hardware_integrations, "save_config", lambda value: config.update(value))
+    callback = client.get("/api/integration/tesla/callback", params={"code": "oauth-code", "state": start["state"]})
+    assert callback.status_code == 200
+    assert "solarminer-tesla-oauth-result" in callback.text
+    assert "refresh-token-rotated" not in callback.text
+    assert config["tesla"]["refresh_token"] == "refresh-token-rotated"
+    assert config["tesla"]["vehicle_ids"] == []
+    assert config["tesla"]["client_id"] == "client-123"
+    assert config["tesla"]["local_mac"] == ""
+    assert "987654321" in callback.text and "My Tesla" in callback.text
+    replay = client.get("/api/integration/tesla/callback", params={"code": "oauth-code", "state": start["state"]})
+    assert replay.status_code == 400
 
 
 def test_deye_ip_recovery_selects_only_the_ambiguous_mac_candidate_that_answers_modbus(client, monkeypatch):

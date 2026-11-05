@@ -30,7 +30,7 @@ from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, VerificationError
@@ -45,7 +45,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect, status
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, StrictStr
 
@@ -64,7 +64,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.185"
+PACKAGE_VERSION = "0.6.186"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -89,6 +89,15 @@ _dispatch_lock = threading.Lock()
 _dispatch_last_sent: dict[str, tuple[str, float]] = {}
 _deye_history_jobs_lock = threading.Lock()
 _deye_history_jobs: dict[str, dict[str, Any]] = {}
+_tesla_oauth_pending_lock = threading.Lock()
+_tesla_oauth_pending: dict[str, dict[str, Any]] = {}
+
+
+def _expire_tesla_oauth_pending(state: str) -> None:
+    with _tesla_oauth_pending_lock:
+        pending = _tesla_oauth_pending.get(state)
+        if pending and pending.get("expires_at", 0) <= time.time():
+            _tesla_oauth_pending.pop(state, None)
 _shelly_blu_read_cache_lock = threading.Lock()
 _shelly_blu_read_cache: dict[tuple[str, ...], tuple[float, list[dict[str, Any]], list[dict[str, Any]]]] = {}
 
@@ -4694,6 +4703,118 @@ def tuya_product_dps_description(payload: dict[str, Any], session: dict[str, Any
 def _require_owner(session: dict[str, Any], conn) -> None:
     actor = _revalidate_actor(conn, session, "manage_gateway")
     if actor["role"] != "owner": raise HTTPException(403, "owner_required")
+
+
+@app.post("/api/v1/energy/ev/tesla/oauth/start")
+def ev_tesla_oauth_start(payload: dict[str, Any], request: Request,
+                         session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Start Tesla owner authorization; the app secret remains transient in Gateway memory."""
+    with db() as conn:
+        _require_owner(session, conn)
+        client_id, client_secret = payload.get("client_id"), payload.get("client_secret")
+        region = payload.get("region", "europe")
+        local_mac = str(payload.get("local_mac") or "").strip().upper()
+        origin = request.headers.get("origin", "")
+        try:
+            parsed = urlsplit(origin)
+            _ = parsed.port  # Force validation of a malformed port before constructing the callback.
+            valid_origin = parsed.scheme == "https" and bool(parsed.hostname)
+        except ValueError:
+            valid_origin = False
+        if not isinstance(client_id, str) or not 1 <= len(client_id.strip()) <= 256:
+            raise HTTPException(422, "tesla_client_id_required")
+        if not isinstance(client_secret, str) or not 1 <= len(client_secret) <= 512:
+            raise HTTPException(422, "tesla_client_secret_required")
+        if region not in hardware_integrations.TESLA_API_BASES:
+            raise HTTPException(422, "invalid_tesla_region")
+        if not valid_origin or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
+            raise HTTPException(400, "tesla_oauth_requires_https_pwa_origin")
+        if local_mac and not MAC_RE.fullmatch(local_mac):
+            raise HTTPException(422, "invalid_tesla_local_mac")
+        callback = f"{origin}/api/integration/tesla/callback"
+        state = secrets.token_urlsafe(32)
+        with _tesla_oauth_pending_lock:
+            now = time.time()
+            for key in [key for key, value in _tesla_oauth_pending.items() if value.get("expires_at", 0) < now]:
+                _tesla_oauth_pending.pop(key, None)
+            _tesla_oauth_pending[state] = {
+                "owner_id": session["user_id"], "client_id": client_id.strip(),
+                "client_secret": client_secret, "region": region, "local_mac": local_mac,
+                "origin": origin, "redirect_uri": callback, "expires_at": now + 600,
+            }
+        expiry_timer = threading.Timer(600, _expire_tesla_oauth_pending, args=(state,))
+        expiry_timer.daemon = True
+        expiry_timer.start()
+        authorize_url = "https://auth.tesla.com/oauth2/v3/authorize?" + urlencode({
+            "response_type": "code", "client_id": client_id.strip(), "redirect_uri": callback,
+            "scope": "openid offline_access vehicle_device_data", "state": state,
+            "prompt_missing_scopes": "true", "require_requested_scopes": "true",
+        })
+        audit(conn, session["user_id"], "energy.ev.tesla.oauth.start", "ev", "success", {
+            "region": region, "redirect_origin": origin, "client_secret_returned": False,
+        })
+        return {"authorize_url": authorize_url, "state": state, "redirect_uri": callback, "allowed_origin": origin}
+
+
+@app.get("/api/integration/tesla/callback", response_class=HTMLResponse)
+def ev_tesla_oauth_callback(request: Request) -> HTMLResponse:
+    state = request.query_params.get("state", "")
+    with _tesla_oauth_pending_lock:
+        pending = _tesla_oauth_pending.pop(state, None) if state else None
+    if not pending or pending.get("expires_at", 0) < time.time():
+        return HTMLResponse("<!doctype html><meta charset=utf-8><title>Tesla Fleet</title><p>Pedido de autorização expirado ou inválido. Fecha esta janela e inicia novamente na PWA.</p>", status_code=400,
+                            headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+    result: dict[str, Any] = {"type": "solarminer-tesla-oauth-result", "state": state, "ok": False,
+                              "message": "A autorização Tesla não foi concluída.", "vehicles": []}
+    try:
+        with db() as conn:
+            owner = conn.execute("SELECT role,status FROM users WHERE id=?", (pending["owner_id"],)).fetchone()
+        if not owner or owner["role"] != "owner" or owner["status"] != "active":
+            result["message"] = "A sessão Owner deixou de estar ativa. Inicia novamente a ligação na PWA."
+        elif request.query_params.get("error") or not request.query_params.get("code"):
+            result["message"] = "A autorização foi cancelada ou recusada na Tesla."
+        else:
+            token_payload = hardware_integrations._tesla_http(hardware_integrations.TESLA_AUTH_URL, form={
+                "grant_type": "authorization_code", "client_id": pending["client_id"],
+                "client_secret": pending["client_secret"], "code": request.query_params["code"],
+                "audience": hardware_integrations.TESLA_API_BASES[pending["region"]],
+                "redirect_uri": pending["redirect_uri"],
+                "scope": "openid offline_access vehicle_device_data",
+            })
+            access_token, refresh_token = token_payload.get("access_token"), token_payload.get("refresh_token")
+            if not isinstance(access_token, str) or not access_token or not isinstance(refresh_token, str) or not refresh_token:
+                raise RuntimeError("tesla_oauth_tokens_missing")
+            config = hardware_integrations.load_config()
+            config["tesla"] = {"region": pending["region"], "client_id": pending["client_id"],
+                               "refresh_token": refresh_token, "vehicle_ids": [], "local_mac": pending["local_mac"]}
+            hardware_integrations.save_config(config)
+            vehicle_payload = hardware_integrations._tesla_http(
+                hardware_integrations.TESLA_API_BASES[pending["region"]] + "/api/1/vehicles", token=access_token)
+            vehicles = vehicle_payload.get("response")
+            if not isinstance(vehicles, list):
+                raise RuntimeError("tesla_vehicle_list_invalid")
+            safe_vehicles = []
+            for vehicle in vehicles:
+                if not isinstance(vehicle, dict):
+                    continue
+                vehicle_id = str(vehicle.get("id_s") or vehicle.get("id") or "")
+                vin = vehicle.get("vin")
+                if vehicle_id.isdigit():
+                    safe_vehicles.append({"id": vehicle_id, "name": str(vehicle.get("display_name") or "Tesla")[:80],
+                                          "vin_suffix": vin[-4:] if isinstance(vin, str) and len(vin) >= 4 else ""})
+            result.update({"ok": True, "message": "Conta Tesla autorizada. Escolhe o veículo na PWA.", "vehicles": safe_vehicles})
+    except Exception:
+        # Never reflect OAuth codes, secrets, tokens, or upstream details into the browser.
+        result["message"] = "A Tesla não concluiu a autorização. Confirma Client ID, Client Secret, região e callback registado."
+    encoded = json.dumps(result).replace("<", "\\u003c")
+    target_origin = json.dumps(pending["origin"])
+    page = ("<!doctype html><html lang=pt><meta charset=utf-8><meta name=referrer content=no-referrer>"
+            "<title>Tesla Fleet</title><p>Regresso à PWA…</p><script>"
+            f"const result={encoded};const origin={target_origin};"
+            "if(window.opener){window.opener.postMessage(result,origin);window.close();}"
+            "else{document.querySelector('p').textContent=result.message;}"
+            "</script></html>")
+    return HTMLResponse(page, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
 
 
 @app.get("/api/v1/energy/ev/tesla")

@@ -645,6 +645,10 @@ export async function saveGatewayLocalNetworkDevice({ mac, ip = "", name, device
 export async function readGatewayTeslaEvConfig() {
   return gatewayApi("/api/v1/energy/ev/tesla");
 }
+export async function startGatewayTeslaOAuth(config) {
+  if (!config || typeof config !== "object") throw new Error("Configuração Tesla OAuth inválida.");
+  return gatewayApi("/api/v1/energy/ev/tesla/oauth/start", { method: "POST", body: config });
+}
 export async function saveGatewayTeslaEvConfig(config) {
   if (!config || typeof config !== "object") throw new Error("Configuração Tesla EV inválida.");
   return gatewayApi("/api/v1/energy/ev/tesla", { method: "PUT", body: config });

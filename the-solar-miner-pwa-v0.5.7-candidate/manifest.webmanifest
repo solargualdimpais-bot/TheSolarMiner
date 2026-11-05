@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.133: confirmação Tesla Fleet e inventário ligado ao MAC.",
+  "description": "The Solar Miner PWA v0.5.134: guia e autorização OAuth Tesla Fleet.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",

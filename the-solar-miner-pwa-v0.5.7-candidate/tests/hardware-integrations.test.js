@@ -68,6 +68,17 @@ test("Owner hardware setup includes the Tesla Fleet configuration beside Deye, A
   assert.ok(app.includes("updateOperationDialog({title:`${title} · falhou`"));
   assert.match(auth, /\/api\/v1\/energy\/ev\/tesla\/read/);
   assert.match(auth, /\/api\/v1\/energy\/ev\/tesla\/presence/);
+  assert.match(auth, /\/api\/v1\/energy\/ev\/tesla\/oauth\/start/);
+  assert.match(html, /id="ev-tesla-help-dialog"[\s\S]*?data-tesla-help-step="6"/);
+  assert.match(html, /https:\/\/developer\.tesla\.com\/docs\/fleet-api\/authentication\/third-party-tokens/);
+  assert.match(html, /Allowed Origin/);
+  assert.match(html, /Redirect URI/);
+  assert.match(html, /vehicle_device_data/);
+  assert.match(app, /window\.location\.origin/);
+  assert.match(app, /event\.source !== teslaOAuthPopup/);
+  assert.match(app, /result\.state !== teslaOAuthState/);
+  assert.match(app, /ev-tesla-help-prev/);
+  assert.match(app, /ev-tesla-help-next/);
   assert.match(app, /readGatewayTeslaLocalPresence/);
   assert.doesNotMatch(app, /hardware-tesla-(?:region|client-id|refresh-token|vehicles)/);
   assert.doesNotMatch(auth, /tuya.*localStorage/i);
