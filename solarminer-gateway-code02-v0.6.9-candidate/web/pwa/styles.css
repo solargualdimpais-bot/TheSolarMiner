@@ -560,6 +560,9 @@ html[data-font="small"]{--font-ui-scale:.9;}html[data-font="normal"]{--font-ui-s
 .home-favorites .favorite-device{position:relative;padding:14px;}
 .home-favorites .favorite-device>.favorite-device-icon{position:absolute;top:13px;left:13px;align-self:auto;width:42px;height:42px;}
 .home-favorites .favorite-device-info{position:absolute;left:14px;right:62px;bottom:14px;min-width:0;}
+.home-favorites .shelly-card-feedback{display:block;min-height:1.25em;color:var(--muted,#aaa);font-size:8px;line-height:1.25;letter-spacing:normal;}
+.home-favorites .shelly-card-feedback:empty{visibility:hidden}
+.inventory-device.is-stale{border-color:rgba(220,201,156,.38)}
 .home-favorites .favorite-device-actions{position:absolute;inset:0;display:block;pointer-events:none;}
 .home-favorites .favorite-device-actions .favorite-state-symbol{position:absolute;top:12px;right:12px;width:42px;height:42px;pointer-events:auto;}
 .favorite-expand{position:absolute;right:13px;bottom:12px;display:grid;place-items:center;width:28px;height:28px;padding:0;border:0;border-radius:0;background:transparent;color:var(--gold-2,#e2d0a4);font-size:24px;line-height:1;cursor:pointer;pointer-events:auto}

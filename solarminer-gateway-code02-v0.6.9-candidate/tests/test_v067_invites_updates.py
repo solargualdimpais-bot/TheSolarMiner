@@ -1004,6 +1004,27 @@ def test_public_tuya_projection_never_labels_cloud_ip_as_local():
     assert device["ip"] == ""
 
 
+def test_hardware_status_keeps_recent_valid_tuya_sample_after_failed_attempt(client, monkeypatch):
+    headers = {"Authorization": f"Bearer {owner_session(client)}"}
+    monkeypatch.setattr(gateway.hardware_integrations, "public_config", lambda: {"tuya": {"devices": [
+        {"device_id": "dimmer", "name": "Dimmer", "local_ip": "192.168.1.20",
+         "current_status": [], "local_control_state": "unavailable"}]}})
+    monkeypatch.setattr(gateway.energy_engine, "read_tuya_telemetry", lambda conn, max_age_seconds: {
+        "dimmer": {"verified": True, "fresh": True, "connection_state": "failed",
+                   "observed_at": "2026-11-05T12:00:00+00:00", "last_attempt_at": "2026-11-05T12:00:01+00:00",
+                   "reason": "temporary_lan_timeout", "status": [{"code": "cur_power", "dps_id": 19, "value": 425}]}})
+
+    response = client.get("/api/v1/integrations/hardware", headers=headers)
+
+    assert response.status_code == 200, response.text
+    device = response.json()["tuya"]["devices"][0]
+    assert device["current_connection_state"] == "local_responded"
+    assert device["local_control_state"] == "ready"
+    assert device["current_status"][0]["value"] == 425
+    assert device["last_read_attempt_state"] == "failed"
+    assert device["last_read_error"] == "temporary_lan_timeout"
+
+
 def test_tuya_lan_discovery_matches_device_ids_or_mac_and_saves_only_private_addresses(client, monkeypatch, tmp_path):
     token = owner_session(client)
     headers = {"Authorization": f"Bearer {token}"}
