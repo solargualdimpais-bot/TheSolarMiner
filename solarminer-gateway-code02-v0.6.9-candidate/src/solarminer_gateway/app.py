@@ -31,6 +31,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlencode, urlsplit
+from urllib.request import Request as URLRequest, urlopen
+from urllib.error import HTTPError, URLError
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, VerificationError
@@ -64,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.188"
+PACKAGE_VERSION = "0.6.189"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -190,6 +192,11 @@ CREATE TABLE IF NOT EXISTS shelly_blu_devices(
  bridge_mac TEXT NOT NULL, bridge_host TEXT NOT NULL, last_rssi INTEGER, values_json TEXT NOT NULL DEFAULT '[]',
  last_seen_at TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS shelly_blu_scan_observations(
+ bridge_mac TEXT NOT NULL, mac TEXT NOT NULL, observed_at REAL NOT NULL, details_json TEXT NOT NULL DEFAULT '{}',
+ PRIMARY KEY(bridge_mac,mac)
+);
+CREATE INDEX IF NOT EXISTS idx_shelly_blu_scan_observations_age ON shelly_blu_scan_observations(observed_at);
 CREATE INDEX IF NOT EXISTS idx_shelly_devices_host ON shelly_devices(host);
 CREATE TABLE IF NOT EXISTS tuya_product_dps_map(
  protocol TEXT NOT NULL DEFAULT 'tuya', manufacturer TEXT NOT NULL DEFAULT 'Tuya',
@@ -413,12 +420,29 @@ def _enrich_shelly_scan(report: dict[str, Any]) -> None:
             continue
 
 
-def _scan_registered_shelly_blu_bridges(conn: sqlite3.Connection, *, duration_seconds: float = 5.0,
+def _remember_shelly_blu_scan(conn: sqlite3.Connection, devices: list[dict[str, Any]]) -> None:
+    """Keep short-lived proof that a bridge recently observed each sensor."""
+    now = time.time()
+    conn.execute("DELETE FROM shelly_blu_scan_observations WHERE observed_at<?", (now - 300,))
+    for item in devices:
+        if not isinstance(item, dict):
+            continue
+        bridge_mac, mac = _inventory_mac(item.get("bridge_mac")), _inventory_mac(item.get("mac"))
+        if not bridge_mac or not mac:
+            continue
+        conn.execute("""INSERT INTO shelly_blu_scan_observations(bridge_mac,mac,observed_at,details_json)
+            VALUES(?,?,?,?) ON CONFLICT(bridge_mac,mac) DO UPDATE SET observed_at=excluded.observed_at,
+            details_json=excluded.details_json""",
+            (bridge_mac, mac, now, json.dumps(item, separators=(",", ":"))))
+
+
+def _scan_registered_shelly_blu_bridges(conn: sqlite3.Connection, *, duration_seconds: float = 30.0,
                                         bridge_macs: set[str] | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Read nearby BLU advertisements through already registered local gateways."""
     rows = conn.execute("""SELECT mac,name,host,model,device_type,auth_ciphertext FROM shelly_devices
         WHERE enabled=1 AND (device_type IN ('smart_blugw','smart_gateway') OR model LIKE '%BLU Gateway%'
-            OR model LIKE '%BLU GW%' OR model LIKE '%BLUGW%' OR model LIKE '%GWF-KZ01%' OR model LIKE '%SNGW-BT01%')
+            OR model LIKE '%BLU GW%' OR model LIKE '%BLUGW%' OR model LIKE '%GWF-KZ01%' OR model LIKE '%SNGW-BT01%'
+            OR upper(model) LIKE '%SN-GW-BT01%' OR upper(model) LIKE '%SN GW BT01%')
         ORDER BY name COLLATE NOCASE LIMIT 8""").fetchall()
     if bridge_macs is not None:
         wanted = {_inventory_mac(value) for value in bridge_macs if _inventory_mac(value)}
@@ -464,10 +488,10 @@ def _read_shelly_blu_bridges_cached(conn: sqlite3.Connection, bridge_macs: set[s
     with _shelly_blu_read_cache_lock:
         cached = _shelly_blu_read_cache.get(key)
         now = time.monotonic()
-        if cached and now - cached[0] < 8.0:
+        if cached and now - cached[0] < 30.0:
             return cached[1], cached[2]
         devices, bridges = _scan_registered_shelly_blu_bridges(
-            conn, duration_seconds=2.0, bridge_macs=set(key))
+            conn, duration_seconds=5.0, bridge_macs=set(key))
         _shelly_blu_read_cache.clear()
         _shelly_blu_read_cache[key] = (time.monotonic(), devices, bridges)
         return devices, bridges
@@ -491,19 +515,31 @@ def register_shelly_blu_device(payload: dict[str, Any],
             raise HTTPException(403, "owner_required")
         bridge_row = conn.execute("""SELECT mac,name,host,model,device_type,auth_ciphertext FROM shelly_devices
             WHERE mac=? AND enabled=1 AND (device_type IN ('smart_blugw','smart_gateway') OR model LIKE '%BLU Gateway%'
-                OR model LIKE '%BLU GW%' OR model LIKE '%BLUGW%' OR model LIKE '%GWF-KZ01%' OR model LIKE '%SNGW-BT01%')""",
+                OR model LIKE '%BLU GW%' OR model LIKE '%BLUGW%' OR model LIKE '%GWF-KZ01%' OR model LIKE '%SNGW-BT01%'
+                OR upper(model) LIKE '%SN-GW-BT01%' OR upper(model) LIKE '%SN GW BT01%')""",
             (bridge_mac,)).fetchone()
         if not bridge_row:
             raise HTTPException(404, "shelly_blu_bridge_not_registered")
-        try:
-            credentials = shelly_credentials.open_credentials(DATA_DIR, bridge_row["auth_ciphertext"] or b"")
-            scan = hardware_integrations.shelly_integration.discover_bluetooth_devices(
-                str(bridge_row["host"] or ""), username=str(credentials.get("username") or ""),
-                password=str(credentials.get("password") or ""))
-        except (OSError, RuntimeError, ValueError) as exc:
-            raise HTTPException(502, "shelly_blu_bridge_scan_failed") from exc
-        observed = next((item for item in scan.get("devices", []) if isinstance(item, dict)
-                         and _inventory_mac(item.get("mac")) == mac), None)
+        observation = conn.execute("""SELECT details_json FROM shelly_blu_scan_observations
+            WHERE bridge_mac=? AND mac=? AND observed_at>=?""", (bridge_mac, mac, time.time() - 300)).fetchone()
+        observed = None
+        if observation:
+            try:
+                candidate = json.loads(observation["details_json"])
+                if isinstance(candidate, dict): observed = candidate
+            except (TypeError, json.JSONDecodeError):
+                observed = None
+        if not observed:
+            try:
+                credentials = shelly_credentials.open_credentials(DATA_DIR, bridge_row["auth_ciphertext"] or b"")
+                scan = hardware_integrations.shelly_integration.discover_bluetooth_devices(
+                    str(bridge_row["host"] or ""), username=str(credentials.get("username") or ""),
+                    password=str(credentials.get("password") or ""), duration_seconds=30.0)
+                _remember_shelly_blu_scan(conn, scan.get("devices", []))
+                observed = next((item for item in scan.get("devices", []) if isinstance(item, dict)
+                                 and _inventory_mac(item.get("mac")) == mac), None)
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise HTTPException(502, "shelly_blu_bridge_scan_failed") from exc
         if not observed:
             raise HTTPException(409, "shelly_blu_device_not_seen_through_bridge")
         conn.execute("BEGIN IMMEDIATE")
@@ -556,7 +592,8 @@ def discover_shelly_blu_bridge(device_id: str, session: dict[str, Any]) -> dict[
             raise HTTPException(403, "owner_required")
         row = conn.execute("""SELECT mac,name,host,model,device_type FROM shelly_devices
             WHERE device_id=? AND enabled=1 AND (device_type IN ('smart_blugw','smart_gateway') OR model LIKE '%BLU Gateway%'
-                OR model LIKE '%BLU GW%' OR model LIKE '%BLUGW%' OR model LIKE '%GWF-KZ01%' OR model LIKE '%SNGW-BT01%')""",
+                OR model LIKE '%BLU GW%' OR model LIKE '%BLUGW%' OR model LIKE '%GWF-KZ01%' OR model LIKE '%SNGW-BT01%'
+                OR upper(model) LIKE '%SN-GW-BT01%' OR upper(model) LIKE '%SN GW BT01%')""",
             (device_id,)).fetchone()
         if not row:
             raise HTTPException(404, "shelly_blu_bridge_not_registered")
@@ -567,7 +604,8 @@ def discover_shelly_blu_bridge(device_id: str, session: dict[str, Any]) -> dict[
                 conn, duration_seconds=5.0, bridge_macs={bridge["mac"]})
     except (OSError, RuntimeError, ValueError) as exc:
         raise HTTPException(502, "shelly_blu_bridge_scan_failed") from exc
-    result = bridges[0] if bridges else {"mac": _inventory_mac(bridge["mac"]), "name": bridge["name"],
+        _remember_shelly_blu_scan(conn, devices)
+        result = bridges[0] if bridges else {"mac": _inventory_mac(bridge["mac"]), "name": bridge["name"],
                                          "model": bridge["model"], "state": "unavailable",
                                          "reason": "bridge_not_scanned"}
     return {"bridge": result, "devices": devices, "device_count": len(devices),
@@ -3496,7 +3534,8 @@ def read_shelly_devices(session: dict[str, Any] = Depends(require_permission("ma
             "SELECT mac,name,model,device_type,bridge_mac,bridge_host,last_rssi,values_json,last_seen_at FROM shelly_blu_devices WHERE enabled=1")]
         blu_bridges = [dict(row) for row in conn.execute("""SELECT mac,name,host,model,device_type,auth_ciphertext FROM shelly_devices
             WHERE enabled=1 AND (device_type IN ('smart_blugw','smart_gateway') OR model LIKE '%BLU Gateway%'
-                OR model LIKE '%BLU GW%' OR model LIKE '%BLUGW%' OR model LIKE '%GWF-KZ01%' OR model LIKE '%SNGW-BT01%')""")]
+                OR model LIKE '%BLU GW%' OR model LIKE '%BLUGW%' OR model LIKE '%GWF-KZ01%' OR model LIKE '%SNGW-BT01%'
+                OR upper(model) LIKE '%SN-GW-BT01%' OR upper(model) LIKE '%SN GW BT01%')""")]
     if blu_rows and blu_bridges:
         try:
             required_bridge_macs = {_inventory_mac(item.get("bridge_mac")) for item in blu_rows
@@ -3750,6 +3789,7 @@ def scan_local_network(session: dict[str, Any] = Depends(require_permission("man
             report = network_scanner.scan_attached_networks()
             _enrich_shelly_scan(report)
             blu_devices, blu_bridges = _scan_registered_shelly_blu_bridges(conn)
+            _remember_shelly_blu_scan(conn, blu_devices)
             report["blu_devices"] = blu_devices
             report["blu_bridges"] = blu_bridges
             report.setdefault("networks", [])
@@ -4705,6 +4745,119 @@ def _require_owner(session: dict[str, Any], conn) -> None:
     if actor["role"] != "owner": raise HTTPException(403, "owner_required")
 
 
+def _normalize_tesla_oauth_relay_config(raw_origin: Any, api_key: Any) -> dict[str, str]:
+    if not isinstance(raw_origin, str) or not isinstance(api_key, str):
+        raise HTTPException(422, "tesla_oauth_relay_invalid_config")
+    raw_origin = raw_origin.strip().rstrip("/")
+    api_key = api_key.strip()
+    try:
+        parsed = urlsplit(raw_origin)
+        _ = parsed.port
+        valid = (parsed.scheme == "https" and bool(parsed.hostname) and parsed.port in (None, 443) and not parsed.username and
+                 not parsed.password and not parsed.path and not parsed.query and not parsed.fragment and
+                 raw_origin == f"https://{parsed.netloc}")
+        if parsed.hostname:
+            ipaddress.ip_address(parsed.hostname)
+            valid = False
+    except ValueError:
+        # A normal DNS hostname is expected; IP literal parsing raises ValueError.
+        try:
+            parsed = urlsplit(raw_origin)
+            host = parsed.hostname or ""
+            valid = (parsed.scheme == "https" and "." in host and not host.endswith((".local", ".localhost"))
+                     and parsed.port in (None, 443)
+                     and not parsed.username and not parsed.password and not parsed.path and not parsed.query
+                     and not parsed.fragment and raw_origin == f"https://{parsed.netloc}")
+        except ValueError:
+            valid = False
+    if not valid or len(api_key) < 32:
+        raise HTTPException(422, "tesla_oauth_relay_invalid_config")
+    return {"origin": raw_origin, "api_key": api_key,
+            "callback": f"{raw_origin}/oauth/callback"}
+
+
+def _tesla_oauth_relay_config() -> dict[str, str] | None:
+    """Return the outbound-only public callback relay configuration, if installed."""
+    raw_origin = os.environ.get("SOLARMINER_TESLA_RELAY_URL", "").strip()
+    api_key = os.environ.get("SOLARMINER_TESLA_RELAY_API_KEY", "")
+    if raw_origin or api_key:
+        try:
+            return _normalize_tesla_oauth_relay_config(raw_origin, api_key)
+        except HTTPException as exc:
+            raise HTTPException(503, "tesla_oauth_relay_not_configured") from exc
+    configured = hardware_integrations.load_config().get("tesla_oauth_relay", {})
+    if not isinstance(configured, dict) or not configured.get("origin") or not configured.get("api_key"):
+        return None
+    try:
+        return _normalize_tesla_oauth_relay_config(configured.get("origin"), configured.get("api_key"))
+    except HTTPException as exc:
+        raise HTTPException(503, "tesla_oauth_relay_not_configured") from exc
+
+
+def _tesla_oauth_relay_request(relay: dict[str, str], method: str, path: str,
+                               payload: dict[str, Any] | None = None,
+                               bearer: str | None = None) -> dict[str, Any]:
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8") if payload is not None else None
+    headers = {"Accept": "application/json", "Authorization": f"Bearer {bearer or relay['api_key']}"}
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+    request = URLRequest(relay["origin"] + path, data=body, headers=headers, method=method)
+    try:
+        with urlopen(request, timeout=8) as response:
+            raw = response.read(16_384)
+        decoded = json.loads(raw.decode("utf-8")) if raw else {}
+    except (HTTPError, URLError, OSError, TimeoutError, UnicodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(502, "tesla_oauth_relay_unavailable") from exc
+    if not isinstance(decoded, dict):
+        raise HTTPException(502, "tesla_oauth_relay_invalid_response")
+    return decoded
+
+
+def _tesla_oauth_exchange_and_list(pending: dict[str, Any], state: str, code: str) -> dict[str, Any]:
+    result: dict[str, Any] = {"type": "solarminer-tesla-oauth-result", "state": state, "ok": False,
+                              "message": "A autorização Tesla não foi concluída.", "vehicles": []}
+    try:
+        with db() as conn:
+            owner = conn.execute("SELECT role,status FROM users WHERE id=?", (pending["owner_id"],)).fetchone()
+        if not owner or owner["role"] != "owner" or owner["status"] != "active":
+            result["message"] = "A sessão Owner deixou de estar ativa. Inicia novamente a ligação na PWA."
+            return result
+        token_payload = hardware_integrations._tesla_http(hardware_integrations.TESLA_AUTH_URL, form={
+            "grant_type": "authorization_code", "client_id": pending["client_id"],
+            "client_secret": pending["client_secret"], "code": code,
+            "audience": hardware_integrations.TESLA_API_BASES[pending["region"]],
+            "redirect_uri": pending["redirect_uri"],
+            "scope": "openid offline_access vehicle_device_data",
+        })
+        access_token, refresh_token = token_payload.get("access_token"), token_payload.get("refresh_token")
+        if not isinstance(access_token, str) or not access_token or not isinstance(refresh_token, str) or not refresh_token:
+            raise RuntimeError("tesla_oauth_tokens_missing")
+        config = hardware_integrations.load_config()
+        config["tesla"] = {"region": pending["region"], "client_id": pending["client_id"],
+                           "refresh_token": refresh_token, "vehicle_ids": [], "local_mac": pending["local_mac"]}
+        hardware_integrations.save_config(config)
+        vehicle_payload = hardware_integrations._tesla_http(
+            hardware_integrations.TESLA_API_BASES[pending["region"]] + "/api/1/vehicles", token=access_token)
+        vehicles = vehicle_payload.get("response")
+        if not isinstance(vehicles, list):
+            raise RuntimeError("tesla_vehicle_list_invalid")
+        safe_vehicles = []
+        for vehicle in vehicles:
+            if not isinstance(vehicle, dict):
+                continue
+            vehicle_id = str(vehicle.get("id_s") or vehicle.get("id") or "")
+            vin = vehicle.get("vin")
+            if vehicle_id.isdigit():
+                safe_vehicles.append({"id": vehicle_id, "name": str(vehicle.get("display_name") or "Tesla")[:80],
+                                      "vin_suffix": vin[-4:] if isinstance(vin, str) and len(vin) >= 4 else ""})
+        result.update({"ok": True, "message": "Conta Tesla autorizada. Escolhe o veículo na PWA.",
+                       "vehicles": safe_vehicles})
+    except Exception:
+        # Never reflect OAuth codes, secrets, tokens, or upstream details into the browser.
+        result["message"] = "A Tesla não concluiu a autorização. Confirma Client ID, Client Secret, região e callback registado."
+    return result
+
+
 @app.post("/api/v1/energy/ev/tesla/oauth/start")
 def ev_tesla_oauth_start(payload: dict[str, Any], request: Request,
                          session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
@@ -4731,6 +4884,7 @@ def ev_tesla_oauth_start(payload: dict[str, Any], request: Request,
             raise HTTPException(400, "tesla_oauth_requires_https_pwa_origin")
         gateway_url = request.url
         gateway_origin = f"{gateway_url.scheme}://{gateway_url.netloc}"
+        relay = _tesla_oauth_relay_config()
         try:
             parsed_gateway = urlsplit(gateway_origin)
             _ = parsed_gateway.port
@@ -4739,12 +4893,17 @@ def ev_tesla_oauth_start(payload: dict[str, Any], request: Request,
                                     and not parsed_gateway.path and not parsed_gateway.query and not parsed_gateway.fragment)
         except ValueError:
             valid_gateway_origin = False
-        if not valid_gateway_origin:
+        if not relay and not valid_gateway_origin:
             raise HTTPException(400, "tesla_oauth_requires_public_https_gateway_origin")
         if local_mac and not MAC_RE.fullmatch(local_mac):
             raise HTTPException(422, "invalid_tesla_local_mac")
-        callback = f"{gateway_origin}/api/integration/tesla/callback"
+        callback = relay["callback"] if relay else f"{gateway_origin}/api/integration/tesla/callback"
         state = secrets.token_urlsafe(32)
+        poll_token = secrets.token_urlsafe(48) if relay else ""
+        if relay:
+            _tesla_oauth_relay_request(relay, "POST", "/v1/sessions", {
+                "state": state, "poll_token": poll_token, "origin": origin,
+            })
         with _tesla_oauth_pending_lock:
             now = time.time()
             for key in [key for key, value in _tesla_oauth_pending.items() if value.get("expires_at", 0) < now]:
@@ -4753,6 +4912,7 @@ def ev_tesla_oauth_start(payload: dict[str, Any], request: Request,
                 "owner_id": session["user_id"], "client_id": client_id.strip(),
                 "client_secret": client_secret, "region": region, "local_mac": local_mac,
                 "origin": origin, "redirect_uri": callback, "expires_at": now + 600,
+                "relay": relay, "poll_token": poll_token, "completing": False,
             }
         expiry_timer = threading.Timer(600, _expire_tesla_oauth_pending, args=(state,))
         expiry_timer.daemon = True
@@ -4765,59 +4925,28 @@ def ev_tesla_oauth_start(payload: dict[str, Any], request: Request,
         audit(conn, session["user_id"], "energy.ev.tesla.oauth.start", "ev", "success", {
             "region": region, "redirect_origin": origin, "client_secret_returned": False,
         })
-        return {"authorize_url": authorize_url, "state": state, "redirect_uri": callback, "allowed_origin": origin}
+        return {"authorize_url": authorize_url, "state": state, "redirect_uri": callback,
+                "allowed_origin": origin, "relay_mode": bool(relay)}
 
 
 @app.get("/api/integration/tesla/callback", response_class=HTMLResponse)
 def ev_tesla_oauth_callback(request: Request) -> HTMLResponse:
     state = request.query_params.get("state", "")
     with _tesla_oauth_pending_lock:
-        pending = _tesla_oauth_pending.pop(state, None) if state else None
+        pending = _tesla_oauth_pending.get(state) if state else None
+        if pending and not pending.get("relay"):
+            _tesla_oauth_pending.pop(state, None)
     if not pending or pending.get("expires_at", 0) < time.time():
         return HTMLResponse("<!doctype html><meta charset=utf-8><title>Tesla Fleet</title><p>Pedido de autorização expirado ou inválido. Fecha esta janela e inicia novamente na PWA.</p>", status_code=400,
                             headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
-    result: dict[str, Any] = {"type": "solarminer-tesla-oauth-result", "state": state, "ok": False,
-                              "message": "A autorização Tesla não foi concluída.", "vehicles": []}
-    try:
-        with db() as conn:
-            owner = conn.execute("SELECT role,status FROM users WHERE id=?", (pending["owner_id"],)).fetchone()
-        if not owner or owner["role"] != "owner" or owner["status"] != "active":
-            result["message"] = "A sessão Owner deixou de estar ativa. Inicia novamente a ligação na PWA."
-        elif request.query_params.get("error") or not request.query_params.get("code"):
-            result["message"] = "A autorização foi cancelada ou recusada na Tesla."
-        else:
-            token_payload = hardware_integrations._tesla_http(hardware_integrations.TESLA_AUTH_URL, form={
-                "grant_type": "authorization_code", "client_id": pending["client_id"],
-                "client_secret": pending["client_secret"], "code": request.query_params["code"],
-                "audience": hardware_integrations.TESLA_API_BASES[pending["region"]],
-                "redirect_uri": pending["redirect_uri"],
-                "scope": "openid offline_access vehicle_device_data",
-            })
-            access_token, refresh_token = token_payload.get("access_token"), token_payload.get("refresh_token")
-            if not isinstance(access_token, str) or not access_token or not isinstance(refresh_token, str) or not refresh_token:
-                raise RuntimeError("tesla_oauth_tokens_missing")
-            config = hardware_integrations.load_config()
-            config["tesla"] = {"region": pending["region"], "client_id": pending["client_id"],
-                               "refresh_token": refresh_token, "vehicle_ids": [], "local_mac": pending["local_mac"]}
-            hardware_integrations.save_config(config)
-            vehicle_payload = hardware_integrations._tesla_http(
-                hardware_integrations.TESLA_API_BASES[pending["region"]] + "/api/1/vehicles", token=access_token)
-            vehicles = vehicle_payload.get("response")
-            if not isinstance(vehicles, list):
-                raise RuntimeError("tesla_vehicle_list_invalid")
-            safe_vehicles = []
-            for vehicle in vehicles:
-                if not isinstance(vehicle, dict):
-                    continue
-                vehicle_id = str(vehicle.get("id_s") or vehicle.get("id") or "")
-                vin = vehicle.get("vin")
-                if vehicle_id.isdigit():
-                    safe_vehicles.append({"id": vehicle_id, "name": str(vehicle.get("display_name") or "Tesla")[:80],
-                                          "vin_suffix": vin[-4:] if isinstance(vin, str) and len(vin) >= 4 else ""})
-            result.update({"ok": True, "message": "Conta Tesla autorizada. Escolhe o veículo na PWA.", "vehicles": safe_vehicles})
-    except Exception:
-        # Never reflect OAuth codes, secrets, tokens, or upstream details into the browser.
-        result["message"] = "A Tesla não concluiu a autorização. Confirma Client ID, Client Secret, região e callback registado."
+    if pending.get("relay"):
+        return HTMLResponse("<!doctype html><meta charset=utf-8><title>Tesla Fleet</title><p>Este fluxo usa o relay público. Fecha esta janela e volta à PWA.</p>", status_code=400,
+                            headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+    if request.query_params.get("error") or not request.query_params.get("code"):
+        result = {"type": "solarminer-tesla-oauth-result", "state": state, "ok": False,
+                  "message": "A autorização foi cancelada ou recusada na Tesla.", "vehicles": []}
+    else:
+        result = _tesla_oauth_exchange_and_list(pending, state, request.query_params["code"])
     encoded = json.dumps(result).replace("<", "\\u003c")
     target_origin = json.dumps(pending["origin"])
     page = ("<!doctype html><html lang=pt><meta charset=utf-8><meta name=referrer content=no-referrer>"
@@ -4829,12 +4958,65 @@ def ev_tesla_oauth_callback(request: Request) -> HTMLResponse:
     return HTMLResponse(page, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
 
 
+@app.post("/api/v1/energy/ev/tesla/oauth/complete")
+def ev_tesla_oauth_complete(payload: dict[str, Any], session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Let the authenticated PWA ask the Gateway to retrieve and exchange a code from its public relay."""
+    state = payload.get("state") if isinstance(payload, dict) else None
+    if not isinstance(state, str) or not 32 <= len(state) <= 256:
+        raise HTTPException(422, "tesla_oauth_state_invalid")
+    with db() as conn:
+        _require_owner(session, conn)
+    with _tesla_oauth_pending_lock:
+        pending = _tesla_oauth_pending.get(state)
+        if (not pending or pending.get("owner_id") != session["user_id"] or
+                pending.get("expires_at", 0) < time.time() or not pending.get("relay")):
+            raise HTTPException(404, "tesla_oauth_session_not_found")
+        if pending.get("completing"):
+            return {"ready": False}
+        pending["completing"] = True
+    relay = pending["relay"]
+    try:
+        relay_result = _tesla_oauth_relay_request(relay, "GET", f"/v1/sessions/{state}", bearer=pending["poll_token"])
+    except HTTPException:
+        with _tesla_oauth_pending_lock:
+            if _tesla_oauth_pending.get(state) is pending:
+                pending["completing"] = False
+        raise
+    if relay_result.get("ready") is not True:
+        with _tesla_oauth_pending_lock:
+            if _tesla_oauth_pending.get(state) is pending:
+                pending["completing"] = False
+        return {"ready": False}
+    if relay_result.get("error"):
+        result = {"type": "solarminer-tesla-oauth-result", "state": state, "ok": False,
+                  "message": "A autorização foi cancelada ou recusada na Tesla.", "vehicles": []}
+    else:
+        code = relay_result.get("code")
+        if not isinstance(code, str) or not code or len(code) > 4096:
+            with _tesla_oauth_pending_lock:
+                if _tesla_oauth_pending.get(state) is pending:
+                    pending["completing"] = False
+            raise HTTPException(502, "tesla_oauth_relay_result_invalid")
+        result = _tesla_oauth_exchange_and_list(pending, state, code)
+    with _tesla_oauth_pending_lock:
+        _tesla_oauth_pending.pop(state, None)
+    try:
+        _tesla_oauth_relay_request(relay, "DELETE", f"/v1/sessions/{state}", bearer=pending["poll_token"])
+    except HTTPException:
+        pass
+    return result
+
+
 @app.get("/api/v1/energy/ev/tesla")
 def ev_tesla_config(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
     with db() as conn:
         _require_owner(session, conn)
         try:
             result = hardware_integrations.public_tesla_config()
+            relay = _tesla_oauth_relay_config()
+            result["oauth_redirect_uri"] = relay["callback"] if relay else ""
+            result["relay_url"] = relay["origin"] if relay else ""
+            result["relay_configured"] = bool(relay)
             row = conn.execute("SELECT value FROM system_state WHERE key='energy_tesla_presence'").fetchone()
             if row:
                 try: result["local_presence"] = json.loads(row["value"])
@@ -4842,6 +5024,37 @@ def ev_tesla_config(session: dict[str, Any] = Depends(require_permission("manage
             return result
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             raise HTTPException(500, "ev_tesla_config_unavailable") from exc
+
+
+@app.put("/api/v1/energy/ev/tesla/relay")
+def ev_tesla_relay_configure(payload: dict[str, Any], session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Set and verify the public callback relay; never return its shared API key."""
+    with db() as conn:
+        _require_owner(session, conn)
+        if os.environ.get("SOLARMINER_TESLA_RELAY_URL") or os.environ.get("SOLARMINER_TESLA_RELAY_API_KEY"):
+            raise HTTPException(409, "tesla_oauth_relay_managed_by_gateway_environment")
+        if payload.get("enabled") is False:
+            config = hardware_integrations.load_config()
+            config.pop("tesla_oauth_relay", None)
+            hardware_integrations.save_config(config)
+            audit(conn, session["user_id"], "energy.ev.tesla.relay.configure", "ev", "success", {"enabled": False})
+            return {"configured": False, "relay_url": "", "oauth_redirect_uri": "", "secrets_returned": False}
+        relay = _normalize_tesla_oauth_relay_config(payload.get("relay_url"), payload.get("api_key"))
+        try:
+            health = _tesla_oauth_relay_request(relay, "GET", "/v1/health")
+        except HTTPException as exc:
+            audit(conn, session["user_id"], "energy.ev.tesla.relay.configure", "ev", "failed", {"reason": "relay_unreachable"})
+            raise HTTPException(502, "tesla_oauth_relay_unreachable") from exc
+        if health.get("status") != "ok":
+            audit(conn, session["user_id"], "energy.ev.tesla.relay.configure", "ev", "failed", {"reason": "relay_health_invalid"})
+            raise HTTPException(502, "tesla_oauth_relay_health_invalid")
+        config = hardware_integrations.load_config()
+        config["tesla_oauth_relay"] = {"origin": relay["origin"], "api_key": relay["api_key"]}
+        hardware_integrations.save_config(config)
+        audit(conn, session["user_id"], "energy.ev.tesla.relay.configure", "ev", "success", {
+            "enabled": True, "relay_origin": relay["origin"], "secret_returned": False})
+        return {"configured": True, "relay_url": relay["origin"],
+                "oauth_redirect_uri": relay["callback"], "secrets_returned": False}
 
 
 @app.post("/api/v1/energy/ev/tesla/presence")
@@ -5809,7 +6022,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.188"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.189"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

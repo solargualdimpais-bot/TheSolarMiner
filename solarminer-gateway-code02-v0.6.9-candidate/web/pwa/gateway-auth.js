@@ -649,6 +649,14 @@ export async function startGatewayTeslaOAuth(config) {
   if (!config || typeof config !== "object") throw new Error("Configuração Tesla OAuth inválida.");
   return gatewayApi("/api/v1/energy/ev/tesla/oauth/start", { method: "POST", body: config });
 }
+export async function completeGatewayTeslaOAuth(state) {
+  if (typeof state !== "string" || !state) throw new Error("Sessão Tesla OAuth inválida.");
+  return gatewayApi("/api/v1/energy/ev/tesla/oauth/complete", { method: "POST", body: { state } });
+}
+export async function saveGatewayTeslaRelay(config) {
+  if (!config || typeof config !== "object") throw new Error("Configuração do relay Tesla inválida.");
+  return gatewayApi("/api/v1/energy/ev/tesla/relay", { method: "PUT", body: config });
+}
 export async function saveGatewayTeslaEvConfig(config) {
   if (!config || typeof config !== "object") throw new Error("Configuração Tesla EV inválida.");
   return gatewayApi("/api/v1/energy/ev/tesla", { method: "PUT", body: config });

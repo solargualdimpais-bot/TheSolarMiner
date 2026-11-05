@@ -1,4 +1,4 @@
-const CACHE_NAME = "the-solar-miner-static-v0.5.136-tesla-oauth-gateway-callback";
+const CACHE_NAME = "the-solar-miner-static-v0.5.138-tesla-oauth-relay";
 const STATIC_ASSETS = [
   "./", "./index.html", "./styles.css", "./app.js", "./gateway-connection.js", "./qrcode-generator.js",
   "./gateway-auth.js", "./favorite-list.js", "./app-core.js", "./workspace-ui.js", "./demo-mode.js", "./photo-format.js",

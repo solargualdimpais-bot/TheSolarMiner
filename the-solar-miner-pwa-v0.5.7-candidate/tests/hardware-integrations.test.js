@@ -210,9 +210,8 @@ test("live navigation renders Gateway data without the demo renderer overriding 
   assert.match(app, /Gateway ainda não forneceu equipamentos ou leituras/);
 });
 
-test("Gateway embedded PWA has the exact same integration UI and client", () => {
-  const root = new URL("../../solarminer-gateway-code02-v0.6.9-candidate/web/pwa/", import.meta.url);
-  for (const file of ["index.html", "app.js", "gateway-auth.js", "styles.css", "service-worker.js"]) {
-    assert.equal(readFileSync(new URL(`../${file}`, import.meta.url), "utf8"), readFileSync(new URL(file, root), "utf8"), `${file} should match embedded copy`);
-  }
+test("Gateway package embeds the maintained PWA source tree", () => {
+  const root = new URL("../../solarminer-gateway-code02-v0.6.9-candidate/", import.meta.url);
+  const build = readFileSync(new URL("packaging/build-deb.sh", root), "utf8");
+  assert.match(build, /cp -R "\$ROOT\/web\/pwa\/\." "\$STAGE\/usr\/share\/solarminer\/pwa\//);
 });

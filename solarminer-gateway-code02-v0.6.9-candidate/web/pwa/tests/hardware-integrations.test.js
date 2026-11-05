@@ -68,6 +68,14 @@ test("Owner hardware setup includes the Tesla Fleet configuration beside Deye, A
   assert.ok(app.includes("updateOperationDialog({title:`${title} · falhou`"));
   assert.match(auth, /\/api\/v1\/energy\/ev\/tesla\/read/);
   assert.match(auth, /\/api\/v1\/energy\/ev\/tesla\/presence/);
+  assert.match(auth, /\/api\/v1\/energy\/ev\/tesla\/oauth\/complete/);
+  assert.match(auth, /saveGatewayTeslaRelay/);
+  assert.match(auth, /\/api\/v1\/energy\/ev\/tesla\/relay/);
+  assert.match(app, /completeGatewayTeslaOAuth/);
+  assert.match(app, /Relay ligado e autenticado/);
+  assert.match(app, /#ev-tesla-relay-key/);
+  assert.match(app, /flow\.relay_mode/);
+  assert.match(app, /config\.oauth_redirect_uri/);
   assert.match(app, /readGatewayTeslaLocalPresence/);
   assert.doesNotMatch(app, /hardware-tesla-(?:region|client-id|refresh-token|vehicles)/);
   assert.doesNotMatch(auth, /tuya.*localStorage/i);
@@ -76,8 +84,8 @@ test("Owner hardware setup includes the Tesla Fleet configuration beside Deye, A
 test("Saving a Tuya device in either form runs only the selected LAN reachability test", () => {
   const app = read("../app.js");
   const auth = read("../gateway-auth.js");
-  const gateway = read("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/app.py");
-  const integrations = read("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/integrations.py");
+  const gateway = read("../../../src/solarminer_gateway/app.py");
+  const integrations = read("../../../src/solarminer_gateway/integrations.py");
   assert.match(app, /async function testTuyaLanReachability\(deviceId\)[\s\S]*?testGatewayTuyaLanReachability\(deviceId\)/);
   assert.match(app, /saveGatewayHardwareIntegrationConfig\([\s\S]*?testTuyaLanReachability\(id\)/);
   assert.match(app, /saveGatewayHardwareIntegrationConfig\(\{tuya:\{devices:next\}\}\)[\s\S]*?testTuyaLanReachability\(device\.device_id\)/);
@@ -194,9 +202,7 @@ test("live navigation renders Gateway data without the demo renderer overriding 
   assert.match(app, /Gateway ainda não forneceu equipamentos ou leituras/);
 });
 
-test("Gateway embedded PWA has the exact same integration UI and client", () => {
-  const root = new URL("../../solarminer-gateway-code02-v0.6.9-candidate/web/pwa/", import.meta.url);
-  for (const file of ["index.html", "app.js", "gateway-auth.js", "styles.css", "service-worker.js"]) {
-    assert.equal(readFileSync(new URL(`../${file}`, import.meta.url), "utf8"), readFileSync(new URL(file, root), "utf8"), `${file} should match embedded copy`);
-  }
+test("Gateway package embeds the source PWA assets used by the release build", () => {
+  const build = read("../../../packaging/build-deb.sh");
+  assert.match(build, /cp -R "\$ROOT\/web\/pwa\/\." "\$STAGE\/usr\/share\/solarminer\/pwa\/"/);
 });

@@ -297,7 +297,9 @@ def inspect_bluetooth_bridge(host: str, *, username: str = "", password: str = "
     reading = identify_and_read(host, username=username, password=password)
     components = reading.get("components", [])
     model_evidence = " ".join(str(reading.get(key) or "") for key in ("model", "device_id")).casefold()
-    known_gateway_model = any(token in model_evidence for token in ("blu gateway", "blugw", "gwf-kz01", "sngw-bt01"))
+    compact_evidence = re.sub(r"[^a-z0-9]", "", model_evidence)
+    known_gateway_model = (any(token in model_evidence for token in ("blu gateway", "blugw", "gwf-kz01"))
+                           or "sngwbt01" in compact_evidence)
     has_ble = "bluetooth" in reading.get("capabilities", []) or any(
         isinstance(item, dict) and item.get("component") == "ble" for item in components) or known_gateway_model
     try:
@@ -317,7 +319,7 @@ def inspect_bluetooth_bridge(host: str, *, username: str = "", password: str = "
 
 
 def discover_bluetooth_devices(host: str, *, username: str = "", password: str = "",
-                               duration_seconds: float = 5.0) -> dict[str, Any]:
+                               duration_seconds: float = 30.0) -> dict[str, Any]:
     """Discover Shelly BLU advertisements through a compatible Shelly BLE bridge.
 
     The bridge runs a uniquely named, short-lived scanner script. Existing user
@@ -326,7 +328,9 @@ def discover_bluetooth_devices(host: str, *, username: str = "", password: str =
     """
     host = _host(host)
     try:
-        duration_seconds = max(2.0, min(8.0, float(duration_seconds)))
+        # Battery sensors can advertise infrequently unless the user wakes
+        # them. Five seconds caused false negatives in the add flow.
+        duration_seconds = max(5.0, min(60.0, float(duration_seconds)))
     except (TypeError, ValueError):
         duration_seconds = 5.0
     bridge = inspect_bluetooth_bridge(host, username=username, password=password)
@@ -361,11 +365,14 @@ def discover_bluetooth_devices(host: str, *, username: str = "", password: str =
                 raise RuntimeError("shelly_script_create_invalid")
             scan_ms = int(duration_seconds * 1000)
             script_code = f'''var SolarMinerBleResults = {{}};
-BLE.Scanner.start({{duration_ms:{scan_ms},active:true}}, function(event, result) {{
+var SolarMinerBleScanStarted = BLE.Scanner.start({{duration_ms:{scan_ms},active:true,interval_ms:100,window_ms:100}}, function(event, result) {{
   if (event !== BLE.Scanner.SCAN_RESULT || !result || !result.addr) return;
   var name = String(result.local_name || "");
   var serviceData = result.service_data || result.serviceData || {{}};
-  var bthome = serviceData.fcd2 || serviceData.FCD2 || "";
+  var bthome = "";
+  if (serviceData && typeof serviceData === "object") {{
+    for (var key in serviceData) if (String(key).toLowerCase() === "fcd2") {{ bthome = serviceData[key]; break; }}
+  }}
   var shellyName = /^SB[A-Z0-9_-]{{2,}}/i.test(name) || /^Shelly BLU/i.test(name);
   if (!shellyName && !bthome) return;
   var address = String(result.addr).toUpperCase();
@@ -374,6 +381,7 @@ BLE.Scanner.start({{duration_ms:{scan_ms},active:true}}, function(event, result)
   SolarMinerBleResults[address] = {{mac:address,name:name,rssi:Number(result.rssi)||null,
     service_data:String(bthome||""),values:values,manufacturer:shellyName?"Shelly":"BTHome",observed_at:Date.now()}};
 }});
+if (SolarMinerBleScanStarted === null) throw Error("ble_scan_start_failed");
 '''
             _rpc(host, "Script.PutCode", {"id": script_id, "code": script_code}, username=username, password=password)
             _rpc(host, "Script.Start", {"id": script_id}, username=username, password=password)
@@ -402,7 +410,8 @@ BLE.Scanner.start({{duration_ms:{scan_ms},active:true}}, function(event, result)
                                 "values": item.get("values") if isinstance(item.get("values"), list) else [],
                                 "bridge_mac": bridge.get("mac"), "bridge_host": host,
                                 "bridge_model": model, "discovery_method": "shelly_blu_gateway_ble"})
-            return {"bridge": bridge, "supported": True, "devices": devices, "reason": ""}
+            return {"bridge": bridge, "supported": True, "devices": devices,
+                    "reason": "no_advertisements_received" if not devices else ""}
         except RuntimeError as exc:
             reason = str(exc)
             if reason in {"shelly_rpc_method_not_found", "shelly_rpc_rejected"}:

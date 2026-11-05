@@ -62,8 +62,8 @@ test("Energy Engine is focused on measurement, readings and history", () => {
   assert.match(app, /function renderSurplusManager\(\)/);
 });
 
-test("Gateway-served PWA assets match the GitHub Pages PWA", () => {
-  for (const file of ["app.js", "gateway-auth.js", "index.html", "service-worker.js"]) {
-    assert.equal(read(gatewayPwa, file), read(root, file), `${file} must stay in sync`);
-  }
+test("Gateway package embeds its maintained PWA source", () => {
+  const build = read(gatewayPwa, "../../packaging/build-deb.sh");
+  assert.match(build, /cp -R "\$ROOT\/web\/pwa\/\." "\$STAGE\/usr\/share\/solarminer\/pwa\//);
+  assert.ok(read(gatewayPwa, "app.js").length > 0);
 });

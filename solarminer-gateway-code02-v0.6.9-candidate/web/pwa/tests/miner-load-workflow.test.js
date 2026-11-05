@@ -51,7 +51,8 @@ test("historical chart does not backfill future forecasts into missing past meas
 });
 
 test("miner page only shows the named miner tabs, and the situation power comes from its Tuya breaker", () => {
-  assert.match(app, /const equipmentCards=page==="mineradoras"\?"":/);
+  assert.doesNotMatch(app, /const equipmentCards=page==="mineradoras"\?"":/);
+  assert.match(app, /page==="mineradoras"\?renderAntminerManagementPanel\(isOwner\):""/);
   assert.match(app, /function minerAssociatedBreakerReading\(miner, loads, registeredMinerCount\)/);
   assert.match(app, /telemetry\[load\.id\].*load\.tuya_device_id/);
   assert.match(app, /Potência · disjuntor Tuya/);

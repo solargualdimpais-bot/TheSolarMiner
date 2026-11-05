@@ -1,0 +1,30 @@
+[Unit]
+Description=SolarMiner Tesla Fleet OAuth callback relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=solarminer-relay
+Group=solarminer-relay
+WorkingDirectory=/opt/solarminer-tesla-relay
+EnvironmentFile=/etc/solarminer-tesla-relay.env
+ExecStart=/opt/solarminer-tesla-relay/.venv/bin/python /opt/solarminer-tesla-relay/run_relay.py
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

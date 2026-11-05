@@ -4,9 +4,10 @@ import { readFileSync } from "node:fs";
 
 const app = readFileSync(new URL("../app.js", import.meta.url), "utf8");
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
-const gatewayApp = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/app.py", import.meta.url), "utf8");
-const energyEngine = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/energy_engine.py", import.meta.url), "utf8");
-const workflow = readFileSync(new URL("../../.github/workflows/gateway-release.yml", import.meta.url), "utf8");
+const gatewayApp = readFileSync(new URL("../../../src/solarminer_gateway/app.py", import.meta.url), "utf8");
+const energyEngine = readFileSync(new URL("../../../src/solarminer_gateway/energy_engine.py", import.meta.url), "utf8");
+const gatewayBuild = readFileSync(new URL("../../../packaging/build-deb.sh", import.meta.url), "utf8");
+const workflow = readFileSync(new URL("../../../../.github/workflows/gateway-release.yml", import.meta.url), "utf8");
 
 test("Tuya LAN report exposes the saved target and key presence without the key", () => {
   assert.match(gatewayApp, /"local_ip": item\.get\("local_ip", ""\)/);
@@ -20,7 +21,7 @@ test("Tuya LAN report exposes the saved target and key presence without the key"
 });
 
 test("Tuya LAN recovery requires an exact unique MAC match and refreshes only after a failed read", () => {
-  const integrations = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/integrations.py", import.meta.url), "utf8");
+  const integrations = readFileSync(new URL("../../../src/solarminer_gateway/integrations.py", import.meta.url), "utf8");
   assert.match(integrations, /failed_indexes[\s\S]*_tuya_scan_local_ips_by_mac\(refresh=True\)/);
   assert.match(integrations, /by_mac = \{mac: next\(iter\(ips\)\) for mac, ips in candidates\.items\(\) if len\(ips\) == 1\}/);
   assert.match(integrations, /tuya_local_ip_not_found_for_mac/);
@@ -280,12 +281,18 @@ test("LAN discovery tries the local neighbor cache after broadcast errors", () =
   assert.match(workflow, /0\.6\.58 0\.6\.59 0\.6\.60 0\.6\.61 0\.6\.62/);
 });
 
-test("USB release rollback verification includes the installed Gateway release", () => {
-  const rollbackLoops = workflow.match(/for VERSION in[^\n]+/g) || [];
-  assert.equal(rollbackLoops.length, 2);
-for (const loop of rollbackLoops) {
-  assert.match(loop, /0\.6\.112 0\.6\.113 0\.6\.114 0\.6\.115 0\.6\.116 0\.6\.117 0\.6\.118 0\.6\.119 0\.6\.120 0\.6\.121 0\.6\.122 0\.6\.123 0\.6\.124 0\.6\.125 0\.6\.126 0\.6\.127 0\.6\.128 0\.6\.129 0\.6\.130 0\.6\.131 0\.6\.132 0\.6\.133 0\.6\.134 0\.6\.135/);
-  assert.match(loop, /0\.6\.139 0\.6\.140 0\.6\.141 0\.6\.142 0\.6\.143 0\.6\.145 0\.6\.146 0\.6\.147 0\.6\.148 0\.6\.149 0\.6\.150 0\.6\.151 0\.6\.152 0\.6\.153 0\.6\.154 0\.6\.155 0\.6\.156 0\.6\.157 0\.6\.158 0\.6\.159 0\.6\.160 0\.6\.161 0\.6\.162 0\.6\.163 0\.6\.164 0\.6\.165 0\.6\.166 0\.6\.169 0\.6\.171 0\.6\.172 0\.6\.173 0\.6\.174 0\.6\.175 0\.6\.176 0\.6\.177; do/);
-}
+test("Gateway release package embeds the PWA and optional Tesla relay environment", () => {
+  const service = readFileSync(new URL("../../../packaging/solarminer-gateway.service", import.meta.url), "utf8");
+  assert.ok(service.includes('EnvironmentFile=-/etc/solarminer/tesla-relay.env'));
+  assert.ok(gatewayBuild.includes('cp -R "$ROOT/web/pwa/." "$STAGE/usr/share/solarminer/pwa/'));
 });
 
+test("USB release rollback verification includes prior Gateway releases", () => {
+  const rollbackLoops = [...workflow.matchAll(/for VERSION in([\s\S]*?); do/g)]
+    .map(match => match[0].replace(/\\\s*\n\s*/g, " "));
+  assert.equal(rollbackLoops.length, 2);
+  for (const loop of rollbackLoops) {
+    assert.match(loop, /0\.6\.112 0\.6\.113 0\.6\.114 0\.6\.115 0\.6\.116 0\.6\.117 0\.6\.118 0\.6\.119 0\.6\.120 0\.6\.121 0\.6\.122 0\.6\.123 0\.6\.124 0\.6\.125 0\.6\.126 0\.6\.127 0\.6\.128 0\.6\.129 0\.6\.130 0\.6\.131 0\.6\.132 0\.6\.133 0\.6\.134 0\.6\.135/);
+  assert.match(loop, /0\.6\.139 0\.6\.140 0\.6\.141 0\.6\.142 0\.6\.143 0\.6\.145 0\.6\.146 0\.6\.147 0\.6\.148 0\.6\.149 0\.6\.150 0\.6\.151 0\.6\.152 0\.6\.153 0\.6\.154 0\.6\.155 0\.6\.156 0\.6\.157 0\.6\.158 0\.6\.159 0\.6\.160 0\.6\.161 0\.6\.162 0\.6\.163 0\.6\.164 0\.6\.165 0\.6\.166 0\.6\.169 0\.6\.171 0\.6\.172 0\.6\.173 0\.6\.174 0\.6\.175 0\.6\.176 0\.6\.177 0\.6\.188; do/);
+  }
+});

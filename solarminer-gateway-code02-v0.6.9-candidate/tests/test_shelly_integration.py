@@ -153,6 +153,15 @@ def test_bluetooth_bridge_probe_does_not_assume_bthome_api(monkeypatch):
     assert result["bthome_discovery_api"] == "not_supported"
 
 
+def test_bluetooth_bridge_probe_recognizes_spaced_or_hyphenated_gateway_model(monkeypatch):
+    monkeypatch.setattr(shelly, "identify_and_read", lambda *args, **kwargs: {
+        "host": "192.168.1.41", "model": "SN-GW-BT01", "firmware": "1.7.0",
+        "generation": 2, "mac": "AA:BB:CC:DD:EE:41", "capabilities": [], "components": []})
+    monkeypatch.setattr(shelly, "_rpc", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("shelly_rpc_method_not_found")))
+    result = shelly.inspect_bluetooth_bridge("192.168.1.41")
+    assert result["bridge_candidate"] is True
+
+
 def test_bluetooth_discovery_uses_and_removes_only_its_temporary_script(monkeypatch):
     calls = []
     monkeypatch.setattr(shelly, "identify_and_read", lambda *args, **kwargs: {
@@ -180,6 +189,30 @@ def test_bluetooth_discovery_uses_and_removes_only_its_temporary_script(monkeypa
     assert [method for method, _ in calls] == ["BTHome.GetStatus", "Script.List", "Script.Create",
         "Script.PutCode", "Script.Start", "Script.Eval", "Script.Stop", "Script.Delete"]
     assert all(params is None or params.get("id") != 1 for _, params in calls)
+
+
+def test_bluetooth_discovery_uses_long_window_and_reports_no_advertisements(monkeypatch):
+    calls = []
+    monkeypatch.setattr(shelly, "identify_and_read", lambda *args, **kwargs: {
+        "host": "192.168.1.40", "model": "Shelly BLU Gateway", "firmware": "1.7.0",
+        "generation": 2, "mac": "AA:BB:CC:DD:EE:40", "capabilities": ["bluetooth"],
+        "components": [{"component": "ble", "id": 0, "status": {}}]})
+    def rpc(host, method, params=None, **auth):
+        calls.append((method, params))
+        if method == "BTHome.GetStatus": return {"errors": []}
+        if method == "Script.List": return {"scripts": []}
+        if method == "Script.Create": return {"id": 4}
+        if method == "Script.Eval": return {"result": "{}"}
+        return {}
+    monkeypatch.setattr(shelly, "_rpc", rpc)
+    monkeypatch.setattr(shelly.time, "sleep", lambda _: None)
+    result = shelly.discover_bluetooth_devices("192.168.1.40", duration_seconds=30)
+    code = next(params["code"] for method, params in calls if method == "Script.PutCode")
+    assert "duration_ms:30000" in code
+    assert "window_ms:100" in code
+    assert result["supported"] is True
+    assert result["devices"] == []
+    assert result["reason"] == "no_advertisements_received"
 
 
 def test_bluetooth_discovery_does_not_stop_scripts_when_all_slots_are_busy(monkeypatch):

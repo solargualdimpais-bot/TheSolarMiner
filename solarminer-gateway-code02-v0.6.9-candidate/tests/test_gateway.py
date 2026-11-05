@@ -73,6 +73,38 @@ def test_owner_terminal_diagnostics_reports_runtime_capabilities(client):
     assert result["available"] is (result["pty_available"] and result["shell_available"])
 
 
+def test_shelly_blu_scan_observation_is_bound_to_bridge_and_expires(client):
+    device = {"mac": "AA:BB:CC:DD:EE:01", "bridge_mac": "AA:BB:CC:DD:EE:40",
+              "name": "SBHT-003C", "rssi": -55, "values": []}
+    with gateway.db() as conn:
+        gateway._remember_shelly_blu_scan(conn, [device])
+        row = conn.execute("SELECT details_json FROM shelly_blu_scan_observations WHERE bridge_mac=? AND mac=?",
+                           (device["bridge_mac"], device["mac"])).fetchone()
+        assert row is not None
+        assert json.loads(row["details_json"])["name"] == "SBHT-003C"
+        assert conn.execute("SELECT COUNT(*) FROM shelly_blu_scan_observations WHERE bridge_mac=?",
+                            ("AA:BB:CC:DD:EE:41",)).fetchone()[0] == 0
+
+
+def test_shelly_blu_registration_uses_recent_gateway_scan_instead_of_missing_second_beacon(client, monkeypatch):
+    owner, private, _ = create_owner(client)
+    bearer = login(client, owner, private).json()["access_token"]
+    bridge_mac = "AA:BB:CC:DD:EE:40"
+    sensor = {"mac": "AA:BB:CC:DD:EE:01", "bridge_mac": bridge_mac, "bridge_host": "192.168.1.40",
+              "name": "SBHT-003C", "model": "SBHT-003C", "rssi": -55, "values": []}
+    with gateway.db() as conn:
+        conn.execute("""INSERT INTO shelly_devices(device_id,mac,name,host,model,generation,device_type,protocol,
+            auth_ciphertext,created_at,updated_at) VALUES(?,?,?,?,?,2,'smart_blugw','shelly_rpc',X'',?,?)""",
+            ("blu-bridge", bridge_mac, "Shelly BLU", "192.168.1.40", "SN-GW-BT01", gateway.utcnow(), gateway.utcnow()))
+        gateway._remember_shelly_blu_scan(conn, [sensor])
+    monkeypatch.setattr(gateway.hardware_integrations.shelly_integration, "discover_bluetooth_devices",
+                        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected second scan")))
+    response = client.post("/api/v1/integrations/shelly/blu/register", headers={"Authorization": f"Bearer {bearer}"},
+                           json={"mac": sensor["mac"], "bridge_mac": bridge_mac, "name": "Sensor Cozinha"})
+    assert response.status_code == 200, response.text
+    assert response.json()["device"]["mac"] == sensor["mac"]
+
+
 def test_retired_huawei_search_routes_are_not_registered():
     paths = {route.path for route in gateway.app.routes if hasattr(route, "path")}
     assert not any(path.startswith("/api/v1/integrations/huawei/") for path in paths)
@@ -148,6 +180,101 @@ def test_tesla_oauth_callback_exchanges_code_persists_rotating_token_and_posts_s
     assert "987654321" in callback.text and "My Tesla" in callback.text
     replay = client.get("/api/integration/tesla/callback", params={"code": "oauth-code", "state": start["state"]})
     assert replay.status_code == 400
+
+
+def test_tesla_oauth_uses_public_relay_and_gateway_exchanges_code_outbound(client, monkeypatch):
+    owner, private, _ = create_owner(client)
+    token = login(client, owner, private).json()["access_token"]
+    monkeypatch.setenv("SOLARMINER_TESLA_RELAY_URL", "https://relay.example")
+    monkeypatch.setenv("SOLARMINER_TESLA_RELAY_API_KEY", "relay-api-key-value-with-at-least-32-characters")
+    gateway._tesla_oauth_pending.clear()
+    relay_calls = []
+
+    class Response:
+        def __init__(self, payload): self.payload = json.dumps(payload).encode()
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def read(self, _limit=-1): return self.payload
+
+    def fake_urlopen(request, timeout=0):
+        relay_calls.append(request)
+        if request.method == "POST": return Response({"expires_in": 600})
+        if request.method == "GET": return Response({"ready": True, "code": "one-time-code"})
+        if request.method == "DELETE": return Response({})
+        raise AssertionError(request.method)
+
+    monkeypatch.setattr(gateway, "urlopen", fake_urlopen)
+    config, calls = {}, []
+
+    def fake_http(url, *, token=None, form=None):
+        calls.append((url, token, form))
+        if form:
+            assert form["code"] == "one-time-code"
+            assert form["redirect_uri"] == "https://relay.example/oauth/callback"
+            return {"access_token": "access-token", "refresh_token": "rotated-refresh-token"}
+        return {"response": [{"id_s": "987654321", "display_name": "My Tesla", "vin": "VIN000000000000000ABCD"}]}
+
+    monkeypatch.setattr(gateway.hardware_integrations, "_tesla_http", fake_http)
+    monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: config)
+    monkeypatch.setattr(gateway.hardware_integrations, "save_config", lambda value: config.update(value))
+    start = client.post("https://gateway.example/api/v1/energy/ev/tesla/oauth/start", headers={
+        "Authorization": f"Bearer {token}", "Origin": "https://solarminer.example",
+    }, json={"region": "europe", "client_id": "client-123", "client_secret": "secret-value"})
+    assert start.status_code == 200, start.text
+    flow = start.json()
+    query = parse_qs(urlsplit(flow["authorize_url"]).query)
+    assert query["redirect_uri"] == ["https://relay.example/oauth/callback"]
+    assert flow["relay_mode"] is True
+    assert "secret-value" not in start.text
+    assert relay_calls[0].full_url == "https://relay.example/v1/sessions"
+
+    complete = client.post("/api/v1/energy/ev/tesla/oauth/complete", headers={
+        "Authorization": f"Bearer {token}",
+    }, json={"state": flow["state"]})
+    assert complete.status_code == 200, complete.text
+    assert complete.json()["ok"] is True
+    assert complete.json()["vehicles"][0]["id"] == "987654321"
+    assert config["tesla"]["refresh_token"] == "rotated-refresh-token"
+    assert len(calls) == 2
+    assert relay_calls[-1].method == "DELETE"
+    assert "one-time-code" not in complete.text and "rotated-refresh-token" not in complete.text
+
+
+def test_owner_can_save_and_test_tesla_relay_without_receiving_its_key(client, monkeypatch):
+    owner, private, _ = create_owner(client)
+    token = login(client, owner, private).json()["access_token"]
+    monkeypatch.delenv("SOLARMINER_TESLA_RELAY_URL", raising=False)
+    monkeypatch.delenv("SOLARMINER_TESLA_RELAY_API_KEY", raising=False)
+    saved = {}
+    monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: saved)
+    monkeypatch.setattr(gateway.hardware_integrations, "save_config", lambda value: saved.update(value) or {})
+    calls = []
+
+    def relay_request(relay, method, path, payload=None, bearer=None):
+        calls.append((relay, method, path, payload, bearer))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(gateway, "_tesla_oauth_relay_request", relay_request)
+    key = "r" * 64
+    response = client.put("/api/v1/energy/ev/tesla/relay", headers={"Authorization": f"Bearer {token}"},
+                          json={"relay_url": "https://relay.example", "api_key": key})
+    assert response.status_code == 200, response.text
+    assert response.json() == {"configured": True, "relay_url": "https://relay.example",
+                               "oauth_redirect_uri": "https://relay.example/oauth/callback", "secrets_returned": False}
+    assert key not in response.text
+    assert saved["tesla_oauth_relay"]["api_key"] == key
+    assert calls[0][1:3] == ("GET", "/v1/health")
+    public = client.get("/api/v1/energy/ev/tesla", headers={"Authorization": f"Bearer {token}"})
+    assert public.status_code == 200
+    assert public.json()["relay_configured"] is True
+    assert public.json()["relay_url"] == "https://relay.example"
+    assert key not in public.text
+
+
+@pytest.mark.parametrize("relay_url", ["http://relay.example", "https://127.0.0.1", "https://localhost", "https://relay.example/path"])
+def test_tesla_relay_rejects_nonpublic_or_nonhttps_origins(relay_url):
+    with pytest.raises(gateway.HTTPException):
+        gateway._normalize_tesla_oauth_relay_config(relay_url, "r" * 64)
 
 
 def test_deye_ip_recovery_selects_only_the_ambiguous_mac_candidate_that_answers_modbus(client, monkeypatch):
