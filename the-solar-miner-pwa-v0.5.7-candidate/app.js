@@ -269,15 +269,13 @@ function classifyGatewayReadings(items, allowedAgeMs = 5 * 60 * 1000) {
 }
 function refreshHomeLiveCards(){
   const host=$("#page-content");if(!host||state.page!=="inicio")return;
-  const scrollX=window.scrollX,scrollY=window.scrollY;
   const template=document.createElement("template");template.innerHTML=renderOverview();
   const date=host.querySelector(".home-page-heading .date-block"),nextDate=template.content.querySelector(".home-page-heading .date-block");
-  if(date&&nextDate&&date.innerHTML!==nextDate.innerHTML)date.innerHTML=nextDate.innerHTML;
-  for(const selector of [".home-weather-card",".home-production-card"]){const current=host.querySelector(selector),next=template.content.querySelector(selector);if(current&&next&&current.innerHTML!==next.innerHTML)current.replaceWith(next);}
+  if(date&&nextDate){const currentStrong=date.querySelector("strong"),nextStrong=nextDate.querySelector("strong");if(currentStrong&&nextStrong)currentStrong.textContent=nextStrong.textContent;const currentBreak=date.querySelector("br"),nextBreak=nextDate.querySelector("br");if(currentBreak&&nextBreak){let currentText=currentBreak.nextSibling,nextText=nextBreak.nextSibling;if(currentText?.nodeType===Node.TEXT_NODE&&nextText?.nodeType===Node.TEXT_NODE)currentText.textContent=nextText.textContent;}}
+  for(const selector of [".home-weather-card",".home-production-card"]){const current=host.querySelector(selector),next=template.content.querySelector(selector);if(current&&next&&current.innerHTML!==next.innerHTML)current.innerHTML=next.innerHTML;}
   const metrics=host.querySelector(".metric-grid"),nextMetrics=template.content.querySelector(".metric-grid");
-  if(metrics&&nextMetrics&&metrics.innerHTML!==nextMetrics.innerHTML)metrics.innerHTML=nextMetrics.innerHTML;
+  if(metrics&&nextMetrics){const currentCards=[...metrics.children],nextCards=[...nextMetrics.children];for(let index=0;index<Math.min(currentCards.length,nextCards.length);index++){const current=currentCards[index],next=nextCards[index],currentValue=current.querySelector(".metric-value"),nextValue=next.querySelector(".metric-value");if(currentValue&&nextValue&&currentValue.innerHTML!==nextValue.innerHTML)currentValue.innerHTML=nextValue.innerHTML;const currentSubs=[...current.querySelectorAll(".metric-sub")],nextSubs=[...next.querySelectorAll(".metric-sub")];for(let sub=0;sub<Math.min(currentSubs.length,nextSubs.length);sub++){if(currentSubs[sub].textContent!==nextSubs[sub].textContent)currentSubs[sub].textContent=nextSubs[sub].textContent;currentSubs[sub].className=nextSubs[sub].className;}}}
   for(const device of state.tuyaDevices||[]){updateVisibleTuyaCard(device.device_id);updateOpenTuyaDeviceDialog(device.device_id);}
-  if(window.scrollX!==scrollX||window.scrollY!==scrollY)window.scrollTo({left:scrollX,top:scrollY,behavior:"instant"});
 }
 function renderAfterLiveRefresh() {
   const now=Date.now(),recentIds=new Set([...recentTuyaSwitchCommands].filter(([,expiresAt])=>expiresAt>now).map(([deviceId])=>deviceId));
@@ -424,7 +422,7 @@ function settlePendingTuyaSwitchStates(devices,readings){
     const reading=readings.find(item=>item.device_id===pending.deviceId);
     const device=devices.find(item=>item.device_id===pending.deviceId);
     const observed=device&&reading?tuyaSwitchState(device,reading,pending.code,true):undefined;
-    if(reading?.connection_state!=="local_responded"||tuyaReadingTimestamp(reading)<=pending.requestedAt||typeof observed!=="boolean")continue;
+    if(reading?.connection_state!=="local_responded"||tuyaReadingTimestamp(reading)<=pending.requestedAt||observed!==pending.value)continue;
     pendingTuyaSwitchStates.delete(key);settled.push(pending.deviceId);
     if(observed!==pending.value){
       const wanted=pending.value?"ligado":"desligado",actual=observed?"ligado":"desligado";
@@ -463,7 +461,8 @@ function updateVisibleTuyaCard(deviceId){
     if(!current)return;
     const template=document.createElement("template");template.innerHTML=favoriteDeviceCards();
     const updated=[...template.content.querySelectorAll(".favorite-device[data-favorite-device]")].find(card=>card.dataset.favoriteDevice===deviceId);
-    if(updated&&current.innerHTML!==updated.innerHTML)current.replaceWith(updated);
+    const currentToggle=current.querySelector("[data-favorite-toggle]"),nextToggle=updated?.querySelector("[data-favorite-toggle]");
+    if(currentToggle&&nextToggle){currentToggle.className=nextToggle.className;for(const name of ["aria-pressed","aria-label","title","disabled"]){if(nextToggle.hasAttribute(name))currentToggle.setAttribute(name,nextToggle.getAttribute(name));else currentToggle.removeAttribute(name);}}
     return;
   }
   if(state.page==="devices"){
@@ -471,7 +470,12 @@ function updateVisibleTuyaCard(deviceId){
     if(!current)return;
     const template=document.createElement("template");template.innerHTML=renderDeviceInventoryPage();
     const updated=[...template.content.querySelectorAll("[data-inventory-device]")].find(card=>card.dataset.inventoryDevice===deviceId);
-    if(updated&&current.innerHTML!==updated.innerHTML)current.replaceWith(updated);
+    if(!updated)return;
+    current.className=updated.className;current.setAttribute("aria-label",updated.getAttribute("aria-label")||"");
+    const currentToggle=current.querySelector("[data-favorite-toggle]"),nextToggle=updated.querySelector("[data-favorite-toggle]");
+    if(currentToggle&&nextToggle){currentToggle.className=nextToggle.className;for(const name of ["aria-pressed","aria-label","title","disabled"]){if(nextToggle.hasAttribute(name))currentToggle.setAttribute(name,nextToggle.getAttribute(name));else currentToggle.removeAttribute(name);}}
+    const currentStatus=current.querySelector(".favorite-device-info > span"),nextStatus=updated.querySelector(".favorite-device-info > span");if(currentStatus&&nextStatus&&currentStatus.textContent!==nextStatus.textContent)currentStatus.textContent=nextStatus.textContent;
+    const currentMetrics=current.querySelector(".inventory-device-metrics"),nextMetrics=updated.querySelector(".inventory-device-metrics");if(currentMetrics&&nextMetrics&&currentMetrics.innerHTML!==nextMetrics.innerHTML)currentMetrics.innerHTML=nextMetrics.innerHTML;
   }
 }
 function updateOpenTuyaDeviceDialog(deviceId){
@@ -1091,23 +1095,11 @@ function refreshTuyaDeviceAfterAction(deviceId,statusNode,commandStartedAt,comma
 function confirmTuyaCommandInBackground(device,requestedAt,codes,desired,commandRoundTripMs,deviceCommandMs=null){
   const deviceId=device.device_id;
   window.setTimeout(async()=>{
-    try{
-      const {reading,result}=await testTuyaLanDevice(deviceId,1);
-      state.tuyaReadings=[...(state.tuyaReadings||[]).filter(item=>item.device_id!==deviceId),reading];
-      settlePendingTuyaSwitchStates(state.tuyaDevices||[],state.tuyaReadings);
-      updateVisibleTuyaCard(deviceId);updateOpenTuyaDeviceDialog(deviceId);
-      const confirmed=codes.every(code=>tuyaSwitchState(device,reading,code,true)===desired);
-      const readbackMs=Math.round(Number(result.average_latency_ms)||Number(reading.latency_ms)||0),totalMs=Math.max(0,Date.now()-requestedAt);
-      const devicePart=Number.isFinite(Number(deviceCommandMs))?` · Gateway→equipamento ${Math.round(Number(deviceCommandMs))} ms`:"";
-      const timing=`app→Gateway ${Math.round(commandRoundTripMs)} ms${devicePart} · confirmação LAN ${readbackMs} ms · total ${totalMs} ms`;
-      document.querySelectorAll(`dialog[open][data-tuya-device-id="${CSS.escape(deviceId)}"] [data-tuya-quick-status],dialog[open][data-tuya-device-id="${CSS.escape(deviceId)}"] [data-tuya-detail-lan-status]`).forEach(node=>{node.textContent=confirmed?`Estado confirmado pela LAN. ${timing}`:`Ordem enviada; a leitura LAN ainda não confirma o estado pedido. ${timing}`;});
-      if(!confirmed&&reading.connection_state==="local_responded")showFeatureNotice(`${device.name||"O dispositivo"}: a leitura LAN ainda não confirma o estado pedido.`);
-      if(reading.connection_state==="local_responded"){for(const code of codes)pendingTuyaSwitchStates.delete(`${deviceId}::${code}`);updateVisibleTuyaCard(deviceId);updateOpenTuyaDeviceDialog(deviceId);}
-    }catch(error){
-      document.querySelectorAll(`dialog[open][data-tuya-device-id="${CSS.escape(deviceId)}"] [data-tuya-quick-status],dialog[open][data-tuya-device-id="${CSS.escape(deviceId)}"] [data-tuya-detail-lan-status]`).forEach(node=>{node.textContent=`Ordem enviada; confirmação LAN pendente. ${error.message}`;});
-    }
-  },120);
-  window.setTimeout(()=>{let cleared=false;for(const code of codes){const key=`${deviceId}::${code}`,pending=pendingTuyaSwitchStates.get(key);if(pending?.requestedAt===requestedAt){pendingTuyaSwitchStates.delete(key);cleared=true;}}if(cleared){updateVisibleTuyaCard(deviceId);updateOpenTuyaDeviceDialog(deviceId);document.querySelectorAll(`dialog[open][data-tuya-device-id="${CSS.escape(deviceId)}"] [data-tuya-quick-status],dialog[open][data-tuya-device-id="${CSS.escape(deviceId)}"] [data-tuya-detail-lan-status]`).forEach(node=>{if(node.textContent.includes("confirmação LAN pendente"))node.textContent="Não houve confirmação LAN recente; o cartão mostra a última leitura válida.";});}},8_000);
+    const devicePart=Number.isFinite(Number(deviceCommandMs))?` · Gateway→equipamento ${Math.round(Number(deviceCommandMs))} ms`:"";
+    const timing=`app→Gateway ${Math.round(commandRoundTripMs)} ms${devicePart}`;
+    document.querySelectorAll(`dialog[open][data-tuya-device-id="${CSS.escape(deviceId)}"] [data-tuya-quick-status],dialog[open][data-tuya-device-id="${CSS.escape(deviceId)}"] [data-tuya-detail-lan-status]`).forEach(node=>{node.textContent=`Ordem aceite; a aguardar a leitura LAN normal. ${timing}`;});
+  },0);
+  window.setTimeout(()=>{let cleared=false;for(const code of codes){const key=`${deviceId}::${code}`,pending=pendingTuyaSwitchStates.get(key);if(pending?.requestedAt===requestedAt){pendingTuyaSwitchStates.delete(key);cleared=true;}}if(cleared){updateVisibleTuyaCard(deviceId);updateOpenTuyaDeviceDialog(deviceId);document.querySelectorAll(`dialog[open][data-tuya-device-id="${CSS.escape(deviceId)}"] [data-tuya-quick-status],dialog[open][data-tuya-device-id="${CSS.escape(deviceId)}"] [data-tuya-detail-lan-status]`).forEach(node=>{if(node.textContent.includes("aguardar a leitura LAN normal"))node.textContent="A ordem foi enviada, mas ainda não foi confirmada pela leitura LAN; mostra-se agora o último estado observado.";});}},8_000);
 }
 async function sendGatewayTuyaSetting(deviceId,code,value){
   const requestedAt=Date.now(),started=performance.now(),result=await controlGatewayTuyaSetting(deviceId,code,value),elapsed=performance.now()-started;

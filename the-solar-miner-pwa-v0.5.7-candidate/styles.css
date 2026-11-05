@@ -621,3 +621,9 @@ html[data-font="small"]{--font-ui-scale:.9;}html[data-font="normal"]{--font-ui-s
 .antminer-subtabs{margin:0 0 14px;overflow-x:auto}.antminer-subtabs button{white-space:nowrap}.antminer-management-panel [data-miner-section][hidden],#engine-miner-breaker[hidden]{display:none!important}
 
 .favorite-state-symbol.pending{opacity:.68;cursor:progress}
+.favorite-state-symbol.pending{opacity:1;filter:drop-shadow(0 0 4px rgba(220,201,156,.55));cursor:progress}
+.main-content .home-page-heading .date-block{min-width:168px;font-variant-numeric:tabular-nums}
+.main-content .metric-card{height:138px;min-height:138px;overflow:hidden}
+.main-content .metric-card .metric-sub{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;min-height:2.7em}
+.main-content .metric-card .battery-flow{-webkit-line-clamp:1;min-height:1.5em;white-space:nowrap;text-overflow:ellipsis}
+@media(max-width:680px){.main-content .metric-card{height:126px;min-height:126px}.main-content .metric-card .metric-sub{font-size:8px;line-height:1.45;min-height:2.5em}}
