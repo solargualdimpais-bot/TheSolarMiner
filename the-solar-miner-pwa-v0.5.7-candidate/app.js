@@ -2416,7 +2416,8 @@ document.querySelector(".owner-device-tabs")?.addEventListener("click", event =>
     if (tab.dataset.ownerDevice === "tesla") {
       const origin = window.location.origin;
       const callback = `${origin}/api/integration/tesla/callback`;
-      for (const id of ["ev-tesla-origin", "ev-tesla-help-origin"]) { const field = $("#" + id); if (field) field.value = origin; }
+      const developerUrl = $("#ev-tesla-help-developer-url"); if (developerUrl) developerUrl.value = "https://developer.tesla.com/";
+  for (const id of ["ev-tesla-origin", "ev-tesla-help-origin"]) { const field = $("#" + id); if (field) field.value = origin; }
       for (const id of ["ev-tesla-callback", "ev-tesla-help-callback"]) { const field = $("#" + id); if (field) field.value = callback; }
     }
   }
@@ -2435,6 +2436,7 @@ function showTeslaHelpStep(step) {
 }
 $("#ev-tesla-help-open")?.addEventListener("click", () => {
   const origin = window.location.origin, callback = `${origin}/api/integration/tesla/callback`;
+  const developerUrl = $("#ev-tesla-help-developer-url"); if (developerUrl) developerUrl.value = "https://developer.tesla.com/";
   for (const id of ["ev-tesla-origin", "ev-tesla-help-origin"]) { const field = $("#" + id); if (field) field.value = origin; }
   for (const id of ["ev-tesla-callback", "ev-tesla-help-callback"]) { const field = $("#" + id); if (field) field.value = callback; }
   showTeslaHelpStep(0); $("#ev-tesla-help-dialog")?.showModal();
@@ -2444,11 +2446,12 @@ $("#ev-tesla-help-prev")?.addEventListener("click", () => showTeslaHelpStep(tesl
 $("#ev-tesla-help-next")?.addEventListener("click", () => {
   if (teslaHelpStep === 6) $("#ev-tesla-help-dialog")?.close(); else showTeslaHelpStep(teslaHelpStep + 1);
 });
-for (const [buttonId, inputId] of [["ev-tesla-copy-origin", "ev-tesla-help-origin"], ["ev-tesla-copy-callback", "ev-tesla-help-callback"]]) {
+for (const [buttonId, inputId] of [["ev-tesla-copy-origin", "ev-tesla-help-origin"], ["ev-tesla-copy-callback", "ev-tesla-help-callback"], ["ev-tesla-copy-developer", "ev-tesla-help-developer-url"]]) {
   $("#" + buttonId)?.addEventListener("click", async () => {
     const value = $("#" + inputId)?.value || "";
-    try { await navigator.clipboard.writeText(value); $("#ev-tesla-help-count").textContent = "Copiado. Cola o endereço no campo correspondente da Tesla Developer."; }
-    catch { $("#" + inputId)?.select(); $("#ev-tesla-help-count").textContent = "Selecionado. Copia o endereço e cola-o no campo correspondente da Tesla Developer."; }
+    const developerLink = inputId === "ev-tesla-help-developer-url";
+    try { await navigator.clipboard.writeText(value); $("#ev-tesla-help-count").textContent = developerLink ? "Endereço copiado. Abre o browser e cola-o; o guia fica aberto no SolarMiner." : "Endereço copiado. Cola-o no campo correspondente da Tesla Developer."; }
+    catch { $("#" + inputId)?.select(); $("#ev-tesla-help-count").textContent = developerLink ? "Endereço selecionado. Copia-o e cola-o no browser; o guia fica aberto no SolarMiner." : "Endereço selecionado. Copia-o e cola-o no campo correspondente da Tesla Developer."; }
   });
 }
 $("#ev-tesla-oauth-start")?.addEventListener("click", async event => {

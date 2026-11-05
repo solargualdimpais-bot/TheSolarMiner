@@ -70,6 +70,8 @@ test("Owner hardware setup includes the Tesla Fleet configuration beside Deye, A
   assert.match(auth, /\/api\/v1\/energy\/ev\/tesla\/presence/);
   assert.match(auth, /\/api\/v1\/energy\/ev\/tesla\/oauth\/start/);
   assert.match(html, /id="ev-tesla-help-dialog"[\s\S]*?data-tesla-help-step="6"/);
+  assert.match(html, /id="ev-tesla-copy-developer"/);
+  assert.match(html, /Para manter este guia aberto[\s\S]*seletor de aplicações/i);
   assert.match(html, /https:\/\/developer\.tesla\.com\/docs\/fleet-api\/authentication\/third-party-tokens/);
   assert.match(html, /Allowed Origin/);
   assert.match(html, /Redirect URI/);
@@ -79,6 +81,7 @@ test("Owner hardware setup includes the Tesla Fleet configuration beside Deye, A
   assert.match(app, /result\.state !== teslaOAuthState/);
   assert.match(app, /ev-tesla-help-prev/);
   assert.match(app, /ev-tesla-help-next/);
+  assert.match(app, /ev-tesla-copy-developer/);
   assert.match(app, /readGatewayTeslaLocalPresence/);
   assert.doesNotMatch(app, /hardware-tesla-(?:region|client-id|refresh-token|vehicles)/);
   assert.doesNotMatch(auth, /tuya.*localStorage/i);
