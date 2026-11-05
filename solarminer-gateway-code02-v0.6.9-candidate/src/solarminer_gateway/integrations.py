@@ -923,15 +923,17 @@ def read_tuya(config: dict[str, Any], *, on_reading: Callable[[dict[str, Any]], 
 
     def read_one(item: dict[str, Any]) -> dict[str, Any]:
         started = time.perf_counter()
+        observed_at = time.time()
         try:
             result = _tuya_local_status(item)
             result["latency_ms"] = round((time.perf_counter() - started) * 1000, 1)
+            result["observed_at"] = observed_at
             return result
         except (RuntimeError, ValueError, OSError, TypeError) as exc:
             return {"device_id": item["device_id"], "name": item.get("name", "Tuya device"),
                     "connection_state": "failed", "reason": str(exc)[:120],
                     "source": "TUYA_LAN", "trust": "UNAVAILABLE",
-                    "latency_ms": round((time.perf_counter() - started) * 1000, 1)}
+                    "latency_ms": round((time.perf_counter() - started) * 1000, 1), "observed_at": observed_at}
 
     # Keep polling bounded. Consumers may persist each completed response before
     # the slowest device finishes; retryable IP failures are deferred until the

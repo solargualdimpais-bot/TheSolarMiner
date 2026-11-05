@@ -95,6 +95,23 @@ def test_owner_product_dps_mapping_drives_future_live_measurements():
     assert telemetry["metrics"]["power"]["value"] == 85.0
 
 
+def test_tuya_poll_keeps_last_sample_fresh_for_five_seconds_and_discards_late_old_response():
+    conn = database()
+    now = datetime.now(timezone.utc)
+    device = {"device_id": "breaker-poll", "functions": [], "status_spec": []}
+    newer = [{"code": "switch", "dps_id": 1, "value": True}]
+    older = [{"code": "switch", "dps_id": 1, "value": False}]
+    energy_engine.persist_tuya_telemetry(conn, [{"device_id": "breaker-poll", "name": "Termoacumulador",
+        "connection_state": "local_responded", "observed_at": now.isoformat(), "status": newer}], [device])
+    energy_engine.persist_tuya_telemetry(conn, [{"device_id": "breaker-poll", "name": "Termoacumulador",
+        "connection_state": "local_responded", "observed_at": (now-timedelta(seconds=1)).isoformat(),
+        "status": older}], [device])
+    recent = energy_engine.read_tuya_telemetry(conn, max_age_seconds=5)["breaker-poll"]
+    assert recent["fresh"] is True
+    assert recent["status"] == newer
+    conn.close()
+
+
 def test_owner_product_dps_19_power_mapping_survives_as_live_card_metric():
     conn = database()
     observed = datetime.now(timezone.utc).isoformat()

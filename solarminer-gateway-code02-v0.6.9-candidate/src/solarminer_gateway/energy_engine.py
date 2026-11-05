@@ -126,6 +126,10 @@ def persist_tuya_telemetry(conn: sqlite3.Connection, readings: list[dict[str, An
                 observed_at = datetime.fromtimestamp(float(observed_at), timezone.utc).isoformat()
             except (OverflowError, OSError, ValueError):
                 observed_at = datetime.now(timezone.utc).isoformat()
+        incoming_stamp = _parse_utc(observed_at)
+        previous_attempt_stamp = _parse_utc(previous.get("last_attempt_at"))
+        if incoming_stamp is not None and previous_attempt_stamp is not None and incoming_stamp <= previous_attempt_stamp:
+            continue
         updated = {**previous, "device_id": device_id, "name": str(reading.get("name") or previous.get("name") or "Tuya")[:120],
                    "connection_state": reading.get("connection_state", "failed"), "last_attempt_at": observed_at}
         if reading.get("connection_state") == "local_responded" and isinstance(reading.get("status"), list) and reading["status"]:

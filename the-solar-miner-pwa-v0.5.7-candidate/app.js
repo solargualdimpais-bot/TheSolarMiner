@@ -332,7 +332,7 @@ async function refreshGatewayReadings() {
     if (sessionInfo().user?.role === "owner") {
       try {
         const hardware = await readGatewayHardwareIntegrationConfig(); state.tuyaDevices = normalizeTuyaInventory(hardware.tuya?.devices);
-        state.tuyaReadings = tuyaReadingsFromConfig(state.tuyaDevices);
+        state.tuyaReadings = mergeTuyaReadings(tuyaReadingsFromConfig(state.tuyaDevices));
         if(!state.tuyaDevices.length) lastTuyaReadAt=0;
       } catch { /* Keep last successful values visible with their original timestamp. */ }
       try { const inventory=await readGatewayDeviceInventory(); state.gatewayDeviceInventory=Array.isArray(inventory.devices)?inventory.devices:[]; }
@@ -419,17 +419,23 @@ function tuyaReadingTimestamp(reading){
   const value=reading?.observed_at;if(typeof value==="number"&&Number.isFinite(value))return value<1e12?value*1000:value;
   const parsed=Date.parse(value||"");return Number.isFinite(parsed)?parsed:0;
 }
+function mergeTuyaReadings(incoming){
+  const merged=new Map((state.tuyaReadings||[]).map(reading=>[reading.device_id,reading]));
+  for(const reading of Array.isArray(incoming)?incoming:[]){if(!reading?.device_id)continue;const previous=merged.get(reading.device_id),previousLive=previous?.connection_state==="local_responded"&&Array.isArray(previous.status)&&previous.status.length>0,incomingLive=reading.connection_state==="local_responded"&&Array.isArray(reading.status)&&reading.status.length>0;if(previousLive&&(!incomingLive||tuyaReadingTimestamp(reading)<=tuyaReadingTimestamp(previous)))continue;merged.set(reading.device_id,reading);}
+  return [...merged.values()];
+}
 function settlePendingTuyaSwitchStates(devices,readings){
   const settled=[];
   for(const [key,pending] of pendingTuyaSwitchStates){
     const reading=readings.find(item=>item.device_id===pending.deviceId);
     const device=devices.find(item=>item.device_id===pending.deviceId);
     const observed=device&&reading?tuyaSwitchState(device,reading,pending.code,true):undefined;
-    if(reading?.connection_state!=="local_responded"||tuyaReadingTimestamp(reading)<=pending.requestedAt||observed!==pending.value)continue;
-    pendingTuyaSwitchStates.delete(key);settled.push(pending.deviceId);
-    if(observed!==pending.value){
+    const observedAt=tuyaReadingTimestamp(reading);if(reading?.connection_state!=="local_responded"||observedAt<=pending.requestedAt)continue;
+    if(observed===pending.value){pendingTuyaSwitchStates.delete(key);settled.push(pending.deviceId);continue;}
+    if(typeof observed!=="boolean")continue;
+    if(pending.timedOut&&observedAt>Number(pending.lastObservedAt||pending.requestedAt)){pending.lastObservedAt=observedAt;pending.mismatchCount=(pending.mismatchCount||0)+1;if(pending.mismatchCount>=4){pendingTuyaSwitchStates.delete(key);settled.push(pending.deviceId);}}
+    if(pending.timedOut&&pending.mismatchCount>=4){
       const wanted=pending.value?"ligado":"desligado",actual=observed?"ligado":"desligado";
-      showFeatureNotice(`${device?.name||"O dispositivo"}: a leitura confirmou ${actual}, mas a ordem era ${wanted}.`);
       document.querySelectorAll(`dialog[open][data-tuya-device-id="${CSS.escape(pending.deviceId)}"] [data-tuya-quick-status],dialog[open][data-tuya-device-id="${CSS.escape(pending.deviceId)}"] [data-tuya-detail-lan-status]`).forEach(node=>{node.textContent=`Falha ao confirmar a ordem: o dispositivo continua ${actual}.`;});
     }
   }
@@ -447,14 +453,19 @@ async function refreshTuyaInventoryStatus(){
     let previousRows=[];try{previousRows=JSON.parse(state.tuyaInventorySignature||"[]");}catch{}
     const previousById=new Map(previousRows.map(row=>[row[0],JSON.stringify(row.slice(1))]));
     const changedIds=signatureRows.filter(row=>previousById.get(row[0])!==JSON.stringify(row.slice(1))).map(row=>row[0]);
-    const readings=tuyaReadingsFromConfig(devices);
+    const readings=mergeTuyaReadings(tuyaReadingsFromConfig(devices));
     const settledIds=settlePendingTuyaSwitchStates(devices,readings);
     const changedSet=new Set([...changedIds,...settledIds]);
     const changed=changedSet.size>0;
     state.tuyaInventorySignature=JSON.stringify(signatureRows);
     state.tuyaDevices=devices;
     state.tuyaReadings=readings;
-    if(changed&&["devices","inicio"].includes(state.page))changedSet.forEach(deviceId=>{updateVisibleTuyaCard(deviceId);updateOpenTuyaDeviceDialog(deviceId);});
+    if(["devices","inicio"].includes(state.page)){
+      changedSet.forEach(deviceId=>updateVisibleTuyaCard(deviceId));
+      // Refresh only the open Tuya detail dialog on every poll. This lets its
+      // five-second stale-reading timer advance without rebuilding the page.
+      for(const dialog of document.querySelectorAll('dialog[open][data-tuya-device-id]'))updateOpenTuyaDeviceDialog(dialog.dataset.tuyaDeviceId);
+    }
   }catch{/* Keep the last confirmed state and its timestamp visible if this poll fails. */}
   finally{state.tuyaInventoryRefreshing=false;}
 }
@@ -485,8 +496,8 @@ function updateOpenTuyaDeviceDialog(deviceId){
   const device=state.tuyaDevices.find(item=>item.device_id===deviceId),reading=state.tuyaReadings.find(item=>item.device_id===deviceId);
   if(!device||!reading)return;
   document.querySelectorAll(`dialog[open][data-tuya-device-id="${CSS.escape(deviceId)}"]`).forEach(dialog=>{
-      dialog.querySelectorAll("[data-tuya-quick-toggle],[data-breaker-detail-toggle]").forEach(button=>{
-      const code=button.dataset.tuyaQuickToggle||button.dataset.breakerDetailToggle,pending=pendingTuyaSwitchStates.get(`${deviceId}::${code}`),value=pending?.value??tuyaSwitchState(device,reading,code);
+    dialog.querySelectorAll("[data-tuya-quick-toggle],[data-breaker-detail-toggle]").forEach(button=>{
+      const code=button.dataset.tuyaQuickToggle||button.dataset.breakerDetailToggle,pending=pendingTuyaSwitchStates.get(`${deviceId}::${code}`),value=pending?.timedOut?undefined:pending?.value??tuyaSwitchState(device,reading,code);
       button.classList.remove("on","off","unknown");button.classList.add(value===true?"on":value===false?"off":"unknown");button.classList.toggle("pending",pendingTuyaSwitchStates.has(`${deviceId}::${code}`));
       button.setAttribute("aria-pressed",String(value===true));
       if(button.hasAttribute("data-tuya-quick-toggle")){
@@ -497,7 +508,7 @@ function updateOpenTuyaDeviceDialog(deviceId){
     });
     if(tuyaIsBreaker(device)){
       const metrics=tuyaSimpleReadings(device,reading),metricByLabel=new Map(metrics.map(item=>[item.label,item.value]));
-      dialog.querySelectorAll("[data-breaker-live-metric]").forEach(node=>{node.textContent=metricByLabel.get(node.dataset.breakerLiveMetric)||"Sem leitura atual";});
+      dialog.querySelectorAll("[data-breaker-live-metric]").forEach(node=>{node.textContent=metricByLabel.get(node.dataset.breakerLiveMetric)||tuyaBreakerMetricFallback(device,reading);});
       const code=tuyaPrimarySwitchCode(device,tuyaSwitchCodes(device)),value=code?tuyaSwitchState(device,reading,code):undefined,stateNode=dialog.querySelector("[data-breaker-live-state]");
       if(stateNode)stateNode.textContent=value===true?"Ligado":value===false?"Desligado":"Estado por confirmar";
     }
@@ -820,7 +831,7 @@ function tuyaPrimarySwitchCode(device,codes=tuyaSwitchCodes(device)){
   return device?.switch_code&&codes.includes(device.switch_code)?device.switch_code:codes.find(code=>/^switch(?:_\d+|_led|_usb\d+)?$/i.test(code))||codes[0]||"";
 }
 function tuyaSwitchState(device,reading,code,ignorePending=false){
-  const pending=ignorePending?null:pendingTuyaSwitchStates.get(`${device?.device_id}::${code}`);if(pending)return pending.value;
+  const pending=ignorePending?null:pendingTuyaSwitchStates.get(`${device?.device_id}::${code}`);if(pending)return pending.timedOut?undefined:pending.value;
   if(!Object.prototype.hasOwnProperty.call(device?.local_dps_map||{},code)&&(device?.dps_knowledge?.mapping_conflicts||[]).some(conflict=>(conflict?.codes||[]).includes(code)))return undefined;
   const status=Array.isArray(reading?.status)?reading.status:[];
   const directItem=status.find(item=>item?.code===code);
@@ -895,7 +906,13 @@ async function sendTuyaSwitchCommand(device,code,desired){
   for(const pendingCode of pendingCodes)pendingTuyaSwitchStates.set(`${device.device_id}::${pendingCode}`,{deviceId:device.device_id,code:pendingCode,value:desired,requestedAt});
   updateVisibleTuyaCard(device.device_id);updateOpenTuyaDeviceDialog(device.device_id);
   try{const started=performance.now(),result=code==="switch_all"?await setTuyaSwitchGroup(device,desired):{results:[await controlGatewayTuyaSwitch(device.device_id,desired,code)],codes:[code]},deviceCommandMs=result.results?.reduce((sum,item)=>sum+(Number(item?.device_command_latency_ms)||0),0);confirmTuyaCommandInBackground(device,requestedAt,pendingCodes,desired,performance.now()-started,deviceCommandMs);return result;}
-  catch(error){for(const pendingCode of pendingCodes)pendingTuyaSwitchStates.delete(`${device.device_id}::${pendingCode}`);updateVisibleTuyaCard(device.device_id);updateOpenTuyaDeviceDialog(device.device_id);throw error;}
+  catch(error){
+    const transportUncertain=error instanceof TypeError||/load failed|failed to fetch|networkerror/i.test(String(error?.message||""));
+    if(!transportUncertain)for(const pendingCode of pendingCodes)pendingTuyaSwitchStates.delete(`${device.device_id}::${pendingCode}`);
+    updateVisibleTuyaCard(device.device_id);updateOpenTuyaDeviceDialog(device.device_id);
+    if(transportUncertain){const uncertain=new Error("O Gateway não devolveu resposta; a ordem pode ter chegado. Aguardo a próxima leitura LAN para confirmar.");uncertain.outcomeUnknown=true;throw uncertain;}
+    throw error;
+  }
 }
 function favoriteDeviceCards() {
   const canUsePwa=sessionInfo().authenticated,canControl=canUsePwa&&sessionInfo().user?.role==="owner";
@@ -914,14 +931,14 @@ function favoriteDeviceCards() {
     const status=readings.find(entry=>entry.device_id===id),values=status?.status||[];
     let codes=tuyaSwitchCodes(device);
     if((device.device_kind_override||device.device_kind)==="breaker")codes=[device.switch_code||codes.find(code=>code==="switch"||code==="switch_1")||codes[0]].filter(Boolean);
-    const channels=codes.map(code=>({code,value:pendingTuyaSwitchStates.get(`${id}::${code}`)?.value??tuyaSwitchState(device,status,code),label:device.channel_labels?.[code]||device.capability_labels?.[code]||code}));
+    const channels=codes.map(code=>{const pending=pendingTuyaSwitchStates.get(`${id}::${code}`);return {code,value:pending?.timedOut?undefined:pending?.value??tuyaSwitchState(device,status,code),label:device.channel_labels?.[code]||device.capability_labels?.[code]||code};});
     if(tuyaSwitchChannelCodes(device,codes).length>1&&!channels.some(channel=>channel.code==="switch_all"))channels.push({code:"switch_all",value:tuyaSwitchState(device,status,"switch_all"),label:"Todos"});
     const level=values.find(entry=>entry.code===device.level_code)?.value,isLevel=Boolean(device.level_code);
     const percent=isLevel&&Number.isFinite(Number(level))?Math.max(0,Math.min(100,Math.round((Number(level)-Number(device.level_min??0))/(Number(device.level_max??100)-Number(device.level_min??0))*100))):null;
     return {id,kind,device,details,status,codes,channels,isLevel,percent};
   });
   const powerGlyph=`<svg viewBox="0 0 28 28" aria-hidden="true" focusable="false"><path d="M19.25 4.9a10.5 10.5 0 1 1-10.5 0"/><path d="M14 2.4v10.2"/></svg>`;
-    const stateSymbol=(id,channel,enabled)=>{const pending=pendingTuyaSwitchStates.has(`${id}::${channel.code}`);return `<button type="button" class="favorite-state-symbol ${channel.value===true?"on":channel.value===false?"off":"unknown"}${pending?" pending":""}" data-favorite-toggle="${esc(id)}" data-favorite-code="${esc(channel.code)}" aria-pressed="${channel.value===true}" aria-label="${esc(channel.label)}: ${pending?"ordem enviada; a confirmar pela LAN":channel.value===true?"ligado":channel.value===false?"desligado":"estado por confirmar no varrimento"}" title="${pending?"A confirmar a ordem pela LAN":channel.value===undefined?"A aguardar estado do varrimento":esc(channel.label)}" ${!enabled||favoriteControlPending.has(id)?"disabled":""}>${powerGlyph}</button>`;};
+    const stateSymbol=(id,channel,enabled)=>{const pending=pendingTuyaSwitchStates.get(`${id}::${channel.code}`),pendingLabel=pending?.timedOut?"sem confirmação; estado incerto":"ordem enviada; a confirmar pela LAN";return `<button type="button" class="favorite-state-symbol ${channel.value===true?"on":channel.value===false?"off":"unknown"}${pending?" pending":""}" data-favorite-toggle="${esc(id)}" data-favorite-code="${esc(channel.code)}" aria-pressed="${channel.value===true}" aria-label="${esc(channel.label)}: ${pending?pendingLabel:channel.value===true?"ligado":channel.value===false?"desligado":"estado por confirmar no varrimento"}" title="${pending?pendingLabel:channel.value===undefined?"A aguardar estado do varrimento":esc(channel.label)}" ${!enabled||favoriteControlPending.has(id)?"disabled":""}>${powerGlyph}</button>`;};
   return `<div class="favorite-manage"><span>Podes adicionar todos os dispositivos registados no Gateway; não há limite de favoritos.</span>${canUsePwa?`<button type="button" class="favorite-add-button" id="home-favorite-plus" aria-label="Adicionar dispositivo ou favorito" title="Adicionar">＋</button>`:""}</div><div class="favorite-device-grid">${rows.map(({id,kind,device,details,status,codes,channels,isLevel,percent,reading})=>{
     const label=details.label||device.name,place=[details.room||device.room,details.floor||device.floor].filter(Boolean).join(" · ")||device.logical_location||"Localização por definir";
     const primaryCode=kind==="tuya"?tuyaPrimarySwitchCode(device,codes):"",primaryChannel=channels.find(channel=>channel.code===primaryCode),channelButtons=kind==="tuya"&&primaryChannel?stateSymbol(id,primaryChannel,canControl):"";
@@ -940,7 +957,7 @@ function openFavoriteDeviceDetails(deviceId,kind){
     const fault=tuyaFault(device,live),breakerCode=breaker?tuyaPrimarySwitchCode(device,tuyaSwitchCodes(device)):"",breakerState=breakerCode?tuyaSwitchState(device,live,breakerCode):undefined;
     const linkLabel=live?.connection_state==="lan_reachable"?`Host respondeu na LAN · ${Math.round(Number(live.latency_ms)||0)} ms · teste sem leitura DPS`:live?.connection_state==="local_responded"?`Leitura DPS local · ${Number(live.success_count)||1}/${Number(live.rounds)||1} respostas · média ${Math.round(Number(live.latency_ms)||0)} ms`:device.online===true?"Tuya Cloud online · sem confirmação LAN":"Sem confirmação LAN";
     const specs=Array.isArray(device.status_spec)?device.status_spec:[],declaredDps=specs.map(spec=>{const entry=status.find(item=>item?.code===spec?.code);let value=entry?.value;if(value&&typeof value==="object")value=JSON.stringify(value);return row(`${tuyaFriendlyCapabilityLabel(spec,device)} · ${spec?.code||"DPS"}`,entry?value:"Sem leitura LAN atual");}),extraDps=status.filter(entry=>!specs.some(spec=>spec?.code===entry?.code)).map(entry=>{let value=entry?.value;if(value&&typeof value==="object")value=JSON.stringify(value);return row(`${entry?.code||"DPS"} · valor recebido`,value);}),dps=[...declaredDps,...extraDps].join("");
-    const breakerMetrics=["Tensão","Corrente","Potência","Consumo diário"].map(label=>{const metric=metrics.find(item=>item.label===label);return `<div class="detail-item"><small>${label}</small><strong data-breaker-live-metric="${label}">${esc(metric?.value||"Sem leitura DPS mapeada")}</strong></div>`}).join("");
+    const breakerMetricFallback=tuyaBreakerMetricFallback(device,live),breakerMetrics=["Tensão","Corrente","Potência","Consumo diário"].map(label=>{const metric=metrics.find(item=>item.label===label);return `<div class="detail-item"><small>${label}</small><strong data-breaker-live-metric="${label}">${esc(metric?.value||breakerMetricFallback)}</strong></div>`}).join("");
     const breakerToggle=breakerCode?`<button type="button" class="favorite-state-symbol breaker-detail-power ${breakerState===true?"on":breakerState===false?"off":"unknown"}" data-breaker-detail-toggle="${esc(breakerCode)}" aria-pressed="${breakerState===true}" aria-label="${breakerState===true?"Desligar":breakerState===false?"Ligar":"Estado por confirmar"}" ${breakerState===undefined||!tuyaSwitchCodeHasLocalMapping(device,breakerCode)||sessionInfo().user?.role!=="owner"?"disabled":""}><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M19.25 4.9a10.5 10.5 0 1 1-10.5 0"/><path d="M14 2.4v10.2"/></svg></button>`:`<p class="empty-state">O esquema não declarou um controlo ON/OFF mapeado.</p>`;
     details=breaker?`<section class="breaker-detail-view"><div class="breaker-detail-state">${breakerToggle}<strong data-breaker-live-state>${breakerState===true?"Ligado":breakerState===false?"Desligado":"Estado por confirmar"}</strong></div><div class="device-detail-grid breaker-detail-metrics" data-breaker-live-metrics>${breakerMetrics}</div><p class="field-note">Tensão, corrente e potência acompanham a última leitura do motor Tuya pela LAN.</p><div class="breaker-detail-settings"><button type="button" class="button secondary" data-breaker-detail-settings>Settings</button></div></section>`:`<div class="device-detail-grid">${row("Estado",fault?fault.label:tuyaDeviceState(device,live))}${row("Ligação",linkLabel)}${metrics.map(metric=>row(metric.label,metric.value)).join("")}</div>${knowledgeRows?`<h3>Interpretação DPS · sugestão de referência</h3><p class="field-note">${esc(knowledge.profile_label||knowledge.preset_label||"Sem perfil confirmado")} · confiança ${esc(knowledge.profile_label?knowledge.device_profile?.confidence:knowledge.confidence||"UNKNOWN")} · nenhuma escrita autorizada automaticamente.${knowledge.profile_signature?` Assinatura: ${esc(knowledge.profile_signature)}.`:""}</p><div class="device-detail-grid telemetry-grid">${knowledgeRows}</div>`:""}${dps?`<h3>Outras leituras DPS recebidas</h3><div class="device-detail-grid telemetry-grid">${dps}</div>`:""}${live?.reason?`<p class="empty-state">${esc(tuyaLanReasonText(live.reason))}</p>`:""}`;
   }else{
@@ -949,7 +966,7 @@ function openFavoriteDeviceDetails(deviceId,kind){
   }
   dialog.innerHTML=`<form method="dialog" class="dialog-body"><div class="dialog-header"><div><p class="eyebrow">FAVORITO · INFORMAÇÃO DO DISPOSITIVO</p><h2>${esc(device.name||deviceId)}</h2></div><button class="icon-button" value="close" aria-label="Fechar">×</button></div>${details}${isTuya?`<p class="connection-result" data-tuya-detail-lan-status role="status" aria-live="polite"></p>`:""}<div class="dialog-actions">${isTuya&&sessionInfo().user?.role==="owner"?(breaker?"":`<button class="button secondary" type="button" data-tuya-detail-read>Testar resposta LAN</button><button class="button secondary" type="button" data-tuya-detail-read-status>Ler estado DPS local</button><button class="button secondary" type="button" data-tuya-detail-settings>Settings</button><button class="button secondary" type="button" data-tuya-detail-connection>IP, MAC e DPS</button>`):""}${isTuya&&breaker&&sessionInfo().user?.role==="owner"?"":"<button class=\"button secondary\" value=\"close\">Fechar</button>"}</div></form>`;
   if(isTuya){dialog.querySelector("[data-tuya-detail-settings],[data-breaker-detail-settings]")?.addEventListener("click",()=>{dialog.close();openTuyaDeviceSettings(device);});dialog.querySelector("[data-tuya-detail-connection]")?.addEventListener("click",()=>{dialog.close();openTuyaDeviceEditor(device);});}
-  if(isTuya&&breaker)dialog.querySelector("[data-breaker-detail-toggle]")?.addEventListener("click",async event=>{const button=event.currentTarget,statusNode=dialog.querySelector("[data-tuya-detail-lan-status]"),code=button.dataset.breakerDetailToggle,current=tuyaSwitchState(device,state.tuyaReadings.find(item=>item.device_id===deviceId),code);button.disabled=true;try{if(typeof current!=="boolean"||!tuyaSwitchCodeHasLocalMapping(device,code))throw new Error("Ainda não existe um estado e mapeamento local confirmados para este interruptor.");await sendTuyaSwitchCommand(device,code,!current);statusNode.textContent="Ordem enviada; o estado será atualizado pela leitura periódica independente.";}catch(error){statusNode.textContent=`Falha ao enviar a ordem: ${error.message}`;}finally{button.disabled=false;}});
+  if(isTuya&&breaker)dialog.querySelector("[data-breaker-detail-toggle]")?.addEventListener("click",async event=>{const button=event.currentTarget,statusNode=dialog.querySelector("[data-tuya-detail-lan-status]"),code=button.dataset.breakerDetailToggle,current=tuyaSwitchState(device,state.tuyaReadings.find(item=>item.device_id===deviceId),code);button.disabled=true;try{if(typeof current!=="boolean"||!tuyaSwitchCodeHasLocalMapping(device,code))throw new Error("Ainda não existe um estado e mapeamento local confirmados para este interruptor.");await sendTuyaSwitchCommand(device,code,!current);statusNode.textContent="Ordem enviada; o estado será atualizado pela leitura periódica independente.";}catch(error){statusNode.textContent=error.outcomeUnknown?error.message:`Falha ao enviar a ordem: ${error.message}`;}finally{button.disabled=false;}});
   if(isTuya)dialog.querySelector("[data-tuya-detail-read-status]")?.addEventListener("click",async event=>{const button=event.currentTarget,statusNode=dialog.querySelector("[data-tuya-detail-lan-status]");button.disabled=true;statusNode.textContent="A consultar os estados DPS pela ligação local…";try{const {reading,result}=await testTuyaLanDevice(deviceId);state.tuyaReadings=[...(state.tuyaReadings||[]).filter(item=>item.device_id!==deviceId),reading];render();const count=Array.isArray(reading.status)?reading.status.length:0;statusNode.textContent=reading.connection_state==="local_responded"?`Leitura DPS local recebida: ${count} estados; ${Number(result.average_latency_ms)||0} ms de média. Sem consulta à cloud.`:`A ligação ou leitura DPS local falhou: ${tuyaLanReasonText(reading.reason||"tuya_lan_status_unavailable")}.`;}catch(error){statusNode.textContent=`A leitura DPS local falhou: ${error.message}`;}finally{button.disabled=false;}});
   if(isTuya)dialog.querySelector("[data-tuya-detail-read]")?.addEventListener("click",async event=>{const button=event.currentTarget,statusNode=dialog.querySelector("[data-tuya-detail-lan-status]");button.disabled=true;statusNode.textContent="A testar apenas a ligação LAN deste equipamento…";let probe;try{probe=await testTuyaLanReachability(deviceId);}catch(error){statusNode.textContent=`Teste LAN falhou: ${error.message}`;button.disabled=false;return;}const {reading,result}=probe;state.tuyaReadings=[...(state.tuyaReadings||[]).filter(item=>item.device_id!==deviceId),reading];statusNode.textContent=result.connection_state==="lan_reachable"?`O IP e a porta local responderam em ${Number(result.latency_ms)||0} ms. Este teste não consultou DPS; o estado e as medições são lidos separadamente.`:result.connection_state==="lan_host_responded"?"O IP respondeu, mas a porta local do Tuya não está a aceitar ligações; dispositivo ainda não confirmado.":`Sem resposta LAN · ${tuyaLanReasonText(result.reason||"tuya_connection_failed")}`;try{render();}catch(error){statusNode.textContent+=` A resposta LAN foi recebida; houve uma falha ao atualizar o cartão: ${error.message}`;}finally{button.disabled=false;}});
   document.body.append(dialog);dialog.addEventListener("close",()=>dialog.remove(),{once:true});dialog.showModal();
@@ -1053,7 +1070,7 @@ function openTuyaQuickControls(device){
   document.body.append(dialog);dialog.addEventListener("close",()=>dialog.remove(),{once:true});
   dialog.querySelectorAll("[data-tuya-quick-toggle]").forEach(button=>button.addEventListener("click",async()=>{
     const code=button.dataset.tuyaQuickToggle;button.disabled=true;const output=dialog.querySelector("[data-tuya-quick-status]");output.textContent="A enviar o comando independente da leitura…";
-    try{const currentDevice=state.tuyaDevices.find(item=>item.device_id===device.device_id)||device,currentReading=state.tuyaReadings.find(item=>item.device_id===device.device_id)||live,current=tuyaSwitchState(currentDevice,currentReading,code);if(typeof current!=="boolean")throw new Error("Ainda não há estado ON/OFF confirmado pelo varrimento independente.");if(!tuyaSwitchCodeHasLocalMapping(currentDevice,code))throw new Error("Falta o mapeamento DPS local exato deste canal.");await sendTuyaSwitchCommand(currentDevice,code,!current);output.textContent="Ordem enviada. O estado será atualizado pela próxima leitura LAN.";}catch(error){output.textContent=`Falha ao enviar comando: ${error.message}`;}finally{button.disabled=false;}
+    try{const currentDevice=state.tuyaDevices.find(item=>item.device_id===device.device_id)||device,currentReading=state.tuyaReadings.find(item=>item.device_id===device.device_id)||live,current=tuyaSwitchState(currentDevice,currentReading,code);if(typeof current!=="boolean")throw new Error("Ainda não há estado ON/OFF confirmado pelo varrimento independente.");if(!tuyaSwitchCodeHasLocalMapping(currentDevice,code))throw new Error("Falta o mapeamento DPS local exato deste canal.");await sendTuyaSwitchCommand(currentDevice,code,!current);output.textContent="Ordem enviada. O estado será atualizado pela próxima leitura LAN.";}catch(error){output.textContent=error.outcomeUnknown?error.message:`Falha ao enviar comando: ${error.message}`;}finally{button.disabled=false;}
   }));
   dialog.querySelectorAll("[data-tuya-pair-mode]").forEach(button=>button.addEventListener("click",async()=>{
     const pair=Number(button.dataset.tuyaPairMode),mode=button.dataset.mode,spec=pairModes[pair-1],output=dialog.querySelector("[data-tuya-quick-status]");
@@ -1102,7 +1119,7 @@ function confirmTuyaCommandInBackground(device,requestedAt,codes,desired,command
     const timing=`app→Gateway ${Math.round(commandRoundTripMs)} ms${devicePart}`;
     document.querySelectorAll(`dialog[open][data-tuya-device-id="${CSS.escape(deviceId)}"] [data-tuya-quick-status],dialog[open][data-tuya-device-id="${CSS.escape(deviceId)}"] [data-tuya-detail-lan-status]`).forEach(node=>{node.textContent=`Ordem aceite; a aguardar a leitura LAN normal. ${timing}`;});
   },0);
-  window.setTimeout(()=>{let cleared=false;for(const code of codes){const key=`${deviceId}::${code}`,pending=pendingTuyaSwitchStates.get(key);if(pending?.requestedAt===requestedAt){pendingTuyaSwitchStates.delete(key);cleared=true;}}if(cleared){updateVisibleTuyaCard(deviceId);updateOpenTuyaDeviceDialog(deviceId);document.querySelectorAll(`dialog[open][data-tuya-device-id="${CSS.escape(deviceId)}"] [data-tuya-quick-status],dialog[open][data-tuya-device-id="${CSS.escape(deviceId)}"] [data-tuya-detail-lan-status]`).forEach(node=>{if(node.textContent.includes("aguardar a leitura LAN normal"))node.textContent="A ordem foi enviada, mas ainda não foi confirmada pela leitura LAN; mostra-se agora o último estado observado.";});}},8_000);
+  window.setTimeout(()=>{let changed=false;for(const code of codes){const key=`${deviceId}::${code}`,pending=pendingTuyaSwitchStates.get(key);if(pending?.requestedAt===requestedAt&&!pending.timedOut){pending.timedOut=true;pending.mismatchCount=0;pending.lastObservedAt=Math.max(pending.requestedAt,tuyaReadingTimestamp(state.tuyaReadings.find(item=>item.device_id===deviceId)));changed=true;}}if(changed){updateVisibleTuyaCard(deviceId);updateOpenTuyaDeviceDialog(deviceId);document.querySelectorAll(`dialog[open][data-tuya-device-id="${CSS.escape(deviceId)}"] [data-tuya-quick-status],dialog[open][data-tuya-device-id="${CSS.escape(deviceId)}"] [data-tuya-detail-lan-status]`).forEach(node=>{if(node.textContent.includes("aguardar a leitura LAN normal"))node.textContent="Ainda sem confirmação LAN; estado temporariamente desconhecido.";});}},8_000);
 }
 async function sendGatewayTuyaSetting(deviceId,code,value){
   const requestedAt=Date.now(),started=performance.now(),result=await controlGatewayTuyaSetting(deviceId,code,value),elapsed=performance.now()-started;
@@ -1156,6 +1173,7 @@ function tuyaMeasurementCodes(device){
 }
 function tuyaSimpleReadings(device,reading){
   if(reading?.connection_state!=="local_responded")return [];
+  const observedAt=tuyaReadingTimestamp(reading);if(!observedAt||Date.now()-observedAt>5_000)return [];
   const status=Array.isArray(reading?.status)?reading.status.filter(item=>item&&typeof item==="object"):[],specs=[...(Array.isArray(device?.status_spec)?device.status_spec:[]),...(Array.isArray(device?.functions)?device.functions:[])].filter(item=>item&&typeof item==="object");
   const mapRows=Array.isArray(device?.dps_knowledge?.dps)?device.dps_knowledge.dps:[],kinds=[{key:"voltage",label:"Tensão",unit:"V",semantics:["voltage","voltage_phase_a","voltage_phase_b","voltage_phase_c"],match:/(^|_)(cur_)?voltage($|_)/i},{key:"current",label:"Corrente",unit:"A",semantics:["current","current_phase_a","current_phase_b","current_phase_c"],match:/(^|_)(cur_)?current($|_)/i},{key:"power",label:"Potência",unit:"W",semantics:["power","active_power","active_power_phase_a","active_power_phase_b","active_power_phase_c"],match:/(^|_)(cur_)?(active_)?power($|_)/i},{key:"daily_energy",label:"Consumo diário",unit:"kWh",semantics:["daily_accumulated_energy","daily_energy"],match:/(^|_)(daily_energy|today_energy|energy_today)($|_)/i},{key:"incremental_energy",label:"Energia incremental",unit:"kWh",semantics:["energy_incremental"],match:/(^|_)(add_ele|energy_incremental)($|_)/i},{key:"total_energy",label:"Energia acumulada",unit:"kWh",semantics:["total_energy","energy_total","accumulated_energy"],match:/(^|_)(total_energy|energy_total|accumulated_energy)($|_)/i},{key:"energy_import",label:"Energia importada",unit:"kWh",semantics:["energy_import"],match:/(^|_)energy_import($|_)/i},{key:"energy_export",label:"Energia exportada",unit:"kWh",semantics:["energy_export"],match:/(^|_)energy_export($|_)/i},{key:"energy_session",label:"Energia da sessão",unit:"kWh",semantics:["energy_session"],match:/(^|_)energy_session($|_)/i}];
   return kinds.flatMap(kind=>{
@@ -1167,6 +1185,11 @@ function tuyaSimpleReadings(device,reading){
     const value=Number(entry.value)/(scale||1)*unitFactor,unit=kind.key.includes("energy")?"kWh":kind.unit;
     return [{label:kind.label,value:`${new Intl.NumberFormat("pt-PT",{maximumFractionDigits:2}).format(value)} ${unit}`,code:entry.code}];
   });
+}
+function tuyaBreakerMetricFallback(device,reading){
+  const observedAt=tuyaReadingTimestamp(reading);
+  if(observedAt&&Date.now()-observedAt>5_000)return "Sem leitura recente há mais de 5 s";
+  return "Sem leitura DPS mapeada";
 }
 function openFavoriteDialog(){
   const devices=[...(state.equipment||[]).map(device=>({id:device.id,name:device.name,kind:"equipment",category:device.category})),...(state.tuyaDevices||[]).map(device=>({id:device.device_id,name:device.name,kind:"tuya",category:"Tuya / MOES"}))];
@@ -1899,7 +1922,6 @@ $('#page-content').addEventListener('click',async e=>{
       if(typeof current!=="boolean")throw new Error(device&&!tuyaSwitchCodeHasLocalMapping(device,code)?"Falta o mapeamento DPS local exato deste canal.":"Ainda não há estado ON/OFF confirmado pelo varrimento independente.");
       if(!device||!tuyaSwitchCodeHasLocalMapping(device,code))throw new Error("Falta o mapeamento DPS local exato deste canal.");
       await sendTuyaSwitchCommand(device,code,!current);
-      showFeatureNotice("Ordem enviada. O estado será atualizado pelo próximo varrimento LAN.");
     }catch(error){showFeatureNotice(`Falha no controlo LAN: ${error.message}`);}
     finally{favoriteControlPending.delete(deviceId);document.querySelectorAll(`[data-favorite-toggle="${CSS.escape(deviceId)}"]`).forEach(button=>{button.disabled=false;button.removeAttribute("aria-busy");});}
     return;
@@ -4258,7 +4280,6 @@ setInterval(() => {
   if(document.visibilityState!=="visible"||!info.authenticated||info.user?.role!=="owner"||gatewayAutoUpdateSuppressed||gatewayUpdateCheckInProgress||$("#operation-dialog")?.open)return;
   runGatewayUpdateCheck({automatic:true});
 },60_000);
-
 
 
 

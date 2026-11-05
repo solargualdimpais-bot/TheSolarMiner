@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.193"
+PACKAGE_VERSION = "0.6.194"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -1498,24 +1498,28 @@ def _tuya_event_poll_interval_seconds() -> float:
 
 
 async def _tuya_device_event_loop() -> None:
-    """Observe all configured Tuya LAN states on a 1.5-second start cadence.
+    """Start Tuya LAN sweeps every 1.5 seconds, with at most two in flight.
 
-    Sweeps are deliberately sequential: if a full sweep takes longer than the
-    interval, the next sweep starts immediately after it, without overlapping
-    requests that could race and overwrite fresher device state.
+    The bound permits a delayed sample to overlap one later poll without
+    accumulating unbounded sockets or worker threads. Persistence rejects
+    older samples that complete after newer ones.
     """
     interval = _tuya_event_poll_interval_seconds()
-    while True:
-        started = asyncio.get_running_loop().time()
+    active: set[asyncio.Task] = set()
+    def report_sweep(task: asyncio.Task) -> None:
         try:
-            await asyncio.to_thread(_collect_tuya_device_events_once)
+            task.result()
         except asyncio.CancelledError:
-            raise
+            pass
         except Exception as exc:
             LOG.warning("Periodic Tuya LAN observation failed (%s)", type(exc).__name__)
-        remaining = interval - (asyncio.get_running_loop().time() - started)
-        if remaining > 0:
-            await asyncio.sleep(remaining)
+    while True:
+        active = {task for task in active if not task.done()}
+        if len(active) < 2:
+            task = asyncio.create_task(asyncio.to_thread(_collect_tuya_device_events_once))
+            task.add_done_callback(report_sweep)
+            active.add(task)
+        await asyncio.sleep(interval)
 
 
 @asynccontextmanager
@@ -2111,7 +2115,7 @@ def hardware_integrations_status(session: dict[str, Any] = Depends(require_permi
     try:
         result = hardware_integrations.public_config()
         with db() as conn:
-            telemetry = energy_engine.read_tuya_telemetry(conn, max_age_seconds=3)
+            telemetry = energy_engine.read_tuya_telemetry(conn, max_age_seconds=5)
             feature_rows = conn.execute("SELECT canonical_key,display_name,canonical_type,units_json FROM tuya_canonical_features ORDER BY category,display_name COLLATE NOCASE").fetchall()
         normalized = []
         for feature in feature_rows:
@@ -2739,7 +2743,21 @@ def _persist_tuya_device_events(conn: sqlite3.Connection, readings: list[dict[st
         if not isinstance(device_id, str):
             continue
         name = str(reading.get("name") or "Tuya device")[:120]
-        observed_at = datetime.now(timezone.utc).isoformat()
+        raw_observed_at = reading.get("observed_at")
+        try:
+            observed_at = (datetime.fromtimestamp(float(raw_observed_at), timezone.utc).isoformat()
+                           if isinstance(raw_observed_at, (int, float)) else
+                           datetime.fromisoformat(str(raw_observed_at).replace("Z", "+00:00")).astimezone(timezone.utc).isoformat())
+        except (TypeError, ValueError, OSError, OverflowError):
+            observed_at = datetime.now(timezone.utc).isoformat()
+        latest = conn.execute("SELECT observed_at FROM device_observations WHERE device_id=? AND observation_key='__availability'",
+                              (device_id,)).fetchone()
+        if latest:
+            try:
+                if datetime.fromisoformat(latest["observed_at"].replace("Z", "+00:00")) >= datetime.fromisoformat(observed_at):
+                    continue
+            except (TypeError, ValueError):
+                pass
         available = reading.get("connection_state") == "local_responded"
         observations: list[tuple[str, Any, str]] = [("__availability", available, "availability")]
         if available:
@@ -6045,7 +6063,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.193"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.194"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(
