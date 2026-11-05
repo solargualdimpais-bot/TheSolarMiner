@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.190"
+PACKAGE_VERSION = "0.6.191"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -3729,6 +3729,8 @@ def command_shelly_switch(device_id: str, payload: dict[str, Any],
                     "command_accepted": bool(result.get("command_accepted")),
                     "command_confirmed": state == "CONFIRMED", "requested_on": payload["on"],
                     "observed_on": observed if isinstance(observed, bool) else None,
+                    "device_command_latency_ms": result.get("device_command_latency_ms"),
+                    "readback_latency_ms": result.get("readback_latency_ms"),
                     "observed_at": result.get("reading", {}).get("observed_at")}
         except (RuntimeError, OSError, ValueError) as exc:
             conn.execute("UPDATE shelly_command_history SET command_state='FAILED',completed_at=? WHERE command_id=?",
@@ -3786,6 +3788,8 @@ def command_shelly_light(device_id: str, payload: dict[str, Any],
             "command_accepted": result.get("command_accepted", False),
             "command_confirmed": result.get("command_confirmed", False),
             "command_state": result.get("command_state", "UNKNOWN"),
+            "device_command_latency_ms": result.get("device_command_latency_ms"),
+            "readback_latency_ms": result.get("readback_latency_ms"),
             "observed_at": result.get("reading", {}).get("observed_at")}
 
 
@@ -6033,7 +6037,7 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if manifest_origin not in allowed_manifest_origins:
             raise update_manager.UpdateValidationError("manifest_origin_not_authorized")
         request = __import__("urllib.request", fromlist=["Request"]).Request(
-            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.190"})
+            manifest_url, headers={"Accept": "application/json", "User-Agent": "SolarMiner-CODE02/0.6.191"})
         with update_manager.open_allowed_https_url(request, allowed_manifest_origins, timeout=8) as response:
             final = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(response.geturl())
             final_origin = (update_manager.normalize_https_origin(

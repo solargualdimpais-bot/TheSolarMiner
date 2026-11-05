@@ -181,6 +181,7 @@ def control_light(host: str, generation: int, component: str, channel: int, *, o
     if color_temperature is not None and (isinstance(color_temperature, bool) or not isinstance(color_temperature, int) or not 2000 <= color_temperature <= 10000):
         raise ValueError("shelly_color_temperature_invalid")
     auth = {"username": username, "password": password}
+    command_started = time.perf_counter()
     if generation >= 2:
         rpc_component = {"color": "rgb", "light": "light"}.get(component, component)
         method = {"light": "Light.Set", "rgb": "RGB.Set", "rgbw": "RGBW.Set", "cct": "CCT.Set"}.get(rpc_component)
@@ -210,7 +211,10 @@ def control_light(host: str, generation: int, component: str, channel: int, *, o
         _request(host, f"{endpoint}?{urlencode(query)}", **auth)
     else:
         raise ValueError("shelly_generation_unsupported")
+    device_command_latency_ms = round((time.perf_counter() - command_started) * 1000)
+    readback_started = time.perf_counter()
     reading = identify_and_read(host, **auth)
+    readback_latency_ms = round((time.perf_counter() - readback_started) * 1000)
     state = "CONFIRMED"
     for item in reading.get("components", []):
         if item.get("component") not in {component, "color" if component in {"rgb", "rgbw"} else component} or item.get("id") != channel:
@@ -224,6 +228,7 @@ def control_light(host: str, generation: int, component: str, channel: int, *, o
     else:
         state = "UNKNOWN"
     return {"command_accepted": True, "command_confirmed": state == "CONFIRMED", "command_state": state,
+            "device_command_latency_ms": device_command_latency_ms, "readback_latency_ms": readback_latency_ms,
             "reading": reading}
 
 
@@ -235,6 +240,7 @@ def control_switch(host: str, generation: int, channel: int, on: bool, *, userna
     if not isinstance(on, bool):
         raise ValueError("shelly_switch_state_invalid")
     auth = {"username": username, "password": password}
+    command_started = time.perf_counter()
     if generation >= 2:
         _rpc(host, "Switch.Set", {"id": channel, "on": on}, **auth)
     elif generation == 1:
@@ -242,7 +248,10 @@ def control_switch(host: str, generation: int, channel: int, on: bool, *, userna
         _request(host, f"/relay/{channel}?{urlencode({'turn': 'on' if on else 'off'})}", **auth)
     else:
         raise ValueError("shelly_generation_unsupported")
+    device_command_latency_ms = round((time.perf_counter() - command_started) * 1000)
+    readback_started = time.perf_counter()
     verified = identify_and_read(host, **auth)
+    readback_latency_ms = round((time.perf_counter() - readback_started) * 1000)
     observed = None
     for component in verified.get("components", []):
         status = component.get("status", {})
@@ -255,7 +264,8 @@ def control_switch(host: str, generation: int, channel: int, on: bool, *, userna
         state = "UNKNOWN"
     return {"connection_state": "connected", "command_accepted": True,
             "command_confirmed": state == "CONFIRMED", "command_state": state,
-            "requested_on": on, "observed_on": observed, "reading": verified}
+            "requested_on": on, "observed_on": observed, "device_command_latency_ms": device_command_latency_ms,
+            "readback_latency_ms": readback_latency_ms, "reading": verified}
 
 
 def read_devices(config: dict[str, Any]) -> list[dict[str, Any]]:

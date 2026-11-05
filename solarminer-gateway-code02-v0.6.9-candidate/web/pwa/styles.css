@@ -620,3 +620,4 @@ html[data-font="small"]{--font-ui-scale:.9;}html[data-font="normal"]{--font-ui-s
 
 .antminer-subtabs{margin:0 0 14px;overflow-x:auto}.antminer-subtabs button{white-space:nowrap}.antminer-management-panel [data-miner-section][hidden],#engine-miner-breaker[hidden]{display:none!important}
 
+.favorite-state-symbol.pending{opacity:.68;cursor:progress}

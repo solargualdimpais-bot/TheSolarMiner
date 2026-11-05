@@ -1387,7 +1387,9 @@ def control_tuya_switch(config: dict[str, Any], device_id: str, on: bool, code: 
     # Commands use the protocol already stored by the independent read engine.
     # Do not issue a status/DPS probe as part of a user command.
     client = _tuya_lan_client(device)
+    command_started = time.perf_counter()
     response = client.set_status(on, switch=int(dps))
+    command_latency_ms = round((time.perf_counter() - command_started) * 1000)
     # Some devices apply a relay command but omit the immediate DPS ACK. Treat
     # the write as unconfirmed and let the independent polling engine verify
     # the requested state; do not report a false rejection here.
@@ -1395,7 +1397,8 @@ def control_tuya_switch(config: dict[str, Any], device_id: str, on: bool, code: 
     return {"device_id": device_id, "switch_code": code, "requested_on": on,
             "command_accepted": acknowledged, "command_acknowledged": acknowledged, "observed_on": None,
             "state_confirmed": False, "connection_state": "command_accepted_awaiting_independent_scan" if acknowledged else "command_sent_awaiting_independent_scan",
-            "control_command_sent": True, "command_sent": True, "source": "TUYA_LAN"}
+            "control_command_sent": True, "command_sent": True,
+            "device_command_latency_ms": command_latency_ms, "source": "TUYA_LAN"}
 
 
 def control_tuya_level(config: dict[str, Any], device_id: str, percent: int) -> dict[str, Any]:
@@ -1414,13 +1417,15 @@ def control_tuya_level(config: dict[str, Any], device_id: str, percent: int) -> 
     target = round(low + (high - low) * percent / 100)
     dps = _tuya_local_dps(device, code)
     client = _tuya_lan_client(device)
+    command_started = time.perf_counter()
     response = client.set_value(int(dps), target)
+    command_latency_ms = round((time.perf_counter() - command_started) * 1000)
     if not isinstance(response, dict) or (response.get("Error") and not response.get("dps")):
         raise _tuya_command_rejection(response, dps)
     return {"device_id": device_id, "level_code": code, "requested_percent": percent, "requested_value": target,
             "command_accepted": True, "control_command_sent": True, "state_confirmed": False,
             "observed_value": None, "connection_state": "command_accepted_awaiting_independent_scan",
-            "source": "TUYA_LAN"}
+            "device_command_latency_ms": command_latency_ms, "source": "TUYA_LAN"}
 
 
 def control_tuya_setting(config: dict[str, Any], device_id: str, code: str, value: Any) -> dict[str, Any]:
@@ -1494,13 +1499,16 @@ def control_tuya_setting(config: dict[str, Any], device_id: str, code: str, valu
         raise ValueError("tuya_local_datapoint_mapping_required")
     dps = dps_id
     client = _tuya_lan_client(device)
+    command_started = time.perf_counter()
     response = client.set_value(int(dps), value)
+    command_latency_ms = round((time.perf_counter() - command_started) * 1000)
     if not isinstance(response, dict) or (response.get("Error") and not response.get("dps")):
         raise _tuya_command_rejection(response, dps_id)
     return {"device_id": device_id, "setting_code": code, "requested_value": value,
             "observed_value": None, "command_accepted": True, "state_confirmed": False,
             "connection_state": "command_accepted_awaiting_independent_scan",
-            "control_command_sent": True, "source": "TUYA_LAN"}
+            "control_command_sent": True, "device_command_latency_ms": command_latency_ms,
+            "source": "TUYA_LAN"}
 
 
 def read_antminer(host: str, port: int = 4028, timeout: float = 2.0) -> dict[str, Any]:
