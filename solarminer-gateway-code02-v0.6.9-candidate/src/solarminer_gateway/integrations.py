@@ -650,6 +650,35 @@ def _tuya_normalize_mac(value: Any) -> str:
     return compact.upper() if len(compact) == 12 else ""
 
 
+def discover_tuya_lan_devices(devices: list[dict[str, Any]], *, scan_seconds: int = 10) -> dict[str, Any]:
+    """Discover synced Tuya devices using their Gateway-held IDs and local keys.
+
+    TinyTuya's convenience ``deviceScan`` wrapper cannot accept its cloud
+    inventory/key list. Calling the bundled scanner directly lets it associate
+    LAN announcements with the already-synced identities and MAC addresses.
+    It deliberately does not brute-force keys against every address on the LAN.
+    """
+    if tinytuya is None:
+        raise RuntimeError("tuya_lan_driver_unavailable")
+    known = [
+        {"id": row["device_id"], "key": row["local_key"],
+         **({"mac": row["local_mac"]} if row.get("local_mac") else {})}
+        for row in devices
+        if isinstance(row, dict)
+        and isinstance(row.get("device_id"), str)
+        and isinstance(row.get("local_key"), str)
+        and len(row["local_key"]) >= 8
+    ]
+    scanner = getattr(tinytuya, "scanner", None)
+    scan = getattr(scanner, "devices", None)
+    if callable(scan) and known:
+        return scan(verbose=False, scantime=scan_seconds, poll=False, byID=True,
+                    tuyadevices=known,
+                    wantids=[row["id"] for row in known])
+    # Compatibility for injected drivers and older TinyTuya builds.
+    return tinytuya.deviceScan(verbose=False, maxretry=scan_seconds, poll=False, byID=True)
+
+
 def _tuya_scan_local_ips_by_mac(*, refresh: bool = False) -> dict[str, str]:
     """Return only unambiguous private IPs discovered for exact Tuya MACs."""
     if tinytuya is None:
@@ -661,7 +690,9 @@ def _tuya_scan_local_ips_by_mac(*, refresh: bool = False) -> dict[str, str]:
         if refresh or now >= expires_at:
             candidates: dict[str, set[str]] = {}
             try:
-                scanned = tinytuya.deviceScan(verbose=False, maxretry=3, poll=False, byID=True)
+                scanned = discover_tuya_lan_devices(
+                    [row for row in load_config().get("tuya", {}).get("devices", [])
+                     if isinstance(row, dict)], scan_seconds=3)
             except Exception as exc:
                 _TUYA_MAC_SCAN_CACHE = (now + 5.0, {})
                 raise RuntimeError("tuya_local_ip_refresh_failed") from exc

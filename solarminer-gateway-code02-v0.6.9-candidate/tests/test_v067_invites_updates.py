@@ -1070,6 +1070,41 @@ def test_tuya_lan_discovery_matches_device_ids_or_mac_and_saves_only_private_add
     assert "local_ip" not in saved[2]
 
 
+def test_tuya_lan_discovery_passes_synced_ids_and_keys_to_bundled_scanner(client, monkeypatch, tmp_path):
+    headers = {"Authorization": f"Bearer {owner_session(client)}"}
+    monkeypatch.setattr(gateway.hardware_integrations, "_data_dir", lambda: tmp_path)
+    gateway.hardware_integrations.save_config({"tuya": {"devices": [
+        {"device_id": "cloud-device-1", "name": "Relay", "local_key": "private-local-key-123",
+         "local_mac": "AA:BB:CC:DD:EE:10"},
+    ]}})
+    calls = []
+
+    class ScannerModule:
+        @staticmethod
+        def devices(**kwargs):
+            calls.append(kwargs)
+            return {"cloud-device-1": {"gwId": "cloud-device-1", "ip": "192.168.1.10",
+                                        "version": "3.3", "mac": "AA:BB:CC:DD:EE:10"}}
+
+    class Driver:
+        scanner = ScannerModule
+
+        @staticmethod
+        def deviceScan(**kwargs):
+            raise AssertionError("the key-aware scanner should be used")
+
+    monkeypatch.setattr(gateway.hardware_integrations, "tinytuya", Driver)
+    response = client.post("/api/v1/integrations/tuya/lan-discovery", headers=headers, json={})
+    assert response.status_code == 200, response.text
+    assert response.json()["matched_count"] == 1
+    assert calls == [{
+        "verbose": False, "scantime": 10, "poll": False, "byID": True,
+        "tuyadevices": [{"id": "cloud-device-1", "key": "private-local-key-123",
+                         "mac": "AA:BB:CC:DD:EE:10"}],
+        "wantids": ["cloud-device-1"],
+    }]
+
+
 def test_tuya_lan_discovery_can_match_manual_mac_from_neighbor_cache(client, monkeypatch, tmp_path):
     headers = {"Authorization": f"Bearer {owner_session(client)}"}
     monkeypatch.setattr(gateway.hardware_integrations, "_data_dir", lambda: tmp_path)

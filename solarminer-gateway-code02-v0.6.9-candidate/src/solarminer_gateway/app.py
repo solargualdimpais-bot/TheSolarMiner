@@ -3005,12 +3005,11 @@ def tuya_lan_discovery(session: dict[str, Any] = Depends(require_permission("man
             try:
                 if hardware_integrations.tinytuya is None:
                     raise RuntimeError("driver_unavailable")
-                discovered = hardware_integrations.tinytuya.deviceScan(
-                    verbose=False, maxretry=10, poll=False, byID=True)
+                discovered = hardware_integrations.discover_tuya_lan_devices(devices, scan_seconds=10)
             except Exception as exc:
                 # Broadcast discovery can be blocked by Wi-Fi isolation; still try configured MACs.
                 scan_error = type(exc).__name__[:64]
-                LOG.warning("Tuya LAN broadcast discovery failed (%s); trying neighbor cache", scan_error)
+                LOG.exception("Tuya LAN discovery failed (%s); trying neighbor cache", scan_error)
                 discovered = {}
             if not isinstance(discovered, dict):
                 raise HTTPException(502, "tuya_lan_discovery_invalid_result")
