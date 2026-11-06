@@ -18,6 +18,11 @@ test("Devices has one manufacturer-neutral network discovery flow", () => {
 test("LAN result dialog tolerates double-clicks and reports save status in Devices onboarding", () => {
   assert.match(app, /if\(dialog\.open\)return;/);
   assert.match(app, /statusSelector=\$\("#local-network-status"\)\?"#local-network-status":"#device-add-status"/);
+  assert.match(app, /data-network-device-open="\$\{index\}"/);
+  assert.match(app, /querySelectorAll\("\[data-network-device-open\]"\)/);
+  assert.match(app, /querySelectorAll\("\[data-blu-device-open\]"\)/);
+  assert.doesNotMatch(app, /A ponte foi identificada, mas não suporta o método de pesquisa BLE do Gateway/);
+  assert.match(app, /Isto não confirma falha da pesquisa BLE/);
 });
 
 test("Shelly controls go through authenticated Gateway APIs and confirm observed state", () => {

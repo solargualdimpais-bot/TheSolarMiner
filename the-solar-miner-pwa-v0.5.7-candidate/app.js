@@ -3513,7 +3513,7 @@ function openLocalNetworkDeviceDetails(index,hostOverride=null){
   $("#network-device-detail-detected-manufacturer").textContent=host.manufacturer||"—";
   $("#network-device-detail-detected-model").textContent=host.model||"—";
   const bridge=host.shelly_bluetooth_bridge;
-  const bridgeStatus=bridge?.bthome_discovery_api==="available"?"Ponte Bluetooth local confirmada.":bridge?.candidate?"A ponte foi identificada, mas não suporta o método de pesquisa BLE do Gateway.":"Não foi identificada uma ponte de sensores compatível neste endereço.";
+  const bridgeStatus=bridge?.bthome_discovery_api==="available"?"Ponte Bluetooth local confirmada. O Gateway pode procurar sensores.":bridge?.bthome_discovery_api==="authentication_required"?"A ponte exige autenticação para verificar a API BTHome; a pesquisa BLE é verificada separadamente.":bridge?.bthome_discovery_api==="probe_failed"?"O Gateway identificou uma possível ponte, mas não conseguiu verificar a API BTHome. Isto não confirma falha da pesquisa BLE.":bridge?.bthome_discovery_api==="not_supported"?"A API BTHome não foi confirmada. Isto não prova que o scanner BLE por script não funcione; a compatibilidade é verificada ao procurar sensores.":bridge?.candidate?"A ponte foi identificada; a compatibilidade da pesquisa BLE é verificada ao procurar sensores.":"Não foi identificada uma ponte de sensores compatível neste endereço.";
   if($("#network-device-detail-bridge"))$("#network-device-detail-bridge").textContent=bridgeStatus;
   $("#network-device-detail-recognized").textContent=match.name?(match.device_id?`${match.name} · ${match.device_id}`:match.name):"Ainda não associado a um equipamento guardado.";
   $("#network-device-detail-save").disabled=false;

@@ -86,6 +86,35 @@ def test_shelly_blu_scan_observation_is_bound_to_bridge_and_expires(client):
                             ("AA:BB:CC:DD:EE:41",)).fetchone()[0] == 0
 
 
+def test_shelly_blu_discovery_returns_and_persists_successful_scan(client, monkeypatch):
+    owner, private, _ = create_owner(client)
+    bearer = login(client, owner, private).json()["access_token"]
+    bridge_mac = "AA:BB:CC:DD:EE:40"
+    sensor = {"mac": "AA:BB:CC:DD:EE:01", "bridge_mac": bridge_mac, "bridge_host": "192.168.1.40",
+              "name": "SBHT-003C", "model": "SBHT-003C", "rssi": -55, "values": []}
+    with gateway.db() as conn:
+        conn.execute("""INSERT INTO shelly_devices(device_id,mac,name,host,model,generation,device_type,protocol,
+            auth_ciphertext,created_at,updated_at) VALUES(?,?,?,?,?,2,'smart_blugw','shelly_rpc',X'',?,?)""",
+            ("shelly:" + bridge_mac, bridge_mac, "Shelly BLU", "192.168.1.40", "SN-GW-BT01",
+             gateway.utcnow(), gateway.utcnow()))
+
+    durations = []
+    def scan(conn, *, duration_seconds, bridge_macs):
+        durations.append(duration_seconds)
+        return [sensor], [{"mac": bridge_mac, "name": "Shelly BLU", "model": "SN-GW-BT01", "state": "scanned"}]
+    monkeypatch.setattr(gateway, "_scan_registered_shelly_blu_bridges", scan)
+    response = client.post(f"/api/v1/integrations/shelly/shelly:{bridge_mac}/blu/discover",
+                           headers={"Authorization": f"Bearer {bearer}"}, json={})
+    assert response.status_code == 200, response.text
+    assert response.json()["device_count"] == 1
+    assert durations == [30.0]
+    with gateway.db() as conn:
+        row = conn.execute("SELECT details_json FROM shelly_blu_scan_observations WHERE bridge_mac=? AND mac=?",
+                           (bridge_mac, sensor["mac"])).fetchone()
+    assert row is not None
+    assert json.loads(row["details_json"])["name"] == sensor["name"]
+
+
 def test_shelly_blu_registration_uses_recent_gateway_scan_instead_of_missing_second_beacon(client, monkeypatch):
     owner, private, _ = create_owner(client)
     bearer = login(client, owner, private).json()["access_token"]

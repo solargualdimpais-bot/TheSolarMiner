@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.200"
+PACKAGE_VERSION = "0.6.201"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -613,13 +613,13 @@ def discover_shelly_blu_bridge(device_id: str, session: dict[str, Any]) -> dict[
     try:
         with db() as conn:
             devices, bridges = _scan_registered_shelly_blu_bridges(
-                conn, duration_seconds=5.0, bridge_macs={bridge["mac"]})
+                conn, duration_seconds=30.0, bridge_macs={bridge["mac"]})
+            _remember_shelly_blu_scan(conn, devices)
+            result = bridges[0] if bridges else {"mac": _inventory_mac(bridge["mac"]), "name": bridge["name"],
+                                             "model": bridge["model"], "state": "unavailable",
+                                             "reason": "bridge_not_scanned"}
     except (OSError, RuntimeError, ValueError) as exc:
         raise HTTPException(502, "shelly_blu_bridge_scan_failed") from exc
-        _remember_shelly_blu_scan(conn, devices)
-        result = bridges[0] if bridges else {"mac": _inventory_mac(bridge["mac"]), "name": bridge["name"],
-                                         "model": bridge["model"], "state": "unavailable",
-                                         "reason": "bridge_not_scanned"}
     return {"bridge": result, "devices": devices, "device_count": len(devices),
             "source": "registered_shelly_blu_bridge", "commands_sent": False}
 
