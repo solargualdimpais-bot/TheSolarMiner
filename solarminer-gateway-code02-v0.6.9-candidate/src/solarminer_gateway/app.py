@@ -877,7 +877,7 @@ def _sync_gateway_device_inventory(conn: sqlite3.Connection, config: dict[str, A
         if product_id:
             product = str(device.get("product") or "")[:160]
             category = str(device.get("category") or "")[:64].casefold()
-            device_kind = str(device.get("device_kind_override") or device.get("device_kind") or "unknown")[:32].casefold()
+            device_kind = str(device.get("device_kind") or "unknown")[:32].casefold()
             conn.execute("""INSERT INTO tuya_product_identity(product_id,product,category,device_kind,product_name_pt,updated_at)
                 VALUES(?,?,?,?,?,?) ON CONFLICT(product_id,product,category,device_kind) DO UPDATE SET
                 product_name_pt=CASE WHEN excluded.product_name_pt<>'' THEN excluded.product_name_pt ELSE tuya_product_identity.product_name_pt END,
@@ -886,10 +886,10 @@ def _sync_gateway_device_inventory(conn: sqlite3.Connection, config: dict[str, A
         tuya_capabilities = [str(value) for value in (device.get("capability_labels") or {}).keys() if isinstance(value, str)]
         _upsert_smart_product_catalog(conn, manufacturer=manufacturer or "Tuya", protocol="tuya",
             product_code=product_id, product_name=product_name or str(device.get("model") or ""),
-            device_kind=str(device.get("device_kind_override") or device.get("device_kind") or "smart"),
+            device_kind=str(device.get("device_kind") or "smart"),
             capabilities=tuya_capabilities, source="tuya_cloud_inventory", confidence="cloud_synced")
         _upsert_gateway_inventory_device(conn, provider="tuya", source_device_id=str(device["device_id"]),
-            name=str(device.get("name") or "Tuya"), device_type=str(device.get("device_kind_override") or device.get("device_kind") or "tuya"),
+            name=str(device.get("name") or "Tuya"), device_type=(str(device.get("device_kind") or "tuya") if str(device.get("device_kind") or "unknown") in hardware_integrations.TUYA_DEVICE_KINDS and device.get("device_kind") != "unknown" else "tuya"),
             mac=str(device.get("local_mac") or device.get("mac") or device.get("mac_address") or ""),
             ip=str(device.get("local_ip") or ""), manufacturer=manufacturer,
             model=str(device.get("model") or product_name),
@@ -3947,7 +3947,7 @@ def scan_local_network(session: dict[str, Any] = Depends(require_permission("man
             if re.fullmatch(MAC_RE, mac):
                 identities.setdefault(mac, []).append({"device_id": device["device_id"],
                     "name": str(device.get("name") or "Tuya")[:120], "provider": "tuya",
-                    "device_type": str(device.get("device_kind_override") or device.get("device_kind") or "tuya")[:48],
+                    "device_type": (str(device.get("device_kind") or "tuya") if str(device.get("device_kind") or "unknown") in hardware_integrations.TUYA_DEVICE_KINDS and device.get("device_kind") != "unknown" else "tuya")[:48],
                     "manufacturer": str(device.get("manufacturer") or "")[:120],
                     "model": str(device.get("model") or device.get("product_name") or "")[:120]})
         for provider, device_type, default_name in (("deye", "inverter", "Deye inverter"),
@@ -4729,7 +4729,7 @@ def tuya_setting_control(payload: dict[str, Any], session: dict[str, Any] = Depe
 
 @app.post("/api/v1/integrations/tuya/product-dps-description")
 def tuya_product_dps_description(payload: dict[str, Any], session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
-    """Save a trusted, owner-edited DPS meaning for every device sharing one exact Product ID."""
+    """Save an Owner DPS meaning for devices with one exact Tuya product identity."""
     with db() as conn:
         _require_owner(session, conn)
         allowed_payload = {"device_id", "dps_id", "description", "semantic_code", "unit", "scale"}

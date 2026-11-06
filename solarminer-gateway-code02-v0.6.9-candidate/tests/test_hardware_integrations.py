@@ -61,12 +61,13 @@ def test_owner_dps_meaning_survives_gateway_config_reload_for_handler_product(tm
     monkeypatch.setattr(integrations, "_data_dir", lambda: tmp_path)
     config_path = tmp_path / "hardware-integrations.json"
     config_path.write_text(json.dumps({"tuya": {"devices": [{"device_id": "breaker",
-        "name": "Disjuntor", "product_id": product_id, "manufacturer": "Tuya",
+        "name": "Disjuntor", "product_id": product_id, "product": "model-a",
+        "category": "dlq", "device_kind": "breaker", "manufacturer": "Tuya",
         "functions": [], "status_spec": []}], "product_schemas": {product_id: profile}}}),
         encoding="utf-8")
     loaded = integrations.load_config()
     public = integrations.public_config(loaded)["tuya"]
-    saved_profile = public["product_catalog"][product_id]["dps_profile"]
+    saved_profile = public["devices"][0]["product_profile"]
     row = next(item for item in saved_profile["dps"] if item["dps_id"] == dps_id)
     assert row["display_name"] == "Potência instantânea"
     assert row["semantic_code"] == "power"
@@ -241,6 +242,33 @@ def test_owner_product_dps_override_is_scoped_to_exact_product_identity_and_only
     assert tuya_dps_registry.analyze_device({**device, "product_dps_overrides": profile["product-a"]["custom_dps_overrides"]})["dps"][0]["display_name"] == "Tensão"
     other = integrations._tuya_apply_product_dps_overrides({**device, "product_id": "product-b"}, {}, scoped_maps)
     assert not other.get("switch_code")
+    for mismatch in ({"product": "another-model"}, {"category": "kg"}, {"device_kind": "multi_switch"}):
+        other = integrations._tuya_apply_product_dps_overrides({**device, **mismatch}, {}, scoped_maps)
+        assert not other.get("switch_code")
+
+
+def test_tuya_product_translation_uses_online_portuguese_and_returns_empty_when_unavailable(monkeypatch):
+    seen = {}
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def read(self, _limit):
+            return json.dumps({"responseStatus": 200,
+                "responseData": {"translatedText": "Disjuntor inteligente"}}).encode()
+
+    def urlopen(request, timeout):
+        seen["url"], seen["timeout"] = request.full_url, timeout
+        return Response()
+
+    monkeypatch.setattr(integrations.urllib.request, "urlopen", urlopen)
+    assert integrations.translate_tuya_product_name("智能断路器") == "Disjuntor inteligente"
+    assert "zh-CN%7Cpt-PT" in seen["url"]
+    assert seen["timeout"] <= 3
+
+    monkeypatch.setattr(integrations.urllib.request, "urlopen",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("offline")))
+    assert integrations.translate_tuya_product_name("智能断路器") == ""
 
 
 def test_owner_product_switch_mapping_routes_command_to_observed_boolean_dp(monkeypatch):
@@ -581,7 +609,7 @@ def test_deye_cloud_history_splits_timed_out_intervals(monkeypatch):
     ({"category": "cl", "product_name": "curtain motor", "functions": []}, "blind", 0),
     ({"category": "evse", "product_name": "AC wallbox charger", "functions": []}, "ev_charger", 0),
     ({"category": "qccdz", "product_name": "AC charger", "functions": []}, "ev_charger", 1),
-    ({"category": "unknown", "name": "Carregador EV garagem", "functions": []}, "ev_charger", 0),
+    ({"category": "unknown", "name": "Carregador EV garagem", "functions": []}, "unknown", 0),
 ])
 def test_tuya_device_profile_is_inferred_from_product_and_schema(device, expected_kind, expected_channels):
     profile = integrations.classify_tuya_device(device)

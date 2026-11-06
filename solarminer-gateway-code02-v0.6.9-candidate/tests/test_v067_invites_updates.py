@@ -492,7 +492,8 @@ def test_hardware_provider_read_is_independent_and_owner_only(client, monkeypatc
 def test_owner_can_map_a_dps_from_a_fresh_lan_read_even_when_product_schema_omits_it(client, monkeypatch):
     headers = {"Authorization": f"Bearer {owner_session(client)}"}
     config = {"tuya": {"devices": [{"device_id": "breaker-1", "name": "Termoacumulador",
-              "product_id": "breaker-product", "category": "dlq", "functions": [],
+              "product_id": "breaker-product", "product": "dlq_breaker_model", "category": "dlq",
+              "device_kind": "breaker", "functions": [],
               "status_spec": [], "current_status": []}], "product_schemas": {}}}
     monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: config)
     monkeypatch.setattr(gateway.hardware_integrations, "save_config", lambda value: value)
@@ -509,7 +510,8 @@ def test_owner_can_map_a_dps_from_a_fresh_lan_read_even_when_product_schema_omit
     assert mapped.status_code == 200, mapped.text
     assert mapped.json()["product_id"] == "breaker-product"
     assert mapped.json()["dps_id"] == 17
-    assert config["tuya"]["product_schemas"]["breaker-product"]["custom_dps_overrides"]["17"]["semantic_code"] == "voltage"
+    identity_key = gateway.hardware_integrations.tuya_product_identity_key(config["tuya"]["devices"][0])
+    assert config["tuya"]["product_dps_maps"][identity_key]["custom_dps_overrides"]["17"]["semantic_code"] == "voltage"
 
     power = client.post("/api/v1/integrations/tuya/product-dps-description", headers=headers, json={
         "device_id": "breaker-1", "dps_id": 19, "description": "Potência instantânea",
@@ -517,7 +519,7 @@ def test_owner_can_map_a_dps_from_a_fresh_lan_read_even_when_product_schema_omit
     })
     assert power.status_code == 200, power.text
     assert power.json()["semantic_code"] == "power"
-    assert config["tuya"]["product_schemas"]["breaker-product"]["custom_dps_overrides"]["19"]["semantic_code"] == "power"
+    assert config["tuya"]["product_dps_maps"][identity_key]["custom_dps_overrides"]["19"]["semantic_code"] == "power"
 
     unknown = client.post("/api/v1/integrations/tuya/product-dps-description", headers=headers, json={
         "device_id": "breaker-1", "dps_id": 18, "description": "Corrente",
@@ -540,7 +542,8 @@ def test_owner_dps19_power_edit_survives_reload_and_exact_handler_enrichment(cli
         "source": handler["source_file"]})
     monkeypatch.setattr(gateway.hardware_integrations, "_data_dir", lambda: tmp_path)
     gateway.hardware_integrations.save_config({"tuya": {"devices": [{"device_id": "breaker-19",
-        "name": "Termoacumulador", "product_id": product_id, "category": "dlq",
+        "name": "Termoacumulador", "product_id": product_id, "product": "dlq_breaker_model",
+        "category": "dlq", "device_kind": "breaker",
         "functions": [], "status_spec": [], "current_status": []}],
         "product_schemas": {product_id: product}}})
     monkeypatch.setattr(gateway.energy_engine, "read_tuya_telemetry", lambda conn, *, max_age_seconds: {
@@ -554,10 +557,11 @@ def test_owner_dps19_power_edit_survives_reload_and_exact_handler_enrichment(cli
     assert mapped.status_code == 200, mapped.text
 
     loaded = gateway.hardware_integrations.load_config()
-    saved = loaded["tuya"]["product_schemas"][product_id]
+    saved = loaded["tuya"]["product_dps_maps"][gateway.hardware_integrations.tuya_product_identity_key(
+        loaded["tuya"]["devices"][0])]
     assert saved["custom_dps_overrides"]["19"]["semantic_code"] == "power"
     public = gateway.hardware_integrations.public_config(loaded)["tuya"]
-    row = next(item for item in public["product_catalog"][product_id]["dps_profile"]["dps"]
+    row = next(item for item in public["devices"][0]["product_profile"]["dps"]
                if item["dps_id"] == 19)
     assert row["display_name"] == "Potência instantânea"
     assert row["semantic_code"] == "power"
