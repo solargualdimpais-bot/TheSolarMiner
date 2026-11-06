@@ -162,7 +162,7 @@
       </dialog>
       </section>
 
-      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.5.144</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
+      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.5.145</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
     </main>
   </div>
 
@@ -202,7 +202,7 @@
     <form method="dialog" class="dialog-header"><div><p class="eyebrow">LIGAÇÃO SEGURA</p><h2>SolarMiner Gateway</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></form>
     <div class="dialog-body">
       <div class="status-banner"><span class="demo-stamp">SEGURANÇA</span><span>A ligação só é aceite quando o browser valida o certificado HTTPS e o dispositivo conclui a autenticação criptográfica.</span></div>
-      <p class="field-note">Na rede local podes usar o IP LAN do Gateway na porta 8443. Fora de casa, o PWA tenta o endereço Tailscale configurado pelo Owner. O iPhone tem de ter Tailscale instalado e ligado ao mesmo Tailnet; TLS continua sempre validado.</p>
+      <p class="field-note">Primeiro, introduz o endereço HTTPS do Gateway e toca em “Testar endpoint”. Se o Gateway estiver à espera do primeiro Owner, abre-se então a janela para confirmares a palavra-passe que definiste na consola local. Na rede local podes usar o IP LAN do Gateway na porta 8443. Fora de casa, usa o endereço HTTPS Tailscale; TLS continua sempre validado.</p>
       <label for="gateway-endpoint">Endpoint HTTPS principal (LAN ou Tailscale)</label><input id="gateway-endpoint" type="url" inputmode="url" placeholder="https://192.168.8.168:8443" autocomplete="off" spellcheck="false">
       <div class="dialog-actions"><button id="gateway-check" class="button primary" type="button">Testar endpoint</button><button id="gateway-clear" class="button secondary" type="button">Desassociado / limpar</button></div>
       <div id="gateway-result" class="connection-result" role="status" aria-live="polite">Nenhum endpoint foi testado. A PWA permanece em modo demonstração.</div>

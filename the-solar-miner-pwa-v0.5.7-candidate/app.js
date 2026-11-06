@@ -31,6 +31,16 @@ let gatewayAutoUpdateSuppressed=false;
 let gatewayUpdateCheckInProgress=false;
 let gatewayOwnerAutoCheckStarted=false;
 const $ = (selector) => document.querySelector(selector);
+function openGatewayConnectionDialog(){
+  const dialog=$("#gateway-dialog");
+  if(!dialog||dialog.open)return;
+  try{dialog.showModal();}
+  catch{dialog.setAttribute("open","");}
+}
+document.addEventListener("click",event=>{
+  const target=event.target?.closest?.("#mode-chip, #owner-open-gateway, #profile-open-gateway, #open-owner-management");
+  if(target){event.preventDefault();openGatewayConnectionDialog();}
+});
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
 function renderOperationDialog({title,message,actions=[],locked=false,progress=false,link=null}={}){
   const dialog=$("#operation-dialog"),messageNode=$("#operation-dialog-message"),linkNode=$("#operation-dialog-link"),actionsNode=$("#operation-dialog-actions");
@@ -2402,7 +2412,6 @@ $("#page-content").addEventListener("change",async e=>{
   }
   const zoom=e.target.closest("[data-site-plan-zoom]");if(zoom){const current=state.siteProfile||{floors:[]},floors=structuredClone(current.floors||[]),floor=floors.find(item=>item.id===zoom.dataset.sitePlanZoom);if(!floor)return;floor.plan_zoom=Number(zoom.value);const out=$("#house-plan-zoom-value");if(out)out.textContent=`${Number(zoom.value).toFixed(1)}×`;try{state.siteProfile=await saveGatewaySiteProfile({...current,floors});}catch(error){showFeatureNotice(`Não foi possível guardar o tamanho da planta: ${error.message}`);}return;}
 });
-$("#mode-chip").addEventListener("click",()=>$("#gateway-dialog").showModal());
 $("#close-gateway-dialog").addEventListener("click",()=>$("#gateway-dialog").close());
 $("#gateway-check").addEventListener("click",async()=>{
   const field=$("#gateway-endpoint");
@@ -2475,8 +2484,12 @@ $("#gateway-clear").addEventListener("click",async()=>{
   gatewayResult("Endpoint removido deste browser. A identidade do dispositivo permanece guardada para poderes voltar a ligar sem palavra-passe.");
 });
 try {
-  if (localStorage.getItem("solarminer-gateway-endpoint-v1") || gatewayHostedOrigin) {
+  const savedEndpoint=localStorage.getItem("solarminer-gateway-endpoint-v1")||gatewayHostedOrigin;
+  if (savedEndpoint) {
     setTimeout(() => $("#gateway-check").click(), 0);
+  } else if(!sessionInfo().authenticated&&!localStorage.getItem("solarminer-first-connection-prompted-v1")) {
+    localStorage.setItem("solarminer-first-connection-prompted-v1","1");
+    setTimeout(openGatewayConnectionDialog,0);
   }
 } catch {}
 const invitePanel = $("#gateway-invite-management");
@@ -2661,7 +2674,6 @@ $("#ev-tesla-vehicle-save")?.addEventListener("click", async event => {
   } catch (error) { status.textContent = "Não foi possível guardar/testar o veículo: " + error.message; }
   finally { button.disabled = false; }
 });
-$("#owner-open-gateway")?.addEventListener("click", () => $("#gateway-dialog").showModal());
 $("#owner-gateway-status").textContent = "Configura e autentica a ligação pelo botão acima.";
 $("#owner-nav-item").addEventListener("click", () => selectOwnerTab(activeOwnerTab));
 let gatewayConsoleRefreshInFlight = false;
