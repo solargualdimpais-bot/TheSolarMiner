@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.204"
+PACKAGE_VERSION = "0.6.205"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -1030,7 +1030,7 @@ def _persist_tuya_product_dps_map(conn: sqlite3.Connection, product_schemas: Any
 
 
 def _persist_tuya_product_dps_maps_scoped(conn: sqlite3.Connection, product_maps: Any) -> int:
-    """Persist Owner DPS meanings with the complete Tuya product identity."""
+    """Persist Owner DPS meanings canonically by Tuya Product ID."""
     if not isinstance(product_maps, dict):
         return 0
     saved = 0
@@ -1042,14 +1042,17 @@ def _persist_tuya_product_dps_maps_scoped(conn: sqlite3.Connection, product_maps
         product = str(mapping.get("product") or "")[:160]
         category = str(mapping.get("category") or "")[:64].casefold()
         device_kind = str(mapping.get("device_kind") or "unknown")[:32].casefold()
-        if not product_id or not product:
+        if not product_id:
             continue
         overrides = mapping.get("custom_dps_overrides") if isinstance(mapping.get("custom_dps_overrides"), dict) else {}
         profile = mapping.get("dps_profile") if isinstance(mapping.get("dps_profile"), dict) else {}
-        rows = profile.get("dps") if isinstance(profile.get("dps"), list) else []
+        rows = [row for row in profile.get("dps", []) if isinstance(row, dict)
+                and isinstance(row.get("dps_id"), int) and not isinstance(row.get("dps_id"), bool)
+                and 1 <= row["dps_id"] <= 65535] if isinstance(profile.get("dps"), list) else []
+        if not rows:
+            continue
+        conn.execute("DELETE FROM tuya_product_dps_map_scoped WHERE product_id=?", (product_id,))
         for row in rows:
-            if not isinstance(row, dict):
-                continue
             dps_id = row.get("dps_id")
             if isinstance(dps_id, bool) or not isinstance(dps_id, int) or not 1 <= dps_id <= 65535:
                 continue
@@ -3568,6 +3571,39 @@ def apply_tuya_product_catalog_import(payload: dict[str, Any], session: dict[str
         return {"applied_count": len(accepted), "excluded_count": len(excluded), "product_schema_count": len(existing)}
 
 
+@app.post("/api/v1/integrations/tuya/product-metadata")
+def save_tuya_product_metadata(payload: dict[str, Any], session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Save owner-curated display name and functional kind for one immutable PID."""
+    with db() as conn:
+        _require_owner(session, conn)
+        if not isinstance(payload, dict) or set(payload) != {"product_id", "product_name_pt", "device_kind"}:
+            raise HTTPException(422, "tuya_product_metadata_invalid")
+        product_id = payload.get("product_id")
+        product_name = payload.get("product_name_pt")
+        device_kind = payload.get("device_kind")
+        if (not isinstance(product_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", product_id)
+                or not isinstance(product_name, str) or len(product_name.strip()) > 160
+                or not isinstance(device_kind, str) or device_kind not in hardware_integrations.TUYA_DEVICE_KINDS):
+            raise HTTPException(422, "tuya_product_metadata_invalid")
+        config = hardware_integrations.load_config()
+        tuya = config.setdefault("tuya", {})
+        metadata = tuya.setdefault("product_metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+            tuya["product_metadata"] = metadata
+        metadata[product_id] = {"product_name_pt": product_name.strip(), "device_kind": device_kind}
+        try:
+            hardware_integrations.save_config(config)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(500, "tuya_product_metadata_save_failed") from exc
+        affected = sum(1 for item in tuya.get("devices", []) if isinstance(item, dict)
+                       and str(item.get("product_id") or "") == product_id)
+        audit(conn, session["user_id"], "hardware.tuya.product_metadata", product_id, "success",
+              {"device_kind": device_kind, "affected_devices": affected})
+        return {"saved": True, "product_id": product_id, "product_name_pt": product_name.strip(),
+                "device_kind": device_kind, "affected_device_count": affected}
+
+
 @app.post("/api/v1/integrations/shelly/register")
 def register_shelly_device(payload: dict[str, Any],
                            session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
@@ -3644,6 +3680,34 @@ def register_shelly_device(payload: dict[str, Any],
         LOG.warning("Shelly inventory registration failed (%s)", type(exc).__name__)
         raise HTTPException(500, "shelly_registration_failed") from exc
     return {"device": central, "reading": reading}
+
+
+@app.post("/api/v1/integrations/shelly/name")
+def rename_shelly_device(payload: dict[str, Any], session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Rename a Shelly device in the Gateway inventory without contacting hardware."""
+    if not isinstance(payload, dict) or set(payload) != {"device_id", "name"}:
+        raise HTTPException(422, "shelly_name_payload_invalid")
+    device_id, name = payload.get("device_id"), payload.get("name")
+    if (not isinstance(device_id, str) or len(device_id) > 140
+            or not isinstance(name, str) or not name.strip() or len(name.strip()) > 120):
+        raise HTTPException(422, "shelly_name_invalid")
+    with db() as conn:
+        _require_owner(session, conn)
+        if device_id.startswith("shelly-blu:"):
+            mac = _inventory_mac(device_id.removeprefix("shelly-blu:"))
+            cursor = conn.execute("UPDATE shelly_blu_devices SET name=?,updated_at=? WHERE mac=? AND enabled=1",
+                                  (name.strip(), utcnow(), mac))
+            provider, source_id = "shelly", f"shelly-blu:{mac}"
+        else:
+            cursor = conn.execute("UPDATE shelly_devices SET name=?,updated_at=? WHERE device_id=? AND enabled=1",
+                                  (name.strip(), utcnow(), device_id))
+            provider, source_id = "shelly", device_id
+        if not cursor.rowcount:
+            raise HTTPException(404, "shelly_device_not_found")
+        conn.execute("UPDATE gateway_device_inventory SET name=?,name_source='owner',updated_at=? WHERE source_provider=? AND source_device_id=?",
+                     (name.strip(), utcnow(), provider, source_id))
+        audit(conn, session["user_id"], "hardware.shelly.rename", device_id, "success", {})
+    return {"saved": True, "device_id": device_id, "name": name.strip()}
 
 
 @app.post("/api/v1/integrations/shelly/read")

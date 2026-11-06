@@ -532,6 +532,16 @@ export async function controlGatewayTuyaSetting(deviceId, code, value) {
   if (typeof deviceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(deviceId) || typeof code !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(code) || !["boolean", "number", "string"].includes(typeof value) || (typeof value === "number" && !Number.isInteger(value))) throw new Error("Definição Tuya inválida.");
   return gatewayApi("/api/v1/integrations/tuya/setting", { method: "POST", body: { device_id: deviceId, code, value } });
 }
+export async function saveGatewayTuyaProductMetadata({ product_id, product_name_pt, device_kind }) {
+  if (typeof product_id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(product_id) ||
+      typeof product_name_pt !== "string" || product_name_pt.trim().length > 160 ||
+      typeof device_kind !== "string" || !["breaker", "switch", "multi_switch", "dimmer", "blind", "socket", "light", "sensor", "ev_charger", "unknown"].includes(device_kind)) {
+    throw new Error("Metadados do produto Tuya inválidos.");
+  }
+  return gatewayApi("/api/v1/integrations/tuya/product-metadata", { method: "POST", body: {
+    product_id, product_name_pt: product_name_pt.trim(), device_kind,
+  } });
+}
 export async function saveGatewayTuyaProductDpsDescription(deviceId, dpsId, description, mapping = {}) {
   if (typeof deviceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(deviceId) || !Number.isInteger(dpsId) || dpsId < 1 || dpsId > 65535 || typeof description !== "string" || !description.trim() || description.trim().length > 80) throw new Error("Descrição DPS inválida.");
   const allowedSemantics = new Set(["voltage", "current", "power", "daily_accumulated_energy", "total_energy", "switch", "countdown", "child_lock", "custom_label"]);
@@ -603,6 +613,12 @@ export async function registerGatewayShellyDevice({ name, host, mac = "", device
   if (typeof username !== "string" || username.length > 128 || typeof password !== "string" || password.length > 256) throw new Error("Credenciais Shelly inválidas.");
   if (mac && !/^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$/i.test(mac)) throw new Error("MAC inválido.");
   return gatewayApi("/api/v1/integrations/shelly/register", { method: "POST", body: { name: name.trim(), host: host.trim(), ...(mac ? { mac: mac.toUpperCase() } : {}), device_type, username, password } });
+}
+export async function renameGatewayShellyDevice(device_id, name) {
+  if (typeof device_id !== "string" || device_id.length > 140 || typeof name !== "string" || !name.trim() || name.trim().length > 120) {
+    throw new Error("Nome Shelly inválido.");
+  }
+  return gatewayApi("/api/v1/integrations/shelly/name", { method: "POST", body: { device_id, name: name.trim() } });
 }
 export async function registerGatewayShellyBluDevice({ mac, name, device_type = "smart_sensor", bridge_mac }) {
   if (typeof mac !== "string" || !/^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$/i.test(mac)) throw new Error("MAC Bluetooth inválido.");

@@ -191,7 +191,7 @@ test("Tuya profiles are inferred automatically and breakers expose one control",
   const gatewayIntegrations = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/integrations.py", import.meta.url), "utf8");
   assert.match(gatewayIntegrations, /def classify_tuya_device\(/);
   assert.match(gatewayIntegrations, /断路器/);
-  assert.match(gatewayIntegrations, /device_kind_override/);
+  assert.match(gatewayIntegrations, /product_meta\.get\("device_kind"\)/);
   assert.doesNotMatch(app, /name="device_kind_override"/);
   assert.match(app, /<small>Tipo Tuya<\/small>/);
   assert.match(app, /<small>Tipo de equipamento<\/small>/);

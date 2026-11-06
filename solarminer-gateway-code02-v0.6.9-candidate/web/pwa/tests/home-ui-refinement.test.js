@@ -168,11 +168,14 @@ test("Tuya device editor opens a Gateway event log for state, availability and a
   assert.match(app, /esc\(item\.ip\)/);
 });
 
-test("Tuya editor uses the cloud Product label and automatic product-scoped DPS/type mapping", () => {
+test("Tuya editor uses cloud Product metadata and shares the DPS map by Product ID", () => {
   assert.doesNotMatch(app, /name="dps_preset_id"/);
   assert.doesNotMatch(app, /name="device_kind_override"/);
-  assert.match(app, /product_name_pt\|\|device\.product/);
-  assert.match(app, /Product ID, Product Tuya, categoria e tipo funcional/);
+  assert.match(app, /product_name_pt\|\|device\.product_name\|\|device\.product/);
+  assert.match(app, /mapa DPS permanece associado apenas ao Product ID/);
+  assert.match(app, /data-tuya-product-edit/);
+  assert.match(app, /saveGatewayTuyaProductMetadata/);
+  assert.match(app, /data-tuya-edit-dps/);
   assert.match(app, /product_name_pt/);
 });
 
@@ -191,7 +194,8 @@ test("Tuya profiles are inferred automatically and breakers expose one control",
   const gatewayIntegrations = readFileSync(new URL("../../../src/solarminer_gateway/integrations.py", import.meta.url), "utf8");
   assert.match(gatewayIntegrations, /def classify_tuya_device\(/);
   assert.match(gatewayIntegrations, /断路器/);
-  assert.match(gatewayIntegrations, /device_kind_override/);
+  assert.match(gatewayIntegrations, /product_meta\.get\("device_kind"\)/);
+  assert.match(gatewayIntegrations, /def tuya_product_identity_key\([\s\S]*?return str\(device\.get\("product_id"\)/);
   assert.doesNotMatch(app, /name="device_kind_override"/);
   assert.match(app, /<small>Tipo Tuya<\/small>/);
   assert.match(app, /<small>Tipo de equipamento<\/small>/);

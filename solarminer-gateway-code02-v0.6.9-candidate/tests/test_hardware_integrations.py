@@ -220,7 +220,7 @@ def test_tuya_dps_registry_keeps_dp18_scoped_and_unknown_read_only():
     assert unknown["raw_dps"]["250"] == {"x": 1}
 
 
-def test_owner_product_dps_override_is_scoped_to_exact_product_identity_and_only_enables_safe_switches():
+def test_owner_product_dps_override_is_scoped_to_pid_and_only_enables_safe_switches():
     profile = {
         "product-a": {"custom_dps_overrides": {
             "7": {"label": "Tensão", "semantic_code": "voltage", "unit": "V", "data_type": "number", "scale": 10},
@@ -242,9 +242,35 @@ def test_owner_product_dps_override_is_scoped_to_exact_product_identity_and_only
     assert tuya_dps_registry.analyze_device({**device, "product_dps_overrides": profile["product-a"]["custom_dps_overrides"]})["dps"][0]["display_name"] == "Tensão"
     other = integrations._tuya_apply_product_dps_overrides({**device, "product_id": "product-b"}, {}, scoped_maps)
     assert not other.get("switch_code")
-    for mismatch in ({"product": "another-model"}, {"category": "kg"}, {"device_kind": "multi_switch"}):
-        other = integrations._tuya_apply_product_dps_overrides({**device, **mismatch}, {}, scoped_maps)
-        assert not other.get("switch_code")
+    # Names, category and functional classification are editable product
+    # metadata; every device with the same immutable PID shares the DPS map.
+    for metadata_change in ({"product": "translated label"}, {"category": "kg"}, {"device_kind": "multi_switch"}):
+        same_product = integrations._tuya_apply_product_dps_overrides({**device, **metadata_change}, {}, scoped_maps)
+        assert same_product["switch_code"] == "switch_9"
+        assert integrations.tuya_product_identity_key({**device, **metadata_change}) == "product-a"
+
+
+def test_legacy_composite_tuya_maps_migrate_to_pid_and_owner_metadata_is_applied(tmp_path, monkeypatch):
+    monkeypatch.setattr(integrations, "_data_dir", lambda: tmp_path)
+    device = {"device_id": "dev-one", "product_id": "pid-one", "product": "智能断路器",
+              "category": "cz", "functions": [], "current_status": []}
+    old_key = json.dumps(("pid-one", "智能断路器", "cz", "unknown"), ensure_ascii=False,
+                         separators=(",", ":"))
+    integrations.save_config({"tuya": {
+        "devices": [device], "product_schemas": {},
+        "product_dps_maps": {old_key: {"product_id": "pid-one", "product": "智能断路器",
+            "category": "cz", "device_kind": "unknown",
+            "custom_dps_overrides": {"1": {"label": "Interruptor", "semantic_code": "switch",
+                "data_type": "boolean", "write_enabled": True}},
+            "dps_profile": {"dps": [{"dps_id": 1, "display_name": "Interruptor"}]}}},
+        "product_metadata": {"pid-one": {"product_name_pt": "Disjuntor Wi-Fi",
+                                             "device_kind": "breaker"}},
+    }})
+    loaded = integrations.load_config()["tuya"]
+    assert list(loaded["product_dps_maps"]) == ["pid-one"]
+    assert loaded["devices"][0]["product_name_pt"] == "Disjuntor Wi-Fi"
+    assert loaded["devices"][0]["device_kind"] == "breaker"
+    assert loaded["devices"][0]["device_kind_label"] == integrations.TUYA_DEVICE_KINDS["breaker"]
 
 
 def test_tuya_product_translation_uses_online_portuguese_and_returns_empty_when_unavailable(monkeypatch):
