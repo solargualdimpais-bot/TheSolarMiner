@@ -179,7 +179,8 @@ def test_bluetooth_discovery_does_not_report_scan_support_for_non_rpc_generation
     monkeypatch.setattr(shelly, "_rpc", lambda host, method, **kwargs: calls.append(method) or {})
     result = shelly.discover_bluetooth_devices("192.168.1.41")
     assert result["supported"] is False
-    assert result["reason"] == "bluetooth_scanner_not_supported"
+    assert result["reason"] == "bluetooth_bridge_capability_not_confirmed"
+    assert result["diagnostic"]["stage"] == "capability_gate"
     assert calls == ["BTHome.GetStatus"]
 
 
@@ -223,7 +224,7 @@ def test_bluetooth_discovery_uses_long_window_and_reports_no_advertisements(monk
         if method == "BTHome.GetStatus": return {"errors": []}
         if method == "Script.List": return {"scripts": []}
         if method == "Script.Create": return {"id": 4}
-        if method == "Script.Eval": return {"result": "{}"}
+        if method == "Script.Eval": return {"result": '{"diagnostic":{"scanner_is_running":true,"start_result":"skipped_scanner_running","advertisement_count":0,"matching_advertisement_count":0,"error":""},"devices":{}}'}
         return {}
     monkeypatch.setattr(shelly, "_rpc", rpc)
     monkeypatch.setattr(shelly.time, "sleep", lambda _: None)
@@ -232,12 +233,36 @@ def test_bluetooth_discovery_uses_long_window_and_reports_no_advertisements(monk
     assert "duration_ms:30000" in code
     assert "window_ms:100" in code
     assert "BLE.Scanner.isRunning" in code and "BLE.Scanner.IsRunning" in code
+    eval_code = next(params["code"] for method, params in calls if method == "Script.Eval")
+    assert "scanner_is_running" in code
+    assert "JSON.stringify({diagnostic:SolarMinerBleDiagnostics,devices:SolarMinerBleResults})" in eval_code
     assert "BLE.Scanner.subscribe || BLE.Scanner.Subscribe" in code
-    assert "if (!SolarMinerIsRunning)" in code
     assert "BLE.Scanner.start || BLE.Scanner.Start" in code
+    assert "SolarMinerBleDiagnostics.start_result" in code
+    assert '"skipped_scanner_running"' in code
     assert result["supported"] is True
     assert result["devices"] == []
     assert result["reason"] == "no_advertisements_received"
+    assert result["diagnostic"]["scanner_is_running"] is True
+    assert result["diagnostic"]["start_result"] == "skipped_scanner_running"
+
+
+def test_bluetooth_discovery_preserves_bridge_rpc_rejection_diagnostic(monkeypatch):
+    monkeypatch.setattr(shelly, "inspect_bluetooth_bridge", lambda *args, **kwargs: {
+        "bridge_candidate": True, "generation": 2, "mac": "AA:BB:CC:DD:EE:40",
+        "model": "Shelly BLU Gateway", "firmware": "1.7.0"})
+
+    def rpc(host, method, params=None, **auth):
+        if method == "Script.List":
+            raise shelly.ShellyRpcError(-32601, "Script.List is not available")
+        return {}
+
+    monkeypatch.setattr(shelly, "_rpc", rpc)
+    result = shelly.discover_bluetooth_devices("192.168.1.40")
+    assert result["reason"] == "shelly_rpc_method_not_found"
+    assert result["diagnostic"]["failed_stage"] == "script_list"
+    assert result["diagnostic"]["rpc_code"] == -32601
+    assert result["diagnostic"]["rpc_message"] == "Script.List is not available"
 
 
 def test_bluetooth_discovery_does_not_stop_scripts_when_all_slots_are_busy(monkeypatch):

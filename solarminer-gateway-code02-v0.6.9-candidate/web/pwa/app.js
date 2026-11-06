@@ -3723,9 +3723,10 @@ $("#page-content").addEventListener("click", async event => {
       const report={hosts:[],blu_devices:Array.isArray(result.devices)?result.devices:[],blu_bridges:[result.bridge||{}],
         networks:[],skipped_networks:[],scanned_count:0,responsive_count:0};
       renderLocalNetworkResults(report);
-      const count=report.blu_devices.length,reason=result.bridge?.reason;
+      const count=report.blu_devices.length,reason=result.bridge?.reason,diagnostic=result.bridge?.diagnostic||{};
+      const diagnosticText=[diagnostic.scanner_is_running!==undefined?`scanner ativo: ${diagnostic.scanner_is_running}`:"",diagnostic.start_result?`pedido de pesquisa: ${diagnostic.start_result}`:"",diagnostic.failed_stage?`falhou em: ${diagnostic.failed_stage}`:"",diagnostic.error?`erro: ${diagnostic.error}`:"",diagnostic.rpc_code!==undefined?`RPC ${diagnostic.rpc_code}${diagnostic.rpc_message?` · ${diagnostic.rpc_message}`:""}`:"",diagnostic.advertisement_count!==undefined?`anúncios BLE: ${diagnostic.advertisement_count}`:"",diagnostic.matching_advertisement_count!==undefined?`anúncios compatíveis: ${diagnostic.matching_advertisement_count}`:""].filter(Boolean).join(" · ");
       status.textContent=count?`${count} sensor${count===1?"":"es"} encontrado${count===1?"":"s"} por ${bridge.name||"esta ponte"}. Abre uma linha para guardar.`:
-        `A ponte ${bridge.name||"Shelly BLU"} respondeu, mas não recebeu anúncios do sensor. A pesquisa já dura até 30 segundos; aproxima e ativa o sensor durante a procura.${reason?` Diagnóstico: ${reason.replaceAll("_"," ")}.`:""}`;
+        `A ponte ${bridge.name||"Shelly BLU"} respondeu, mas não recebeu anúncios do sensor. A pesquisa já dura até 30 segundos; aproxima e ativa o sensor durante a procura.${reason?` Resultado: ${reason.replaceAll("_"," ")}.`:""}${diagnosticText?` Detalhe da ponte: ${diagnosticText}.`:""}`;
     }catch(error){status.textContent=`Não foi possível procurar sensores pela ponte ${bridge.name||"Shelly BLU"}: ${error.message||"o Gateway não respondeu."}`;}
     return;
   }

@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.203"
+PACKAGE_VERSION = "0.6.204"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -473,11 +473,19 @@ def _scan_registered_shelly_blu_bridges(conn: sqlite3.Connection, *, duration_se
                             "state": "unavailable", "reason": str(exc)[:100]})
             continue
         bridge = result.get("bridge") if isinstance(result.get("bridge"), dict) else {}
+        scan_diagnostic = result.get("diagnostic") if isinstance(result.get("diagnostic"), dict) else {}
+        if scan_diagnostic:
+            # Diagnostic contains only bridge-reported scanner state and RPC
+            # error metadata; never credentials or script contents.
+            LOG.info("Shelly BLU scan diagnostic mac=%s stage=%s result=%s",
+                     bridge_mac, str(scan_diagnostic.get("stage") or "unknown")[:48],
+                     json.dumps(scan_diagnostic, ensure_ascii=True, separators=(",", ":"))[:1200])
         bridges.append({"mac": bridge_mac or _inventory_mac(bridge.get("mac")),
                         "name": str(row["name"] or "Shelly BLU Gateway")[:120],
                         "model": str(bridge.get("model") or row["model"] or "")[:120],
                         "state": "scanned" if result.get("supported") else "unsupported",
-                        "reason": str(result.get("reason") or "")[:100]})
+                        "reason": str(result.get("reason") or "")[:100],
+                        "diagnostic": scan_diagnostic})
         for item in result.get("devices", []) if isinstance(result.get("devices"), list) else []:
             if not isinstance(item, dict):
                 continue

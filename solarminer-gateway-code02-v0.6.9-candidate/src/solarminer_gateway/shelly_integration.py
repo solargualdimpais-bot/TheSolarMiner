@@ -16,6 +16,15 @@ _DEVICE_IO_LIMIT = threading.BoundedSemaphore(8)
 _BLU_DISCOVERY_LOCK = threading.Lock()
 
 
+class ShellyRpcError(RuntimeError):
+    """A Shelly JSON-RPC rejection with safe, bounded device diagnostics."""
+
+    def __init__(self, code: Any, message: Any):
+        self.code = code if isinstance(code, (int, str)) else "unknown"
+        self.device_message = re.sub(r"[\x00-\x1f\x7f]", " ", str(message or ""))[:160]
+        super().__init__("shelly_rpc_method_not_found" if self.code == -32601 else "shelly_rpc_rejected")
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise urllib.error.HTTPError(req.full_url, code, "redirect_rejected", headers, fp)
@@ -71,8 +80,8 @@ def _rpc(host: str, method: str, params: dict[str, Any] | None = None, **auth: s
     if result.get("error"):
         error = result.get("error") if isinstance(result.get("error"), dict) else {}
         if error.get("code") == -32601:
-            raise RuntimeError("shelly_rpc_method_not_found")
-        raise RuntimeError("shelly_rpc_rejected")
+            raise ShellyRpcError(error.get("code"), error.get("message") or "method_not_found")
+        raise ShellyRpcError(error.get("code"), error.get("message") or "rpc_rejected")
     value = result.get("result")
     if not isinstance(value, dict):
         raise RuntimeError("shelly_rpc_invalid_result")
@@ -346,9 +355,13 @@ def discover_bluetooth_devices(host: str, *, username: str = "", password: str =
     bridge = inspect_bluetooth_bridge(host, username=username, password=password)
     model = str(bridge.get("model") or "")
     if not bridge.get("bridge_candidate") or int(bridge.get("generation") or 0) < 2:
-        return {"bridge": bridge, "supported": False, "devices": [], "reason": "bluetooth_scanner_not_supported"}
+        diagnostic = {"stage": "capability_gate", "bridge_candidate": bool(bridge.get("bridge_candidate")),
+                      "reported_generation": bridge.get("generation"), "scanner_is_running": "not_queried"}
+        return {"bridge": bridge, "supported": False, "devices": [], "reason": "bluetooth_bridge_capability_not_confirmed",
+                "diagnostic": diagnostic}
 
     script_id: int | None = None
+    diagnostic: dict[str, Any] = {"stage": "script_list", "scanner_is_running": "not_queried"}
     with _BLU_DISCOVERY_LOCK:
         try:
             script_list = _rpc(host, "Script.List", username=username, password=password)
@@ -358,7 +371,9 @@ def discover_bluetooth_devices(host: str, *, username: str = "", password: str =
             managed = [item for item in scripts if isinstance(item, dict)
                        and str(item.get("name") or "").startswith("SolarMiner BLE scan ")]
             if any(item.get("running") is True for item in managed):
-                return {"bridge": bridge, "supported": False, "devices": [], "reason": "bluetooth_scan_already_running"}
+                diagnostic.update({"stage": "managed_script_check", "managed_scan_running": True})
+                return {"bridge": bridge, "supported": False, "devices": [], "reason": "bluetooth_scan_already_running",
+                        "diagnostic": diagnostic}
             for item in managed:
                 stale_id = item.get("id")
                 if item.get("running") is not True and isinstance(stale_id, int) and not isinstance(stale_id, bool):
@@ -367,7 +382,9 @@ def discover_bluetooth_devices(host: str, *, username: str = "", password: str =
                     except (RuntimeError, OSError, ValueError):
                         pass
             if sum(1 for item in scripts if isinstance(item, dict) and item.get("running") is True) >= 3:
-                return {"bridge": bridge, "supported": False, "devices": [], "reason": "bluetooth_script_slots_busy"}
+                diagnostic.update({"stage": "script_capacity_check", "running_script_count": sum(1 for item in scripts if isinstance(item, dict) and item.get("running") is True)})
+                return {"bridge": bridge, "supported": False, "devices": [], "reason": "bluetooth_script_slots_busy",
+                        "diagnostic": diagnostic}
             created = _rpc(host, "Script.Create", {"name": f"SolarMiner BLE scan {uuid.uuid4().hex[:8]}"},
                            username=username, password=password)
             script_id = created.get("id")
@@ -375,47 +392,76 @@ def discover_bluetooth_devices(host: str, *, username: str = "", password: str =
                 raise RuntimeError("shelly_script_create_invalid")
             scan_ms = int(duration_seconds * 1000)
             script_code = f'''var SolarMinerBleResults = {{}};
-var SolarMinerIsRunning = typeof BLE.Scanner.isRunning === "function" ? BLE.Scanner.isRunning() :
-  (typeof BLE.Scanner.IsRunning === "function" ? BLE.Scanner.IsRunning() : false);
-var SolarMinerSubscribe = BLE.Scanner.subscribe || BLE.Scanner.Subscribe;
-var SolarMinerStart = BLE.Scanner.start || BLE.Scanner.Start;
-if (typeof SolarMinerSubscribe !== "function") throw Error("ble_scanner_subscribe_not_supported");
-SolarMinerSubscribe.call(BLE.Scanner, function(event, result) {{
-  if (event !== BLE.Scanner.SCAN_RESULT || !result || !result.addr) return;
-  var name = String(result.local_name || "");
-  var serviceData = result.service_data || result.serviceData || {{}};
-  var bthome = "";
-  if (serviceData && typeof serviceData === "object") {{
-    for (var key in serviceData) if (String(key).toLowerCase() === "fcd2") {{ bthome = serviceData[key]; break; }}
+var SolarMinerBleDiagnostics = {{stage:"init",scanner_is_running:null,subscribe_available:false,start_available:false,
+  start_result:"not_called",advertisement_count:0,matching_advertisement_count:0,error:""}};
+var SolarMinerSubscribe = null;
+var SolarMinerStart = null;
+try {{
+  SolarMinerBleDiagnostics.stage = "scanner_state";
+  SolarMinerSubscribe = BLE.Scanner.subscribe || BLE.Scanner.Subscribe;
+  SolarMinerStart = BLE.Scanner.start || BLE.Scanner.Start;
+  if (typeof BLE.Scanner.isRunning === "function") SolarMinerBleDiagnostics.scanner_is_running = BLE.Scanner.isRunning();
+  else if (typeof BLE.Scanner.IsRunning === "function") SolarMinerBleDiagnostics.scanner_is_running = BLE.Scanner.IsRunning();
+  else SolarMinerBleDiagnostics.scanner_is_running = "api_unavailable";
+  SolarMinerBleDiagnostics.subscribe_available = typeof SolarMinerSubscribe === "function";
+  SolarMinerBleDiagnostics.start_available = typeof SolarMinerStart === "function";
+  if (!SolarMinerBleDiagnostics.subscribe_available) throw Error("BLE.Scanner.subscribe_unavailable");
+  SolarMinerBleDiagnostics.stage = "subscribe";
+  SolarMinerSubscribe.call(BLE.Scanner, function(event, result) {{
+    if (event !== BLE.Scanner.SCAN_RESULT || !result || !result.addr) return;
+    SolarMinerBleDiagnostics.advertisement_count++;
+    var name = String(result.local_name || "");
+    var serviceData = result.service_data || result.serviceData || {{}};
+    var bthome = "";
+    if (serviceData && typeof serviceData === "object") {{
+      for (var key in serviceData) if (String(key).toLowerCase() === "fcd2") {{ bthome = serviceData[key]; break; }}
+    }}
+    var shellyName = /^SB[A-Z0-9_-]{{2,}}/i.test(name) || /^Shelly BLU/i.test(name);
+    if (!shellyName && !bthome) return;
+    SolarMinerBleDiagnostics.matching_advertisement_count++;
+    var address = String(result.addr).toUpperCase();
+    var values = null;
+    if (bthome && typeof BTHome !== "undefined") {{ try {{ values = BTHome.parseData(String(bthome), address); }} catch (_) {{ values = null; }} }}
+    SolarMinerBleResults[address] = {{mac:address,name:name,rssi:Number(result.rssi)||null,
+      service_data:String(bthome||""),values:values,manufacturer:shellyName?"Shelly":"BTHome",observed_at:Date.now()}};
+  }});
+  if (SolarMinerBleDiagnostics.scanner_is_running === true) SolarMinerBleDiagnostics.start_result = "skipped_scanner_running";
+  else {{
+    if (!SolarMinerBleDiagnostics.start_available) throw Error("BLE.Scanner.start_unavailable");
+    SolarMinerBleDiagnostics.stage = "scan_request";
+    var SolarMinerBleScanStarted = SolarMinerStart.call(BLE.Scanner, {{duration_ms:{scan_ms},active:true,interval_ms:100,window_ms:100}});
+    SolarMinerBleDiagnostics.start_result = SolarMinerBleScanStarted === null ? "null" : SolarMinerBleScanStarted === false ? "false" : "accepted";
+    if (SolarMinerBleScanStarted === null || SolarMinerBleScanStarted === false) {{ SolarMinerBleDiagnostics.error = "scan_request_rejected"; SolarMinerBleDiagnostics.failed_stage = "scan_request"; }}
   }}
-  var shellyName = /^SB[A-Z0-9_-]{{2,}}/i.test(name) || /^Shelly BLU/i.test(name);
-  if (!shellyName && !bthome) return;
-  var address = String(result.addr).toUpperCase();
-  var values = null;
-  if (bthome && typeof BTHome !== "undefined") {{ try {{ values = BTHome.parseData(String(bthome), address); }} catch (_) {{ values = null; }} }}
-  SolarMinerBleResults[address] = {{mac:address,name:name,rssi:Number(result.rssi)||null,
-    service_data:String(bthome||""),values:values,manufacturer:shellyName?"Shelly":"BTHome",observed_at:Date.now()}};
-}});
-if (!SolarMinerIsRunning) {{
-  if (typeof SolarMinerStart !== "function") throw Error("ble_scanner_start_not_supported");
-  var SolarMinerBleScanStarted = SolarMinerStart.call(BLE.Scanner, {{duration_ms:{scan_ms},active:true,interval_ms:100,window_ms:100}});
-  if (SolarMinerBleScanStarted === null || SolarMinerBleScanStarted === false) throw Error("ble_scan_start_failed");
+}} catch (SolarMinerBleError) {{
+  SolarMinerBleDiagnostics.error = String(SolarMinerBleError && SolarMinerBleError.message || SolarMinerBleError).slice(0,160);
+  SolarMinerBleDiagnostics.failed_stage = SolarMinerBleDiagnostics.stage;
 }}
 '''
+            diagnostic.update({"stage": "script_upload"})
             _rpc(host, "Script.PutCode", {"id": script_id, "code": script_code}, username=username, password=password)
+            diagnostic.update({"stage": "script_start"})
             _rpc(host, "Script.Start", {"id": script_id}, username=username, password=password)
             time.sleep(duration_seconds + 0.4)
-            evaluated = _rpc(host, "Script.Eval", {"id": script_id, "code": "JSON.stringify(SolarMinerBleResults)"},
+            diagnostic.update({"stage": "read_script_diagnostics"})
+            evaluated = _rpc(host, "Script.Eval", {"id": script_id, "code": "JSON.stringify({diagnostic:SolarMinerBleDiagnostics,devices:SolarMinerBleResults})"},
                              username=username, password=password)
             encoded = evaluated.get("result", "{}")
             if not isinstance(encoded, str) or len(encoded) > 65536:
                 raise RuntimeError("shelly_ble_scan_response_invalid")
             try:
-                found = json.loads(encoded)
+                payload = json.loads(encoded)
             except json.JSONDecodeError as exc:
                 raise RuntimeError("shelly_ble_scan_response_invalid") from exc
+            if not isinstance(payload, dict):
+                raise RuntimeError("shelly_ble_scan_response_invalid")
+            found = payload.get("devices", payload if "diagnostic" not in payload else {})
             if not isinstance(found, dict):
                 raise RuntimeError("shelly_ble_scan_response_invalid")
+            script_diagnostic = payload.get("diagnostic")
+            if isinstance(script_diagnostic, dict):
+                diagnostic.update(script_diagnostic)
+                diagnostic["stage"] = "scan_complete"
             devices = []
             for mac, item in found.items():
                 normalized = _normalize_mac(mac)
@@ -429,13 +475,19 @@ if (!SolarMinerIsRunning) {{
                                 "values": item.get("values") if isinstance(item.get("values"), list) else [],
                                 "bridge_mac": bridge.get("mac"), "bridge_host": host,
                                 "bridge_model": model, "discovery_method": "shelly_blu_gateway_ble"})
+            scan_reason = ("ble_scan_request_rejected" if diagnostic.get("error") == "scan_request_rejected" else
+                           "ble_scanner_method_unavailable" if diagnostic.get("error") in {
+                               "BLE.Scanner.subscribe_unavailable", "BLE.Scanner.start_unavailable"} else
+                           "no_advertisements_received" if not devices else "")
             return {"bridge": bridge, "supported": True, "devices": devices,
-                    "reason": "no_advertisements_received" if not devices else ""}
+                    "reason": scan_reason, "diagnostic": diagnostic}
         except RuntimeError as exc:
             reason = str(exc)
-            if reason in {"shelly_rpc_method_not_found", "shelly_rpc_rejected"}:
-                reason = "bluetooth_scanner_not_supported"
-            return {"bridge": bridge, "supported": False, "devices": [], "reason": reason}
+            diagnostic.update({"failed_stage": diagnostic.get("stage", "unknown"), "error": reason})
+            if isinstance(exc, ShellyRpcError):
+                diagnostic["rpc_code"] = exc.code
+                diagnostic["rpc_message"] = exc.device_message
+            return {"bridge": bridge, "supported": False, "devices": [], "reason": reason, "diagnostic": diagnostic}
         finally:
             if script_id is not None:
                 try:
