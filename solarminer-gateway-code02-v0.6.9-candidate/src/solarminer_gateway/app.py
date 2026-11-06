@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.199"
+PACKAGE_VERSION = "0.6.200"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -230,6 +230,18 @@ CREATE TABLE IF NOT EXISTS shelly_product_profiles(
  updated_at TEXT NOT NULL, PRIMARY KEY(manufacturer,protocol,product_code)
 );
 CREATE INDEX IF NOT EXISTS idx_tuya_dps_category ON tuya_product_dps_map(protocol, category, device_kind, product_id);
+CREATE TABLE IF NOT EXISTS tuya_product_identity(
+ product_id TEXT NOT NULL, product TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '',
+ device_kind TEXT NOT NULL DEFAULT 'unknown', product_name_pt TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL,
+ PRIMARY KEY(product_id,product,category,device_kind)
+);
+CREATE TABLE IF NOT EXISTS tuya_product_dps_map_scoped(
+ product_id TEXT NOT NULL, product TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '',
+ device_kind TEXT NOT NULL DEFAULT 'unknown', dps_id INTEGER NOT NULL, dps_code TEXT NOT NULL DEFAULT '',
+ semantic_code TEXT NOT NULL DEFAULT 'unknown', description TEXT NOT NULL DEFAULT '', data_type TEXT NOT NULL DEFAULT 'unknown',
+ unit TEXT, scale REAL, write_supported INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL,
+ PRIMARY KEY(product_id,product,category,device_kind,dps_id)
+);
 CREATE INDEX IF NOT EXISTS idx_shelly_command_history_device_time ON shelly_command_history(device_id,occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_gateway_device_inventory_mac ON gateway_device_inventory(mac);
 CREATE INDEX IF NOT EXISTS idx_gateway_device_inventory_status ON gateway_device_inventory(confirmation_status, name);
@@ -862,6 +874,15 @@ def _sync_gateway_device_inventory(conn: sqlite3.Connection, config: dict[str, A
         product_name = str(device.get("product_name") or "")
         manufacturer = str(device.get("manufacturer") or ("Moes" if "moes" in product_name.casefold() else ""))
         product_id = str(device.get("product_id") or "")
+        if product_id:
+            product = str(device.get("product") or "")[:160]
+            category = str(device.get("category") or "")[:64].casefold()
+            device_kind = str(device.get("device_kind_override") or device.get("device_kind") or "unknown")[:32].casefold()
+            conn.execute("""INSERT INTO tuya_product_identity(product_id,product,category,device_kind,product_name_pt,updated_at)
+                VALUES(?,?,?,?,?,?) ON CONFLICT(product_id,product,category,device_kind) DO UPDATE SET
+                product_name_pt=CASE WHEN excluded.product_name_pt<>'' THEN excluded.product_name_pt ELSE tuya_product_identity.product_name_pt END,
+                updated_at=excluded.updated_at""",
+                (product_id[:128], product, category, device_kind, str(device.get("product_name_pt") or "")[:160], utcnow()))
         tuya_capabilities = [str(value) for value in (device.get("capability_labels") or {}).keys() if isinstance(value, str)]
         _upsert_smart_product_catalog(conn, manufacturer=manufacturer or "Tuya", protocol="tuya",
             product_code=product_id, product_name=product_name or str(device.get("model") or ""),
@@ -996,6 +1017,51 @@ def _persist_tuya_product_dps_map(conn: sqlite3.Connection, product_schemas: Any
                 dps_code=excluded.dps_code,semantic_code=excluded.semantic_code,description=excluded.description,data_type=excluded.data_type,
                 unit=excluded.unit,scale=excluded.scale,confidence=excluded.confidence,source=excluded.source,
                 validation_status=excluded.validation_status,read_supported=excluded.read_supported,write_supported=excluded.write_supported,updated_at=excluded.updated_at""", values)
+            saved += 1
+    return saved
+
+
+def _persist_tuya_product_dps_maps_scoped(conn: sqlite3.Connection, product_maps: Any) -> int:
+    """Persist Owner DPS meanings with the complete Tuya product identity."""
+    if not isinstance(product_maps, dict):
+        return 0
+    saved = 0
+    stamp = utcnow()
+    for mapping in product_maps.values():
+        if not isinstance(mapping, dict):
+            continue
+        product_id = str(mapping.get("product_id") or "")[:128]
+        product = str(mapping.get("product") or "")[:160]
+        category = str(mapping.get("category") or "")[:64].casefold()
+        device_kind = str(mapping.get("device_kind") or "unknown")[:32].casefold()
+        if not product_id or not product:
+            continue
+        overrides = mapping.get("custom_dps_overrides") if isinstance(mapping.get("custom_dps_overrides"), dict) else {}
+        profile = mapping.get("dps_profile") if isinstance(mapping.get("dps_profile"), dict) else {}
+        rows = profile.get("dps") if isinstance(profile.get("dps"), list) else []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            dps_id = row.get("dps_id")
+            if isinstance(dps_id, bool) or not isinstance(dps_id, int) or not 1 <= dps_id <= 65535:
+                continue
+            override = overrides.get(str(dps_id)) if isinstance(overrides.get(str(dps_id)), dict) else {}
+            scale = override.get("scale", row.get("scale"))
+            if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not math.isfinite(float(scale)):
+                scale = None
+            conn.execute("""INSERT INTO tuya_product_dps_map_scoped
+                (product_id,product,category,device_kind,dps_id,dps_code,semantic_code,description,data_type,unit,scale,write_supported,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(product_id,product,category,device_kind,dps_id) DO UPDATE SET
+                dps_code=excluded.dps_code,semantic_code=excluded.semantic_code,description=excluded.description,
+                data_type=excluded.data_type,unit=excluded.unit,scale=excluded.scale,
+                write_supported=excluded.write_supported,updated_at=excluded.updated_at""",
+                (product_id, product, category, device_kind, dps_id,
+                 str(override.get("function_code") or row.get("function_code") or "")[:64],
+                 str(override.get("semantic_code") or row.get("semantic_code") or "unknown")[:64],
+                 str(override.get("label") or row.get("display_name") or f"DPS {dps_id}")[:80],
+                 str(override.get("data_type") or row.get("data_type") or "unknown")[:24],
+                 str(override.get("unit") or row.get("unit") or "")[:16] or None, scale,
+                 int(bool(override.get("write_enabled"))), stamp))
             saved += 1
     return saved
 
@@ -2373,8 +2439,10 @@ def _tuya_devices_sync_work(session: dict[str, Any], cancelled: threading.Event)
             tuya["devices"] = list(imported.values())
             tuya["product_schemas"] = synced.get("product_schemas", tuya.get("product_schemas", {}))
             tuya["category_schemas"] = synced.get("category_schemas", tuya.get("category_schemas", {}))
+            tuya["product_dps_maps"] = synced.get("product_dps_maps", tuya.get("product_dps_maps", {}))
             config["tuya"] = tuya
             hardware_integrations.save_config(config)
+            _sync_gateway_device_inventory(conn, config)
             dps_maps_saved = _persist_tuya_product_dps_map(conn, tuya.get("product_schemas"))
             audit(conn, session["user_id"], "hardware.tuya.sync", "gateway", "success", {
                 "device_count": synced["device_count"],
@@ -4699,6 +4767,15 @@ def tuya_product_dps_description(payload: dict[str, Any], session: dict[str, Any
                        "dps_profile": tuya_dps_registry.product_profile(device), "custom_dps_overrides": {},
                        "cached_at": int(time.time())}
             profiles[product_id] = product
+        identity = hardware_integrations.tuya_product_identity(device)
+        identity_key = hardware_integrations.tuya_product_identity_key(device)
+        if not all(identity):
+            raise HTTPException(422, "tuya_product_identity_incomplete")
+        scoped_maps = tuya.get("product_dps_maps") if isinstance(tuya.get("product_dps_maps"), dict) else {}
+        scoped_map = scoped_maps.get(identity_key)
+        if not isinstance(scoped_map, dict):
+            scoped_map = {"product_id": identity[0], "product": identity[1], "category": identity[2],
+                          "device_kind": identity[3], "custom_dps_overrides": {}, "dps_profile": {"dps": []}}
         product.setdefault("protocol", "tuya")
         product.setdefault("manufacturer", "Tuya")
         product.setdefault("device_kind", str(device.get("device_kind") or device.get("category") or "unknown")[:32])
@@ -4711,8 +4788,7 @@ def tuya_product_dps_description(payload: dict[str, Any], session: dict[str, Any
         observed_status = (telemetry.get("status", [])
                            if telemetry.get("fresh") and telemetry.get("connection_state") == "local_responded"
                            else [])
-        for rows in (observed_status, device.get("current_status"), device.get("functions"), device.get("status_spec"),
-                     product.get("functions"), product.get("status_spec")):
+        for rows in (observed_status, device.get("current_status"), device.get("functions"), device.get("status_spec")):
             for row in rows if isinstance(rows, list) else []:
                 if not isinstance(row, dict):
                     continue
@@ -4725,7 +4801,7 @@ def tuya_product_dps_description(payload: dict[str, Any], session: dict[str, Any
                     continue
                 if parsed > 0:
                     recognized.add(parsed)
-        profile = product.get("dps_profile") if isinstance(product.get("dps_profile"), dict) else {}
+        profile = tuya_dps_registry.product_profile(device)
         profile_dps = profile.get("dps") if isinstance(profile.get("dps"), list) else []
         reference = next((row for row in profile_dps if isinstance(row, dict) and row.get("dps_id") == dps_id), None)
         if reference:
@@ -4772,38 +4848,52 @@ def tuya_product_dps_description(payload: dict[str, Any], session: dict[str, Any
                 scale = 10 ** values["scale"]
         if characteristics.get(semantic, {}).get("data_type") == "number" and (unit not in accepted_units.get(semantic, set()) or scale is None):
             raise HTTPException(422, "tuya_dps_measurement_requires_unit_and_scale")
-        product.setdefault("custom_dps_overrides", {})[str(dps_id)] = {
+        scoped_map.setdefault("custom_dps_overrides", {})[str(dps_id)] = {
             "label": label, "semantic_code": semantic, "unit": unit or None,
             "data_type": data_type, "scale": scale,
             "write_enabled": semantic in {"switch", "countdown", "child_lock"},
         }
-        if reference is None:
-            reference = {"dps_id": dps_id, "confidence": "OWNER_CUSTOM", "source": "Gateway Product ID mapping"}
-            if not isinstance(profile.get("dps"), list):
-                profile["dps"] = []
-            profile["dps"].append(reference)
-        reference.update({"display_name": label, "semantic_code": semantic,
-                          "unit": unit or reference.get("unit"), "data_type": data_type,
-                          "scale": scale if scale is not None else reference.get("scale"),
-                          "confidence": "OWNER_CUSTOM", "source": "Gateway Product ID mapping",
+        scoped_profile = scoped_map.get("dps_profile") if isinstance(scoped_map.get("dps_profile"), dict) else {"dps": []}
+        scoped_rows = scoped_profile.get("dps") if isinstance(scoped_profile.get("dps"), list) else []
+        scoped_reference = next((row for row in scoped_rows if isinstance(row, dict) and row.get("dps_id") == dps_id), None)
+        if scoped_reference is None:
+            scoped_reference = {"dps_id": dps_id, "confidence": "OWNER_CUSTOM", "source": "Gateway scoped Product mapping"}
+            scoped_rows.append(scoped_reference)
+        scoped_reference.update({"display_name": label, "semantic_code": semantic,
+                          "unit": unit or (reference.get("unit") if isinstance(reference, dict) else None), "data_type": data_type,
+                          "scale": scale if scale is not None else (reference.get("scale") if isinstance(reference, dict) else None),
+                          "confidence": "OWNER_CUSTOM", "source": "Gateway scoped Product mapping",
                           "write_supported": semantic in {"switch", "countdown", "child_lock"}})
-        product["dps_profile"] = profile
+        scoped_profile["dps"] = scoped_rows
+        scoped_map["dps_profile"] = scoped_profile
+        scoped_maps[identity_key] = scoped_map
         tuya["product_schemas"] = profiles
+        tuya["product_dps_maps"] = scoped_maps
         config["tuya"] = tuya
         try:
             saved = hardware_integrations.save_config(config)
         except (OSError, ValueError) as exc:
             raise HTTPException(500, "tuya_product_dps_description_save_failed") from exc
+        conn.execute("""INSERT INTO tuya_product_identity(product_id,product,category,device_kind,product_name_pt,updated_at)
+            VALUES(?,?,?,?,?,?) ON CONFLICT(product_id,product,category,device_kind) DO UPDATE SET
+            product_name_pt=CASE WHEN excluded.product_name_pt<>'' THEN excluded.product_name_pt ELSE tuya_product_identity.product_name_pt END,
+            updated_at=excluded.updated_at""",
+            (identity[0][:128], identity[1][:160], identity[2][:64], identity[3][:32],
+             str(device.get("product_name_pt") or "")[:160], utcnow()))
         # save_config returns a public view that deliberately omits private
         # schema internals; persist from the validated in-memory profiles.
         _persist_tuya_product_dps_map(conn, profiles)
+        _persist_tuya_product_dps_maps_scoped(conn, scoped_maps)
         audit(conn, session["user_id"], "hardware.tuya.dps_description", f"{product_id}:{dps_id}", "success",
               {"device_id": device_id, "product_id": product_id, "dps_id": dps_id, "semantic_code": semantic})
-        return {"saved": True, "product_id": product_id, "dps_id": dps_id,
+        affected = sum(1 for item in tuya.get("devices", []) if isinstance(item, dict)
+                       and hardware_integrations.tuya_product_identity_key(item) == identity_key)
+        return {"saved": True, "product_id": product_id, "product": identity[1],
+                "category": identity[2], "device_kind": identity[3], "dps_id": dps_id,
                 "description": label, "semantic_code": semantic,
                 "unit": unit or None, "scale": scale, "data_type": data_type,
-                "affected_device_count": sum(1 for item in tuya.get("devices", []) if isinstance(item, dict) and str(item.get("product_id") or "") == product_id),
-                "product_profile": saved.get("tuya", {}).get("product_catalog", {}).get(product_id, {}).get("dps_profile", {})}
+                "affected_device_count": affected,
+                "product_profile": scoped_profile}
 
 
 def _require_owner(session: dict[str, Any], conn) -> None:

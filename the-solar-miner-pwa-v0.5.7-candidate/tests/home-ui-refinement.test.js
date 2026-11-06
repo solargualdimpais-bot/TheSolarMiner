@@ -168,11 +168,12 @@ test("Tuya device editor opens a Gateway event log for state, availability and a
   assert.match(app, /esc\(item\.ip\)/);
 });
 
-test("Tuya editor persists an explicit DPS profile and keeps automatic matches as suggestions", () => {
-  assert.match(app, /name="dps_preset_id"/);
-  assert.match(app, /Automático · só sugestão, sem atribuir significado/);
-  assert.match(app, /dps_preset_id:form\.elements\.dps_preset_id\.value\|\|null/);
-  assert.match(app, /O esquema oficial deste produto e os códigos DPS explícitos prevalecem/);
+test("Tuya editor uses the cloud Product label and automatic product-scoped DPS/type mapping", () => {
+  assert.doesNotMatch(app, /name="dps_preset_id"/);
+  assert.doesNotMatch(app, /name="device_kind_override"/);
+  assert.match(app, /product_name_pt\|\|device\.product/);
+  assert.match(app, /Product ID, Product Tuya, categoria e tipo funcional/);
+  assert.match(app, /product_name_pt/);
 });
 
 test("KG six-channel quick controls expose per-pair modes and separate Settings without showing DPS ids", () => {
@@ -186,16 +187,18 @@ test("KG six-channel quick controls expose per-pair modes and separate Settings 
   assert.match(app, /data-tuya-channel-label=/);
 });
 
-test("Tuya profiles can be inferred or overridden and breakers expose one control", () => {
+test("Tuya profiles are inferred automatically and breakers expose one control", () => {
   const gatewayIntegrations = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/integrations.py", import.meta.url), "utf8");
   assert.match(gatewayIntegrations, /def classify_tuya_device\(/);
   assert.match(gatewayIntegrations, /断路器/);
   assert.match(gatewayIntegrations, /device_kind_override/);
-  assert.match(app, /name="device_kind_override"/);
-  assert.match(app, /\["ev_charger","Carregador EV"\]/);
+  assert.doesNotMatch(app, /name="device_kind_override"/);
+  assert.match(app, /<small>Tipo Tuya<\/small>/);
+  assert.match(app, /<small>Tipo de equipamento<\/small>/);
+  assert.match(app, /device\.product_name_pt\|\|device\.product/);
   assert.match(app, /refreshTuyaSchemaIfNeeded/);
   assert.match(app, /Outras leituras DPS recebidas/);
-  assert.match(app, /Disjuntor · um botão ON\/OFF/);
+  assert.match(app, /device\.device_kind_label\|\|"Equipamento Tuya"/);
   assert.match(app, /if\(\(device\.device_kind_override\|\|device\.device_kind\)==="breaker"\)codes=\[/);
 });
 

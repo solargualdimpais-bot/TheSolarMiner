@@ -81,14 +81,16 @@ test("Owner hardware setup includes the Tesla Fleet configuration beside Deye, A
   assert.doesNotMatch(auth, /tuya.*localStorage/i);
 });
 
-test("Saving a Tuya device in either form runs only the selected LAN reachability test", () => {
+test("Saving a Tuya device resolves missing LAN identity, then confirms first-time DPS; verified edits do not retest", () => {
   const app = read("../app.js");
   const auth = read("../gateway-auth.js");
   const gateway = read("../../../src/solarminer_gateway/app.py");
   const integrations = read("../../../src/solarminer_gateway/integrations.py");
   assert.match(app, /async function testTuyaLanReachability\(deviceId\)[\s\S]*?testGatewayTuyaLanReachability\(deviceId\)/);
-  assert.match(app, /saveGatewayHardwareIntegrationConfig\([\s\S]*?testTuyaLanReachability\(id\)/);
-  assert.match(app, /saveGatewayHardwareIntegrationConfig\(\{tuya:\{devices:next\}\}\)[\s\S]*?testTuyaLanReachability\(device\.device_id\)/);
+  assert.match(app, /if\(!requestedIp\|\|!requestedMac\)\{[\s\S]*?discoverGatewayTuyaLanDevices\(\)/);
+  assert.match(app, /saveGatewayHardwareIntegrationConfig\(\{tuya:\{devices:next\}\}\)[\s\S]*?if\(previouslyVerified\)\{/);
+  assert.match(app, /const report=await runGatewayTuyaLanDiagnostics\(1,device\.device_id\)/);
+  assert.match(app, /Alterações guardadas\. A ligação local já estava confirmada; não repeti os testes\./);
   assert.match(auth, /\/api\/v1\/integrations\/tuya\/lan-reachability/);
   assert.match(gateway, /@app\.post\(\"\/api\/v1\/integrations\/tuya\/lan-reachability\"\)/);
   assert.match(gateway, /status_read\": False, \"dps_read\": False, \"cloud_requested\": False/);

@@ -129,8 +129,8 @@ test("Favorite commands use the cached state and never trigger a LAN read", () =
   assert.match(app, /function openFavoriteDeviceDetails\(deviceId,kind\)/);
   assert.match(app, /function tuyaSimpleReadings\(device,reading\)/);
   assert.match(app, /function favoriteReadingConfirmed\(item\)/);
-  assert.match(app, /A testar apenas a resposta na LAN/);
-  assert.match(app, /Configuração guardada, mas sem resposta LAN/);
+  assert.match(app, /savedConfirmation\?'Ligação local validada anteriormente · à espera da próxima leitura'/);
+  assert.match(app, /Alterações guardadas\. A ligação local já estava confirmada; não repeti os testes\./);
   assert.match(app, /function renderTuyaDeviceCards\(devices\)/);
   assert.match(app, /tuya-read-state/);
   assert.match(app, /confirmed\?'Confirmado':'Por confirmar'/);
@@ -222,8 +222,8 @@ test("Tuya setting writes require a known local datapoint mapping", () => {
 
 test("Tuya editor distinguishes a confirmed save from a failed follow-up LAN test", () => {
   assert.match(app, /Falha ao guardar no Gateway: \$\{error\.message\}/);
-  assert.match(app, /Configuração guardada, mas sem resposta LAN/);
-  assert.match(app, /const \{reading,result\}=await testTuyaLanReachability\(device\.device_id\)/);
+  assert.match(app, /if\(previouslyVerified\)\{[\s\S]*?não repeti os testes/);
+  assert.match(app, /const report=await runGatewayTuyaLanDiagnostics\(1,device\.device_id\)/);
 });
 
 test("Tuya save and manual re-test use only basic LAN reachability, and closed Tuya ports stay unconfirmed", () => {

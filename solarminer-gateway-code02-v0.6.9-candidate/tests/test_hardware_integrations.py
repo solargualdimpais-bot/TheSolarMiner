@@ -219,7 +219,7 @@ def test_tuya_dps_registry_keeps_dp18_scoped_and_unknown_read_only():
     assert unknown["raw_dps"]["250"] == {"x": 1}
 
 
-def test_owner_product_dps_override_changes_meaning_and_only_enables_type_safe_switches():
+def test_owner_product_dps_override_is_scoped_to_exact_product_identity_and_only_enables_safe_switches():
     profile = {
         "product-a": {"custom_dps_overrides": {
             "7": {"label": "Tensão", "semantic_code": "voltage", "unit": "V", "data_type": "number", "scale": 10},
@@ -228,15 +228,18 @@ def test_owner_product_dps_override_changes_meaning_and_only_enables_type_safe_s
         }},
         "product-b": {"custom_dps_overrides": {"7": {"label": "Tensão antiga", "semantic_code": "voltage", "unit": "V"}}},
     }
-    device = {"device_id": "device-a", "product_id": "product-a", "functions": [],
+    device = {"device_id": "device-a", "product_id": "product-a", "product": "model-a",
+              "category": "dlq", "device_kind": "breaker", "functions": [],
               "current_status": [{"dps_id": 7, "code": "dps_7", "value": 2310},
                                  {"dps_id": 8, "code": "dps_8", "value": 145},
                                  {"dps_id": 9, "code": "dps_9", "value": False}]}
-    enriched = integrations._tuya_apply_product_dps_overrides(device, profile)
+    identity_key = integrations.tuya_product_identity_key(device)
+    scoped_maps = {identity_key: {"custom_dps_overrides": profile["product-a"]["custom_dps_overrides"]}}
+    enriched = integrations._tuya_apply_product_dps_overrides(device, {}, scoped_maps)
     assert enriched["switch_code"] == "switch_9"
     assert enriched["local_dps_map"]["switch_9"] == "9"
     assert tuya_dps_registry.analyze_device({**device, "product_dps_overrides": profile["product-a"]["custom_dps_overrides"]})["dps"][0]["display_name"] == "Tensão"
-    other = integrations._tuya_apply_product_dps_overrides({**device, "product_id": "product-b"}, profile)
+    other = integrations._tuya_apply_product_dps_overrides({**device, "product_id": "product-b"}, {}, scoped_maps)
     assert not other.get("switch_code")
 
 
@@ -247,15 +250,16 @@ def test_owner_product_switch_mapping_routes_command_to_observed_boolean_dp(monk
             sent.update(value=value, dps=switch)
             return {"dps": {str(switch): value}}
     monkeypatch.setattr(integrations, "_tuya_lan_client", lambda _device: LocalDevice())
-    config = {
-        "devices": [{"device_id": "switch-unit", "product_id": "product-switch", "local_key": "secret",
+    device = {"device_id": "switch-unit", "product_id": "product-switch", "product": "breaker-model",
+                     "category": "dlq", "device_kind": "breaker", "local_key": "secret",
                      "local_ip": "192.168.1.30", "local_protocol": "3.3",
                      "current_status": [{"dps_id": 9, "code": "dps_9", "value": False}],
-                     "functions": [], "status_spec": []}],
-        "product_schemas": {"product-switch": {"custom_dps_overrides": {
+                     "functions": [], "status_spec": []}
+    config = {"devices": [device], "product_schemas": {}, "product_dps_maps": {
+        integrations.tuya_product_identity_key(device): {"custom_dps_overrides": {
             "9": {"label": "Interruptor", "semantic_code": "switch", "data_type": "boolean", "write_enabled": True}
-        }}},
-    }
+        }}
+    }}
     result = integrations.control_tuya_switch(config, "switch-unit", True)
     assert result["switch_code"] == "switch_9"
     assert sent == {"value": True, "dps": 9}
@@ -586,19 +590,19 @@ def test_tuya_device_profile_is_inferred_from_product_and_schema(device, expecte
     assert profile["device_kind_label"]
 
 
-def test_owner_can_override_tuya_device_profile_and_return_to_automatic():
+def test_tuya_device_profile_is_derived_automatically_from_cloud_type_and_category():
     existing = {"tuya": {"client_id": "client", "client_secret": "secret-value-123", "devices": [{
         "device_id": "breaker_1", "name": "Disjuntor", "category": "dlq", "product_name": "断路器",
         "functions": [{"code": "switch_1", "type": "Boolean"}, {"code": "trip_reset", "type": "Boolean"}],
     }]}}
     edited = integrations.validate_config({"tuya": {"devices": [{
-        "device_id": "breaker_1", "name": "Disjuntor", "device_kind_override": "breaker",
+        "device_id": "breaker_1", "name": "Disjuntor",
     }]}}, existing=existing)
     public = integrations.public_config(edited)["tuya"]["devices"][0]
     assert public["device_kind"] == "breaker"
     assert public["channel_count"] == 1
     auto = integrations.validate_config({"tuya": {"devices": [{
-        "device_id": "breaker_1", "name": "Disjuntor", "device_kind_override": "auto",
+        "device_id": "breaker_1", "name": "Disjuntor", "device_kind_override": "multi_switch",
     }]}}, existing=edited)
     assert "device_kind_override" not in auto["tuya"]["devices"][0]
 
@@ -665,11 +669,10 @@ def test_tuya_local_names_and_capability_aliases_are_bound_to_synced_schema():
     assert public_device["switch_channels"] == [f"switch_{index}" for index in range(1, 7)]
     assert public_device["channel_labels"]["switch_6"] == "Portão"
     assert public_device["capability_labels"]["relay_status"] == "Estado do relé"
-    assert public_device["dps_preset_id"] == "six_channel_hybrid"
-    assert public_device["dps_knowledge"]["preset_id"] == "six_channel_hybrid"
+    assert public_device["dps_preset_id"] == public_device["dps_knowledge"]["preset_id"]
     invalid_preset = {"tuya": {**edited_payload["tuya"], "devices": [{**edited_payload["tuya"]["devices"][0], "dps_preset_id": "invented"}]}}
-    with pytest.raises(ValueError, match="invalid_tuya_dps_preset"):
-        integrations.validate_config(invalid_preset, existing=existing)
+    accepted_without_manual_preset = integrations.validate_config(invalid_preset, existing=existing)
+    assert accepted_without_manual_preset["tuya"]["devices"][0].get("dps_preset_id") != "invented"
     invalid = {"tuya": {**edited_payload["tuya"], "devices": [{**edited_payload["tuya"]["devices"][0], "capability_labels": {"not_synced": "Inventado"}}]}}
     with pytest.raises(ValueError, match="invalid_tuya_capability_label"):
         integrations.validate_config(invalid, existing=existing)
