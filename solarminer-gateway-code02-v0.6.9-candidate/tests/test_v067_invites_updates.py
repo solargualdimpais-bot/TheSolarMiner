@@ -15,6 +15,16 @@ def keypair():
 
 def sig(private, text): return private.sign(text.encode()).hex()
 
+
+def test_runtime_package_version_matches_debian_metadata_and_usb_repair_target():
+    root = Path(__file__).resolve().parents[1]
+    control = (root / "packaging" / "control").read_text(encoding="utf-8")
+    package_version = next(line.split(":", 1)[1].strip()
+                           for line in control.splitlines() if line.startswith("Version:"))
+    repair = (root / "packaging" / "repair-existing-from-usb.sh").read_text(encoding="utf-8")
+    assert gateway.PACKAGE_VERSION == package_version
+    assert f"TARGET_VERSION={package_version}" in repair
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway, "DB_PATH", tmp_path / "gateway.db")
