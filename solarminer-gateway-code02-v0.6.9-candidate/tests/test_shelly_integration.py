@@ -231,10 +231,10 @@ def test_bluetooth_discovery_uses_long_window_and_reports_no_advertisements(monk
     code = next(params["code"] for method, params in calls if method == "Script.PutCode")
     assert "duration_ms:30000" in code
     assert "window_ms:100" in code
-    assert "SolarMinerScanner.isRunning" in code and "SolarMinerScanner.IsRunning" in code
-    assert "SolarMinerScanner.subscribe || SolarMinerScanner.Subscribe" in code
+    assert "BLE.Scanner.isRunning" in code and "BLE.Scanner.IsRunning" in code
+    assert "BLE.Scanner.subscribe || BLE.Scanner.Subscribe" in code
     assert "if (!SolarMinerIsRunning)" in code
-    assert "SolarMinerScanner.start || SolarMinerScanner.Start" in code
+    assert "BLE.Scanner.start || BLE.Scanner.Start" in code
     assert result["supported"] is True
     assert result["devices"] == []
     assert result["reason"] == "no_advertisements_received"

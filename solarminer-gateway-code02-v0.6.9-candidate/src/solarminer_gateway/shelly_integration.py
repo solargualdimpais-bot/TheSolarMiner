@@ -375,13 +375,12 @@ def discover_bluetooth_devices(host: str, *, username: str = "", password: str =
                 raise RuntimeError("shelly_script_create_invalid")
             scan_ms = int(duration_seconds * 1000)
             script_code = f'''var SolarMinerBleResults = {{}};
-var SolarMinerScanner = BLE.Scanner;
-var SolarMinerIsRunning = typeof SolarMinerScanner.isRunning === "function" ? SolarMinerScanner.isRunning() :
-  (typeof SolarMinerScanner.IsRunning === "function" ? SolarMinerScanner.IsRunning() : false);
-var SolarMinerSubscribe = SolarMinerScanner.subscribe || SolarMinerScanner.Subscribe;
-var SolarMinerStart = SolarMinerScanner.start || SolarMinerScanner.Start;
+var SolarMinerIsRunning = typeof BLE.Scanner.isRunning === "function" ? BLE.Scanner.isRunning() :
+  (typeof BLE.Scanner.IsRunning === "function" ? BLE.Scanner.IsRunning() : false);
+var SolarMinerSubscribe = BLE.Scanner.subscribe || BLE.Scanner.Subscribe;
+var SolarMinerStart = BLE.Scanner.start || BLE.Scanner.Start;
 if (typeof SolarMinerSubscribe !== "function") throw Error("ble_scanner_subscribe_not_supported");
-SolarMinerSubscribe.call(SolarMinerScanner, function(event, result) {{
+SolarMinerSubscribe.call(BLE.Scanner, function(event, result) {{
   if (event !== BLE.Scanner.SCAN_RESULT || !result || !result.addr) return;
   var name = String(result.local_name || "");
   var serviceData = result.service_data || result.serviceData || {{}};
@@ -399,7 +398,7 @@ SolarMinerSubscribe.call(SolarMinerScanner, function(event, result) {{
 }});
 if (!SolarMinerIsRunning) {{
   if (typeof SolarMinerStart !== "function") throw Error("ble_scanner_start_not_supported");
-  var SolarMinerBleScanStarted = SolarMinerStart.call(SolarMinerScanner, {{duration_ms:{scan_ms},active:true,interval_ms:100,window_ms:100}});
+  var SolarMinerBleScanStarted = SolarMinerStart.call(BLE.Scanner, {{duration_ms:{scan_ms},active:true,interval_ms:100,window_ms:100}});
   if (SolarMinerBleScanStarted === null || SolarMinerBleScanStarted === false) throw Error("ble_scan_start_failed");
 }}
 '''
