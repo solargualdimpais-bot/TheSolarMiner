@@ -375,7 +375,13 @@ def discover_bluetooth_devices(host: str, *, username: str = "", password: str =
                 raise RuntimeError("shelly_script_create_invalid")
             scan_ms = int(duration_seconds * 1000)
             script_code = f'''var SolarMinerBleResults = {{}};
-var SolarMinerBleScanStarted = BLE.Scanner.start({{duration_ms:{scan_ms},active:true,interval_ms:100,window_ms:100}}, function(event, result) {{
+var SolarMinerScanner = BLE.Scanner;
+var SolarMinerIsRunning = typeof SolarMinerScanner.isRunning === "function" ? SolarMinerScanner.isRunning() :
+  (typeof SolarMinerScanner.IsRunning === "function" ? SolarMinerScanner.IsRunning() : false);
+var SolarMinerSubscribe = SolarMinerScanner.subscribe || SolarMinerScanner.Subscribe;
+var SolarMinerStart = SolarMinerScanner.start || SolarMinerScanner.Start;
+if (typeof SolarMinerSubscribe !== "function") throw Error("ble_scanner_subscribe_not_supported");
+SolarMinerSubscribe.call(SolarMinerScanner, function(event, result) {{
   if (event !== BLE.Scanner.SCAN_RESULT || !result || !result.addr) return;
   var name = String(result.local_name || "");
   var serviceData = result.service_data || result.serviceData || {{}};
@@ -391,7 +397,11 @@ var SolarMinerBleScanStarted = BLE.Scanner.start({{duration_ms:{scan_ms},active:
   SolarMinerBleResults[address] = {{mac:address,name:name,rssi:Number(result.rssi)||null,
     service_data:String(bthome||""),values:values,manufacturer:shellyName?"Shelly":"BTHome",observed_at:Date.now()}};
 }});
-if (SolarMinerBleScanStarted === null) throw Error("ble_scan_start_failed");
+if (!SolarMinerIsRunning) {{
+  if (typeof SolarMinerStart !== "function") throw Error("ble_scanner_start_not_supported");
+  var SolarMinerBleScanStarted = SolarMinerStart.call(SolarMinerScanner, {{duration_ms:{scan_ms},active:true,interval_ms:100,window_ms:100}});
+  if (SolarMinerBleScanStarted === null || SolarMinerBleScanStarted === false) throw Error("ble_scan_start_failed");
+}}
 '''
             _rpc(host, "Script.PutCode", {"id": script_id, "code": script_code}, username=username, password=password)
             _rpc(host, "Script.Start", {"id": script_id}, username=username, password=password)
