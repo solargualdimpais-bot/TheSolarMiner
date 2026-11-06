@@ -3154,17 +3154,28 @@ ${dpsPresetOptions}</select></label><p class="field-note">A seleção aplica ape
   document.body.append(dialog);dialog.addEventListener("close",()=>dialog.remove());dialog.querySelector("[data-tuya-editor-cancel]").addEventListener("click",()=>dialog.close("cancel"));
   const editorForm=dialog.querySelector("#tuya-device-edit-form");
   editorForm.addEventListener("submit",async event=>{
-    event.preventDefault();const form=event.currentTarget,save=form.querySelector('[type="submit"]'),status=form.querySelector("#tuya-device-edit-status");if(!form.elements.local_ip.value.trim()||!form.elements.local_mac.value.trim()){status.textContent="Indica o IP local e o MAC para testar a resposta na LAN.";return;}save.disabled=true;status.textContent="A guardar alterações no Gateway…";
+    event.preventDefault();const form=event.currentTarget,save=form.querySelector('[type="submit"]'),status=form.querySelector("#tuya-device-edit-status");if(!form.elements.local_mac.value.trim()){status.textContent="Indica o MAC local. O IP pode ser descoberto automaticamente na rede.";return;}save.disabled=true;status.textContent=form.elements.local_ip.value.trim()?"A guardar alterações no Gateway…":"A procurar o MAC na rede para descobrir o IP…";
     let saved,schemaInfo={queried:false,found:Boolean(device.functions?.length||device.status_spec?.length)};
     try{
+      const requestedMac=form.elements.local_mac.value.trim().toUpperCase();
+      if(!form.elements.local_ip.value.trim()){
+        const scan=await scanGatewayLocalNetwork();
+        const matchingHosts=(scan.hosts||[]).filter(host=>String(host.mac||"").trim().toUpperCase()===requestedMac);
+        const candidateIps=new Set(matchingHosts.flatMap(host=>[host.ip,...(host.ip_candidates||[])].filter(Boolean)));
+        if(matchingHosts.some(host=>host.mac_ip_conflict)||candidateIps.size>1)throw new Error("O Gateway encontrou mais de um IP possível para este MAC; não escolheu nenhum.");
+        if(candidateIps.size!==1)throw new Error("O Gateway não encontrou este MAC na rede. Confirma que o equipamento está ligado à mesma LAN.");
+        form.elements.local_ip.value=[...candidateIps][0];
+      }
+      status.textContent="MAC localizado; a guardar o IP encontrado e a configuração no Gateway…";
       const config=await readGatewayHardwareIntegrationConfig(),labels={},dpsMap={};
       for(const input of form.querySelectorAll("[data-tuya-capability-label]"))labels[input.dataset.tuyaCapabilityLabel]=input.value.trim();
       for(const input of form.querySelectorAll("[data-tuya-dps]"))if(input.value.trim())dpsMap[input.dataset.tuyaDps]=input.value.trim();
-      const next=(config.tuya?.devices||[]).map(item=>item.device_id===device.device_id?{...item,name:form.elements.name.value.trim(),name_source:"local",device_kind_override:form.elements.device_kind_override.value,room:form.elements.room.value.trim(),floor:form.elements.floor.value.trim(),local_ip:form.elements.local_ip.value.trim(),local_mac:form.elements.local_mac.value.trim().toUpperCase(),local_protocol:form.elements.local_protocol.value,dps_preset_id:form.elements.dps_preset_id.value||null,local_dps_map:dpsMap,channel_labels:Object.fromEntries(channels.map(channel=>[channel.code,labels[channel.code]||""])),capability_labels:labels}:item);
+      const next=(config.tuya?.devices||[]).map(item=>item.device_id===device.device_id?{...item,name:form.elements.name.value.trim(),name_source:"local",device_kind_override:form.elements.device_kind_override.value,room:form.elements.room.value.trim(),floor:form.elements.floor.value.trim(),local_ip:form.elements.local_ip.value.trim(),local_mac:requestedMac,local_protocol:form.elements.local_protocol.value,dps_preset_id:form.elements.dps_preset_id.value||null,local_dps_map:dpsMap,channel_labels:Object.fromEntries(channels.map(channel=>[channel.code,labels[channel.code]||""])),capability_labels:labels}:item);
       if(!next.some(item=>item.device_id===device.device_id))throw new Error("O dispositivo deixou de constar na configuração do Gateway.");
       saved=await saveGatewayHardwareIntegrationConfig({tuya:{devices:next}});
-      const persisted=(saved.tuya?.devices||[]).find(item=>item.device_id===device.device_id),requestedIp=form.elements.local_ip.value.trim(),requestedMac=form.elements.local_mac.value.trim().toUpperCase();
-      if(!persisted||String(persisted.local_ip||"").trim()!==requestedIp||String(persisted.local_mac||"").trim().toUpperCase()!==requestedMac)throw new Error("O Gateway não confirmou o IP/MAC local deste dispositivo.");
+      const persisted=(saved.tuya?.devices||[]).find(item=>item.device_id===device.device_id),requestedIp=form.elements.local_ip.value.trim();
+      if(!persisted||String(persisted.local_mac||"").trim().toUpperCase()!==requestedMac)throw new Error("O Gateway não confirmou o MAC local deste dispositivo.");
+      if(requestedIp&&String(persisted.local_ip||"").trim()!==requestedIp)throw new Error("O Gateway não confirmou o IP/MAC local deste dispositivo.");
       if(!schemaInfo.found){try{schemaInfo=await refreshTuyaSchemaIfNeeded(device.device_id,saved);}catch(error){schemaInfo={queried:true,found:false,error};}}
     }catch(error){status.textContent=`Falha ao guardar no Gateway: ${error.message}`;save.disabled=false;return;}
     status.textContent="Configuração guardada. A testar apenas a resposta na LAN…";

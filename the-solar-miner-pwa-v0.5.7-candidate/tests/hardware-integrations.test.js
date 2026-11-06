@@ -96,6 +96,16 @@ test("Saving a Tuya device in either form runs only the selected LAN reachabilit
   assert.match(integrations, /socket\.create_connection\(\(address, 6668\), timeout=timeout\)/);
 });
 
+test("Tuya editor can resolve a missing local IP by unique MAC before LAN testing", () => {
+  const app = read("../app.js");
+  assert.match(app, /if\(!form\.elements\.local_mac\.value\.trim\(\)\)/);
+  assert.doesNotMatch(app, /if\(!form\.elements\.local_ip\.value\.trim\(\)\|\|!form\.elements\.local_mac\.value\.trim\(\)\)/);
+  assert.match(app, /local_protocol:form\.elements\.local_protocol\.value/);
+  assert.match(app, /if\(!form\.elements\.local_ip\.value\.trim\(\)\)[\s\S]*?scanGatewayLocalNetwork\(\)[\s\S]*?candidateIps\.size!==1[\s\S]*?form\.elements\.local_ip\.value=\[\.\.\.candidateIps\]\[0\][\s\S]*?saveGatewayHardwareIntegrationConfig/);
+  assert.match(app, /if\(!schemaInfo\.queried\)[\s\S]*?testTuyaLanReachability\(device\.device_id\)/);
+  assert.match(app, /mais de um IP possível para este MAC/);
+});
+
 test("Antminer power target prefers the active tuner target over the saved profile target", () => {
   const app = read("../app.js");
   const helper = app.match(/function antminerCurrentPowerTarget\(data\)\{[\s\S]*?\n\}/)?.[0];
