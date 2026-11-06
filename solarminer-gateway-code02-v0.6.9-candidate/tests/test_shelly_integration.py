@@ -162,6 +162,27 @@ def test_bluetooth_bridge_probe_recognizes_spaced_or_hyphenated_gateway_model(mo
     assert result["bridge_candidate"] is True
 
 
+def test_bluetooth_bridge_probe_recognizes_shelly_blu_gw_name(monkeypatch):
+    monkeypatch.setattr(shelly, "identify_and_read", lambda *args, **kwargs: {
+        "host": "192.168.1.41", "model": "Shelly BLU GW", "firmware": "1.7.0",
+        "generation": 2, "mac": "AA:BB:CC:DD:EE:41", "capabilities": [], "components": []})
+    monkeypatch.setattr(shelly, "_rpc", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("shelly_rpc_method_not_found")))
+    result = shelly.inspect_bluetooth_bridge("192.168.1.41")
+    assert result["bridge_candidate"] is True
+
+
+def test_bluetooth_discovery_does_not_report_scan_support_for_non_rpc_generation(monkeypatch):
+    calls = []
+    monkeypatch.setattr(shelly, "identify_and_read", lambda *args, **kwargs: {
+        "host": "192.168.1.41", "model": "Shelly BLU GW", "firmware": "1.7.0",
+        "generation": 1, "mac": "AA:BB:CC:DD:EE:41", "capabilities": [], "components": []})
+    monkeypatch.setattr(shelly, "_rpc", lambda host, method, **kwargs: calls.append(method) or {})
+    result = shelly.discover_bluetooth_devices("192.168.1.41")
+    assert result["supported"] is False
+    assert result["reason"] == "bluetooth_scanner_not_supported"
+    assert calls == ["BTHome.GetStatus"]
+
+
 def test_bluetooth_discovery_uses_and_removes_only_its_temporary_script(monkeypatch):
     calls = []
     monkeypatch.setattr(shelly, "identify_and_read", lambda *args, **kwargs: {

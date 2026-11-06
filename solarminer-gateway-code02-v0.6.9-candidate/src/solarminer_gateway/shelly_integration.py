@@ -308,7 +308,7 @@ def inspect_bluetooth_bridge(host: str, *, username: str = "", password: str = "
     components = reading.get("components", [])
     model_evidence = " ".join(str(reading.get(key) or "") for key in ("model", "device_id")).casefold()
     compact_evidence = re.sub(r"[^a-z0-9]", "", model_evidence)
-    known_gateway_model = (any(token in model_evidence for token in ("blu gateway", "blugw", "gwf-kz01"))
+    known_gateway_model = (any(token in model_evidence for token in ("blu gateway", "blu gw", "blugw", "gwf-kz01"))
                            or "sngwbt01" in compact_evidence)
     has_ble = "bluetooth" in reading.get("capabilities", []) or any(
         isinstance(item, dict) and item.get("component") == "ble" for item in components) or known_gateway_model
