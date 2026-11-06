@@ -3157,7 +3157,7 @@ ${dpsPresetOptions}</select></label><p class="field-note">A seleção aplica ape
   document.body.append(dialog);dialog.addEventListener("close",()=>dialog.remove());dialog.querySelector("[data-tuya-editor-cancel]").addEventListener("click",()=>dialog.close("cancel"));
   const editorForm=dialog.querySelector("#tuya-device-edit-form");
   editorForm.addEventListener("submit",async event=>{
-    event.preventDefault();const form=event.currentTarget,save=form.querySelector('[type="submit"]'),status=form.querySelector("#tuya-device-edit-status");let requestedIp=form.elements.local_ip.value.trim(),requestedMac=form.elements.local_mac.value.trim().toUpperCase();if(!requestedIp&&!requestedMac){status.textContent="Indica o IP ou o MAC local para identificar o equipamento na rede.";return;}const compactRequestedMac=String(requestedMac||"").replace(/[^0-9a-f]/gi,"").toUpperCase();if(requestedMac&&compactRequestedMac.length!==12){status.textContent="O MAC local tem de conter 12 dígitos hexadecimais.";return;}if(requestedMac)requestedMac=compactRequestedMac.match(/.{2}/g).join(":");save.disabled=true;status.textContent=requestedIp&&requestedMac?"A guardar IP e MAC já indicados…":"A procurar na rede o dado em falta…";
+    event.preventDefault();const form=event.currentTarget,save=form.querySelector('[type="submit"]'),status=form.querySelector("#tuya-device-edit-status");let requestedIp=form.elements.local_ip.value.trim(),requestedMac=form.elements.local_mac.value.trim().toUpperCase();if(!requestedIp&&!requestedMac){status.textContent="Indica o IP ou o MAC local para identificar o equipamento na rede.";return;}const compactRequestedMac=String(requestedMac||"").replace(/[^0-9a-f]/gi,"").toUpperCase();if(requestedMac&&compactRequestedMac.length!==12){status.textContent="O MAC local tem de conter 12 dígitos hexadecimais.";return;}if(requestedMac)requestedMac=compactRequestedMac.match(/.{2}/g).join(":");const previouslyVerified=device.local_verified===true&&requestedIp===String(device.local_ip||"").trim()&&requestedMac===String(device.local_mac||"").trim().toUpperCase();save.disabled=true;status.textContent=requestedIp&&requestedMac?"A guardar IP e MAC já indicados…":"A procurar na rede o dado em falta…";
     let saved,schemaInfo={queried:false,found:Boolean(device.functions?.length||device.status_spec?.length)};
     try{
       if(!requestedIp||!requestedMac){
@@ -3183,8 +3183,13 @@ ${dpsPresetOptions}</select></label><p class="field-note">A seleção aplica ape
       const persisted=(saved.tuya?.devices||[]).find(item=>item.device_id===device.device_id);
       if(!persisted||String(persisted.local_mac||"").trim().toUpperCase()!==requestedMac)throw new Error("O Gateway não confirmou o MAC local deste dispositivo.");
       if(requestedIp&&String(persisted.local_ip||"").trim()!==requestedIp)throw new Error("O Gateway não confirmou o IP/MAC local deste dispositivo.");
-      if(!schemaInfo.found){try{schemaInfo=await refreshTuyaSchemaIfNeeded(device.device_id,saved);}catch(error){schemaInfo={queried:true,found:false,error};}}
+      if(!schemaInfo.found&&!previouslyVerified){try{schemaInfo=await refreshTuyaSchemaIfNeeded(device.device_id,saved);}catch(error){schemaInfo={queried:true,found:false,error};}}
     }catch(error){status.textContent=`Falha ao guardar no Gateway: ${error.message}`;save.disabled=false;return;}
+    if(previouslyVerified){
+      state.tuyaDevices=normalizeTuyaInventory(saved.tuya?.devices||state.tuyaDevices);
+      try{const inventory=await readGatewayDeviceInventory();state.gatewayDeviceInventory=Array.isArray(inventory.devices)?inventory.devices:[];}catch{/* The saved edit is retained; the inventory refreshes on the next view. */}
+      status.textContent="Alterações guardadas. A ligação local já estava confirmada; não repeti os testes.";dialog.close("saved");render();return;
+    }
     status.textContent="Configuração guardada. A confirmar leitura DPS autenticada na LAN…";
     try{
       if(!schemaInfo.queried)state.tuyaDevices=normalizeTuyaInventory(saved.tuya?.devices||state.tuyaDevices);

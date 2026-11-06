@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.147: configuração inicial segura do Gateway.",
+  "description": "The Solar Miner PWA v0.5.148: edição de equipamentos Tuya sem testes de ligação repetidos.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",
