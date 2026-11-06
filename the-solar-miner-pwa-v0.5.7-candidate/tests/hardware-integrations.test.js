@@ -88,7 +88,7 @@ test("Saving a Tuya device in either form runs only the selected LAN reachabilit
   const integrations = read("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/integrations.py");
   assert.match(app, /async function testTuyaLanReachability\(deviceId\)[\s\S]*?testGatewayTuyaLanReachability\(deviceId\)/);
   assert.match(app, /saveGatewayHardwareIntegrationConfig\([\s\S]*?testTuyaLanReachability\(id\)/);
-  assert.match(app, /saveGatewayHardwareIntegrationConfig\(\{tuya:\{devices:next\}\}\)[\s\S]*?testTuyaLanReachability\(device\.device_id\)/);
+  assert.match(app, /saveGatewayHardwareIntegrationConfig\(\{tuya:\{devices:next\}\}\)[\s\S]*?runGatewayTuyaLanDiagnostics\(1,device\.device_id\)/);
   assert.match(auth, /\/api\/v1\/integrations\/tuya\/lan-reachability/);
   assert.match(gateway, /@app\.post\(\"\/api\/v1\/integrations\/tuya\/lan-reachability\"\)/);
   assert.match(gateway, /status_read\": False, \"dps_read\": False, \"cloud_requested\": False/);
@@ -98,12 +98,17 @@ test("Saving a Tuya device in either form runs only the selected LAN reachabilit
 
 test("Tuya editor can resolve a missing local IP by unique MAC before LAN testing", () => {
   const app = read("../app.js");
-  assert.match(app, /if\(!form\.elements\.local_mac\.value\.trim\(\)\)/);
+  assert.match(app, /if\(!requestedIp&&!requestedMac\)/);
   assert.doesNotMatch(app, /if\(!form\.elements\.local_ip\.value\.trim\(\)\|\|!form\.elements\.local_mac\.value\.trim\(\)\)/);
   assert.match(app, /local_protocol:form\.elements\.local_protocol\.value/);
-  assert.match(app, /if\(!form\.elements\.local_ip\.value\.trim\(\)\)[\s\S]*?scanGatewayLocalNetwork\(\)[\s\S]*?candidateIps\.size!==1[\s\S]*?form\.elements\.local_ip\.value=\[\.\.\.candidateIps\]\[0\][\s\S]*?saveGatewayHardwareIntegrationConfig/);
-  assert.match(app, /if\(!schemaInfo\.queried\)[\s\S]*?testTuyaLanReachability\(device\.device_id\)/);
-  assert.match(app, /mais de um IP possível para este MAC/);
+  assert.match(app, /if\(!requestedIp\|\|!requestedMac\)[\s\S]*?scanGatewayLocalNetwork\(\)[\s\S]*?candidateIps\.size!==1\|\|candidateMacs\.size!==1[\s\S]*?form\.elements\.local_ip\.value=requestedIp;form\.elements\.local_mac\.value=requestedMac[\s\S]*?saveGatewayHardwareIntegrationConfig/);
+  assert.match(app, /requestedIp&&requestedMac\?"A guardar IP e MAC já indicados/);
+  assert.match(app, /if\(!schemaInfo\.queried\)[\s\S]*?runGatewayTuyaLanDiagnostics\(1,device\.device_id\)/);
+  assert.match(app, /mais de uma correspondência possível/);
+  assert.match(app, /state\.tuyaDevices=normalizeTuyaInventory\(savedConfig\.tuya\?\.devices\|\|state\.tuyaDevices\)/);
+  assert.match(app, /runGatewayTuyaLanDiagnostics\(1,device\.device_id\)[\s\S]*?local_responded[\s\S]*?state\.gatewayDeviceInventory=Array\.isArray\(inventory\.devices\)/);
+  assert.match(app, /if\(!requestedIp\|\|!requestedMac\)[\s\S]*?scanGatewayLocalNetwork\(\)/);
+  assert.match(app, /requestedIp&&requestedMac\?"A guardar IP e MAC já indicados/);
 });
 
 test("Antminer power target prefers the active tuner target over the saved profile target", () => {

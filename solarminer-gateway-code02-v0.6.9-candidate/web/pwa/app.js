@@ -3105,6 +3105,9 @@ async function loadTuyaDpsSnapshot(device,container){
   try{
     const report=await runGatewayTuyaLanDiagnostics(1,device.device_id),result=(report.devices||[]).find(item=>item?.device_id===device.device_id);
     if(!result||result.connection_state!=="local_responded")throw new Error(result?.reason||"O dispositivo não respondeu na LAN.");
+    const savedConfig=await readGatewayHardwareIntegrationConfig();
+    state.tuyaDevices=normalizeTuyaInventory(savedConfig.tuya?.devices||state.tuyaDevices);
+    try{const inventory=await readGatewayDeviceInventory();state.gatewayDeviceInventory=Array.isArray(inventory.devices)?inventory.devices:[];}catch{/* The confirmed status is saved by the Gateway; refresh Devices on the next view. */}
     const live=Array.isArray(result.status)?result.status:[],observed=new Map();for(const item of live){const id=Number(item?.dps_id??item?.dp_id??item?.dpId??(/^dps_\d+$/.test(String(item?.code||""))?String(item.code).slice(4):NaN));if(Number.isInteger(id)&&id>0)observed.set(id,item);}
     const suggestions=new Map();for(const item of [...(device.dps_knowledge?.dps||[]),...(device.product_profile?.dps||[])]){const id=Number(item?.dps_id);if(Number.isInteger(id)&&id>0&&!suggestions.has(id))suggestions.set(id,item);}
     for(const item of [...(device.functions||[]),...(device.status_spec||[])]){const id=Number(item?.dp_id??item?.dpId);if(Number.isInteger(id)&&id>0&&!suggestions.has(id))suggestions.set(id,{dps_id:id,display_name:item.name||item.code||"Por identificar",semantic_code:item.code||"unknown"});}
@@ -3154,40 +3157,46 @@ ${dpsPresetOptions}</select></label><p class="field-note">A seleção aplica ape
   document.body.append(dialog);dialog.addEventListener("close",()=>dialog.remove());dialog.querySelector("[data-tuya-editor-cancel]").addEventListener("click",()=>dialog.close("cancel"));
   const editorForm=dialog.querySelector("#tuya-device-edit-form");
   editorForm.addEventListener("submit",async event=>{
-    event.preventDefault();const form=event.currentTarget,save=form.querySelector('[type="submit"]'),status=form.querySelector("#tuya-device-edit-status");if(!form.elements.local_mac.value.trim()){status.textContent="Indica o MAC local. O IP pode ser descoberto automaticamente na rede.";return;}save.disabled=true;status.textContent=form.elements.local_ip.value.trim()?"A guardar alterações no Gateway…":"A procurar o MAC na rede para descobrir o IP…";
+    event.preventDefault();const form=event.currentTarget,save=form.querySelector('[type="submit"]'),status=form.querySelector("#tuya-device-edit-status");let requestedIp=form.elements.local_ip.value.trim(),requestedMac=form.elements.local_mac.value.trim().toUpperCase();if(!requestedIp&&!requestedMac){status.textContent="Indica o IP ou o MAC local para identificar o equipamento na rede.";return;}const compactRequestedMac=String(requestedMac||"").replace(/[^0-9a-f]/gi,"").toUpperCase();if(requestedMac&&compactRequestedMac.length!==12){status.textContent="O MAC local tem de conter 12 dígitos hexadecimais.";return;}if(requestedMac)requestedMac=compactRequestedMac.match(/.{2}/g).join(":");save.disabled=true;status.textContent=requestedIp&&requestedMac?"A guardar IP e MAC já indicados…":"A procurar na rede o dado em falta…";
     let saved,schemaInfo={queried:false,found:Boolean(device.functions?.length||device.status_spec?.length)};
     try{
-      const requestedMac=form.elements.local_mac.value.trim().toUpperCase();
-      if(!form.elements.local_ip.value.trim()){
+      if(!requestedIp||!requestedMac){
         const scan=await scanGatewayLocalNetwork();
-        const matchingHosts=(scan.hosts||[]).filter(host=>String(host.mac||"").trim().toUpperCase()===requestedMac);
-        const candidateIps=new Set(matchingHosts.flatMap(host=>[host.ip,...(host.ip_candidates||[])].filter(Boolean)));
-        if(matchingHosts.some(host=>host.mac_ip_conflict)||candidateIps.size>1)throw new Error("O Gateway encontrou mais de um IP possível para este MAC; não escolheu nenhum.");
-        if(candidateIps.size!==1)throw new Error("O Gateway não encontrou este MAC na rede. Confirma que o equipamento está ligado à mesma LAN.");
-        form.elements.local_ip.value=[...candidateIps][0];
+        const compactMac=value=>String(value||"").replace(/[^0-9a-f]/gi,"").toUpperCase();
+        const matches=(scan.hosts||[]).filter(host=>(requestedMac&&compactMac(host.mac)===compactMac(requestedMac))||(requestedIp&&String(host.ip||"").trim()===requestedIp));
+        const candidateIps=new Set(matches.flatMap(host=>[host.ip,...(host.ip_candidates||[])].filter(Boolean)));
+        const candidateMacs=new Set(matches.map(host=>compactMac(host.mac)).filter(value=>value.length===12));
+        if(matches.some(host=>host.mac_ip_conflict)||candidateIps.size>1||candidateMacs.size>1)throw new Error("O Gateway encontrou mais de uma correspondência possível; não escolheu IP nem MAC.");
+        if(candidateIps.size!==1||candidateMacs.size!==1)throw new Error("O Gateway não encontrou na rede o IP ou MAC em falta.");
+        if(requestedIp&&candidateIps.has(requestedIp)===false)throw new Error("O IP indicado não corresponde ao MAC encontrado na rede.");
+        if(requestedMac&&[...candidateMacs][0]!==compactMac(requestedMac))throw new Error("O MAC indicado não corresponde ao IP encontrado na rede.");
+        requestedIp=[...candidateIps][0];requestedMac=[...candidateMacs][0].match(/.{2}/g).join(":");
+        form.elements.local_ip.value=requestedIp;form.elements.local_mac.value=requestedMac;
       }
       status.textContent="MAC localizado; a guardar o IP encontrado e a configuração no Gateway…";
       const config=await readGatewayHardwareIntegrationConfig(),labels={},dpsMap={};
       for(const input of form.querySelectorAll("[data-tuya-capability-label]"))labels[input.dataset.tuyaCapabilityLabel]=input.value.trim();
       for(const input of form.querySelectorAll("[data-tuya-dps]"))if(input.value.trim())dpsMap[input.dataset.tuyaDps]=input.value.trim();
-      const next=(config.tuya?.devices||[]).map(item=>item.device_id===device.device_id?{...item,name:form.elements.name.value.trim(),name_source:"local",device_kind_override:form.elements.device_kind_override.value,room:form.elements.room.value.trim(),floor:form.elements.floor.value.trim(),local_ip:form.elements.local_ip.value.trim(),local_mac:requestedMac,local_protocol:form.elements.local_protocol.value,dps_preset_id:form.elements.dps_preset_id.value||null,local_dps_map:dpsMap,channel_labels:Object.fromEntries(channels.map(channel=>[channel.code,labels[channel.code]||""])),capability_labels:labels}:item);
+      const next=(config.tuya?.devices||[]).map(item=>item.device_id===device.device_id?{...item,name:form.elements.name.value.trim(),name_source:"local",device_kind_override:form.elements.device_kind_override.value,room:form.elements.room.value.trim(),floor:form.elements.floor.value.trim(),local_ip:requestedIp,local_mac:requestedMac,local_protocol:form.elements.local_protocol.value,dps_preset_id:form.elements.dps_preset_id.value||null,local_dps_map:dpsMap,channel_labels:Object.fromEntries(channels.map(channel=>[channel.code,labels[channel.code]||""])),capability_labels:labels}:item);
       if(!next.some(item=>item.device_id===device.device_id))throw new Error("O dispositivo deixou de constar na configuração do Gateway.");
       saved=await saveGatewayHardwareIntegrationConfig({tuya:{devices:next}});
-      const persisted=(saved.tuya?.devices||[]).find(item=>item.device_id===device.device_id),requestedIp=form.elements.local_ip.value.trim();
+      const persisted=(saved.tuya?.devices||[]).find(item=>item.device_id===device.device_id);
       if(!persisted||String(persisted.local_mac||"").trim().toUpperCase()!==requestedMac)throw new Error("O Gateway não confirmou o MAC local deste dispositivo.");
       if(requestedIp&&String(persisted.local_ip||"").trim()!==requestedIp)throw new Error("O Gateway não confirmou o IP/MAC local deste dispositivo.");
       if(!schemaInfo.found){try{schemaInfo=await refreshTuyaSchemaIfNeeded(device.device_id,saved);}catch(error){schemaInfo={queried:true,found:false,error};}}
     }catch(error){status.textContent=`Falha ao guardar no Gateway: ${error.message}`;save.disabled=false;return;}
-    status.textContent="Configuração guardada. A testar apenas a resposta na LAN…";
+    status.textContent="Configuração guardada. A confirmar leitura DPS autenticada na LAN…";
     try{
       if(!schemaInfo.queried)state.tuyaDevices=normalizeTuyaInventory(saved.tuya?.devices||state.tuyaDevices);
       const confirmed=state.tuyaDevices.find(item=>item.device_id===device.device_id),requestedIp=form.elements.local_ip.value.trim(),requestedMac=form.elements.local_mac.value.trim().toUpperCase();
       if(!confirmed||String(confirmed.local_ip||"").trim()!==requestedIp||String(confirmed.local_mac||"").trim().toUpperCase()!==requestedMac)throw new Error("O Gateway guardou a configuração, mas a lista atualizada ainda não confirmou IP e MAC.");
-      const {reading,result}=await testTuyaLanReachability(device.device_id);
-      state.tuyaReadings=[...(state.tuyaReadings||[]).filter(item=>item.device_id!==device.device_id),reading];
-      if(!tuyaReadingConfirmed(reading)){status.textContent=`Configuração guardada, mas sem resposta LAN: ${tuyaLanReasonText(reading.reason||"tuya_connection_failed")}`;save.disabled=false;return;}
+      const report=await runGatewayTuyaLanDiagnostics(1,device.device_id),result=(report.devices||[]).find(item=>item?.device_id===device.device_id),reading=result||null;
+      if(reading)state.tuyaReadings=[...(state.tuyaReadings||[]).filter(item=>item.device_id!==device.device_id),reading];
+      if(!reading||reading.connection_state!=="local_responded"||!Array.isArray(reading.status)||!reading.status.length){status.textContent=`IP e MAC guardados, mas sem leitura DPS local autenticada; o equipamento continua por confirmar. ${tuyaLanReasonText(reading?.reason||"tuya_lan_status_unavailable")}`;save.disabled=false;return;}
+      const confirmedConfig=await readGatewayHardwareIntegrationConfig();state.tuyaDevices=normalizeTuyaInventory(confirmedConfig.tuya?.devices||state.tuyaDevices);
+      try{const inventory=await readGatewayDeviceInventory();state.gatewayDeviceInventory=Array.isArray(inventory.devices)?inventory.devices:[];}catch{/* Gateway confirmation is persisted; next Devices refresh reloads inventory. */}
       const schemaNote=schemaInfo.queried?(schemaInfo.found?" Esquema DPS e funções atualizado a partir da Tuya.":" A Tuya não devolveu o esquema DPS deste equipamento."):" Esquema DPS existente mantido.";
-      status.textContent=result.connection_state==="lan_host_responded"?"Configuração guardada. O IP respondeu na LAN, mas a porta Tuya está fechada."+schemaNote:`Configuração guardada. Resposta LAN em ${Number(result.latency_ms).toLocaleString("pt-PT")} ms.${schemaNote}`;dialog.close("saved");render();
+      status.textContent=`Configuração guardada. Leitura DPS local confirmada (${reading.status.length} estados); equipamento confirmado.${schemaNote}`;dialog.close("saved");render();
     }catch(error){status.textContent=`Configuração guardada, mas o teste de resposta LAN falhou: ${error.message}`;save.disabled=false;}
   });
   dialog.showModal();

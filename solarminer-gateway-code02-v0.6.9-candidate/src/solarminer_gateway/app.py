@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.198"
+PACKAGE_VERSION = "0.6.199"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -2866,7 +2866,8 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
         actor = _revalidate_actor(conn, session, "manage_gateway")
         if actor["role"] != "owner":
             raise HTTPException(403, "owner_required")
-        config = hardware_integrations.load_config().get("tuya", {})
+        full_config = hardware_integrations.load_config()
+        config = full_config.get("tuya", {}) if isinstance(full_config.get("tuya"), dict) else {}
         devices = [item for item in config.get("devices", [])
                    if isinstance(item, dict) and isinstance(item.get("device_id"), str)]
         if selected_device_id is not None:
@@ -2927,6 +2928,23 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
                                                "ip_refreshed_by_mac": bool(row.get("ip_refreshed_by_mac")),
                                                "ip_cleared_missing_mac": bool(row.get("ip_cleared_missing_mac"))})
         elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+        verified_ids = {device_id for device_id, rows in samples.items()
+                        if any(row.get("ok") and row.get("status") for row in rows)}
+        if verified_ids:
+            configured_devices = config.get("devices", []) if isinstance(config.get("devices"), list) else []
+            for item in configured_devices:
+                if not isinstance(item, dict) or item.get("device_id") not in verified_ids:
+                    continue
+                item["local_verified"] = True
+                item["local_control_state"] = "ready"
+                latest_protocol = next((row.get("local_protocol") for row in reversed(samples[item["device_id"]])
+                                        if row.get("ok") and row.get("local_protocol")), None)
+                if latest_protocol:
+                    item["local_protocol"] = latest_protocol
+            full_config["tuya"] = config
+            hardware_integrations.save_config(full_config)
+            _sync_gateway_device_inventory(conn, full_config)
+            conn.commit()
         result = []
         for item in devices:
             rows = samples[item["device_id"]]
@@ -2951,6 +2969,7 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
                                           "private_lan_target_required" if not item.get("local_ip") else None)})
         return {"rounds": rounds, "configured_count": len(devices),
                 "lan_testable_count": len(configured_lan),
+                "confirmed_device_count": len(verified_ids),
                 "elapsed_ms": elapsed_ms, "sweep_times_ms": sweep_times,
                 "devices": result, "control_commands_sent": False}
 

@@ -736,15 +736,17 @@ def test_tuya_lan_diagnostics_excludes_setup_failures_from_response_latency(clie
     assert device["reason"] == "private_lan_target_required"
 
 
-def test_tuya_lan_diagnostics_can_probe_one_device_for_three_read_only_rounds(client, monkeypatch):
+def test_tuya_lan_diagnostics_can_probe_one_device_for_three_read_only_rounds(client, monkeypatch, tmp_path):
     headers = {"Authorization": f"Bearer {owner_session(client)}"}
-    monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: {"tuya": {"devices": [
+    monkeypatch.setattr(gateway.hardware_integrations, "_data_dir", lambda: tmp_path / "gateway-data")
+    config = {"tuya": {"devices": [
         {"device_id": "target-device", "name": "Target", "local_ip": "192.168.1.30",
          "local_mac": "AA:BB:CC:DD:EE:30", "local_key": "key-target", "switch_code": "switch_1",
          "status_spec": [{"code": "switch_1", "name": "Switch"}, {"code": "cur_power", "name": "Power"}]},
         {"device_id": "other-device", "name": "Other", "local_ip": "192.168.1.31",
          "local_key": "key-other"},
-    ]}})
+    ]}}
+    monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: config)
     calls = []
     def read_tuya(config):
         devices = config["devices"]
@@ -768,6 +770,11 @@ def test_tuya_lan_diagnostics_can_probe_one_device_for_three_read_only_rounds(cl
     assert device["local_protocol"] == "3.4"
     assert device["status"] == [{"code": "switch_1", "value": True}]
     assert report["control_commands_sent"] is False
+    assert report["confirmed_device_count"] == 1
+    assert config["tuya"]["devices"][0]["local_verified"] is True
+    inventory = client.get("/api/v1/device-inventory", headers=headers).json()["devices"]
+    confirmed = next(item for item in inventory if item["source_device_id"] == "target-device")
+    assert confirmed["confirmation_status"] == "confirmed"
 
 
 def test_tuya_lan_reachability_checks_only_selected_private_ip_without_reading_status_or_cloud(client, monkeypatch):
