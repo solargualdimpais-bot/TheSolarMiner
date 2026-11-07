@@ -614,11 +614,11 @@ export async function registerGatewayShellyDevice({ name, host, mac = "", device
   if (mac && !/^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$/i.test(mac)) throw new Error("MAC inválido.");
   return gatewayApi("/api/v1/integrations/shelly/register", { method: "POST", body: { name: name.trim(), host: host.trim(), ...(mac ? { mac: mac.toUpperCase() } : {}), device_type, username, password } });
 }
-export async function renameGatewayShellyDevice(device_id, name) {
-  if (typeof device_id !== "string" || device_id.length > 140 || typeof name !== "string" || !name.trim() || name.trim().length > 120) {
+export async function renameGatewayShellyDevice(device_id, name, room) {
+  if (typeof device_id !== "string" || device_id.length > 140 || typeof name !== "string" || !name.trim() || name.trim().length > 120 || (room !== undefined && (typeof room !== "string" || room.length > 120))) {
     throw new Error("Nome Shelly inválido.");
   }
-  return gatewayApi("/api/v1/integrations/shelly/name", { method: "POST", body: { device_id, name: name.trim() } });
+  return gatewayApi("/api/v1/integrations/shelly/name", { method: "POST", body: { device_id, name: name.trim(), ...(room !== undefined ? { room: room.trim() } : {}) } });
 }
 export async function registerGatewayShellyBluDevice({ mac, name, device_type = "smart_sensor", bridge_mac }) {
   if (typeof mac !== "string" || !/^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$/i.test(mac)) throw new Error("MAC Bluetooth inválido.");

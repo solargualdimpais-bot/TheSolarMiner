@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.152: catálogo Tuya por Product ID e controlos Shelly atualizados.",
+  "description": "The Solar Miner PWA v0.5.153: controlos de brilho Shelly melhorados.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",

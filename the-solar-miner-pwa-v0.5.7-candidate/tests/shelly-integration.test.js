@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 
 const app = fs.readFileSync(new URL("../app.js", import.meta.url), "utf8");
+const gatewayApp = fs.readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/web/pwa/app.js", import.meta.url), "utf8");
+const gatewayStyles = fs.readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/web/pwa/styles.css", import.meta.url), "utf8");
 const api = fs.readFileSync(new URL("../gateway-auth.js", import.meta.url), "utf8");
 const backend = fs.readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/shelly_integration.py", import.meta.url), "utf8");
 
@@ -66,6 +68,22 @@ test("Shelly Vintage card opens details and local light control is exposed", () 
   assert.match(api, /readGatewayShellyProductProfiles/);
   const cardRenderer=app.match(/const shellyCards=list=>list\.map\(device=>\{[\s\S]*?\}\)\.join\(""\);/)?.[0]||"";
   assert.doesNotMatch(cardRenderer, /range|data-shelly-apply-brightness|Procurar sensores BLU/);
+});
+
+test("Shelly brightness keeps the chosen slider target and sends one second after release", () => {
+  const refresh=gatewayApp.match(/async function refreshShellyInventoryStatus\([\s\S]*?\n\}/)?.[0]||"";
+  const change=gatewayApp.match(/\$\("#page-content"\)\.addEventListener\("change", e => \{[\s\S]*?\n\}\);/)?.[0]||"";
+  assert.match(gatewayApp, /const shellyBrightnessTimers=new Map\(\)/);
+  assert.match(gatewayApp, /setTimeout\(\(\)=>\{[\s\S]*?controlGatewayShellyLight\(deviceId,component,channel,\{brightness\}\)[\s\S]*?\},1000\)/);
+  assert.doesNotMatch(refresh, /brightnessSlider\.value\s*=/);
+  assert.match(gatewayApp, /data-shelly-badge-brightness/);
+  assert.match(gatewayApp, /if\(brightnessBadge\)brightnessBadge\.textContent=Number\.isFinite\(measuredBrightness\)/);
+  assert.match(change, /clearTimeout\(prior\)/);
+  assert.match(gatewayApp, /const dimmableComponents=components\.filter/);
+  assert.match(gatewayApp, /dimmableComponents\.length>1\?" is-multi-dimmer"/);
+  assert.match(gatewayApp, /data-shelly-light-metrics data-shelly-component=/);
+  assert.match(gatewayApp, /data-shelly-device="\$\{esc\(deviceId\)\}" data-shelly-component="\$\{esc\(component\)\}" data-shelly-channel="\$\{channel\}"/);
+  assert.match(gatewayStyles, /is-multi-dimmer\{display:grid;grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
 });
 
 test("Shelly detail uses the shared device dialog layout used by Tuya", () => {

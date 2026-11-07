@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.206"
+PACKAGE_VERSION = "0.6.207"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -3688,11 +3688,12 @@ def register_shelly_device(payload: dict[str, Any],
 @app.post("/api/v1/integrations/shelly/name")
 def rename_shelly_device(payload: dict[str, Any], session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
     """Rename a Shelly device in the Gateway inventory without contacting hardware."""
-    if not isinstance(payload, dict) or set(payload) != {"device_id", "name"}:
+    if not isinstance(payload, dict) or set(payload) not in ({"device_id", "name"}, {"device_id", "name", "room"}):
         raise HTTPException(422, "shelly_name_payload_invalid")
-    device_id, name = payload.get("device_id"), payload.get("name")
+    device_id, name, room = payload.get("device_id"), payload.get("name"), payload.get("room")
     if (not isinstance(device_id, str) or len(device_id) > 140
-            or not isinstance(name, str) or not name.strip() or len(name.strip()) > 120):
+            or not isinstance(name, str) or not name.strip() or len(name.strip()) > 120
+            or (room is not None and (not isinstance(room, str) or len(room.strip()) > 120))):
         raise HTTPException(422, "shelly_name_invalid")
     with db() as conn:
         _require_owner(session, conn)
@@ -3702,15 +3703,19 @@ def rename_shelly_device(payload: dict[str, Any], session: dict[str, Any] = Depe
                                   (name.strip(), utcnow(), mac))
             provider, source_id = "shelly", f"shelly-blu:{mac}"
         else:
-            cursor = conn.execute("UPDATE shelly_devices SET name=?,updated_at=? WHERE device_id=? AND enabled=1",
-                                  (name.strip(), utcnow(), device_id))
+            if room is None:
+                cursor = conn.execute("UPDATE shelly_devices SET name=?,updated_at=? WHERE device_id=? AND enabled=1",
+                                      (name.strip(), utcnow(), device_id))
+            else:
+                cursor = conn.execute("UPDATE shelly_devices SET name=?,room=?,updated_at=? WHERE device_id=? AND enabled=1",
+                                      (name.strip(), room.strip(), utcnow(), device_id))
             provider, source_id = "shelly", device_id
         if not cursor.rowcount:
             raise HTTPException(404, "shelly_device_not_found")
         conn.execute("UPDATE gateway_device_inventory SET name=?,name_source='owner',updated_at=? WHERE source_provider=? AND source_device_id=?",
                      (name.strip(), utcnow(), provider, source_id))
         audit(conn, session["user_id"], "hardware.shelly.rename", device_id, "success", {})
-    return {"saved": True, "device_id": device_id, "name": name.strip()}
+    return {"saved": True, "device_id": device_id, "name": name.strip(), **({"room": room.strip()} if room is not None else {})}
 
 
 @app.post("/api/v1/integrations/shelly/read")
@@ -3721,7 +3726,7 @@ def read_shelly_devices(session: dict[str, Any] = Depends(require_permission("ma
         if actor["role"] != "owner":
             raise HTTPException(403, "owner_required")
         shelly_rows = [dict(row) for row in conn.execute(
-            "SELECT device_id,name,host,mac,model,generation,protocol,firmware,auth_ciphertext FROM shelly_devices WHERE enabled=1")]
+            "SELECT device_id,name,room,host,mac,model,generation,protocol,firmware,auth_ciphertext FROM shelly_devices WHERE enabled=1")]
     shelly_devices, credential_failures = [], []
     for item in shelly_rows:
         try:
@@ -3734,6 +3739,10 @@ def read_shelly_devices(session: dict[str, Any] = Depends(require_permission("ma
     # Device I/O is deliberately outside SQLite transactions: a sleeping device
     # must not hold up unrelated inventory writes.
     readings = credential_failures + hardware_integrations.shelly_integration.read_devices({"devices": shelly_devices})
+    shelly_room_by_id = {item["device_id"]: item.get("room", "") for item in shelly_rows}
+    for reading in readings:
+        if reading.get("device_id") in shelly_room_by_id:
+            reading["room"] = shelly_room_by_id[reading["device_id"]]
     with db() as conn:
         blu_rows = [dict(row) for row in conn.execute(
             "SELECT mac,name,model,device_type,bridge_mac,bridge_host,last_rssi,values_json,last_seen_at FROM shelly_blu_devices WHERE enabled=1")]
