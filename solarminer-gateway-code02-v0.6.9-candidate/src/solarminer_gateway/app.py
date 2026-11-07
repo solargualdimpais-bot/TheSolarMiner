@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.208"
+PACKAGE_VERSION = "0.6.209"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -87,6 +87,11 @@ install_error_queue_handler()
 _energy_sample_lock = threading.Lock()
 _latest_deye_sample: dict[str, Any] | None = None
 _recent_deye_samples: list[dict[str, Any]] = []
+DEYE_IP_RECOVERY_AFTER_SECONDS = 60.0
+DEYE_IP_RECOVERY_RETRY_SECONDS = 60.0
+_deye_ip_recovery_lock = threading.Lock()
+_deye_unreachable_since: dict[tuple[str, str, str, str], float] = {}
+_deye_last_ip_recovery_attempt: dict[tuple[str, str, str, str], float] = {}
 _dispatch_lock = threading.Lock()
 _dispatch_last_sent: dict[str, tuple[str, float]] = {}
 _deye_history_jobs_lock = threading.Lock()
@@ -743,23 +748,59 @@ def _refresh_deye_host_by_inventory_mac(deye_config: dict[str, Any]) -> dict[str
         return None
 
 
+def _deye_recovery_key(deye_config: dict[str, Any]) -> tuple[str, str, str, str]:
+    return (str(deye_config.get("host") or ""), str(deye_config.get("port", 502)),
+            str(deye_config.get("unit_id", 1)), _inventory_mac(deye_config.get("local_mac")))
+
+
 def _read_deye_with_inventory_recovery(deye_config: dict[str, Any]) -> dict[str, Any]:
-    """Read Deye once; after failure, find its inventoried MAC and retry the new IP once."""
+    """Read Deye; only search another IP after 60s of continuous no-response failures."""
     try:
         snapshot = hardware_integrations.read_deye(deye_config)
     except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
         snapshot = {"host": deye_config.get("host"), "port": deye_config.get("port", 502),
                     "connection_state": "tcp_unreachable", "reason": str(exc)[:120],
                     "metrics_decoded": False, "trust": "UNAVAILABLE"}
-    if isinstance(snapshot, dict) and snapshot.get("connection_state") == "mapped_registers_response":
+    if not isinstance(snapshot, dict):
+        snapshot = {"connection_state": "failed", "metrics_decoded": False}
+    state = str(snapshot.get("connection_state") or "")
+    key = _deye_recovery_key(deye_config)
+    no_response_states = {"tcp_unreachable", "modbus_timeout", "modbus_transport_error", "invalid_modbus_response"}
+    response_states = {"mapped_registers_response", "mapped_register_read_failed", "modbus_identity_response",
+                       "modbus_register_probe_response", "modbus_exception_response"}
+    if state not in no_response_states:
+        # A Modbus response (including an unsupported map/function) proves the
+        # configured IP is reachable, so never launch IP discovery for it.
+        if state in response_states:
+            with _deye_ip_recovery_lock:
+                _deye_unreachable_since.pop(key, None)
+                _deye_last_ip_recovery_attempt.pop(key, None)
         return snapshot
+
+    now = time.monotonic()
+    with _deye_ip_recovery_lock:
+        failed_since = _deye_unreachable_since.setdefault(key, now)
+        failure_duration = now - failed_since
+        if failure_duration < DEYE_IP_RECOVERY_AFTER_SECONDS:
+            return snapshot
+        last_attempt = _deye_last_ip_recovery_attempt.get(key)
+        if last_attempt is not None and now - last_attempt < DEYE_IP_RECOVERY_RETRY_SECONDS:
+            return snapshot
+        # Reserve the attempt before network scanning so concurrent manual and
+        # periodic reads cannot start duplicate LAN scans.
+        _deye_last_ip_recovery_attempt[key] = now
+
     refreshed = _refresh_deye_host_by_inventory_mac(deye_config)
     if not refreshed:
-        return snapshot if isinstance(snapshot, dict) else {"connection_state": "failed", "metrics_decoded": False}
+        return snapshot
     try:
         retried = refreshed.pop("verified_snapshot", None) or hardware_integrations.read_deye(refreshed)
         retried["ip_refreshed_by_mac"] = bool(refreshed.get("ip_changed"))
         retried["mac_verified_on_lan"] = True
+        if str(retried.get("connection_state") or "") in response_states:
+            with _deye_ip_recovery_lock:
+                _deye_unreachable_since.pop(key, None)
+                _deye_last_ip_recovery_attempt.pop(key, None)
         return retried
     except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
         return {"host": refreshed["host"], "port": refreshed.get("port", 502),

@@ -325,9 +325,11 @@ def test_deye_ip_recovery_selects_only_the_ambiguous_mac_candidate_that_answers_
         if host.endswith(".200"):
             return {"host": host, "connection_state": "mapped_registers_response",
                     "metrics_decoded": True, "metrics": [{"field": "pv_power", "value": 321}]}
-        return {"host": host, "connection_state": "mapped_register_read_failed", "metrics_decoded": False}
+        return {"host": host, "connection_state": "tcp_unreachable", "metrics_decoded": False}
 
     monkeypatch.setattr(gateway.hardware_integrations, "read_deye", read_deye)
+    key = gateway._deye_recovery_key(config["deye"])
+    monkeypatch.setitem(gateway._deye_unreachable_since, key, time.monotonic() - 61)
     result = gateway._read_deye_with_inventory_recovery(dict(config["deye"]))
     assert result["host"] == "192.168.8.200"
     assert result["connection_state"] == "mapped_registers_response"

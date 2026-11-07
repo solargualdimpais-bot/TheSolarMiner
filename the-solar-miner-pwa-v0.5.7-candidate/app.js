@@ -4333,11 +4333,11 @@ hydrateWorkspacePhotos();
 if (sessionInfo().authenticated) refreshGatewayReadings();
 setInterval(() => {
   const lastRefresh=Date.parse(state.lastUpdated||"");
-  if (document.visibilityState === "visible" && !["mineradoras","gestao-excedentes"].includes(state.page) && sessionInfo().authenticated && !state.refreshing && (!Number.isFinite(lastRefresh) || Date.now()-lastRefresh>=3_000)) {
+  if (document.visibilityState === "visible" && !["mineradoras","gestao-excedentes"].includes(state.page) && sessionInfo().authenticated && !state.refreshing && (!Number.isFinite(lastRefresh) || Date.now()-lastRefresh>=10_000)) {
     refreshGatewayReadings();
   }
-}, 1_000);
-setInterval(() => { void refreshTuyaInventoryStatus();if(state.page==="devices"&&document.visibilityState==="visible")void refreshShellyInventoryStatus({quiet:true}); },1_500);
+}, 5_000);
+setInterval(() => { if(document.visibilityState!=="visible")return;void refreshTuyaInventoryStatus();if(state.page==="devices")void refreshShellyInventoryStatus({quiet:true}); },15_000);
 setInterval(() => {
   const info=sessionInfo();
   if(document.visibilityState!=="visible"||!info.authenticated||info.user?.role!=="owner"||gatewayAutoUpdateSuppressed||gatewayUpdateCheckInProgress||$("#operation-dialog")?.open)return;

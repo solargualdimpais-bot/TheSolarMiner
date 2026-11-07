@@ -30,7 +30,7 @@ test("Gateway administration is on an Owner-only page and live Home uses Gateway
   assert.match(app, /liveHomeMetric\("Painéis"/);
   assert.match(app, /function liveSolarHomeMetric\(\) \{[\s\S]*?state\.energyEngine\?\.current[\s\S]*?current\.pv_power_w/);
   assert.match(app, /function liveBatteryHomeMetric\(\) \{[\s\S]*?current\.battery_power_w/);
-  assert.match(app, /Date\.now\(\)-lastRefresh>=3_000/);
+  assert.match(app, /Date\.now\(\)-lastRefresh>=10_000/);
   assert.match(app, /battery_output_power/);
   assert.match(app, /miner_hashrate_5s_ghs/);
   assert.match(app, /miner_power_limit_w/);

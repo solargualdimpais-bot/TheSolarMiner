@@ -140,7 +140,7 @@ test("Favorite commands use the cached state and never trigger a LAN read", () =
 
 test("Devices inventory uses the latest Gateway reading instead of stale LAN probes and places power before voltage", () => {
   assert.match(app, /async function refreshTuyaInventoryStatus\(\)/);
-  assert.match(app, /setInterval\(\(\) => \{ void refreshTuyaInventoryStatus\(\); \},1_500\)/);
+  assert.match(app, /setInterval\(\(\) => \{ if\(document\.visibilityState==="visible"\)void refreshTuyaInventoryStatus\(\); \},15_000\)/);
   assert.match(app, /setInterval\(\(\) => \{ if\(state\.page==="devices"&&document\.visibilityState==="visible"\)void refreshShellyInventoryStatus\(\{quiet:true\}\); \},15_000\)/);
   assert.match(app, /!\[\"devices\",\"inicio\"\]\.includes\(state\.page\)/);
   assert.match(app, /function tuyaCachedReadings\(devices\)/);
