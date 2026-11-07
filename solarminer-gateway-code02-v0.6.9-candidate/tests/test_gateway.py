@@ -495,7 +495,8 @@ def test_tuya_event_collector_polls_devices_even_without_a_pwa_request(tmp_path,
     monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: {"tuya": config})
     monkeypatch.setattr(gateway.hardware_integrations, "save_config", lambda _config: None)
     observed = []
-    def read_tuya(selected, *, on_reading=None):
+    def read_tuya(selected, *, on_reading=None, background_poll=False):
+        assert background_poll is True
         observed.extend(item["device_id"] for item in selected["devices"])
         readings = [{"device_id": "lan-ready", "name": "Relay", "connection_state": "local_responded",
                      "status": [{"code": "switch_1", "value": True}]}]
@@ -526,7 +527,8 @@ def test_tuya_event_collector_marks_a_failed_device_offline_without_rewriting_st
     saved = []
     monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: {"tuya": config})
     monkeypatch.setattr(gateway.hardware_integrations, "save_config", lambda value: saved.append(value))
-    def read_tuya(_selected, *, on_reading=None):
+    def read_tuya(_selected, *, on_reading=None, background_poll=False):
+        assert background_poll is True
         readings = [{"device_id": "lan-offline", "name": "Breaker", "connection_state": "failed",
                      "reason": "tuya_local_ip_not_found_for_mac", "status": []}]
         if on_reading:
@@ -543,15 +545,15 @@ def test_tuya_event_collector_marks_a_failed_device_offline_without_rewriting_st
     assert len(saved) == 1
 
 
-def test_tuya_event_poll_interval_defaults_to_one_and_a_half_seconds_and_honors_override(monkeypatch):
+def test_tuya_event_poll_interval_defaults_to_five_seconds_and_enforces_safe_minimum(monkeypatch):
     monkeypatch.delenv("SOLARMINER_TUYA_EVENT_POLL_SECONDS", raising=False)
-    assert gateway._tuya_event_poll_interval_seconds() == 1.5
+    assert gateway._tuya_event_poll_interval_seconds() == 5.0
     monkeypatch.setenv("SOLARMINER_TUYA_EVENT_POLL_SECONDS", "5")
     assert gateway._tuya_event_poll_interval_seconds() == 5.0
     monkeypatch.setenv("SOLARMINER_TUYA_EVENT_POLL_SECONDS", "1.5")
-    assert gateway._tuya_event_poll_interval_seconds() == 1.5
+    assert gateway._tuya_event_poll_interval_seconds() == 5.0
     monkeypatch.setenv("SOLARMINER_TUYA_EVENT_POLL_SECONDS", "invalid")
-    assert gateway._tuya_event_poll_interval_seconds() == 1.5
+    assert gateway._tuya_event_poll_interval_seconds() == 5.0
 
 
 def test_password_login_rejects_wrong_password_without_registering_device(client):
@@ -617,30 +619,42 @@ def test_health_info_and_bootstrap_token_permissions(client, caplog):
     assert secret not in caplog.text
 
 
-def test_health_endpoint_uses_a_small_database_read(monkeypatch):
-    queries = []
+def test_health_endpoint_is_independent_of_database(monkeypatch):
+    def unexpected_database_access():
+        raise AssertionError("liveness health must not wait on SQLite")
 
-    class Result:
-        def fetchone(self):
-            return ("OWNER_ACTIVE",)
-
-    class Connection:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def execute(self, query):
-            queries.append(query)
-            return Result()
-
-    monkeypatch.setattr(gateway, "db", lambda: Connection())
+    monkeypatch.setattr(gateway, "db", unexpected_database_access)
     response = gateway.health()
 
     assert response["status"] == "ok"
-    assert response["bootstrap_state"] == "OWNER_ACTIVE"
-    assert queries == ["SELECT value FROM system_state WHERE key='bootstrap_state'"]
+    assert "bootstrap_state" not in response
+    assert response["package_version"] == gateway.PACKAGE_VERSION
+
+
+def test_open_database_connection_does_not_reissue_wal_mode_pragma(tmp_path, monkeypatch):
+    statements = []
+
+    class Connection:
+        row_factory = None
+
+        def execute(self, statement):
+            statements.append(statement)
+            return self
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(gateway, "DB_PATH", tmp_path / "gateway.db")
+    monkeypatch.setattr(gateway, "INSTANCE_MARKER", tmp_path / "not-initialized")
+    monkeypatch.setattr(gateway.sqlite3, "connect", lambda *_args, **_kwargs: Connection())
+
+    with gateway.db():
+        pass
+
+    assert "PRAGMA foreign_keys=ON" in statements
+    assert "PRAGMA recursive_triggers=ON" in statements
+    assert "PRAGMA busy_timeout=10000" in statements
+    assert not any("journal_mode" in statement.casefold() for statement in statements)
 
 
 def test_bootstrap_login_persistence_and_session(client):

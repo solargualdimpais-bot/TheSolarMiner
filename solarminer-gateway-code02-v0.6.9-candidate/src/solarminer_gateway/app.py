@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.207"
+PACKAGE_VERSION = "0.6.208"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -965,7 +965,6 @@ def db() -> Any:
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA recursive_triggers=ON")
     conn.execute("PRAGMA busy_timeout=10000")
-    conn.execute("PRAGMA journal_mode=WAL")
     try:
         yield conn
     finally:
@@ -1103,6 +1102,17 @@ def initialize() -> None:
         except sqlite3.Error as exc:
             LOG.critical("Initialized database cannot be validated (%s); preserving it", type(exc).__name__)
             return
+    # WAL is a database-level mode. Set it once during startup instead of
+    # asking for it on every API connection, which can contend with active
+    # readers/writers and make short health/bootstrap requests time out.
+    try:
+        with sqlite3.connect(DB_PATH, timeout=10) as journal_conn:
+            journal_mode = journal_conn.execute("PRAGMA journal_mode=WAL").fetchone()
+            if not journal_mode or str(journal_mode[0]).lower() != "wal":
+                raise sqlite3.OperationalError("database_wal_mode_unavailable")
+    except sqlite3.Error as exc:
+        LOG.critical("Database journal mode could not be initialized (%s)", type(exc).__name__)
+        return
     with db() as conn:
         conn.executescript(SCHEMA)
         shelly_product_registry.ensure_schema(conn)
@@ -1561,7 +1571,7 @@ def _collect_tuya_device_events_once() -> int:
             conn.commit()
 
     readings = hardware_integrations.read_tuya(
-        {**config, "devices": devices}, on_reading=persist_completed_reading)
+        {**config, "devices": devices}, on_reading=persist_completed_reading, background_poll=True)
     if _update_tuya_device_records(integration_config, readings, record_status=False):
         hardware_integrations.save_config(integration_config)
     return recorded
@@ -1569,33 +1579,25 @@ def _collect_tuya_device_events_once() -> int:
 
 def _tuya_event_poll_interval_seconds() -> float:
     try:
-        return max(0.5, min(3600.0, float(os.environ.get("SOLARMINER_TUYA_EVENT_POLL_SECONDS", "1.5"))))
+        # Keep a quiet interval after each completed fleet pass. A slow/offline
+        # device set must not turn the observer into a continuous LAN sweep.
+        return max(5.0, min(3600.0, float(os.environ.get("SOLARMINER_TUYA_EVENT_POLL_SECONDS", "5"))))
     except (TypeError, ValueError):
-        return 1.5
+        return 5.0
 
 
 async def _tuya_device_event_loop() -> None:
-    """Start Tuya LAN sweeps every 1.5 seconds, with at most two in flight.
-
-    The bound permits a delayed sample to overlap one later poll without
-    accumulating unbounded sockets or worker threads. Persistence rejects
-    older samples that complete after newer ones.
-    """
+    """Poll Tuya LAN devices sequentially, with a quiet interval after each pass."""
     interval = _tuya_event_poll_interval_seconds()
-    active: set[asyncio.Task] = set()
-    def report_sweep(task: asyncio.Task) -> None:
+    while True:
         try:
-            task.result()
+            # Background reads use saved protocol/IP only. Protocol probing and
+            # MAC-based rediscovery remain explicit Owner actions.
+            await asyncio.to_thread(_collect_tuya_device_events_once)
         except asyncio.CancelledError:
-            pass
+            raise
         except Exception as exc:
             LOG.warning("Periodic Tuya LAN observation failed (%s)", type(exc).__name__)
-    while True:
-        active = {task for task in active if not task.done()}
-        if len(active) < 2:
-            task = asyncio.create_task(asyncio.to_thread(_collect_tuya_device_events_once))
-            task.add_done_callback(report_sweep)
-            active.add(task)
         await asyncio.sleep(interval)
 
 
@@ -1921,18 +1923,10 @@ async def database_error_handler(_: Request, exc: sqlite3.Error) -> JSONResponse
 
 @app.get("/api/v1/health")
 def health() -> dict[str, Any]:
-    try:
-        with db() as conn:
-            # This endpoint is polled by the PWA and watchdog. A full SQLite
-            # integrity_check scans every table/index and can take longer than
-            # the 3.5–4s availability probe on a large persistent database,
-            # making a healthy Gateway appear offline. Keep the routine probe
-            # bounded to a small read; run full integrity checks only as an
-            # explicit maintenance diagnostic.
-            state = conn.execute("SELECT value FROM system_state WHERE key='bootstrap_state'").fetchone()
-        return {"status": "ok", "version": VERSION, "package_version": PACKAGE_VERSION, "bootstrap_state": state[0] if state else "RECOVERY_REQUIRED"}
-    except sqlite3.Error:
-        raise HTTPException(503, "database_unavailable")
+    # Liveness must stay independent of SQLite. Bootstrap and data readiness
+    # have their own API routes; a brief database lock must not make the
+    # watchdog restart a running server or make endpoint checks flap.
+    return {"status": "ok", "version": VERSION, "package_version": PACKAGE_VERSION}
 
 
 @app.get("/api/v1/info")

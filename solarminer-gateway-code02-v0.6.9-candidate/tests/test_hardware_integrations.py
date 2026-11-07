@@ -1363,7 +1363,7 @@ def test_tuya_reports_devices_individually_when_one_status_request_fails(monkeyp
     assert all(item["source"] == "TUYA_LAN" for item in result)
 
 
-def test_tuya_local_protocol_fallback_probes_33_then_34_then_35_and_remembers_match(monkeypatch):
+def test_tuya_local_read_uses_only_the_configured_protocol(monkeypatch):
     attempted = []
     class LocalDevice:
         def __init__(self, protocol): self.protocol = protocol
@@ -1376,14 +1376,13 @@ def test_tuya_local_protocol_fallback_probes_33_then_34_then_35_and_remembers_ma
                         lambda device: LocalDevice(device["local_protocol"]))
     device = {"device_id": "relay-1", "name": "Relay", "local_key": "local-key-123",
               "local_ip": "192.168.8.44", "local_protocol": "3.3"}
-    result = integrations._tuya_local_status(device)
-    assert attempted == ["3.3", "3.4"]
-    assert device["local_protocol"] == "3.4"
-    assert result["local_protocol"] == "3.4"
-    assert result["status"] == [{"code": "dps_1", "dps_id": 1, "value": True}]
+    with pytest.raises(RuntimeError, match="tuya_protocol_probe_failed:3.3"):
+        integrations._tuya_local_status(device)
+    assert attempted == ["3.3"]
+    assert device["local_protocol"] == "3.3"
 
 
-def test_tuya_local_protocol_reuses_confirmed_protocol_before_fallbacks(monkeypatch):
+def test_tuya_local_protocol_uses_the_saved_protocol(monkeypatch):
     attempted = []
     class LocalDevice:
         def __init__(self, protocol): self.protocol = protocol
@@ -1400,7 +1399,7 @@ def test_tuya_local_protocol_reuses_confirmed_protocol_before_fallbacks(monkeypa
     assert result["status"] == [{"code": "dps_1", "dps_id": 1, "value": False}]
 
 
-def test_tuya_local_protocol_fallback_reports_all_attempts_without_cloud(monkeypatch):
+def test_tuya_local_protocol_failure_reports_single_attempt_without_cloud(monkeypatch):
     attempted = []
     class LocalDevice:
         def __init__(self, protocol): self.protocol = protocol
@@ -1410,10 +1409,27 @@ def test_tuya_local_protocol_fallback_reports_all_attempts_without_cloud(monkeyp
     monkeypatch.setattr(integrations, "_tuya_lan_client",
                         lambda device: LocalDevice(device["local_protocol"]))
     monkeypatch.setattr(integrations, "_tuya_request", lambda *args, **kwargs: pytest.fail("Tuya fallback used Cloud"))
-    with pytest.raises(RuntimeError, match="tuya_protocol_probe_failed:3.3,3.4,3.5"):
+    with pytest.raises(RuntimeError, match="tuya_protocol_probe_failed:3.3"):
         integrations._tuya_local_status({"device_id": "relay-1", "local_key": "local-key-123",
                                          "local_ip": "192.168.8.44", "local_protocol": "3.3"})
-    assert attempted == ["3.3", "3.4", "3.5"]
+    assert attempted == ["3.3"]
+
+
+def test_tuya_background_poll_does_not_scan_network_after_a_failed_read(monkeypatch):
+    device = {"device_id": "relay-1", "name": "Relay", "local_key": "local-key-123",
+              "local_ip": "192.168.8.80", "local_mac": "AA:BB:CC:DD:EE:FF", "local_protocol": "3.4"}
+    monkeypatch.setattr(integrations, "_tuya_local_status",
+                        lambda _item: (_ for _ in ()).throw(RuntimeError("tuya_protocol_probe_failed:3.4")))
+    monkeypatch.setattr(integrations, "_tuya_scan_local_ips_by_mac",
+                        lambda **_kwargs: pytest.fail("background polling must not rediscover the LAN"))
+    monkeypatch.setattr(integrations, "_persist_tuya_protocols",
+                        lambda *_args: pytest.fail("background polling must not rewrite device network config"))
+
+    result = integrations.read_tuya({"devices": [device]}, background_poll=True)
+
+    assert result[0]["connection_state"] == "failed"
+    assert result[0]["reason"] == "tuya_protocol_probe_failed:3.4"
+    assert device["local_ip"] == "192.168.8.80"
 
 
 def test_tuya_successful_protocol_and_mac_resolved_ip_are_saved_without_exposing_key(tmp_path, monkeypatch):

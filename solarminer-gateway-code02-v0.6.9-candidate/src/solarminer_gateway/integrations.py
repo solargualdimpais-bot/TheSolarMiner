@@ -42,7 +42,7 @@ try:
 except ImportError:  # Keep the rest of the Gateway usable if packaging is incomplete.
     tinytuya = None
 
-_TUYA_PROTOCOL_FALLBACKS = ("3.3", "3.4", "3.5")
+_TUYA_PROTOCOLS_WITH_PERSISTED_STATUS = ("3.3", "3.4", "3.5")
 _TUYA_PROTOCOL_CONFIG_LOCK = threading.Lock()
 _TUYA_MAC_SCAN_LOCK = threading.Lock()
 _TUYA_MAC_SCAN_CACHE: tuple[float, dict[str, str]] = (0.0, {})
@@ -879,7 +879,7 @@ def _tuya_local_dps(device: dict[str, Any], code: str, *, status: bool = False) 
 
 
 def _tuya_probe_local_status(device: dict[str, Any]):
-    """Find a working supported Tuya LAN protocol using read-only status requests."""
+    """Read Tuya status once using the configured protocol, without protocol guessing."""
     if tinytuya is None:
         raise RuntimeError("tuya_lan_driver_unavailable")
     key = device.get("local_key")
@@ -889,8 +889,11 @@ def _tuya_probe_local_status(device: dict[str, Any]):
     device["local_ip"] = host
     failures = []
     preferred = str(device.get("local_protocol") or "")
-    protocols = ((preferred,) + tuple(protocol for protocol in _TUYA_PROTOCOL_FALLBACKS if protocol != preferred)
-                 if preferred in _TUYA_PROTOCOL_FALLBACKS else _TUYA_PROTOCOL_FALLBACKS)
+    # The selected protocol is part of the device configuration. Trying other
+    # versions on every failed read multiplies LAN traffic and can overload a
+    # large fleet; a mismatch is returned to the caller for explicit correction.
+    protocol = preferred if preferred in _TUYA_PROTOCOLS_WITH_PERSISTED_STATUS else "3.3"
+    protocols = (protocol,)
     for protocol in protocols:
         candidate = {**device, "local_ip": host, "local_protocol": protocol}
         try:
@@ -1006,7 +1009,8 @@ def _tuya_local_status(device: dict[str, Any]) -> dict[str, Any]:
             "local_ip": device.get("local_ip", ""), "observed_at": time.time()}
 
 
-def read_tuya(config: dict[str, Any], *, on_reading: Callable[[dict[str, Any]], None] | None = None) -> list[dict[str, Any]]:
+def read_tuya(config: dict[str, Any], *, on_reading: Callable[[dict[str, Any]], None] | None = None,
+              background_poll: bool = False) -> list[dict[str, Any]]:
     """Read Tuya device status over LAN only; never fall back to Tuya Cloud."""
     devices = [item for item in config.get("devices", [])
                if isinstance(item, dict) and isinstance(item.get("device_id"), str)]
@@ -1031,7 +1035,7 @@ def read_tuya(config: dict[str, Any], *, on_reading: Callable[[dict[str, Any]], 
     # the slowest device finishes; retryable IP failures are deferred until the
     # MAC-based recovery below has had a chance to replace them.
     retryable_indexes = set()
-    with ThreadPoolExecutor(max_workers=min(8, len(devices)), thread_name_prefix="tuya-lan") as pool:
+    with ThreadPoolExecutor(max_workers=min(4 if background_poll else 8, len(devices)), thread_name_prefix="tuya-lan") as pool:
         futures = {pool.submit(read_one, item): index for index, item in enumerate(devices)}
         results = [{} for _ in devices]
         for future in as_completed(futures):
@@ -1039,7 +1043,7 @@ def read_tuya(config: dict[str, Any], *, on_reading: Callable[[dict[str, Any]], 
             result = future.result()
             results[index] = result
             reason = str(result.get("reason", ""))
-            retryable = (result.get("connection_state") == "failed"
+            retryable = (not background_poll and result.get("connection_state") == "failed"
                          and (reason.startswith("tuya_protocol_probe_failed:")
                               or reason == "tuya_local_ip_unresolved_from_mac")
                          and _tuya_normalize_mac(devices[index].get("local_mac")))
@@ -1097,7 +1101,7 @@ def read_tuya(config: dict[str, Any], *, on_reading: Callable[[dict[str, Any]], 
         for index in failed_indexes:
             on_reading(results[index])
     selected = {item["device_id"]: item["local_protocol"] for item in results
-                if item.get("connection_state") == "local_responded" and item.get("local_protocol") in _TUYA_PROTOCOL_FALLBACKS}
+                if item.get("connection_state") == "local_responded" and item.get("local_protocol") in _TUYA_PROTOCOLS_WITH_PERSISTED_STATUS}
     local_ips: dict[str, str | None] = {item["device_id"]: item["local_ip"] for item in results
                                        if item.get("local_ip") and (item.get("connection_state") == "local_responded"
                                                                      or item.get("device_id") in refreshed_ips)}

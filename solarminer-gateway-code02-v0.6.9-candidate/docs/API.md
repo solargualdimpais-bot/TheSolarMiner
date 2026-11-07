@@ -68,7 +68,7 @@ All network use is intended over TLS. A fresh USB installation sets the initial 
 
 | Method | Path | Access |
 |---|---|---|
-| GET | `/api/v1/health` | Public, minimal health and bootstrap state |
+| GET | `/api/v1/health` | Public, process liveness and package version; independent of SQLite |
 | GET | `/api/v1/info` | Public, product/version only |
 | GET | `/api/v1/bootstrap/status` | Public, state only |
 | POST | `/api/v1/bootstrap/owner` | Exact allow-listed HTTPS origin, locally set one-time setup password + Ed25519 proof + timestamp/nonce; legacy token remains supported |

@@ -19,7 +19,7 @@ A matriz corresponde à constante `PERMISSIONS` já existente. Não foi criada u
 
 | Endpoint | Regra observada |
 |---|---|
-| `GET /api/v1/health` | Público; verifica integridade da base de dados |
+| `GET /api/v1/health` | Público; liveness e versão do pacote, sem depender da SQLite |
 | `GET /api/v1/info` | Público |
 | `GET /api/v1/bootstrap/status` | Público; não revela o token |
 | `POST /api/v1/bootstrap/owner` | Origem HTTPS autorizada, palavra-passe definida localmente na instalação, timestamp/nonce e assinatura Ed25519; token legado continua compatível |
