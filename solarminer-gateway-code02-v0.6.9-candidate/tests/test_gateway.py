@@ -610,6 +610,9 @@ def test_password_login_rate_limit_is_shared_across_source_ips(client):
 
 
 def test_health_info_and_bootstrap_token_permissions(client, caplog):
+    import inspect
+
+    assert inspect.iscoroutinefunction(gateway.health)
     assert client.get("/api/v1/health").status_code == 200
     assert client.get("/api/v1/info").json()["version"] == "0.6.0"
     token_file = gateway.BOOTSTRAP_PATH

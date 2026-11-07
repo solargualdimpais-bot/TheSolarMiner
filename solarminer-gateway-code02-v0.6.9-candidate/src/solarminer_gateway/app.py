@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.210"
+PACKAGE_VERSION = "0.6.211"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -1963,10 +1963,12 @@ async def database_error_handler(_: Request, exc: sqlite3.Error) -> JSONResponse
 
 
 @app.get("/api/v1/health")
-def health() -> dict[str, Any]:
+async def health() -> dict[str, Any]:
     # Liveness must stay independent of SQLite. Bootstrap and data readiness
     # have their own API routes; a brief database lock must not make the
-    # watchdog restart a running server or make endpoint checks flap.
+    # watchdog restart a running server or make endpoint checks flap. Keep
+    # this async and I/O-free so slow synchronous device routes cannot occupy
+    # the worker thread needed to answer liveness probes.
     return {"status": "ok", "version": VERSION, "package_version": PACKAGE_VERSION}
 
 
