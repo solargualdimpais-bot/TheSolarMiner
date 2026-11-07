@@ -28,6 +28,7 @@ def command_result(command, stdout="", returncode=0):
 
 def test_watchdog_restarts_gateway_after_three_consecutive_failed_health_checks(tmp_path, monkeypatch):
     monkeypatch.setattr(health_watchdog, "DATA_DIR", tmp_path)
+    monkeypatch.setenv("SOLARMINER_WATCHDOG_ACTIONS_ENABLED", "true")
     calls = []
 
     def runner(command, **_kwargs):
@@ -86,6 +87,7 @@ def test_watchdog_skips_recovery_during_offline_recovery(tmp_path):
 
 def test_watchdog_reloads_nginx_only_after_backend_health_is_good(tmp_path, monkeypatch):
     monkeypatch.setattr(health_watchdog, "DATA_DIR", tmp_path)
+    monkeypatch.setenv("SOLARMINER_WATCHDOG_ACTIONS_ENABLED", "true")
     calls = []
 
     def runner(command, **_kwargs):
@@ -115,6 +117,7 @@ def test_watchdog_reloads_nginx_only_after_backend_health_is_good(tmp_path, monk
 
 def test_watchdog_rolls_back_recent_release_after_six_local_failures(tmp_path, monkeypatch):
     monkeypatch.setattr(health_watchdog, "DATA_DIR", tmp_path)
+    monkeypatch.setenv("SOLARMINER_WATCHDOG_ACTIONS_ENABLED", "true")
     update_state = tmp_path / "update-state.json"
     update_state.write_text(json.dumps({
         "state": "COMMITTED",
@@ -151,6 +154,40 @@ def test_watchdog_rolls_back_recent_release_after_six_local_failures(tmp_path, m
     assert ["/usr/bin/python3", "-m", "solarminer_gateway.system_update_pipeline",
             "--rollback-committed"] in calls
     assert json.loads(state_path.read_text())["automatic_rollback_completed"] == 1000
+
+
+def test_watchdog_can_log_failures_without_restart_reload_or_rollback(tmp_path, monkeypatch):
+    monkeypatch.setattr(health_watchdog, "DATA_DIR", tmp_path)
+    monkeypatch.setenv("SOLARMINER_WATCHDOG_ACTIONS_ENABLED", "false")
+    calls = []
+    messages = []
+
+    def runner(command, **_kwargs):
+        calls.append(command)
+        if command[1:3] == ["list-units", "--all"]:
+            return command_result(command)
+        if command[:3] == ["/usr/bin/tailscale", "status", "--json"]:
+            return command_result(command, '{"Self":{"Online":true}}')
+        return command_result(command)
+
+    def opener(request, **_kwargs):
+        raise urllib.error.URLError("temporary failure")
+
+    result = None
+    for _ in range(6):
+        result = health_watchdog.check_once(
+            runner=runner, opener=opener,
+            context_factory=lambda **_kwargs: ssl.create_default_context(),
+            state_path=tmp_path / "watchdog.json", now=lambda: 700,
+            logger=messages.append,
+        )
+
+    assert result == {"status": "actions_disabled", "gateway": "unreachable", "proxy": "unreachable"}
+    assert not any(command[:2] == ["/usr/bin/systemctl", "restart"] for command in calls)
+    assert not any(command[:2] == ["/usr/bin/systemctl", "reload"] for command in calls)
+    assert not any("--rollback-committed" in command for command in calls)
+    assert sum(message.startswith("watchdog: ERROR Gateway health") for message in messages) == 6
+    assert any("automatic recovery actions disabled" in message for message in messages)
 
 
 def test_watchdog_never_uses_stale_update_for_automatic_rollback(tmp_path):

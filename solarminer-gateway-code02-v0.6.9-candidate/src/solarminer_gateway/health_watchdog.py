@@ -23,6 +23,13 @@ ROLLBACK_PROBATION_SECONDS = 24 * 60 * 60
 UPDATE_STATE_PATH = Path("/opt/solarminer/update-state.json")
 
 
+def _automatic_actions_enabled() -> bool:
+    """Allow health observation while temporarily disabling automated recovery actions."""
+    return os.environ.get("SOLARMINER_WATCHDOG_ACTIONS_ENABLED", "true").strip().casefold() in {
+        "1", "true", "yes", "on",
+    }
+
+
 def _request_health(url: str, context: ssl.SSLContext, *, timeout: float = 4.0,
                     opener: Callable[..., Any] = urllib.request.urlopen) -> tuple[str, str | None]:
     request = urllib.request.Request(url, headers={"Cache-Control": "no-cache", "Connection": "close"})
@@ -189,6 +196,21 @@ def check_once(*, runner: Callable[..., Any] = subprocess.run,
         state["gateway_failures"] = int(state.get("gateway_failures", 0)) + 1
         state["failures_since_healthy"] = int(state.get("failures_since_healthy", 0)) + 1
         logger(f"watchdog: ERROR Gateway health {gateway_state} ({gateway_reason or 'unknown'})")
+
+    # Keep collecting health diagnostics, but do not let transient failures
+    # trigger service restarts, Nginx reloads, or automatic release rollback.
+    if not _automatic_actions_enabled():
+        if proxy_state == "healthy":
+            state["proxy_failures"] = 0
+            if gateway_state == "healthy":
+                state["failures_since_healthy"] = 0
+        else:
+            state["proxy_failures"] = int(state.get("proxy_failures", 0)) + 1
+            state["failures_since_healthy"] = int(state.get("failures_since_healthy", 0)) + 1
+            logger(f"watchdog: ERROR Nginx proxy health {proxy_state} ({proxy_reason or 'unknown'})")
+        _save_state(state, state_path)
+        logger("watchdog: automatic recovery actions disabled; health checks only")
+        return {"status": "actions_disabled", "gateway": gateway_state, "proxy": proxy_state}
 
     if gateway_state != "healthy":
         last_restart = float(state.get("gateway_last_restart", 0) or 0)
