@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.205"
+PACKAGE_VERSION = "0.6.206"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -1923,9 +1923,12 @@ async def database_error_handler(_: Request, exc: sqlite3.Error) -> JSONResponse
 def health() -> dict[str, Any]:
     try:
         with db() as conn:
-            integrity = conn.execute("PRAGMA integrity_check").fetchone()
-            if integrity is None or integrity[0] != "ok":
-                raise HTTPException(503, "database_integrity_failure")
+            # This endpoint is polled by the PWA and watchdog. A full SQLite
+            # integrity_check scans every table/index and can take longer than
+            # the 3.5–4s availability probe on a large persistent database,
+            # making a healthy Gateway appear offline. Keep the routine probe
+            # bounded to a small read; run full integrity checks only as an
+            # explicit maintenance diagnostic.
             state = conn.execute("SELECT value FROM system_state WHERE key='bootstrap_state'").fetchone()
         return {"status": "ok", "version": VERSION, "package_version": PACKAGE_VERSION, "bootstrap_state": state[0] if state else "RECOVERY_REQUIRED"}
     except sqlite3.Error:

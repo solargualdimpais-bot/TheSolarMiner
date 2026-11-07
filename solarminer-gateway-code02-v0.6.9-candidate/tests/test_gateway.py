@@ -617,6 +617,32 @@ def test_health_info_and_bootstrap_token_permissions(client, caplog):
     assert secret not in caplog.text
 
 
+def test_health_endpoint_uses_a_small_database_read(monkeypatch):
+    queries = []
+
+    class Result:
+        def fetchone(self):
+            return ("OWNER_ACTIVE",)
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, query):
+            queries.append(query)
+            return Result()
+
+    monkeypatch.setattr(gateway, "db", lambda: Connection())
+    response = gateway.health()
+
+    assert response["status"] == "ok"
+    assert response["bootstrap_state"] == "OWNER_ACTIVE"
+    assert queries == ["SELECT value FROM system_state WHERE key='bootstrap_state'"]
+
+
 def test_bootstrap_login_persistence_and_session(client):
     owner, private, _ = create_owner(client)
     assert not gateway.BOOTSTRAP_PATH.exists()
