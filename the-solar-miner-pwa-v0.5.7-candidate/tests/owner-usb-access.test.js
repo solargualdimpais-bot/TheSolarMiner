@@ -52,6 +52,10 @@ test("Gateway console summarizes detected errors and filters logs to affected se
   assert.match(app, /gatewayConsoleDetectedErrorServices/);
   assert.match(app, /Serviços marcados como falhados/);
   assert.match(app, /gatewayConsoleServicePatterns\[service\]/);
+  assert.match(html, /id="gateway-console-send-report"/);
+  assert.match(app, /sendGatewayDiagnosticsReport\(\)/);
+  assert.match(app, /gateway_watchdog: "Watchdog"/);
+  assert.match(app, /setGatewayWatchdogEnabled\(enable\)/);
 });
 
 test("Owner PWA checks for Gateway updates automatically every minute while active", () => {
@@ -91,10 +95,10 @@ test("Owner recovery file parser accepts a generated key and rejects malformed/o
 });
 
 test("new PWA static cache version is changed and USB limitations are documented", () => {
-  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.150-first-owner-connection-onboarding/);
+  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.155-reduced-gateway-polling/);
   assert.match(serviceWorker, /\.\/favorite-list\.js/);
-  assert.match(manifest, /v0\.5\.150/);
-  assert.equal(packageJson.version, "0.5.150");
+  assert.match(manifest, /v0\.5\.155/);
+  assert.equal(packageJson.version, "0.5.155");
   assert.doesNotMatch(html, /gateway-update-refresh|Atualizar estado/);
   assert.doesNotMatch(app, /gateway-update-refresh/);
   const docs = read("OWNER_USB_AND_ACCESS.md");

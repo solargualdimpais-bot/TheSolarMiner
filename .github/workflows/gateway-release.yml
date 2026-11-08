@@ -65,6 +65,7 @@ jobs:
         run: |
           bash -n tools/tesla_oauth_relay/install-ubuntu.sh tools/tesla_oauth_relay/bootstrap-ubuntu.sh
           sh -n packaging/install-from-usb.sh
+          python3 -m py_compile packaging/reset-data-volume.py
           ! grep -Eq 'PACKAGE_NAME=solarminer-gateway_[0-9]|version = "[0-9]' packaging/install-from-usb.sh
           grep -q 'OWNER_STATE' packaging/install-from-usb.sh
           grep -q 'systemctl disable --now solarminer-gateway-watchdog.timer' packaging/postinst
@@ -292,6 +293,7 @@ jobs:
           done
           cp solarminer-gateway-code02-v0.6.9-candidate/packaging/install-from-usb.sh "$BUNDLE/"
           cp solarminer-gateway-code02-v0.6.9-candidate/packaging/provision-data-volume.py "$BUNDLE/"
+          cp solarminer-gateway-code02-v0.6.9-candidate/packaging/reset-data-volume.py "$BUNDLE/"
           cp solarminer-gateway-code02-v0.6.9-candidate/packaging/install-tailscale.sh "$BUNDLE/"
           cp solarminer-gateway-code02-v0.6.9-candidate/packaging/repair-existing-from-usb.sh "$BUNDLE/"
           cp solarminer-gateway-code02-v0.6.9-candidate/packaging/USB_INSTALL_README.txt "$BUNDLE/README.txt"

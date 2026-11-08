@@ -44,7 +44,7 @@ CONSOLE_SERVICES = {
     "solarminer-update-broker.socket": "privileged_update_broker",
     "solarminer-tailscale-cert.timer": "tailscale_certificate_renewal",
 }
-def _cpu_sample() -> tuple[int, int] | None:
+def _cpu_sample() -> tuple[int, int, int] | None:
     try:
         with open("/proc/stat", "r", encoding="ascii") as stream:
             fields = stream.readline().split()
@@ -52,21 +52,50 @@ def _cpu_sample() -> tuple[int, int] | None:
         if len(values) < 4:
             return None
         idle = values[3] + (values[4] if len(values) > 4 else 0)
-        return sum(values), idle
+        iowait = values[4] if len(values) > 4 else 0
+        return sum(values), idle, iowait
     except (OSError, ValueError):
         return None
 
 
-def _system_resources() -> dict[str, object]:
+def _top_processes(runner=subprocess.run) -> list[dict[str, object]]:
+    """Return only executable names and numeric use; never collect command-line arguments."""
+    try:
+        result = runner(["/usr/bin/ps", "-eo", "comm,pcpu,pmem", "--sort=-pcpu", "--no-headers"],
+                        capture_output=True, text=True, timeout=3, check=False)
+        if result.returncode != 0 or not isinstance(result.stdout, str):
+            return []
+        processes = []
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            if len(parts) != 3 or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", parts[0]):
+                continue
+            try:
+                cpu, memory = float(parts[1]), float(parts[2])
+            except ValueError:
+                continue
+            if not (0 <= cpu <= 10000 and 0 <= memory <= 100):
+                continue
+            processes.append({"name": parts[0], "cpu_percent": round(cpu, 1), "memory_percent": round(memory, 1)})
+            if len(processes) == 5:
+                break
+        return processes
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+
+
+def _system_resources(runner=subprocess.run) -> dict[str, object]:
     first = _cpu_sample()
     if first:
         time.sleep(0.12)
     second = _cpu_sample() if first else None
     cpu_percent = None
+    iowait_percent = None
     if first and second:
         total_delta, idle_delta = second[0] - first[0], second[1] - first[1]
         if total_delta > 0 and idle_delta >= 0:
             cpu_percent = round(max(0.0, min(100.0, 100 * (1 - idle_delta / total_delta))), 1)
+            iowait_percent = round(max(0.0, min(100.0, 100 * (second[2] - first[2]) / total_delta)), 1)
     memory = {}
     try:
         with open("/proc/meminfo", "r", encoding="ascii") as stream:
@@ -85,10 +114,35 @@ def _system_resources() -> dict[str, object]:
         disk_data = {"path": "/var/lib/solarminer", "total_bytes": disk.total,
                      "used_bytes": disk.used, "free_bytes": disk.free,
                      "used_percent": round(100 * disk.used / disk.total, 1) if disk.total else None}
+        resolved_data_dir = os.path.realpath("/var/lib/solarminer")
+        mountpoint = "/"
+        try:
+            with open("/proc/self/mountinfo", "r", encoding="ascii") as stream:
+                mounts = []
+                for line in stream:
+                    left, separator, right = line.rstrip("\n").partition(" - ")
+                    fields = left.split()
+                    if not separator or len(fields) < 5:
+                        continue
+                    candidate = re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), fields[4])
+                    if resolved_data_dir == candidate or resolved_data_dir.startswith(candidate.rstrip("/") + "/"):
+                        mounts.append((len(candidate), candidate, fields, right.split()))
+                if mounts:
+                    _, mountpoint, mount_fields, _ = max(mounts, key=lambda item: item[0])
+                    disk_data["separate_mount"] = mountpoint != "/"
+                    disk_data["mounted"] = True
+                    disk_data["read_only"] = "ro" in mount_fields[5].split(",")
+                else:
+                    disk_data.update({"separate_mount": False, "mounted": False, "read_only": None})
+        except (OSError, ValueError, IndexError):
+            disk_data.update({"separate_mount": None, "mounted": None, "read_only": None})
     except OSError:
         disk_data = {"path": "/var/lib/solarminer", "total_bytes": None,
-                     "used_bytes": None, "free_bytes": None, "used_percent": None}
-    return {"cpu_percent": cpu_percent, "cpu_count": os.cpu_count(), "memory": memory_data, "disk": disk_data}
+                     "used_bytes": None, "free_bytes": None, "used_percent": None,
+                     "separate_mount": None, "mounted": None, "read_only": None}
+    return {"cpu_percent": cpu_percent, "cpu_iowait_percent": iowait_percent,
+            "cpu_count": os.cpu_count(), "memory": memory_data,
+            "disk": disk_data, "top_processes": _top_processes(runner)}
 
 
 def _service_statuses(runner=subprocess.run) -> dict[str, str]:
@@ -147,11 +201,17 @@ def handle_request(raw: bytes, runner=subprocess.run) -> dict[str, object]:
     except (ValueError, UnicodeDecodeError):
         return {"status": "error", "reason": "request_invalid"}
     if not isinstance(request, dict) or request.get("action") not in {
-        "preflight", "enqueue", "tailscale_status", "tailscale_connect", "diagnostics"
+        "preflight", "enqueue", "tailscale_status", "tailscale_connect", "diagnostics",
+        "watchdog_set"
     }:
         return {"status": "error", "reason": "request_invalid"}
     action = request["action"]
-    if action in {"preflight", "tailscale_status", "diagnostics"}:
+    if action == "watchdog_set":
+        if set(request) != {"action", "enabled"} or not isinstance(request.get("enabled"), bool):
+            return {"status": "error", "reason": "watchdog_state_invalid"}
+        verb = "enable" if request["enabled"] else "disable"
+        args = ["/usr/bin/systemctl", verb, "--now", "solarminer-gateway-watchdog.timer"]
+    elif action in {"preflight", "tailscale_status", "diagnostics"}:
         if set(request) != {"action"}:
             return {"status": "error", "reason": "request_invalid"}
         if action == "preflight":
@@ -212,7 +272,7 @@ def handle_request(raw: bytes, runner=subprocess.run) -> dict[str, object]:
             logs += "\n\n--- SolarMiner Tailscale certificate and Nginx setup log ---\n" + cert_log
         truncated = len(logs) > 24000
         return {"status": "ok", "logs": _redact_diagnostics(logs),
-                "services": _service_statuses(runner), "resources": _system_resources(),
+                "services": _service_statuses(runner), "resources": _system_resources(runner),
                 "truncated": truncated,
                 "scope": "allowlisted_services_last_7_days_including_update_recovery_plus_tailscale_setup_log_tail"}
     if action == "tailscale_connect" and result.returncode != 0:
@@ -256,6 +316,11 @@ def handle_request(raw: bytes, runner=subprocess.run) -> dict[str, object]:
         if not connected and auth_url is None:
             return {"status": "error", "reason": "tailscale_auth_url_missing"}
         return {"started": True, "connected": connected, "auth_url": auth_url}
+    if action == "watchdog_set":
+        if result.returncode != 0:
+            return {"status": "error", "reason": "watchdog_state_change_failed"}
+        status = "active" if request["enabled"] else "inactive"
+        return {"status": "ok", "enabled": request["enabled"], "timer": status}
     if result.returncode != 0 or payload.get("status") == "error":
         reason = payload.get("reason")
         if not isinstance(reason, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,180}", reason):

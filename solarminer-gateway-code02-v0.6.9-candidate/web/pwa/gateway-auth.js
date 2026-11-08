@@ -287,6 +287,17 @@ export async function readGatewayConsole() {
 export async function readGatewayDiagnosticsUpload() {
   return gatewayApi("/api/v1/system/diagnostics-upload");
 }
+export async function sendGatewayDiagnosticsReport() {
+  return gatewayApi("/api/v1/system/diagnostics-upload/send", { method: "POST", body: {} });
+}
+export async function setGatewayWatchdogEnabled(enabled) {
+  if (typeof enabled !== "boolean") throw new Error("Estado do Watchdog inválido.");
+  return gatewayApi("/api/v1/system/watchdog", { method: "PUT", body: { enabled } });
+}
+export async function reportGatewayClientDiagnostics(events) {
+  if (!Array.isArray(events) || events.length < 1 || events.length > 20) return { events: 0 };
+  return gatewayApi("/api/v1/system/client-diagnostics", { method: "POST", body: { events } });
+}
 export async function saveGatewayDiagnosticsUploadToken(token) {
   return gatewayApi("/api/v1/system/diagnostics-upload", { method: "PUT", body: { token } });
 }

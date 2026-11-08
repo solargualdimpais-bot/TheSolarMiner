@@ -20,6 +20,7 @@ FSTAB = pathlib.Path("/etc/fstab")
 MARKER = pathlib.Path("/etc/solarminer/data-volume.uuid")
 LABEL = "SOLARMINER_DATA"
 MIN_FREE_MIB = 40 * 1024
+MIN_UNLABELLED_DATA_BYTES = 2 * 1024 * 1024 * 1024
 
 
 def run(args: list[str], *, check: bool = True, env: dict[str, str] | None = None) -> str:
@@ -176,15 +177,16 @@ def partition_table_type(output: str) -> str:
     return ""
 
 
-def partition_rows(disk: str) -> list[tuple[str, str, str, str]]:
+def partition_rows(disk: str) -> list[tuple[str, str, str, str, str]]:
     output = run(["lsblk", "--paths", "--noheadings", "--pairs",
-                  "--output", "NAME,TYPE,PARTLABEL,FSTYPE,UUID", disk])
+                  "--bytes", "--output", "NAME,TYPE,PARTLABEL,FSTYPE,UUID,SIZE", disk])
     rows = []
     for line in output.splitlines():
         values = dict(re.findall(r'(\w+)="([^"]*)"', line))
         if values.get("TYPE") == "part":
             rows.append((values.get("NAME", ""), values.get("PARTLABEL", ""),
-                         values.get("FSTYPE", ""), values.get("UUID", "")))
+                         values.get("FSTYPE", ""), values.get("UUID", ""),
+                         values.get("SIZE", "0")))
     return rows
 
 
@@ -205,11 +207,29 @@ def mounted_targets(partition: str) -> list[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
-def find_existing_data_partition(rows: list[tuple[str, str, str, str]]) -> tuple[str, str, str, str] | None:
+def find_existing_data_partition(rows: list[tuple[str, str, str, str, str]]) -> tuple[str, str, str, str, str] | None:
     labelled = [row for row in rows if row[1].casefold() == LABEL.casefold()]
     if len(labelled) > 1:
         raise RuntimeError("Há mais de uma partição com a etiqueta de dados SolarMiner.")
     return labelled[0] if labelled else None
+
+
+def find_unlabelled_large_ext4_partitions(
+    rows: list[tuple[str, str, str, str, str]], root_source: str,
+) -> list[tuple[str, str, str, str, str]]:
+    root_path = pathlib.Path(os.path.realpath(root_source.split("[", 1)[0]))
+    candidates = []
+    for row in rows:
+        name, partlabel, filesystem, _uuid, size = row
+        try:
+            size_bytes = int(size)
+        except (TypeError, ValueError):
+            size_bytes = 0
+        if (name and pathlib.Path(os.path.realpath(name)) != root_path
+                and not partlabel and filesystem.lower() == "ext4"
+                and size_bytes >= MIN_UNLABELLED_DATA_BYTES):
+            candidates.append(row)
+    return candidates
 
 
 def ensure_ext4_data_partition(partition: str, filesystem: str, uuid: str) -> str:
@@ -303,6 +323,15 @@ def main() -> int:
         else:
             if MARKER.exists():
                 raise RuntimeError("Existe registo de volume de dados, mas a partição marcada não foi encontrada.")
+            root_source = run(["findmnt", "--noheadings", "--output", "SOURCE", "--target", "/"])
+            unlabelled = find_unlabelled_large_ext4_partitions(rows, root_source)
+            if unlabelled:
+                candidates = ", ".join(row[0] for row in unlabelled)
+                raise RuntimeError(
+                    "Há partição(ões) ext4 grande(s) sem etiqueta SOLARMINER_DATA "
+                    f"({candidates}). Não vou criar outro volume nem ignorar possíveis dados do Owner. "
+                    "Confirma a etiqueta e a partição antes de repetir a instalação."
+                )
             table = run(["parted", "--machine", "--script", disk, "unit", "MiB", "print", "free"])
             if partition_table_type(table) != "gpt":
                 raise RuntimeError("O disco do Debian não usa GPT; nenhuma partição foi alterada.")

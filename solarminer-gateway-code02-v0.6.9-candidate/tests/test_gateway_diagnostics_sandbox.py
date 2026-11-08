@@ -24,3 +24,31 @@ def test_owner_console_includes_bounded_nginx_proxy_error_tail():
     assert "not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0" in broker
     assert 'logs += "\\n\\n--- Recent Nginx proxy errors ---\\n" + nginx_errors' in broker
     assert "ReadWritePaths=/opt/solarminer /var/lib/solarminer /var/log/nginx /run" in service
+
+
+def test_fresh_usb_installer_reuses_data_volume_and_classifies_owner_without_recreating_it():
+    root = Path(__file__).parents[1]
+    installer = (root / "packaging" / "install-from-usb.sh").read_text(encoding="utf-8")
+    provisioner = (root / "packaging" / "provision-data-volume.py").read_text(encoding="utf-8")
+    resetter = (root / "packaging" / "reset-data-volume.py").read_text(encoding="utf-8")
+    assert 'LABEL = "SOLARMINER_DATA"' in provisioner
+    assert 'if filesystem.lower() == "ext4"' in provisioner
+    assert 'não será formatada para proteger a base de dados e o Owner.' in provisioner
+    assert 'marker = Path("/var/lib/solarminer/initialized.marker")' in installer
+    assert 'print("active")' in installer
+    assert 'ESTADO DO OWNER: foi encontrado um Owner ativo na base de dados persistente.' in installer
+    assert 'Palavra-passe de um Owner registado (entrada visível):' in installer
+    assert 'stored_hash.strip()' in installer
+    assert 'if active_owners and not owners:' in installer
+    assert 'print("reset_data" if offer_fresh_install(' in installer
+    assert 'return input().strip() == "APAGAR DADOS"' in installer
+    assert 'Palavra-passe de um Owner registado (entrada visível)' in installer
+    assert 'OWNER_STATE=fresh' in installer
+    assert 'LABEL = "SOLARMINER_DATA"' in resetter
+    assert 'MARKER.read_text(encoding="ascii").strip() != old_uuid' in resetter
+    assert 'mkfs.ext4", "-F", "-L", LABEL' in resetter
+    assert '"TYPE", str(source_path)' in resetter
+    assert 'OWNER_STATE=$(python3' in installer
+    assert 'recovery)' in installer
+    assert 'não tem um Owner ativo nem bootstrap inicial disponível' in installer
+    assert 'solarminer-gateway owner-password' in installer

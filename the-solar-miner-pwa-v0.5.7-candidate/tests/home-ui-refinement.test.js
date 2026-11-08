@@ -172,7 +172,7 @@ test("Tuya editor uses the cloud Product label and automatic product-scoped DPS/
   assert.doesNotMatch(app, /name="dps_preset_id"/);
   assert.doesNotMatch(app, /name="device_kind_override"/);
   assert.match(app, /product_name_pt\|\|device\.product/);
-  assert.match(app, /Product ID, Product Tuya, categoria e tipo funcional/);
+  assert.match(app, /O mapa DPS permanece associado apenas ao Product ID/);
   assert.match(app, /product_name_pt/);
 });
 

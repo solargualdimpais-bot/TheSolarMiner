@@ -43,6 +43,18 @@ def test_error_handler_queues_error_but_not_warning(tmp_path):
     assert item["message"] == "connection failed"
 
 
+def test_error_handler_queues_only_actionable_slow_diagnostic_warnings(tmp_path):
+    path = tmp_path / "queue.ndjson"
+    handler = error_reporting.ErrorQueueHandler(level=logging.WARNING, queue_path=path)
+    handler.handle(logging.LogRecord("solarminer.gateway", logging.WARNING, "", 0,
+        "Gateway request slow status=200 route=/api/v1/health latency_ms=2200", (), None))
+    handler.handle(logging.LogRecord("solarminer.gateway", logging.WARNING, "", 0,
+        "routine status update", (), None))
+    items = [json.loads(line) for line in path.read_text().splitlines()]
+    assert len(items) == 1
+    assert "latency_ms=2200" in items[0]["message"]
+
+
 def test_flush_posts_sanitized_batch_and_retains_newer_records(tmp_path, monkeypatch):
     queue = tmp_path / "queue.ndjson"
     token = tmp_path / "token"
@@ -153,6 +165,35 @@ def test_system_snapshot_uses_broker_and_redacts_secrets_and_private_addresses(m
     assert "private.example" not in snapshot
     assert "192.168.1.20" not in snapshot
     assert "/private/location" not in snapshot
+
+
+def test_system_snapshot_includes_io_mount_and_top_process_metrics_without_paths(monkeypatch):
+    from solarminer_gateway import update_helper_client
+    monkeypatch.setattr(update_helper_client, "request", lambda action: {
+        "status": "ok", "resources": {"cpu_iowait_percent": 8.3,
+            "disk": {"used_percent": 2.2, "separate_mount": True, "mounted": True, "read_only": False,
+                     "mountpoint": "/var/lib/solarminer"},
+            "top_processes": [{"name": "uvicorn", "cpu_percent": 32.4, "memory_percent": 4.1,
+                               "args": "must_not_be_reported"}]}, "logs": ""})
+    snapshot = error_reporting._collect_system_diagnostics()
+    assert "cpu_iowait_percent: 8.3" in snapshot
+    assert "disk.separate_mount: True" in snapshot
+    assert "disk.read_only: False" in snapshot
+    assert "process uvicorn: cpu_percent=32.4, memory_percent=4.1" in snapshot
+    assert "must_not_be_reported" not in snapshot
+    assert "/var/lib/solarminer" not in snapshot
+
+
+def test_automatic_triage_compares_safari_and_chrome_without_claiming_root_cause():
+    events = [
+        {"browser": "Safari", "endpoint_kind": "Tailscale", "route": "/api/v1/health", "outcome": "timeout"},
+        {"browser": "Chrome", "endpoint_kind": "Tailscale", "route": "/api/v1/health", "outcome": "success"},
+    ]
+    batch = [{"message": "PWA endpoint probe diagnostic events=" + json.dumps(events)}]
+    triage = error_reporting._automatic_triage(batch, "")
+    assert "Browser-specific path" in triage
+    assert "not distinguishable" in triage
+    assert "Confidence: medium" in triage
 
 
 def test_system_failure_is_reported_without_app_queue_and_is_deduplicated(tmp_path, monkeypatch):

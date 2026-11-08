@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.214"
+PACKAGE_VERSION = "0.6.215"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -1032,7 +1032,10 @@ def ensure_private_dir(path: Path) -> None:
 
 @contextmanager
 def db() -> Any:
+    started = time.perf_counter()
+    outcome = "ok"
     if INSTANCE_MARKER.exists() and not DB_PATH.is_file():
+        LOG.error("Database operation failed stage=connect reason=initialized_database_missing")
         raise sqlite3.OperationalError("database missing for initialized instance")
     DB_PATH.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     # Once initialized, never let SQLite's default create-if-missing behavior
@@ -1049,8 +1052,16 @@ def db() -> Any:
     conn.execute("PRAGMA busy_timeout=10000")
     try:
         yield conn
+    except Exception as exc:
+        outcome = type(exc).__name__
+        raise
     finally:
         conn.close()
+        elapsed_ms = round((time.perf_counter() - started) * 1000)
+        if elapsed_ms >= 1000 or outcome != "ok":
+            level = logging.ERROR if outcome != "ok" else logging.WARNING
+            LOG.log(level, "Database operation %s reason=%s duration_ms=%d",
+                    "failed" if outcome != "ok" else "slow", outcome, elapsed_ms)
 
 
 def audit(conn: sqlite3.Connection, actor: str | None, action: str, target: str | None, outcome: str, details: dict | None = None) -> None:
@@ -1770,6 +1781,10 @@ app = FastAPI(title="SolarMiner Gateway", version=VERSION, docs_url=None, redoc_
 @app.middleware("http")
 async def report_http_server_errors(request: Request, call_next):
     started = time.perf_counter()
+    def route_label() -> str:
+        route = request.scope.get("route")
+        value = getattr(route, "path", "unmatched")
+        return value if isinstance(value, str) and value.startswith("/api/v1/") else "unmatched_or_non_api"
     diagnostic_probe = request.url.path in {
         "/api/v1/health", "/api/v1/info", "/api/v1/bootstrap/status",
     }
@@ -1778,12 +1793,15 @@ async def report_http_server_errors(request: Request, call_next):
     except Exception as exc:
         elapsed_ms = round((time.perf_counter() - started) * 1000)
         LOG.error("Unhandled Gateway request exception route=%s type=%s latency_ms=%d",
-                  request.url.path, type(exc).__name__, elapsed_ms)
+                  route_label(), type(exc).__name__, elapsed_ms)
         raise
     elapsed_ms = round((time.perf_counter() - started) * 1000)
     if response.status_code >= 500:
         LOG.error("Gateway returned HTTP server error status=%s route=%s latency_ms=%d",
-                  response.status_code, request.url.path, elapsed_ms)
+                  response.status_code, route_label(), elapsed_ms)
+    elif elapsed_ms >= 1000:
+        LOG.warning("Gateway request slow status=%s route=%s latency_ms=%d",
+                    response.status_code, route_label(), elapsed_ms)
     elif diagnostic_probe and elapsed_ms >= 1000:
         LOG.warning("Gateway diagnostic probe slow status=%s route=%s latency_ms=%d",
                     response.status_code, request.url.path, elapsed_ms)
@@ -6627,6 +6645,99 @@ def read_diagnostics_upload(session: dict[str, Any] = Depends(current_session)) 
         if actor["role"] != "owner":
             raise HTTPException(403, "owner_only")
     return error_reporting.diagnostics_upload_status()
+
+
+@app.post("/api/v1/system/client-diagnostics")
+def receive_client_diagnostics(payload: dict[str, Any],
+                               session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Persist only a strict, privacy-safe summary of PWA endpoint checks for later GitHub reports."""
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_only")
+    events = payload.get("events") if isinstance(payload, dict) and set(payload) == {"events"} else None
+    if not isinstance(events, list) or not events or len(events) > 20:
+        raise HTTPException(422, "client_diagnostics_invalid")
+    browsers = {"Chrome", "Chrome_iOS", "Safari", "Firefox", "Edge", "Other"}
+    endpoints = {"LAN", "Tailscale", "Hosted", "Other"}
+    routes = {"/api/v1/health", "/api/v1/info", "/api/v1/bootstrap/status"}
+    outcomes = {"success", "auth_required", "http_error", "timeout", "browser_network_error",
+                "request_error", "invalid_json", "invalid_response", "gateway_contract_error"}
+    safe_events: list[dict[str, Any]] = []
+    for event in events:
+        if not isinstance(event, dict) or set(event) - {"occurred_at", "browser", "endpoint_kind", "route", "outcome", "latency_ms", "http_status", "error_name"}:
+            raise HTTPException(422, "client_diagnostics_invalid")
+        timestamp, browser, endpoint, route = (event.get("occurred_at"), event.get("browser"),
+                                                  event.get("endpoint_kind"), event.get("route"))
+        try:
+            occurred = datetime.fromisoformat(timestamp.replace("Z", "+00:00")) if isinstance(timestamp, str) else None
+        except ValueError:
+            occurred = None
+        latency = event.get("latency_ms")
+        outcome, http_status, error_name = event.get("outcome"), event.get("http_status"), event.get("error_name")
+        if (occurred is None or occurred.tzinfo is None or browser not in browsers or endpoint not in endpoints
+                or route not in routes or outcome not in outcomes or isinstance(latency, bool)
+                or not isinstance(latency, int) or not 0 <= latency <= 120000
+                or (http_status is not None and (isinstance(http_status, bool) or not isinstance(http_status, int) or not 100 <= http_status <= 599))
+                or (error_name is not None and error_name not in {"AbortError", "TypeError", "Error"})):
+            raise HTTPException(422, "client_diagnostics_invalid")
+        safe_events.append({"occurred_at": occurred.astimezone(timezone.utc).isoformat(), "browser": browser,
+                            "endpoint_kind": endpoint, "route": route, "outcome": outcome,
+                            "latency_ms": latency, "http_status": http_status, "error_name": error_name})
+    failures = [event for event in safe_events if event["outcome"] not in {"success", "auth_required"}]
+    if failures:
+        LOG.error("PWA endpoint probe diagnostic events=%s", json.dumps(safe_events, separators=(",", ":")))
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        audit(conn, actor["user_id"], "system.client_diagnostics.submit", "endpoint_probe", "success",
+              {"events": len(safe_events), "failures": len(failures)})
+    return {"status": "recorded", "events": len(safe_events), "failures": len(failures)}
+
+
+@app.post("/api/v1/system/diagnostics-upload/send")
+def send_manual_diagnostics_report(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Owner-triggered upload of the current timestamped console snapshot to the private diagnostics repo."""
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_only")
+    if not error_reporting.diagnostics_upload_status().get("configured"):
+        raise HTTPException(409, "github_diagnostics_not_configured")
+    try:
+        result = error_reporting.flush_reports(force_system_report=True, report_source="owner_manual")
+    except (OSError, ValueError, RuntimeError, TimeoutError, json.JSONDecodeError) as exc:
+        LOG.error("Owner manual diagnostics report failed reason=%s", type(exc).__name__)
+        raise HTTPException(503, "github_diagnostics_report_failed") from exc
+    if result.get("status") != "sent":
+        raise HTTPException(503, "github_diagnostics_report_not_sent")
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        audit(conn, actor["user_id"], "system.diagnostics_upload.manual", "private_github_issues", "success", {})
+    return {"status": "sent", "issue_url": result.get("issue_url")}
+
+
+@app.put("/api/v1/system/watchdog")
+def configure_gateway_watchdog(payload: dict[str, Any],
+                               session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Allow only the authenticated Owner to manually enable/disable the watchdog timer."""
+    if not isinstance(payload, dict) or set(payload) != {"enabled"} or not isinstance(payload["enabled"], bool):
+        raise HTTPException(422, "watchdog_state_invalid")
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_only")
+    try:
+        result = update_helper_client.request("watchdog_set", enabled=payload["enabled"])
+    except (OSError, RuntimeError, ValueError) as exc:
+        LOG.error("Owner watchdog control failed enabled=%s reason=%s",
+                  payload["enabled"], type(exc).__name__)
+        raise HTTPException(503, "watchdog_state_change_failed") from exc
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        audit(conn, actor["user_id"], "system.watchdog.configure", "gateway_watchdog_timer", "success",
+              {"enabled": payload["enabled"]})
+    return {"status": "ok", "enabled": result.get("enabled") is True,
+            "timer": result.get("timer", "unknown")}
 
 
 @app.put("/api/v1/system/diagnostics-upload")

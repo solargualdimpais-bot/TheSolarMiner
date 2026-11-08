@@ -92,9 +92,30 @@ def enqueue_record(record: logging.LogRecord, path: Path = QUEUE_PATH) -> None:
 
 
 class ErrorQueueHandler(logging.Handler):
+    def __init__(self, level: int = logging.NOTSET, queue_path: Path = QUEUE_PATH):
+        super().__init__(level=level)
+        self.queue_path = queue_path
+
     def emit(self, record: logging.LogRecord) -> None:
         if record.levelno >= logging.ERROR:
-            enqueue_record(record)
+            enqueue_record(record, self.queue_path)
+            return
+        try:
+            message = record.getMessage()
+        except Exception:
+            return
+        diagnostic_warning = (
+            "Gateway request slow" in message
+            or "Gateway diagnostic probe slow" in message
+            or "Database operation slow" in message
+            or ("Deye polling diagnostic" in message and "outcome=mapped_registers_response" not in message)
+            or ("Periodic Tuya poll diagnostic" in message and
+                ("outcome=partial" in message or "duration_ms=" in message and
+                 re.search(r"duration_ms=(\d+)", message) and
+                 int(re.search(r"duration_ms=(\d+)", message).group(1)) >= 2000))
+        )
+        if diagnostic_warning:
+            enqueue_record(record, self.queue_path)
 
 
 def install_error_queue_handler() -> None:
@@ -182,7 +203,7 @@ def _collect_system_diagnostics() -> str:
     resources = snapshot.get("resources")
     if isinstance(resources, dict):
         # Only include numeric resource metrics; omit paths and arbitrary host metadata.
-        for key in ("cpu_percent", "cpu_count"):
+        for key in ("cpu_percent", "cpu_iowait_percent", "cpu_count"):
             value = resources.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 lines.append(f"resource {key}: {value}")
@@ -193,6 +214,23 @@ def _collect_system_diagnostics() -> str:
                     value = metrics.get(key)
                     if isinstance(value, (int, float)) and not isinstance(value, bool):
                         lines.append(f"resource {group}.{key}: {value}")
+                if group == "disk":
+                    for key in ("separate_mount", "mounted", "read_only"):
+                        value = metrics.get(key)
+                        if isinstance(value, bool) or value is None:
+                            lines.append(f"resource disk.{key}: {value}")
+        processes = resources.get("top_processes")
+        if isinstance(processes, list):
+            lines.append("Top processes by CPU (process name only; no command-line arguments):")
+            for process in processes[:5]:
+                if not isinstance(process, dict):
+                    continue
+                name = process.get("name")
+                cpu = process.get("cpu_percent")
+                memory = process.get("memory_percent")
+                if (isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", name)
+                        and isinstance(cpu, (int, float)) and isinstance(memory, (int, float))):
+                    lines.append(f"process {name}: cpu_percent={cpu}, memory_percent={memory}")
     logs = snapshot.get("logs")
     if isinstance(logs, str):
         lines.append("Recent allowlisted service logs (redacted):")
@@ -200,15 +238,87 @@ def _collect_system_diagnostics() -> str:
     return "\n".join(lines)[:10_000] or "No system diagnostics were returned."
 
 
-def _create_issue(batch: list[dict[str, Any]], token: str, system_diagnostics: str) -> str:
+def _automatic_triage(batch: list[dict[str, Any]], system_diagnostics: str) -> str:
+    """Apply conservative rules; distinguish observed failure from inferred cause."""
+    lines = system_diagnostics.splitlines()
+    lower = system_diagnostics.casefold()
+    diagnoses: list[str] = []
+    pwa_events: list[dict[str, Any]] = []
+    for item in batch:
+        message = item.get("message", "")
+        marker = "PWA endpoint probe diagnostic events="
+        if marker in message:
+            try:
+                raw = message.split(marker, 1)[1].strip()
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    pwa_events.extend(event for event in parsed if isinstance(event, dict))
+            except (ValueError, TypeError):
+                pass
+    failures = [event for event in pwa_events if event.get("outcome") not in {"success", "auth_required"}]
+    successes = [event for event in pwa_events if event.get("outcome") in {"success", "auth_required"}]
+    if failures and successes:
+        failing_browsers = {event.get("browser") for event in failures}
+        successful_browsers = {event.get("browser") for event in successes}
+        failing_routes = {(event.get("endpoint_kind"), event.get("route")) for event in failures}
+        successful_routes = {(event.get("endpoint_kind"), event.get("route")) for event in successes}
+        if failing_browsers.isdisjoint(successful_browsers) and failing_routes & successful_routes:
+            diagnoses.append("Browser-specific path: the same endpoint category and API route failed in one browser and succeeded in another. This points to a browser/network-path difference; TLS, DNS, CORS and local browser state are not distinguishable from fetch failure alone. Confidence: medium.")
+        elif {event.get("endpoint_kind") for event in failures}.isdisjoint({event.get("endpoint_kind") for event in successes}):
+            diagnoses.append("Endpoint choice differs between successful and failed probes. Compare the per-browser saved endpoint/fallback settings before blaming the Gateway. Confidence: medium.")
+    if "watchdog: tailscale=online" in lower and "local gateway=unreachable, proxy=healthy" in lower:
+        diagnoses.append("Gateway API unavailable while the local proxy is healthy and Tailscale is online. This isolates the observed failure to the Gateway application/listener path; it does not prove why the application stopped responding. Confidence: high for the failing layer, low for the underlying cause.")
+    if "resource disk.read_only: true" in lower:
+        diagnoses.append("The database data volume is mounted read-only. This can prevent SQLite writes and cause degraded or failed Gateway operations; inspect the filesystem/kernel errors at the same timestamp. Confidence: high for the storage condition, not for every observed outage.")
+    if "resource disk.mounted: false" in lower:
+        diagnoses.append("The expected database data path is not on a separate mounted volume in this snapshot. Verify the intended persistent partition is mounted before attributing failures to application load. Confidence: high for the observed mount layout.")
+    if re.search(r"resource cpu_iowait_percent: (?:[2-9]\d|100)(?:\.\d+)?", lower):
+        diagnoses.append("CPU I/O wait is elevated in this snapshot. This is consistent with storage latency but does not identify which device or operation is responsible. Confidence: medium.")
+    if re.search(r"resource disk.used_percent: (?:9\d|100)(?:\.\d+)?", lower):
+        diagnoses.append("The data volume is nearly full in this snapshot; this can cause database writes or update operations to fail. Confidence: medium.")
+    has_slow_probe = any("gateway diagnostic probe slow" in line.casefold() or
+                          "gateway request slow" in line.casefold() for line in lines)
+    database_lines = [line for line in lines if "database operation" in line.casefold() and
+                      ("slow" in line.casefold() or "failed" in line.casefold())]
+    if database_lines:
+        diagnoses.append("Slow or failed SQLite access was recorded. This can delay API requests, but the report does not prove that the database caused a concurrent endpoint failure. Confidence: medium when timestamps overlap.")
+    deye_lines = [line for line in lines if "deye polling diagnostic" in line.casefold() and
+                  ("outcome=error" in line.casefold() or "outcome=slow" in line.casefold())]
+    tuya_lines = [line for line in lines if "periodic tuya poll diagnostic" in line.casefold() and
+                  ("outcome=partial" in line.casefold() or "outcome=error" in line.casefold() or "duration_ms=" in line.casefold())]
+    if has_slow_probe and deye_lines:
+        diagnoses.append("Slow Gateway probe and slow/failed Deye polling both appear in the captured window. This is a temporal correlation, not proof that Deye caused the API delay. Confidence: low to medium.")
+    if has_slow_probe and tuya_lines:
+        diagnoses.append("Slow Gateway probe and Tuya polling diagnostics both appear in the captured window. This is a temporal correlation, not proof that Tuya caused the API delay. Confidence: low to medium.")
+    if "signed gateway update check failed" in lower or "update_helper_unavailable_or_timed_out" in lower:
+        diagnoses.append("The signed update check/helper failed or timed out. This identifies the update-check stage, not whether the cause was GitHub reachability, local CPU pressure or an internal delay.")
+    if any(word in lower for word in ("nginx configuration test failed", "emerg", "connect() failed", "upstream timed out")):
+        diagnoses.append("Nginx/proxy errors are present in the captured logs; inspect the exact timestamped Nginx line before attributing the API outage to the Gateway process.")
+    evidence = [line.strip() for line in lines if any(marker in line.casefold() for marker in
+                ("watchdog:", "gateway diagnostic probe", "deye polling diagnostic", "periodic tuya poll diagnostic",
+                 "signed gateway update check failed", "nginx configuration", "upstream timed out",
+                 "database operation slow", "database operation failed", "gateway request slow"))]
+    if not diagnoses:
+        diagnoses.append("Insufficient evidence for a specific cause. The report records symptoms, but no matching rule has enough correlated evidence to choose a failing layer.")
+    if evidence:
+        diagnoses.append("Relevant system evidence: " + " | ".join(evidence[-8:]))
+    return "\n".join(f"- {item}" for item in diagnoses)[:6000]
+
+
+def _create_issue(batch: list[dict[str, Any]], token: str, system_diagnostics: str,
+                  report_source: str = "automatic") -> str:
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     digest = hashlib.sha256(("".join(item["id"] for item in batch) + system_diagnostics).encode()).hexdigest()[:12]
-    title = (f"Automated Gateway diagnostics {day} ({len(batch)} errors, {digest})" if batch
+    title = (f"Owner requested Gateway diagnostics {day} ({digest})" if report_source == "owner_manual" else
+             f"Automated Gateway diagnostics {day} ({len(batch)} errors, {digest})" if batch
              else f"Automated Gateway system failure {day} ({digest})")
     body = [
         "Automated sanitized error report from a SolarMiner Gateway.",
         "\nPrivacy: this report contains sanitized error records and a bounded snapshot of allowlisted Gateway, updater, recovery, Nginx and Tailscale service diagnostics. Credentials, URLs, IP/MAC addresses, paths and user/device identifiers are redacted. No raw request bodies or database contents are uploaded.",
         f"\nGateway package version: {sanitize_message(os.environ.get('SOLARMINER_PACKAGE_VERSION', 'unknown'))}.",
+        "\nAutomatic triage (rules-based; inferred causes are labelled and not treated as proof):",
+        _automatic_triage(batch, system_diagnostics),
+        f"\nReport source: {sanitize_message(report_source)}.",
         "\nSystem diagnostics:",
         "```text",
         system_diagnostics,
@@ -275,7 +385,8 @@ def _save_system_fingerprint(path: Path, fingerprint: str) -> None:
 
 
 def flush_reports(path: Path = QUEUE_PATH, token_path: Path = TOKEN_PATH,
-                  fingerprint_path: Path = SYSTEM_FINGERPRINT_PATH) -> dict[str, Any]:
+                  fingerprint_path: Path = SYSTEM_FINGERPRINT_PATH, *,
+                  force_system_report: bool = False, report_source: str = "automatic") -> dict[str, Any]:
     """Send queued errors or new system failures; retain queued reports on failure."""
     if not token_path.exists():
         return {"status": "not_configured", "sent": 0}
@@ -286,10 +397,11 @@ def flush_reports(path: Path = QUEUE_PATH, token_path: Path = TOKEN_PATH,
     snapshot = _collect_system_diagnostics()
     system_fingerprint = _system_failure_fingerprint(snapshot)
     system_changed = fingerprint_path.exists() and fingerprint_path.read_text(encoding="ascii", errors="ignore").strip() != system_fingerprint
-    has_system_failure = _system_snapshot_is_actionable(snapshot) and (not fingerprint_path.exists() or system_changed)
+    has_system_failure = (force_system_report or
+                          (_system_snapshot_is_actionable(snapshot) and (not fingerprint_path.exists() or system_changed)))
     if not batch and not has_system_failure:
         return {"status": "empty", "sent": 0}
-    url = _create_issue(batch, token, snapshot)
+    url = _create_issue(batch, token, snapshot, report_source=report_source)
     if batch:
         with _LOCK:
             current = path.read_bytes()

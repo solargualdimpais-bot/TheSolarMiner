@@ -67,7 +67,9 @@ export function inferHostedGatewayEndpoint(locationLike = globalThis.location) {
 export async function probeGateway(urlValue, { fetchImpl = globalThis.fetch, timeoutMs = 3500, allowLocalHttp = false } = {}) {
   const base = validateGatewayUrl(urlValue, { allowLocalHttp });
   const startedAt = Date.now();
+  const probeSteps = [];
   const getJson = async path => {
+    const stepStarted = Date.now();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -75,22 +77,47 @@ export async function probeGateway(urlValue, { fetchImpl = globalThis.fetch, tim
         method: "GET", headers: { Accept: "application/json" }, cache: "no-store",
         credentials: "omit", redirect: "error", signal: controller.signal,
       });
-      if (response.status === 401) return { authRequired: true };
-      if (response.status === 403) return { forbidden: true };
-      if (!response.ok) throw new Error(`HTTP_${response.status}`);
-      const body = await response.json();
-      if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("INVALID_RESPONSE");
-      return body;
+      if ([401, 403].includes(response.status)) {
+        probeSteps.push({ occurred_at: new Date().toISOString(), route: path, outcome: "auth_required", http_status: response.status, latency_ms: Date.now() - stepStarted });
+        return { body: null, authRequired: true };
+      }
+      if (!response.ok) {
+        const step = { occurred_at: new Date().toISOString(), route: path, outcome: "http_error", http_status: response.status, latency_ms: Date.now() - stepStarted };
+        probeSteps.push(step); throw Object.assign(new Error(`HTTP_${response.status}`), { probeStep: step });
+      }
+      let body;
+      try { body = await response.json(); }
+      catch { const step = { occurred_at: new Date().toISOString(), route: path, outcome: "invalid_json", http_status: response.status, latency_ms: Date.now() - stepStarted }; probeSteps.push(step); throw Object.assign(new Error("INVALID_JSON"), { probeStep: step }); }
+      if (!body || typeof body !== "object" || Array.isArray(body)) {
+        const step = { occurred_at: new Date().toISOString(), route: path, outcome: "invalid_response", http_status: response.status, latency_ms: Date.now() - stepStarted };
+        probeSteps.push(step); throw Object.assign(new Error("INVALID_RESPONSE"), { probeStep: step });
+      }
+      probeSteps.push({ occurred_at: new Date().toISOString(), route: path, outcome: "success", http_status: response.status, latency_ms: Date.now() - stepStarted });
+      return { body };
+    } catch (error) {
+      if (!error?.probeStep) {
+        const outcome = error?.name === "AbortError" ? "timeout" : error?.name === "TypeError" ? "browser_network_error" : "request_error";
+        const step = { occurred_at: new Date().toISOString(), route: path, outcome, error_name: String(error?.name || "Error").slice(0, 32), latency_ms: Date.now() - stepStarted };
+        probeSteps.push(step); error.probeStep = step;
+      }
+      throw error;
     } finally { clearTimeout(timer); }
   };
   try {
-    const health = await getJson("/api/v1/health");
-    if (health.authRequired) return { state: CONNECTION_STATES.AUTH_REQUIRED, reachable: true, identityValidated: false };
-    if (health.forbidden) return { state: CONNECTION_STATES.AUTH_REQUIRED, reachable: true, identityValidated: false };
-    if (health.status !== "ok" || typeof health.version !== "string") throw new Error("INVALID_HEALTH");
-    const info = await getJson("/api/v1/info");
-    if (info.authRequired || info.forbidden) return { state: CONNECTION_STATES.AUTH_REQUIRED, reachable: true, identityValidated: false };
-    if (info.product !== "SolarMiner Gateway" || typeof info.version !== "string") throw new Error("UNEXPECTED_PRODUCT");
+    const healthResponse = await getJson("/api/v1/health");
+    if (healthResponse.authRequired) return { state: CONNECTION_STATES.AUTH_REQUIRED, reachable: true, identityValidated: false, probeSteps, elapsedMs: Date.now() - startedAt };
+    const health = healthResponse.body;
+    if (health.status !== "ok" || typeof health.version !== "string") {
+      const step = probeSteps.at(-1); if (step) step.outcome = "gateway_contract_error";
+      throw new Error("INVALID_HEALTH");
+    }
+    const infoResponse = await getJson("/api/v1/info");
+    if (infoResponse.authRequired) return { state: CONNECTION_STATES.AUTH_REQUIRED, reachable: true, identityValidated: false, probeSteps, elapsedMs: Date.now() - startedAt };
+    const info = infoResponse.body;
+    if (info.product !== "SolarMiner Gateway" || typeof info.version !== "string") {
+      const step = probeSteps.at(-1); if (step) step.outcome = "gateway_contract_error";
+      throw new Error("UNEXPECTED_PRODUCT");
+    }
     return {
       state: CONNECTION_STATES.RESPONDING_UNVERIFIED,
       reachable: true,
@@ -100,12 +127,58 @@ export async function probeGateway(urlValue, { fetchImpl = globalThis.fetch, tim
       endpointKind: classifyEndpoint(base.toString()),
       lastCommunicationAt: new Date().toISOString(),
       elapsedMs: Date.now() - startedAt,
+      probeSteps,
       note: "A API respondeu, mas o contrato v0.6.5 não expõe uma identidade criptográfica do Gateway para validação independente.",
     };
   } catch (error) {
-    const code = error?.name === "AbortError" ? "timeout" : (error?.message || "network_error");
-    return { state: CONNECTION_STATES.UNAVAILABLE, reachable: false, identityValidated: false, errorCode: code };
+    const code = error?.probeStep?.outcome || (error?.name === "AbortError" ? "timeout" : "invalid_response");
+    return { state: CONNECTION_STATES.UNAVAILABLE, reachable: false, identityValidated: false,
+      errorCode: code, failureRoute: error?.probeStep?.route || "gateway_contract",
+      failureLatencyMs: error?.probeStep?.latency_ms ?? Date.now() - startedAt,
+      endpointKind: classifyEndpoint(base.toString()), probeSteps, elapsedMs: Date.now() - startedAt };
   }
+}
+
+const CLIENT_PROBE_QUEUE_KEY = "solarminer-client-probe-queue-v1";
+export function storeGatewayProbeDiagnostics(endpointKind, result) {
+  try {
+    const browserFamily = /Edg\//.test(navigator.userAgent) ? "Edge"
+      : /CriOS/.test(navigator.userAgent) ? "Chrome_iOS"
+      : /Chrome\//.test(navigator.userAgent) ? "Chrome"
+      : /Firefox\//.test(navigator.userAgent) ? "Firefox"
+      : /Safari\//.test(navigator.userAgent) && /Version\//.test(navigator.userAgent) ? "Safari" : "Other";
+    const steps = Array.isArray(result?.probeSteps) ? result.probeSteps : [];
+    if (!steps.length) return;
+    const events = steps.map(step => ({ occurred_at: step.occurred_at || new Date().toISOString(),
+      browser: browserFamily, endpoint_kind: endpointKind, route: step.route,
+      outcome: step.outcome, latency_ms: Math.max(0, Math.min(120000, Number(step.latency_ms) || 0)),
+      http_status: Number.isInteger(step.http_status) ? step.http_status : null,
+      error_name: ["AbortError", "TypeError", "Error"].includes(step.error_name) ? step.error_name : null }));
+    const previous = JSON.parse(localStorage.getItem(CLIENT_PROBE_QUEUE_KEY) || "[]");
+    const queue = Array.isArray(previous) ? previous : [];
+    localStorage.setItem(CLIENT_PROBE_QUEUE_KEY, JSON.stringify([...queue, ...events].slice(-20)));
+  } catch { /* Browser diagnostics stay optional and must never break connection checks. */ }
+}
+export function takeGatewayProbeDiagnostics() {
+  try {
+    const value = JSON.parse(localStorage.getItem(CLIENT_PROBE_QUEUE_KEY) || "[]");
+    return Array.isArray(value) ? value.slice(-20) : [];
+  } catch { return []; }
+}
+export function clearGatewayProbeDiagnostics() {
+  try { localStorage.removeItem(CLIENT_PROBE_QUEUE_KEY); } catch {}
+}
+export function acknowledgeGatewayProbeDiagnostics(events) {
+  try {
+    const current = JSON.parse(localStorage.getItem(CLIENT_PROBE_QUEUE_KEY) || "[]");
+    if (!Array.isArray(current) || !Array.isArray(events)) return;
+    const prefix = current.slice(0, events.length);
+    if (JSON.stringify(prefix) === JSON.stringify(events)) {
+      const remainder = current.slice(events.length);
+      if (remainder.length) localStorage.setItem(CLIENT_PROBE_QUEUE_KEY, JSON.stringify(remainder));
+      else localStorage.removeItem(CLIENT_PROBE_QUEUE_KEY);
+    }
+  } catch {}
 }
 
 export class GatewayConnectionManager {

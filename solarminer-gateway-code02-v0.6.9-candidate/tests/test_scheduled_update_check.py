@@ -58,6 +58,23 @@ def test_root_broker_accepts_only_allowlisted_actions_and_validated_enqueue(monk
     assert len(calls) == 1
 
 
+def test_root_broker_only_enables_watchdog_through_fixed_systemd_unit():
+    calls = []
+    def runner(args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    enabled = update_broker.handle_request(b'{"action":"watchdog_set","enabled":true}\n', runner)
+    disabled = update_broker.handle_request(b'{"action":"watchdog_set","enabled":false}\n', runner)
+    assert enabled == {"status": "ok", "enabled": True, "timer": "active"}
+    assert disabled == {"status": "ok", "enabled": False, "timer": "inactive"}
+    assert [call[0] for call in calls] == [
+        ["/usr/bin/systemctl", "enable", "--now", "solarminer-gateway-watchdog.timer"],
+        ["/usr/bin/systemctl", "disable", "--now", "solarminer-gateway-watchdog.timer"],
+    ]
+    assert update_broker.handle_request(b'{"action":"watchdog_set","enabled":"yes"}\n', runner)["status"] == "error"
+    assert len(calls) == 2
+
+
 def test_root_broker_console_reads_fixed_service_logs_and_tailscale_setup_log_and_redacts_secrets(monkeypatch):
     calls = []
     raw_logs = ("2026-10-22T10:00:00+00:00 gateway INFO password=visible-secret Bearer abc.def.ghi\n"
@@ -88,7 +105,7 @@ def test_root_broker_console_reads_fixed_service_logs_and_tailscale_setup_log_an
     assert nginx_call[0] == ["/usr/sbin/nginx", "-t"]
     assert response["scope"] == "allowlisted_services_last_7_days_including_update_recovery_plus_tailscale_setup_log_tail"
     assert set(response["services"]) == set(update_broker.CONSOLE_SERVICES.values())
-    assert set(response["resources"]) == {"cpu_percent", "cpu_count", "memory", "disk"}
+    assert set(response["resources"]) == {"cpu_percent", "cpu_iowait_percent", "cpu_count", "memory", "disk", "top_processes"}
 
 
 def test_service_status_reader_uses_only_fixed_units_and_distinguishes_failure():

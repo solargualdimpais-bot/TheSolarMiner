@@ -3,10 +3,10 @@ import { DEMO_CONTROL_CONFIG, createDemoControlState, updateDemoControl, toggleD
 import { renderWorkspacePage, renderHomePreferenceLinks, renderHouseSearch, handleWorkspaceAction, handleWorkspaceChange, applyPreferences, getWorkspacePageLabel, workspace, getEditableEntity, saveEditableEntity, saveDemoWorkspace, hydrateWorkspacePhotos } from "./workspace-ui.js";
 import { renderAutomationsPage, renderSolarProductionPage, renderDemoAdminPanel, handleFeatureAction, saveAutomationForm, addDemoUser, saveDemoUserEdit, saveSolarWeather, demoFeatures } from "./features-v053.js";
 const PWA_INVITE_LANDING_URL = "https://solargualdimpais-bot.github.io/TheSolarMiner/";
-import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classifyEndpoint, inferHostedGatewayEndpoint, buildInviteLandingUrl, readInviteLandingHash, PRESENCE_API_STATUS } from "./gateway-connection.js";
+import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classifyEndpoint, inferHostedGatewayEndpoint, buildInviteLandingUrl, readInviteLandingHash, PRESENCE_API_STATUS, storeGatewayProbeDiagnostics, takeGatewayProbeDiagnostics, acknowledgeGatewayProbeDiagnostics } from "./gateway-connection.js";
 import { isHeicPhoto } from "./photo-format.js";
 import { addFavoriteId, normalizeFavoriteIds, reorderFavoriteIds } from "./favorite-list.js";
-import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, redeemGatewayInvite, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, readGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayDiagnosticsUpload, saveGatewayDiagnosticsUploadToken, disableGatewayDiagnosticsUpload, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, previewGatewayTuyaProductImport, applyGatewayTuyaProductImport, saveGatewayTuyaProductMetadata, controlGatewayAntminer, testGatewayAntminerControl, readGatewayAntminerManagement, writeGatewayAntminerManagement, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, controlGatewayTuyaSetting, saveGatewayTuyaProductDpsDescription, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, testGatewayTuyaLanReachability, discoverGatewayTuyaLanDevices, scanGatewayLocalNetwork, readGatewayDeviceInventory, readGatewaySmartProductCatalog, readGatewayShellyProductProfiles, readGatewayShellyDevices, discoverGatewayShellyDevices, registerGatewayShellyDevice, renameGatewayShellyDevice, registerGatewayShellyBluDevice, discoverGatewayShellyBluDevices, controlGatewayShellySwitch, controlGatewayShellyLight, applyGatewayLocalNetworkMatches, saveGatewayLocalNetworkDevice, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, startGatewayTeslaOAuth, completeGatewayTeslaOAuth, saveGatewayTeslaRelay, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging, readGatewayTeslaLocalPresence } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, redeemGatewayInvite, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, readGatewayEnergyEngineConfig, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayDiagnosticsUpload, saveGatewayDiagnosticsUploadToken, disableGatewayDiagnosticsUpload, sendGatewayDiagnosticsReport, setGatewayWatchdogEnabled, reportGatewayClientDiagnostics, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, previewGatewayTuyaProductImport, applyGatewayTuyaProductImport, saveGatewayTuyaProductMetadata, controlGatewayAntminer, testGatewayAntminerControl, readGatewayAntminerManagement, writeGatewayAntminerManagement, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, controlGatewayTuyaSetting, saveGatewayTuyaProductDpsDescription, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, testGatewayTuyaLanReachability, discoverGatewayTuyaLanDevices, scanGatewayLocalNetwork, readGatewayDeviceInventory, readGatewaySmartProductCatalog, readGatewayShellyProductProfiles, readGatewayShellyDevices, discoverGatewayShellyDevices, registerGatewayShellyDevice, renameGatewayShellyDevice, registerGatewayShellyBluDevice, discoverGatewayShellyBluDevices, controlGatewayShellySwitch, controlGatewayShellyLight, applyGatewayLocalNetworkMatches, saveGatewayLocalNetworkDevice, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, startGatewayTeslaOAuth, completeGatewayTeslaOAuth, saveGatewayTeslaRelay, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging, readGatewayTeslaLocalPresence } from "./gateway-auth.js";
 
 let automationEditingId = "";
 let energyEngineActiveTab="summary";
@@ -37,6 +37,15 @@ function openGatewayConnectionDialog(){
   if(!dialog||dialog.open)return;
   try{dialog.showModal();}
   catch{dialog.setAttribute("open","");}
+}
+async function submitPendingGatewayProbeDiagnostics() {
+  if (!sessionInfo().authenticated || sessionInfo().user?.role !== "owner") return;
+  const events = takeGatewayProbeDiagnostics();
+  if (!events.length) return;
+  try {
+    await reportGatewayClientDiagnostics(events);
+    acknowledgeGatewayProbeDiagnostics(events);
+  } catch { /* Keep the bounded local queue for the next authenticated connection. */ }
 }
 document.addEventListener("click",event=>{
   const target=event.target?.closest?.("#mode-chip, #owner-open-gateway, #profile-open-gateway, #open-owner-management");
@@ -2493,17 +2502,27 @@ $("#gateway-check").addEventListener("click",async()=>{
       const tailscaleFallback=localStorage.getItem("solarminer-gateway-tailscale-endpoint-v1");
       if(tailscaleFallback&&tailscaleFallback!==primary.origin&&new URL(tailscaleFallback).hostname.toLowerCase().endsWith(".ts.net"))candidates.push(validateGatewayUrl(tailscaleFallback).origin);
     } catch {}
-    let endpoint=primary, result=null;
+    let endpoint=primary, result=null, lastEndpointKind="Other";
     for(const candidate of candidates){
       gatewayResult(candidate===primary.origin?"A verificar /api/v1/health e /api/v1/info…":"Endpoint LAN indisponível; a tentar o endereço Tailscale…");
       result=await gatewayManager.check(candidate);
+      const endpointKind = candidate === location.origin && location.hostname.endsWith("github.io") ? "Hosted"
+        : new URL(candidate).hostname.toLowerCase().endsWith(".ts.net") ? "Tailscale"
+          : classifyEndpoint(candidate) === "CANDIDATE_LAN" ? "LAN" : "Other";
+      lastEndpointKind=endpointKind;
+      storeGatewayProbeDiagnostics(endpointKind, result);
       if(result.reachable){endpoint=validateGatewayUrl(candidate);break;}
     }
     field.value=endpoint.origin;
     try { localStorage.setItem("solarminer-gateway-endpoint-v1", endpoint.origin); } catch {}
     if(result.reachable) {
+      let bootstrapStartedAt = Date.now();
       try {
+        bootstrapStartedAt = Date.now();
         const bootstrap = await readGatewayBootstrapStatus(endpoint.origin);
+        storeGatewayProbeDiagnostics(lastEndpointKind, { probeSteps: [{ occurred_at: new Date().toISOString(),
+          route: "/api/v1/bootstrap/status", outcome: "success", http_status: 200,
+          latency_ms: Date.now() - bootstrapStartedAt }] });
         if (["BOOTSTRAP_PENDING", "OWNER_SETUP_REQUIRED"].includes(bootstrap.state)) {
           gatewayResult("Gateway pronto para o primeiro Owner. Abre-se a configuração inicial.");
           if (!$("#gateway-bootstrap-dialog").open) $("#gateway-bootstrap-dialog").showModal();
@@ -2512,13 +2531,18 @@ $("#gateway-check").addEventListener("click",async()=>{
             const login = await loginGateway({ gatewayUrl: endpoint.origin });
             $("#gateway-password-login-form").hidden = true;
             gatewayResult(`Ligação autenticada neste dispositivo como ${login.user.username} (${login.user.role}).`);
-            markGatewayAuthenticated(); updateSessionUi(); await refreshGatewayReadings();
+            markGatewayAuthenticated(); updateSessionUi(); await submitPendingGatewayProbeDiagnostics(); await refreshGatewayReadings();
           } catch (loginError) {
             $("#gateway-password-login-form").hidden = false;
             gatewayResult(`${result.state}. ${loginError.message} Introduz as credenciais de uma conta ativa para registar este browser.`);
           }
         }
       } catch (statusError) {
+        storeGatewayProbeDiagnostics(lastEndpointKind, { probeSteps: [{ occurred_at: new Date().toISOString(),
+          route: "/api/v1/bootstrap/status", outcome: statusError?.name === "AbortError" ? "timeout"
+            : statusError?.name === "TypeError" ? "browser_network_error" : "request_error",
+          error_name: ["AbortError", "TypeError"].includes(statusError?.name) ? statusError.name : "Error",
+          latency_ms: Date.now() - bootstrapStartedAt }] });
         gatewayResult(`Gateway respondeu, mas não foi possível consultar o estado de bootstrap: ${statusError.message}`);
       }
     }
@@ -2538,7 +2562,7 @@ $("#gateway-password-login-form").addEventListener("submit", async event => {
     $("#gateway-password-login-form").hidden = true;
     gatewayResult(`Sessão iniciada como ${login.user.username} (${login.user.role}).`);
     status.textContent = `Dispositivo autenticado como ${login.user.username}.`;
-    markGatewayAuthenticated(); updateSessionUi(); await refreshGatewayReadings();
+    markGatewayAuthenticated(); updateSessionUi(); await submitPendingGatewayProbeDiagnostics(); await refreshGatewayReadings();
   } catch (error) {
     password.value = "";
     status.textContent = error.message || "Não foi possível iniciar sessão.";
@@ -2748,6 +2772,7 @@ let gatewayConsoleRefreshInFlight = false;
 let gatewayConsoleServices = {};
 const gatewayConsoleServiceLabels = {
   gateway: "SolarMiner Gateway", nginx: "Nginx", tailscale: "Tailscale",
+  gateway_watchdog: "Watchdog",
   daily_update_check: "Verificação diária de atualizações",
   privileged_update_broker: "Broker de atualização privilegiado",
   tailscale_certificate_renewal: "Renovação do certificado Tailscale",
@@ -2764,6 +2789,7 @@ function renderGatewayConsoleMetrics(result) {
   if (!servicesHost || !resourcesHost) return;
   servicesHost.replaceChildren();
   const services = result.services && typeof result.services === "object" ? result.services : {};
+  gatewayConsoleServices = services;
   for (const [key, label] of Object.entries(gatewayConsoleServiceLabels)) {
     const row = document.createElement("div"), name = document.createElement("span"), state = document.createElement("span");
     const value = ["active", "inactive", "failed"].includes(services[key]) ? services[key] : "unknown";
@@ -2787,7 +2813,33 @@ function renderGatewayConsoleMetrics(result) {
     row.className = "gateway-console-resource"; name.textContent = label; amount.textContent = value;
     row.append(name, amount); resourcesHost.append(row);
   }
+  const watchdogButton = $("#gateway-watchdog-toggle"), watchdogStatus = $("#gateway-watchdog-status");
+  const watchdog = services.gateway_watchdog;
+  if (watchdogButton) {
+    watchdogButton.disabled = !["active", "inactive", "failed"].includes(watchdog);
+    watchdogButton.textContent = watchdog === "active" ? "Desativar Watchdog" : "Ativar Watchdog";
+  }
+  if (watchdogStatus) watchdogStatus.textContent = watchdog === "active"
+    ? "Ativo; as verificações do Watchdog estão ligadas."
+    : watchdog === "inactive" ? "Desativado; podes ativá-lo manualmente aqui."
+      : watchdog === "failed" ? "O temporizador do Watchdog está em falha."
+        : "Estado do Watchdog desconhecido.";
 }
+$("#gateway-watchdog-toggle")?.addEventListener("click", async event => {
+  const button = event.currentTarget, status = $("#gateway-watchdog-status");
+  if (!sessionInfo().authenticated || sessionInfo().user?.role !== "owner") return;
+  const enable = gatewayConsoleServices.gateway_watchdog !== "active";
+  button.disabled = true;
+  status.textContent = enable ? "A ativar o Watchdog…" : "A desativar o Watchdog…";
+  try {
+    const result = await setGatewayWatchdogEnabled(enable);
+    status.textContent = result.enabled ? "Watchdog ativado manualmente." : "Watchdog desativado manualmente.";
+    await refreshGatewayConsole({ silent: true });
+  } catch (error) {
+    status.textContent = `Não foi possível alterar o Watchdog: ${error.message}`;
+    button.disabled = false;
+  }
+});
 async function refreshGatewayConsole({ silent = false } = {}) {
   const status = $("#gateway-console-status"), output = $("#gateway-console-output");
   if (!status || !output || gatewayConsoleRefreshInFlight) return;
@@ -2864,6 +2916,24 @@ function renderGatewayConsoleErrors() {
     host.append(list);
   }
 }
+$("#gateway-console-send-report")?.addEventListener("click", async event => {
+  const button = event.currentTarget, status = $("#gateway-console-send-report-status");
+  if (!sessionInfo().authenticated || sessionInfo().user?.role !== "owner") return;
+  button.disabled = true;
+  status.textContent = "A enviar o snapshot atual e a fila de erros para o repositório privado…";
+  try {
+    const result = await sendGatewayDiagnosticsReport();
+    status.replaceChildren(document.createTextNode("Relatório enviado para o destino privado. "));
+    if (typeof result.issue_url === "string" && result.issue_url.startsWith("https://github.com/")) {
+      const link = document.createElement("a"); link.href = result.issue_url; link.target = "_blank";
+      link.rel = "noopener noreferrer"; link.textContent = "Abrir relatório"; status.append(link);
+    }
+  } catch (error) {
+    status.textContent = error.message?.includes("github_diagnostics_not_configured")
+      ? "Configura primeiro o token privado do GitHub na secção Relatórios automáticos."
+      : `Não foi possível enviar o relatório: ${error.message}`;
+  } finally { button.disabled = false; }
+});
 function renderGatewayConsoleLogs({ preserveScroll = false } = {}) {
   const output = $("#gateway-console-output");
   if (!output) return;
@@ -3998,7 +4068,7 @@ $("#gateway-bootstrap-form").addEventListener("submit", async event => {
     $("#gateway-bootstrap-recovery").hidden = false;
     $("#gateway-endpoint").value = result.gatewayUrl;
     $("#gateway-bootstrap-result").textContent = "Owner registado. A palavra-passe de configuração foi consumida e este telemóvel ficou associado. Guarda a chave de recuperação offline.";
-    markGatewayAuthenticated(); updateSessionUi(); await refreshGatewayReadings();
+    markGatewayAuthenticated(); updateSessionUi(); await submitPendingGatewayProbeDiagnostics(); await refreshGatewayReadings();
   } catch (error) { passwordField.value = ""; $("#gateway-bootstrap-result").textContent = `Registo inicial não concluído: ${error.message}`; }
 });
 $("#gateway-copy-recovery-key").addEventListener("click", async () => {
@@ -4056,7 +4126,7 @@ $("#gateway-owner-recovery-form").addEventListener("submit", async event => {
     $("#gateway-recovery-key").value = "";
     $("#gateway-recovery-file").value = "";
     output.textContent = "Acesso Owner recuperado. A chave antiga foi consumida; descarrega e guarda já a chave nova na pen.";
-    markGatewayAuthenticated(); updateSessionUi(); await refreshGatewayReadings();
+    markGatewayAuthenticated(); updateSessionUi(); await submitPendingGatewayProbeDiagnostics(); await refreshGatewayReadings();
   } catch (error) { $("#gateway-recovery-password").value = ""; $("#gateway-recovery-password-repeat").value = ""; output.textContent = `Recuperação não concluída: ${error.message}`; }
 });
 $("#gateway-download-new-recovery-key").addEventListener("click", () => {
@@ -4391,7 +4461,7 @@ if (inviteActivationHash) {
       password.value = ""; repeat.value = "";
       history.replaceState(null, "", `${location.pathname}${location.search}`);
       status.textContent = `Acesso criado como ${result.user.username} (${result.user.role}). Este dispositivo já está registado.`;
-      markGatewayAuthenticated(); updateSessionUi(); await refreshGatewayReadings();
+      markGatewayAuthenticated(); updateSessionUi(); await submitPendingGatewayProbeDiagnostics(); await refreshGatewayReadings();
       setTimeout(() => { const dialog = $("#gateway-invite-activation-dialog"); if (dialog.open) dialog.close(); }, 900);
     } catch (error) {
       password.value = ""; repeat.value = "";

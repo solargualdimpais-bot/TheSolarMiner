@@ -10,10 +10,10 @@ from typing import Any
 DEFAULT_SOCKET_PATH = "/run/solarminer/update-broker.sock"
 
 
-def request(action: str, operation_id: str | None = None) -> dict[str, Any]:
-    if action not in {"preflight", "enqueue", "tailscale_status", "tailscale_connect", "diagnostics"}:
+def request(action: str, operation_id: str | None = None, enabled: bool | None = None) -> dict[str, Any]:
+    if action not in {"preflight", "enqueue", "tailscale_status", "tailscale_connect", "diagnostics", "watchdog_set"}:
         raise ValueError("update_broker_action_invalid")
-    payload: dict[str, str] = {"action": action}
+    payload: dict[str, Any] = {"action": action}
     if action == "enqueue":
         try:
             valid_operation_id = isinstance(operation_id, str) and str(uuid.UUID(operation_id)) == operation_id
@@ -22,7 +22,11 @@ def request(action: str, operation_id: str | None = None) -> dict[str, Any]:
         if not valid_operation_id:
             raise ValueError("update_operation_id_invalid")
         payload["operation_id"] = operation_id
-    elif operation_id is not None:
+    elif action == "watchdog_set":
+        if operation_id is not None or not isinstance(enabled, bool):
+            raise ValueError("watchdog_state_invalid")
+        payload["enabled"] = enabled
+    elif operation_id is not None or enabled is not None:
         raise ValueError("update_operation_id_unexpected")
     path = os.environ.get("SOLARMINER_UPDATE_BROKER_SOCKET", DEFAULT_SOCKET_PATH)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:

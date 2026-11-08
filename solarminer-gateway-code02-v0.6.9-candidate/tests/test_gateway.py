@@ -1197,6 +1197,47 @@ def test_owner_can_configure_private_diagnostics_token_without_readback(client, 
     assert not token_path.exists()
 
 
+def test_owner_can_submit_privacy_filtered_endpoint_probe_diagnostics(client, monkeypatch):
+    owner, private, _ = create_owner(client)
+    headers, _ = _owner_headers(client, owner, private, nonce="owner-client-diagnostic-01")
+    captured = []
+    monkeypatch.setattr(gateway.LOG, "error", lambda message, *args: captured.append(message % args))
+    payload = {"events": [{"occurred_at": "2026-11-08T12:00:00Z", "browser": "Safari",
+        "endpoint_kind": "Tailscale", "route": "/api/v1/health", "outcome": "timeout",
+        "latency_ms": 3500, "http_status": None, "error_name": "AbortError"}]}
+    response = client.post("/api/v1/system/client-diagnostics", headers=headers, json=payload)
+    assert response.status_code == 200, response.text
+    assert response.json() == {"status": "recorded", "events": 1, "failures": 1}
+    assert captured and '"browser":"Safari"' in captured[0]
+    assert client.post("/api/v1/system/client-diagnostics", headers=headers,
+        json={"events": [{**payload["events"][0], "endpoint_url": "https://private.example"}]}).status_code == 422
+
+
+def test_owner_can_toggle_watchdog_manually(client, monkeypatch):
+    owner, private, _ = create_owner(client)
+    headers, _ = _owner_headers(client, owner, private, nonce="owner-watchdog-toggle-01")
+    calls = []
+    monkeypatch.setattr(gateway.update_helper_client, "request", lambda action, **kwargs: calls.append((action, kwargs)) or {
+        "status": "ok", "enabled": kwargs["enabled"], "timer": "active" if kwargs["enabled"] else "inactive"})
+    response = client.put("/api/v1/system/watchdog", headers=headers, json={"enabled": True})
+    assert response.status_code == 200, response.text
+    assert response.json() == {"status": "ok", "enabled": True, "timer": "active"}
+    assert calls == [("watchdog_set", {"enabled": True})]
+
+
+def test_owner_can_send_manual_diagnostics_to_automatic_destination(client, monkeypatch):
+    owner, private, _ = create_owner(client)
+    headers, _ = _owner_headers(client, owner, private, nonce="owner-manual-report-01")
+    monkeypatch.setattr(gateway.error_reporting, "diagnostics_upload_status", lambda: {"configured": True})
+    captured = []
+    monkeypatch.setattr(gateway.error_reporting, "flush_reports", lambda **kwargs: captured.append(kwargs) or {
+        "status": "sent", "issue_url": "https://github.com/solargualdimpais-bot/TheSolarMiner-Diagnostics/issues/1"})
+    response = client.post("/api/v1/system/diagnostics-upload/send", headers=headers, json={})
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "sent"
+    assert captured == [{"force_system_report": True, "report_source": "owner_manual"}]
+
+
 def test_non_owner_cannot_read_gateway_console(client, monkeypatch):
     owner, private, _ = create_owner(client)
     member, _ = _create_member(client, owner, private, role="viewer", username="console-viewer",

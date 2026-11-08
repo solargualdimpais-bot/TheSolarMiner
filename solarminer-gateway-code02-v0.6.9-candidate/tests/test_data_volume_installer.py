@@ -112,10 +112,10 @@ def test_refuses_multiple_large_free_areas():
 
 def test_partition_listing_uses_compatible_lsblk_pairs_options(monkeypatch):
     calls = []
-    output = 'NAME="/dev/sda1" TYPE="part" PARTLABEL="SOLARMiner_DATA" FSTYPE="ext4" UUID="data-uuid"'
+    output = 'NAME="/dev/sda1" TYPE="part" PARTLABEL="SOLARMiner_DATA" FSTYPE="ext4" UUID="data-uuid" SIZE="126000000000"'
     monkeypatch.setattr(provision, "run", lambda args: calls.append(args) or output)
     assert provision.partition_rows("/dev/sda") == [
-        ("/dev/sda1", "SOLARMiner_DATA", "ext4", "data-uuid")
+        ("/dev/sda1", "SOLARMiner_DATA", "ext4", "data-uuid", "126000000000")
     ]
     assert "--pairs" in calls[0]
     assert "--list" not in calls[0]
@@ -133,7 +133,7 @@ def test_existing_named_ext4_partition_is_reused_without_a_size_limit(monkeypatc
     calls = []
     monkeypatch.setattr(provision, "mounted_targets", lambda _partition: [])
     monkeypatch.setattr(provision, "run", lambda args: calls.append(args) or "")
-    rows = [("/dev/sda6", "solarminer_data", "ext4", "data-uuid")]
+    rows = [("/dev/sda6", "solarminer_data", "ext4", "data-uuid", "126000000000")]
     partition = provision.find_existing_data_partition(rows)
     assert partition == rows[0]
     assert provision.ensure_ext4_data_partition(partition[0], partition[2], partition[3]) == "data-uuid"
@@ -176,11 +176,19 @@ def test_ext4_partition_without_uuid_fails_without_formatting(monkeypatch):
 
 def test_duplicate_data_partition_labels_are_rejected():
     rows = [
-        ("/dev/sda6", "SOLARMINER_DATA", "ext4", "uuid-a"),
-        ("/dev/sda7", "solarminer_data", "ext4", "uuid-b"),
+        ("/dev/sda6", "SOLARMINER_DATA", "ext4", "uuid-a", "126000000000"),
+        ("/dev/sda7", "solarminer_data", "ext4", "uuid-b", "126000000000"),
     ]
     with pytest.raises(RuntimeError, match="mais de uma partição"):
         provision.find_existing_data_partition(rows)
+
+
+def test_unlabelled_large_ext4_partition_blocks_creation_of_replacement_data_volume():
+    rows = [
+        ("/dev/sda1", "", "ext4", "old-data-uuid", "126000000000"),
+        ("/dev/sda2", "", "ext4", "root-uuid", "64000000000"),
+    ]
+    assert provision.find_unlabelled_large_ext4_partitions(rows, "/dev/sda2") == [rows[0]]
 
 
 def test_fstab_entry_is_idempotent(tmp_path, monkeypatch):
