@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.211"
+PACKAGE_VERSION = "0.6.212"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -82,9 +82,9 @@ LOG = logging.getLogger("solarminer.gateway")
 logging.basicConfig(level=os.environ.get("SOLARMINER_LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
 install_error_queue_handler()
 
-# Deye telemetry is sampled frequently for the live SOC estimator, while only
-# every third sample is written to SQLite to limit durable history growth.
+# Deye polling is deliberately bounded to avoid overlapping slow Modbus reads.
 _energy_sample_lock = threading.Lock()
+_deye_read_lock = threading.Lock()
 _latest_deye_sample: dict[str, Any] | None = None
 _recent_deye_samples: list[dict[str, Any]] = []
 DEYE_IP_RECOVERY_AFTER_SECONDS = 60.0
@@ -754,6 +754,18 @@ def _deye_recovery_key(deye_config: dict[str, Any]) -> tuple[str, str, str, str]
 
 
 def _read_deye_with_inventory_recovery(deye_config: dict[str, Any]) -> dict[str, Any]:
+    """Avoid overlapping periodic and manual Modbus conversations."""
+    if not _deye_read_lock.acquire(blocking=False):
+        return {"host": deye_config.get("host"), "port": deye_config.get("port", 502),
+                "connection_state": "read_in_progress", "reason": "deye_read_already_in_progress",
+                "metrics_decoded": False, "trust": "UNAVAILABLE"}
+    try:
+        return _read_deye_with_inventory_recovery_locked(deye_config)
+    finally:
+        _deye_read_lock.release()
+
+
+def _read_deye_with_inventory_recovery_locked(deye_config: dict[str, Any]) -> dict[str, Any]:
     """Read Deye; only search another IP after 60s of continuous no-response failures."""
     try:
         snapshot = hardware_integrations.read_deye(deye_config)
@@ -1275,9 +1287,9 @@ def initialize() -> None:
 
 def _energy_sample_interval_seconds() -> float:
     try:
-        return max(3.0, min(3600.0, float(os.environ.get("SOLARMINER_ENERGY_SAMPLE_SECONDS", "3"))))
+        return max(15.0, min(3600.0, float(os.environ.get("SOLARMINER_ENERGY_SAMPLE_SECONDS", "15"))))
     except (TypeError, ValueError):
-        return 3.0
+        return 15.0
 
 
 def _prune_historical_records(now_utc: datetime | None = None) -> dict[str, int]:
@@ -1336,10 +1348,10 @@ async def _history_retention_loop() -> None:
 
 
 async def _energy_sampling_loop() -> None:
-    """Read Deye telemetry every 3s; persist a representative sample every 9s."""
+    """Read Deye telemetry at a bounded interval; skip overlap with manual reads."""
     global _latest_deye_sample
     interval = _energy_sample_interval_seconds()
-    persist_interval = 9.0
+    persist_interval = 15.0
     last_persisted_bucket: int | None = None
     next_sample_at = asyncio.get_running_loop().time()
     while True:
@@ -1347,7 +1359,9 @@ async def _energy_sampling_loop() -> None:
             config = hardware_integrations.load_config().get("deye", {})
             if config.get("host") and config.get("enabled", True):
                 snapshot = await asyncio.to_thread(_read_deye_with_inventory_recovery, config)
-                if isinstance(snapshot, dict) and snapshot.get("connection_state") == "mapped_registers_response":
+                if isinstance(snapshot, dict) and snapshot.get("connection_state") == "read_in_progress":
+                    LOG.debug("Periodic Deye sample skipped because another read is in progress")
+                elif isinstance(snapshot, dict) and snapshot.get("connection_state") == "mapped_registers_response":
                     with _energy_sample_lock:
                         sample = {**snapshot, "sampled_at": datetime.now(timezone.utc).isoformat(timespec="microseconds")}
                         _latest_deye_sample = sample
@@ -1356,8 +1370,8 @@ async def _energy_sampling_loop() -> None:
                         # the SOC integrator to bridge persisted samples.
                         if len(_recent_deye_samples) > 240:
                             del _recent_deye_samples[:-240]
-                    # The SOC estimator sees every three-second sample in RAM;
-                    # SQLite receives only one representative sample per 9s.
+                    # The SOC estimator sees every successful sample in RAM;
+                    # SQLite stores at most one representative sample per 15s.
                     persist_bucket = int(time.time() // persist_interval)
                     if persist_bucket != last_persisted_bucket:
                         with db() as conn:
@@ -1367,7 +1381,7 @@ async def _energy_sampling_loop() -> None:
                         last_persisted_bucket = persist_bucket
                         if not count:
                             LOG.warning("Periodic Deye sample returned no mapped readings")
-                else:
+                elif snapshot is not None:
                     LOG.warning("Periodic Deye sample returned no mapped readings")
             else:
                 with _energy_sample_lock:
@@ -4594,7 +4608,10 @@ def hardware_provider_read(provider: str, payload: dict[str, Any] | None = None,
             if provider == "deye":
                 if not item.get("host"):
                     raise HTTPException(409, "deye_not_configured")
-                result: dict[str, Any] = {"deye": _read_deye_with_inventory_recovery(item)}
+                deye_result = _read_deye_with_inventory_recovery(item)
+                if deye_result.get("connection_state") == "read_in_progress":
+                    raise HTTPException(409, "deye_read_already_in_progress")
+                result: dict[str, Any] = {"deye": deye_result}
                 metrics_saved = _persist_deye_telemetry(conn, result["deye"])
                 result["energy_readings_persisted"] = metrics_saved
             elif provider == "antminer":
