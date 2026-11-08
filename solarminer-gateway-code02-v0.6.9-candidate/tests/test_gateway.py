@@ -487,6 +487,8 @@ def test_tuya_lan_event_history_records_switch_and_availability_transitions(clie
 
 def test_tuya_event_collector_polls_devices_even_without_a_pwa_request(tmp_path, monkeypatch, caplog):
     monkeypatch.setattr(gateway, "_tuya_last_diagnostic_log_at", 0.0)
+    monkeypatch.setattr(gateway.time, "monotonic", lambda: 61.0)
+    caplog.set_level("INFO")
     monkeypatch.setenv("SOLARMINER_DATA_DIR", str(tmp_path / "solarminer-data"))
     monkeypatch.setattr(gateway, "DB_PATH", tmp_path / "gateway.db")
     monkeypatch.setattr(gateway, "BOOTSTRAP_PATH", tmp_path / "bootstrap.token")
