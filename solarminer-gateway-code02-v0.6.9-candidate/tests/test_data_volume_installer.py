@@ -121,6 +121,12 @@ def test_partition_listing_uses_compatible_lsblk_pairs_options(monkeypatch):
     assert "--list" not in calls[0]
 
 
+def test_data_partition_fields_consumes_the_new_size_column():
+    assert provision.data_partition_fields(
+        ("/dev/sda3", "SOLARMINER_DATA", "", "", "129000000000")
+    ) == ("/dev/sda3", "SOLARMINER_DATA", "", "")
+
+
 def test_partition_uuid_uses_portable_blkid_value_options(monkeypatch):
     calls = []
     monkeypatch.setattr(provision, "run", lambda args: calls.append(args) or "data-uuid\n")
@@ -146,6 +152,38 @@ def test_existing_named_non_ext4_partition_is_never_formatted(monkeypatch):
     monkeypatch.setattr(provision, "run", lambda args: calls.append(args) or "")
     with pytest.raises(RuntimeError, match="não será formatada"):
         provision.ensure_ext4_data_partition("/dev/sda6", "vfat", "")
+    assert calls == []
+
+
+def test_named_blank_partition_left_by_interrupted_installer_is_initialized(monkeypatch):
+    calls = []
+    monkeypatch.setattr(provision, "mounted_targets", lambda _partition: [])
+    def fake_run(args, *, check=True, env=None):
+        calls.append(args)
+        return "fresh-data-uuid\n" if args[0] == "blkid" and "--match-tag" in args else ""
+    monkeypatch.setattr(provision, "run", fake_run)
+    monkeypatch.setattr(
+        provision.subprocess, "run",
+        lambda args, **kwargs: type("Result", (), {"returncode": 2, "stdout": "", "stderr": ""})(),
+    )
+    result = provision.ensure_ext4_data_partition("/dev/sda3", "", "")
+    assert result == "fresh-data-uuid"
+    assert calls == [
+        ["mkfs.ext4", "-L", "SOLARMINER_DATA", "/dev/sda3"],
+        ["blkid", "--output", "value", "--match-tag", "UUID", "/dev/sda3"],
+    ]
+
+
+def test_named_blank_partition_with_existing_signature_is_not_formatted(monkeypatch):
+    calls = []
+    monkeypatch.setattr(provision, "mounted_targets", lambda _partition: [])
+    monkeypatch.setattr(provision, "run", lambda args, **kwargs: calls.append(args) or "")
+    monkeypatch.setattr(
+        provision.subprocess, "run",
+        lambda args, **kwargs: type("Result", (), {"returncode": 0, "stdout": "TYPE=crypto_LUKS", "stderr": ""})(),
+    )
+    with pytest.raises(RuntimeError, match="contém assinaturas"):
+        provision.ensure_ext4_data_partition("/dev/sda3", "", "")
     assert calls == []
 
 
