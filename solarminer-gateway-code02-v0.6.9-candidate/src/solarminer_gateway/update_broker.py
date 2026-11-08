@@ -279,6 +279,11 @@ def handle_request(raw: bytes, runner=subprocess.run) -> dict[str, object]:
         return {"status": "error", "reason": "tailscale_connect_failed"}
     if action == "tailscale_status" and result.returncode != 0:
         return {"status": "error", "reason": "tailscale_status_unavailable"}
+    if action == "watchdog_set":
+        if result.returncode != 0:
+            return {"status": "error", "reason": "watchdog_state_change_failed"}
+        status = "active" if request["enabled"] else "inactive"
+        return {"status": "ok", "enabled": request["enabled"], "timer": status}
     raw_result = result.stdout if result.returncode == 0 else result.stderr
     try:
         payload = json.loads(raw_result or "")
@@ -316,11 +321,6 @@ def handle_request(raw: bytes, runner=subprocess.run) -> dict[str, object]:
         if not connected and auth_url is None:
             return {"status": "error", "reason": "tailscale_auth_url_missing"}
         return {"started": True, "connected": connected, "auth_url": auth_url}
-    if action == "watchdog_set":
-        if result.returncode != 0:
-            return {"status": "error", "reason": "watchdog_state_change_failed"}
-        status = "active" if request["enabled"] else "inactive"
-        return {"status": "ok", "enabled": request["enabled"], "timer": status}
     if result.returncode != 0 or payload.get("status") == "error":
         reason = payload.get("reason")
         if not isinstance(reason, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,180}", reason):
