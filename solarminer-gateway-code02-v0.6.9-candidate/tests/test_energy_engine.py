@@ -1083,15 +1083,13 @@ def test_forecast_guided_dispatch_fails_closed_without_forecast():
     assert result["actions"] == []
 
 
-def test_energy_sampler_interval_defaults_to_fifteen_seconds_and_never_goes_below_fifteen(monkeypatch):
+def test_energy_sampler_uses_response_latency_and_fivefold_backoff():
     from solarminer_gateway import app as gateway
 
-    monkeypatch.delenv("SOLARMINER_ENERGY_SAMPLE_SECONDS", raising=False)
-    assert gateway._energy_sample_interval_seconds() == 15
-    monkeypatch.setenv("SOLARMINER_ENERGY_SAMPLE_SECONDS", "1.5")
-    assert gateway._energy_sample_interval_seconds() == 15
-    monkeypatch.setenv("SOLARMINER_ENERGY_SAMPLE_SECONDS", "4.5")
-    assert gateway._energy_sample_interval_seconds() == 15
+    assert gateway._deye_poll_delay_for_latency(3) == 3
+    assert gateway._deye_poll_delay_for_latency(4) == 4
+    assert gateway._deye_failure_backoff_seconds(5) == 25
+    assert gateway._deye_failure_backoff_seconds(10) == 50
 
 
 def test_background_sampler_persists_snapshot_without_pwa_request(tmp_path, monkeypatch):

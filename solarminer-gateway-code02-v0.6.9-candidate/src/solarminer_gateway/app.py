@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.212"
+PACKAGE_VERSION = "0.6.213"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -85,6 +85,9 @@ install_error_queue_handler()
 # Deye polling is deliberately bounded to avoid overlapping slow Modbus reads.
 _energy_sample_lock = threading.Lock()
 _deye_read_lock = threading.Lock()
+_deye_latency_state_lock = threading.Lock()
+_deye_last_success_latency_seconds: float | None = None
+_deye_next_poll_delay_seconds = 5.0
 _latest_deye_sample: dict[str, Any] | None = None
 _recent_deye_samples: list[dict[str, Any]] = []
 DEYE_IP_RECOVERY_AFTER_SECONDS = 60.0
@@ -755,13 +758,25 @@ def _deye_recovery_key(deye_config: dict[str, Any]) -> tuple[str, str, str, str]
 
 def _read_deye_with_inventory_recovery(deye_config: dict[str, Any]) -> dict[str, Any]:
     """Avoid overlapping periodic and manual Modbus conversations."""
+    global _deye_last_success_latency_seconds, _deye_next_poll_delay_seconds
     if not _deye_read_lock.acquire(blocking=False):
         return {"host": deye_config.get("host"), "port": deye_config.get("port", 502),
                 "connection_state": "read_in_progress", "reason": "deye_read_already_in_progress",
                 "metrics_decoded": False, "trust": "UNAVAILABLE"}
+    started = time.perf_counter()
+    result: dict[str, Any] | None = None
     try:
-        return _read_deye_with_inventory_recovery_locked(deye_config)
+        result = _read_deye_with_inventory_recovery_locked(deye_config)
+        return result
     finally:
+        elapsed = max(0.0, time.perf_counter() - started)
+        with _deye_latency_state_lock:
+            if result is not None and result.get("connection_state") == "mapped_registers_response":
+                _deye_last_success_latency_seconds = elapsed
+                _deye_next_poll_delay_seconds = _deye_poll_delay_for_latency(elapsed)
+            else:
+                _deye_next_poll_delay_seconds = _deye_failure_backoff_seconds(
+                    _deye_last_success_latency_seconds)
         _deye_read_lock.release()
 
 
@@ -1286,10 +1301,24 @@ def initialize() -> None:
 
 
 def _energy_sample_interval_seconds() -> float:
+    with _deye_latency_state_lock:
+        return _deye_next_poll_delay_seconds
+
+
+def _deye_poll_delay_for_latency(latency_seconds: float) -> float:
+    """Use one measured latency after success and five times after a failed read."""
     try:
-        return max(15.0, min(3600.0, float(os.environ.get("SOLARMINER_ENERGY_SAMPLE_SECONDS", "15"))))
+        value = float(latency_seconds)
     except (TypeError, ValueError):
-        return 15.0
+        value = 5.0
+    if not math.isfinite(value):
+        value = 5.0
+    return max(0.1, min(3600.0, value))
+
+
+def _deye_failure_backoff_seconds(last_success_latency_seconds: float | None) -> float:
+    reference = last_success_latency_seconds if last_success_latency_seconds is not None else 5.0
+    return _deye_poll_delay_for_latency(reference * 5.0)
 
 
 def _prune_historical_records(now_utc: datetime | None = None) -> dict[str, int]:
@@ -1348,17 +1377,19 @@ async def _history_retention_loop() -> None:
 
 
 async def _energy_sampling_loop() -> None:
-    """Read Deye telemetry at a bounded interval; skip overlap with manual reads."""
+    """Adapt Deye polling delay to measured Modbus latency and failures."""
     global _latest_deye_sample
-    interval = _energy_sample_interval_seconds()
     persist_interval = 15.0
     last_persisted_bucket: int | None = None
-    next_sample_at = asyncio.get_running_loop().time()
     while True:
+        next_poll_at: float | None = None
         try:
             config = hardware_integrations.load_config().get("deye", {})
             if config.get("host") and config.get("enabled", True):
                 snapshot = await asyncio.to_thread(_read_deye_with_inventory_recovery, config)
+                # Start the next interval at response receipt, so local processing
+                # and persistence time do not get added to the measured wait.
+                next_poll_at = time.monotonic() + _energy_sample_interval_seconds()
                 if isinstance(snapshot, dict) and snapshot.get("connection_state") == "read_in_progress":
                     LOG.debug("Periodic Deye sample skipped because another read is in progress")
                 elif isinstance(snapshot, dict) and snapshot.get("connection_state") == "mapped_registers_response":
@@ -1392,13 +1423,11 @@ async def _energy_sampling_loop() -> None:
         except Exception as exc:
             # Keep the service alive; diagnostic data contains only safe error type.
             LOG.warning("Periodic energy sample failed (%s)", type(exc).__name__)
-        next_sample_at += interval
-        delay = next_sample_at - asyncio.get_running_loop().time()
-        if delay <= 0:
-            # A slow device read must not trigger a burst of catch-up reads.
-            next_sample_at = asyncio.get_running_loop().time() + interval
-            delay = interval
-        await asyncio.sleep(delay)
+        if next_poll_at is None:
+            # Includes failed reads and failures before a response was returned.
+            next_poll_at = time.monotonic() + _energy_sample_interval_seconds()
+        # A small floor prevents a zero-delay loop if local work outlasts the interval.
+        await asyncio.sleep(max(0.1, next_poll_at - time.monotonic()))
 
 
 def _run_automatic_dispatch() -> dict[str, Any]:
