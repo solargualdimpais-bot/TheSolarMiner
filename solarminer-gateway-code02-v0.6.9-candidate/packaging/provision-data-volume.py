@@ -222,14 +222,10 @@ def ensure_ext4_data_partition(partition: str, filesystem: str, uuid: str) -> st
         if not uuid:
             raise RuntimeError("A partição de dados ext4 não tem UUID legível; não foi alterada.")
         return uuid
-    if targets:
-        raise RuntimeError("A partição de dados está montada; não foi formatada.")
-    print(f"A formatar a partição identificada pelo rótulo SolarMiner como ext4: {partition}.", flush=True)
-    run(["mkfs.ext4", "-F", "-L", LABEL, partition])
-    uuid = partition_uuid(partition)
-    if not uuid:
-        raise RuntimeError("A partição foi formatada, mas não foi possível ler o UUID.")
-    return uuid
+    raise RuntimeError(
+        f"A partição existente {partition} tem sistema de ficheiros {filesystem or 'desconhecido'}; "
+        "não será formatada para proteger a base de dados e o Owner."
+    )
 
 
 def write_fstab(uuid: str) -> None:

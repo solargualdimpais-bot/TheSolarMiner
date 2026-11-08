@@ -485,7 +485,8 @@ def test_tuya_lan_event_history_records_switch_and_availability_transitions(clie
     assert rows[3]["new_value_json"] == "false"
 
 
-def test_tuya_event_collector_polls_devices_even_without_a_pwa_request(tmp_path, monkeypatch):
+def test_tuya_event_collector_polls_devices_even_without_a_pwa_request(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(gateway, "_tuya_last_diagnostic_log_at", 0.0)
     monkeypatch.setenv("SOLARMINER_DATA_DIR", str(tmp_path / "solarminer-data"))
     monkeypatch.setattr(gateway, "DB_PATH", tmp_path / "gateway.db")
     monkeypatch.setattr(gateway, "BOOTSTRAP_PATH", tmp_path / "bootstrap.token")
@@ -516,9 +517,12 @@ def test_tuya_event_collector_polls_devices_even_without_a_pwa_request(tmp_path,
     assert [(row["event_type"], row["new_value_json"]) for row in rows] == [
         ("availability", "true"), ("switch_state", "true")]
     assert config["devices"][0]["local_control_state"] == "ready"
+    assert "Periodic Tuya poll diagnostic outcome=success configured=1 successful=1 failed=0" in caplog.text
+    assert "lan-ready" not in caplog.text
 
 
-def test_tuya_event_collector_marks_a_failed_device_offline_without_rewriting_status(tmp_path, monkeypatch):
+def test_tuya_event_collector_marks_a_failed_device_offline_without_rewriting_status(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(gateway, "_tuya_last_diagnostic_log_at", 0.0)
     monkeypatch.setenv("SOLARMINER_DATA_DIR", str(tmp_path / "solarminer-data"))
     monkeypatch.setattr(gateway, "DB_PATH", tmp_path / "gateway.db")
     monkeypatch.setattr(gateway, "BOOTSTRAP_PATH", tmp_path / "bootstrap.token")
@@ -546,6 +550,8 @@ def test_tuya_event_collector_marks_a_failed_device_offline_without_rewriting_st
     assert config["devices"][0]["current_status"] == [{"code": "power", "value": 500}]
     assert config["devices"][0]["last_status_at"] == 123
     assert len(saved) == 1
+    assert "Periodic Tuya poll diagnostic outcome=partial configured=1 successful=0 failed=1" in caplog.text
+    assert "lan-offline" not in caplog.text
 
 
 def test_tuya_event_poll_interval_defaults_to_five_seconds_and_enforces_safe_minimum(monkeypatch):

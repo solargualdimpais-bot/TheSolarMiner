@@ -44,18 +44,35 @@ if dpkg-query -W -f='${db:Status-Status}' solarminer-gateway 2>/dev/null | grep 
 fi
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-PACKAGE_NAME=solarminer-gateway_0.6.196_amd64.deb
-PACKAGE="$HERE/$PACKAGE_NAME"
 MANIFEST="$HERE/solarminer-release.json"
 PUBLIC_KEY="$HERE/release-pubkey.pem"
 DATA_PROVISIONER="$HERE/provision-data-volume.py"
-for file in "$PACKAGE" "$MANIFEST" "$PUBLIC_KEY" "$DATA_PROVISIONER"; do
+for file in "$MANIFEST" "$PUBLIC_KEY" "$DATA_PROVISIONER"; do
   [ -s "$file" ] || fail "Ficheiro necessário em falta na pen: $(basename "$file")"
   [ ! -L "$file" ] || fail "Não são aceites ficheiros simbólicos: $(basename "$file")"
 done
+PACKAGE_VERSION=$(python3 - "$MANIFEST" <<'PY'
+import json, pathlib, re, sys
+try:
+    manifest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+    version = manifest["version"]
+    if not isinstance(version, str) or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,3}", version):
+        raise ValueError("versão inválida")
+    if manifest.get("release_id") != "gateway-v" + version:
+        raise ValueError("identidade da release inválida")
+    print(version)
+except (OSError, ValueError, TypeError, KeyError) as exc:
+    print(f"Manifesto inválido: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+) || fail "Não foi possível identificar com segurança a versão do pacote no manifesto."
+PACKAGE_NAME="solarminer-gateway_${PACKAGE_VERSION}_amd64.deb"
+PACKAGE="$HERE/$PACKAGE_NAME"
+[ -s "$PACKAGE" ] || fail "Ficheiro necessário em falta na pen: $PACKAGE_NAME"
+[ ! -L "$PACKAGE" ] || fail "Não são aceites ficheiros simbólicos: $PACKAGE_NAME"
 [ "$(dpkg-deb -f "$PACKAGE" Architecture)" = amd64 ] || fail "Pacote não é amd64."
 [ "$(dpkg-deb -f "$PACKAGE" Package)" = solarminer-gateway ] || fail "Pacote inesperado."
-[ "$(dpkg-deb -f "$PACKAGE" Version)" = 0.6.196 ] || fail "Versão do pacote não corresponde ao instalador."
+[ "$(dpkg-deb -f "$PACKAGE" Version)" = "$PACKAGE_VERSION" ] || fail "Versão do pacote não corresponde ao manifesto."
 
 WORK=$(mktemp -d /tmp/solarminer-bootstrap.XXXXXX)
 CREATED_TRUST=0
@@ -84,9 +101,11 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 log "A validar manifesto, assinatura Ed25519 e pacote antes de instalar."
-python3 - "$MANIFEST" "$PUBLIC_KEY" "$PACKAGE" "$WORK" <<'PY'
+python3 - "$MANIFEST" "$PUBLIC_KEY" "$PACKAGE" "$PACKAGE_VERSION" "$WORK" <<'PY'
 import hashlib, json, os, pathlib, sys
-manifest_path, key_path, package_path, work_dir = map(pathlib.Path, sys.argv[1:])
+manifest_path, key_path, package_path = map(pathlib.Path, sys.argv[1:4])
+version = sys.argv[4]
+work_dir = pathlib.Path(sys.argv[5])
 try:
     m = json.loads(manifest_path.read_text(encoding="utf-8"))
     required = {"schema_version", "release_id", "version", "min_compatible_version",
@@ -94,7 +113,6 @@ try:
                 "signature_algorithm", "signature", "compatibility", "migration_requirements"}
     if not isinstance(m, dict) or not required.issubset(m):
         raise ValueError("campos obrigatórios do manifesto em falta")
-    version = "0.6.196"
     if m["schema_version"] != 1 or m["signature_algorithm"] != "Ed25519":
         raise ValueError("esquema ou algoritmo não suportado")
     if m["version"] != version or m["release_id"] != "gateway-v" + version:
@@ -182,8 +200,43 @@ log "A instalar pacote e dependências assinados."
 apt-get update >>"$LOG" 2>&1 || fail "apt-get update falhou. Consulta $LOG"
 INSTALLED_PACKAGE=1
 DEBIAN_FRONTEND=noninteractive apt-get install -y "$PACKAGE" >>"$LOG" 2>&1 || fail "Instalação do pacote falhou. Consulta $LOG"
-log "A configurar a palavra-passe inicial do Owner na consola local. O que escreveres será visível e não será guardado em texto simples."
-solarminer-gateway owner-password || fail "A configuração local da palavra-passe inicial falhou. Consulta $LOG"
+log "A verificar se a base persistente já tem um Owner ativo."
+OWNER_STATE=$(python3 - <<'PY'
+import sqlite3
+from pathlib import Path
+
+database = Path("/var/lib/solarminer/gateway.db")
+if not database.is_file():
+    print("empty")
+else:
+    try:
+        with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=5) as connection:
+            tables = {
+                row[0] for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                )
+            }
+            if "users" not in tables:
+                if tables:
+                    raise sqlite3.DatabaseError(
+                        "Persistent database has tables but no users table; refusing to treat it as a clean database"
+                    )
+                active_owner = None
+            else:
+                active_owner = connection.execute(
+                    "SELECT 1 FROM users WHERE role='owner' AND status='active' LIMIT 1"
+                ).fetchone()
+    except sqlite3.Error as exc:
+        raise SystemExit(f"Não foi possível verificar a base persistente com segurança: {exc}")
+    print("active" if active_owner else "empty")
+PY
+) || fail "Não foi possível verificar o Owner existente; a instalação parou sem alterar a base de dados."
+if [ "$OWNER_STATE" = "active" ]; then
+  log "Owner ativo encontrado no disco persistente; a palavra-passe existente e os dados foram preservados. A ignorar o registo de Owner inicial."
+else
+  log "A configurar a palavra-passe inicial do Owner na consola local. O que escreveres será visível e não será guardado em texto simples."
+  solarminer-gateway owner-password || fail "A configuração local da palavra-passe inicial falhou. Consulta $LOG"
+fi
 if command -v tailscale >/dev/null 2>&1; then
   log "A iniciar o Tailscale. A autorização do equipamento exige a tua conta Tailscale e será apresentada no terminal; não é guardada no log."
   tailscale up || log "Autorização Tailscale pendente; conclui o início de sessão com o URL apresentado pelo comando tailscale up."
@@ -194,15 +247,37 @@ chmod 0640 /etc/solarminer/update-sources.json
 log "A aguardar o serviço e a validar o health check local."
 systemctl is-enabled --quiet solarminer-gateway.service || fail "O serviço não ficou ativo no arranque."
 attempt=0
-while [ "$attempt" -lt 30 ]; do
+while [ "$attempt" -lt 60 ]; do
   if systemctl is-active --quiet solarminer-gateway.service &&
-     python3 - <<'PY' >/dev/null 2>&1
-import json, ssl, urllib.request
-ctx = ssl.create_default_context(cafile="/var/lib/solarminer/server.crt")
-with urllib.request.urlopen("https://127.0.0.1:8443/api/v1/health", context=ctx, timeout=1) as response:
+     python3 - <<'PY' >>"$LOG" 2>&1
+import hashlib
+import http.client
+import json
+import ssl
+from pathlib import Path
+
+try:
+    certificate = Path("/var/lib/solarminer/server.crt")
+    expected_der = ssl.PEM_cert_to_DER_cert(certificate.read_text(encoding="ascii"))
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    # This is a loopback readiness probe only. Pin the exact configured server
+    # certificate instead of treating a CA-issued leaf certificate as a CA.
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    connection = http.client.HTTPSConnection("127.0.0.1", 8443, context=context, timeout=1)
+    connection.connect()
+    actual_der = connection.sock.getpeercert(binary_form=True)
+    if not hashlib.sha256(actual_der).digest() == hashlib.sha256(expected_der).digest():
+        raise RuntimeError("Gateway presented a TLS certificate different from server.crt")
+    connection.request("GET", "/api/v1/health")
+    response = connection.getresponse()
     if response.status != 200:
-        raise SystemExit(1)
+        raise RuntimeError(f"health endpoint returned HTTP {response.status}")
     json.load(response)
+    connection.close()
+except Exception as exc:
+    print(f"Local health probe failed: {type(exc).__name__}: {exc}", flush=True)
+    raise SystemExit(1)
 PY
   then
     log "Health check concluído com sucesso."
@@ -211,7 +286,7 @@ PY
   attempt=$((attempt + 1))
   sleep 1
 done
-[ "$attempt" -lt 30 ] || {
+[ "$attempt" -lt 60 ] || {
   {
     echo "--- diagnóstico local de Gateway/Nginx ---"
     echo "Gateway ativo: $(systemctl is-active solarminer-gateway.service 2>/dev/null || true)"
@@ -222,7 +297,7 @@ done
   } | tee -a "$LOG" "$PERSISTENT_LOG"
   fail "Health check não passou dentro de 60 segundos. O detalhe da resposta e o estado local foram guardados nos registos persistentes."
 }
-log "Instalação inicial SolarMiner Gateway 0.6.196 concluída."
+log "Instalação inicial SolarMiner Gateway $PACKAGE_VERSION concluída."
 log "O Gateway está configurado para verificar diariamente o repositório oficial; aplicar uma atualização continua a exigir ação Owner na PWA."
 trap - EXIT HUP INT TERM
 rm -rf "$WORK"

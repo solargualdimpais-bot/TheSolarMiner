@@ -140,21 +140,13 @@ def test_existing_named_ext4_partition_is_reused_without_a_size_limit(monkeypatc
     assert calls == []
 
 
-def test_existing_named_non_ext4_partition_is_formatted_as_ext4(monkeypatch):
+def test_existing_named_non_ext4_partition_is_never_formatted(monkeypatch):
     calls = []
     monkeypatch.setattr(provision, "mounted_targets", lambda _partition: [])
-
-    def fake_run(args, **_kwargs):
-        calls.append(args)
-        return "formatted-uuid" if args[0] == "blkid" else ""
-
-    monkeypatch.setattr(provision, "run", fake_run)
-    uuid = provision.ensure_ext4_data_partition("/dev/sda6", "vfat", "")
-    assert uuid == "formatted-uuid"
-    assert calls == [
-        ["mkfs.ext4", "-F", "-L", "SOLARMINER_DATA", "/dev/sda6"],
-        ["blkid", "--output", "value", "--match-tag", "UUID", "/dev/sda6"],
-    ]
+    monkeypatch.setattr(provision, "run", lambda args: calls.append(args) or "")
+    with pytest.raises(RuntimeError, match="não será formatada"):
+        provision.ensure_ext4_data_partition("/dev/sda6", "vfat", "")
+    assert calls == []
 
 
 def test_named_non_ext4_partition_mounted_elsewhere_is_never_formatted(monkeypatch):

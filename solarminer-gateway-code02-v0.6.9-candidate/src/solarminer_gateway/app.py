@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.213"
+PACKAGE_VERSION = "0.6.214"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -88,6 +88,7 @@ _deye_read_lock = threading.Lock()
 _deye_latency_state_lock = threading.Lock()
 _deye_last_success_latency_seconds: float | None = None
 _deye_next_poll_delay_seconds = 5.0
+_last_deye_diagnostic_log_at = 0.0
 _latest_deye_sample: dict[str, Any] | None = None
 _recent_deye_samples: list[dict[str, Any]] = []
 DEYE_IP_RECOVERY_AFTER_SECONDS = 60.0
@@ -95,6 +96,7 @@ DEYE_IP_RECOVERY_RETRY_SECONDS = 60.0
 _deye_ip_recovery_lock = threading.Lock()
 _deye_unreachable_since: dict[tuple[str, str, str, str], float] = {}
 _deye_last_ip_recovery_attempt: dict[tuple[str, str, str, str], float] = {}
+_tuya_last_diagnostic_log_at = 0.0
 _dispatch_lock = threading.Lock()
 _dispatch_last_sent: dict[str, tuple[str, float]] = {}
 _deye_history_jobs_lock = threading.Lock()
@@ -758,7 +760,7 @@ def _deye_recovery_key(deye_config: dict[str, Any]) -> tuple[str, str, str, str]
 
 def _read_deye_with_inventory_recovery(deye_config: dict[str, Any]) -> dict[str, Any]:
     """Avoid overlapping periodic and manual Modbus conversations."""
-    global _deye_last_success_latency_seconds, _deye_next_poll_delay_seconds
+    global _deye_last_success_latency_seconds, _deye_next_poll_delay_seconds, _last_deye_diagnostic_log_at
     if not _deye_read_lock.acquire(blocking=False):
         return {"host": deye_config.get("host"), "port": deye_config.get("port", 502),
                 "connection_state": "read_in_progress", "reason": "deye_read_already_in_progress",
@@ -770,6 +772,7 @@ def _read_deye_with_inventory_recovery(deye_config: dict[str, Any]) -> dict[str,
         return result
     finally:
         elapsed = max(0.0, time.perf_counter() - started)
+        outcome = str(result.get("connection_state") or "failed") if result else "no_response"
         with _deye_latency_state_lock:
             if result is not None and result.get("connection_state") == "mapped_registers_response":
                 _deye_last_success_latency_seconds = elapsed
@@ -777,6 +780,17 @@ def _read_deye_with_inventory_recovery(deye_config: dict[str, Any]) -> dict[str,
             else:
                 _deye_next_poll_delay_seconds = _deye_failure_backoff_seconds(
                     _deye_last_success_latency_seconds)
+            next_delay = _deye_next_poll_delay_seconds
+            now = time.monotonic()
+            should_summarize_success = now - _last_deye_diagnostic_log_at >= 60.0
+            if outcome != "mapped_registers_response" or elapsed >= 2.0 or should_summarize_success:
+                _last_deye_diagnostic_log_at = now
+                if outcome == "mapped_registers_response" and elapsed < 2.0:
+                    LOG.info("Deye polling diagnostic outcome=%s latency_ms=%d next_wait_ms=%d",
+                             outcome, round(elapsed * 1000), round(next_delay * 1000))
+                else:
+                    LOG.warning("Deye polling diagnostic outcome=%s latency_ms=%d next_wait_ms=%d",
+                                outcome, round(elapsed * 1000), round(next_delay * 1000))
         _deye_read_lock.release()
 
 
@@ -1639,6 +1653,8 @@ async def _tesla_presence_loop() -> None:
 
 def _collect_tuya_device_events_once() -> int:
     """Poll configured Tuya Wi-Fi devices and save observed transitions locally."""
+    global _tuya_last_diagnostic_log_at
+    started = time.perf_counter()
     integration_config = hardware_integrations.load_config()
     config = integration_config.get("tuya", {})
     devices = [item for item in config.get("devices", [])
@@ -1657,8 +1673,25 @@ def _collect_tuya_device_events_once() -> int:
             energy_engine.persist_tuya_telemetry(conn, [reading], devices, config.get("product_schemas", {}))
             conn.commit()
 
-    readings = hardware_integrations.read_tuya(
-        {**config, "devices": devices}, on_reading=persist_completed_reading, background_poll=True)
+    try:
+        readings = hardware_integrations.read_tuya(
+            {**config, "devices": devices}, on_reading=persist_completed_reading, background_poll=True)
+    except Exception as exc:
+        LOG.error("Periodic Tuya poll diagnostic outcome=error configured=%d duration_ms=%d error_type=%s",
+                  len(devices), round((time.perf_counter() - started) * 1000), type(exc).__name__)
+        raise
+    duration_ms = round((time.perf_counter() - started) * 1000)
+    successful = sum(1 for item in readings if item.get("connection_state") == "local_responded")
+    failed = max(0, len(devices) - successful)
+    now = time.monotonic()
+    if failed or duration_ms >= 2000 or now - _tuya_last_diagnostic_log_at >= 60.0:
+        _tuya_last_diagnostic_log_at = now
+        message = "Periodic Tuya poll diagnostic outcome=%s configured=%d successful=%d failed=%d duration_ms=%d parallel_limit=%d"
+        values = ("partial" if failed else "success", len(devices), successful, failed, duration_ms, min(4, len(devices)))
+        if failed or duration_ms >= 2000:
+            LOG.warning(message, *values)
+        else:
+            LOG.info(message, *values)
     if _update_tuya_device_records(integration_config, readings, record_status=False):
         hardware_integrations.save_config(integration_config)
     return recorded
@@ -1736,15 +1769,24 @@ app = FastAPI(title="SolarMiner Gateway", version=VERSION, docs_url=None, redoc_
 
 @app.middleware("http")
 async def report_http_server_errors(request: Request, call_next):
+    started = time.perf_counter()
+    diagnostic_probe = request.url.path in {
+        "/api/v1/health", "/api/v1/info", "/api/v1/bootstrap/status",
+    }
     try:
         response = await call_next(request)
     except Exception as exc:
-        LOG.error("Unhandled Gateway request exception route=%s type=%s",
-                  request.url.path, type(exc).__name__)
+        elapsed_ms = round((time.perf_counter() - started) * 1000)
+        LOG.error("Unhandled Gateway request exception route=%s type=%s latency_ms=%d",
+                  request.url.path, type(exc).__name__, elapsed_ms)
         raise
+    elapsed_ms = round((time.perf_counter() - started) * 1000)
     if response.status_code >= 500:
-        LOG.error("Gateway returned HTTP server error status=%s route=%s",
-                  response.status_code, request.url.path)
+        LOG.error("Gateway returned HTTP server error status=%s route=%s latency_ms=%d",
+                  response.status_code, request.url.path, elapsed_ms)
+    elif diagnostic_probe and elapsed_ms >= 1000:
+        LOG.warning("Gateway diagnostic probe slow status=%s route=%s latency_ms=%d",
+                    response.status_code, request.url.path, elapsed_ms)
     return response
 # Cross-origin PWA access is opt-in and exact-origin allow-listed. The official
 # GitHub Pages origin is enabled by the package; additional origins must be set

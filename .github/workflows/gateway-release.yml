@@ -65,6 +65,9 @@ jobs:
         run: |
           bash -n tools/tesla_oauth_relay/install-ubuntu.sh tools/tesla_oauth_relay/bootstrap-ubuntu.sh
           sh -n packaging/install-from-usb.sh
+          ! grep -Eq 'PACKAGE_NAME=solarminer-gateway_[0-9]|version = "[0-9]' packaging/install-from-usb.sh
+          grep -q 'OWNER_STATE' packaging/install-from-usb.sh
+          grep -q 'systemctl disable --now solarminer-gateway-watchdog.timer' packaging/postinst
           sh -n packaging/solarminer-data-volume-check
           sh -n packaging/repair-existing-from-usb.sh
           sh -n packaging/postinst
