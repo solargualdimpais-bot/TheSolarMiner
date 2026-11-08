@@ -1418,6 +1418,9 @@ async def _energy_sampling_loop() -> None:
                 with _energy_sample_lock:
                     _latest_deye_sample = None
                     _recent_deye_samples.clear()
+                # No Deye read is possible until configuration changes; avoid
+                # waking the sampler on the short adaptive interval while idle.
+                next_poll_at = time.monotonic() + 15.0
         except asyncio.CancelledError:
             raise
         except Exception as exc:
