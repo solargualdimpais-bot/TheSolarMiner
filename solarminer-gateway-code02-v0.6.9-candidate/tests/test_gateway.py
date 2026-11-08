@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import io
 import json
@@ -629,7 +630,7 @@ def test_health_endpoint_is_independent_of_database(monkeypatch):
         raise AssertionError("liveness health must not wait on SQLite")
 
     monkeypatch.setattr(gateway, "db", unexpected_database_access)
-    response = gateway.health()
+    response = asyncio.run(gateway.health())
 
     assert response["status"] == "ok"
     assert "bootstrap_state" not in response
