@@ -127,6 +127,83 @@ def test_data_partition_fields_consumes_the_new_size_column():
     ) == ("/dev/sda3", "SOLARMINER_DATA", "", "")
 
 
+def test_newly_created_partition_row_with_size_completes_initialization(monkeypatch):
+    calls = []
+    monkeypatch.setattr(provision, "mounted_targets", lambda _partition: [])
+    monkeypatch.setattr(provision, "run", lambda args, **kwargs: calls.append(args) or "created-uuid\n")
+    monkeypatch.setattr(
+        provision.subprocess, "run",
+        lambda args, **kwargs: type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+    row = ("/dev/sda6", "SOLARMINER_DATA", "", "", "129000000000")
+    assert provision.prepare_labeled_data_partition(row) == ("/dev/sda6", "created-uuid")
+    assert calls == [
+        ["wipefs", "--all", "/dev/sda6"],
+        ["mkfs.ext4", "-F", "-L", "SOLARMINER_DATA", "/dev/sda6"],
+        ["blkid", "--output", "value", "--match-tag", "UUID", "/dev/sda6"],
+    ]
+
+
+def test_clean_debian_partition_plus_unallocated_space_provisions_data_end_to_end(
+    tmp_path, monkeypatch,
+):
+    """Exercise the exact clean-install layout that previously failed on USB."""
+    commands = []
+    initial_rows = [
+        ("/dev/sda2", "SolarMiner Gateway", "ext4", "root-uuid", "64000000000")
+    ]
+    data_row = (
+        "/dev/sda6", "SOLARMINER_DATA", "", "", "129000000000"
+    )
+
+    class FakeLock:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def flock(self, *_args): return None
+
+    monkeypatch.setattr(provision, "fcntl", type("Fcntl", (), {
+        "LOCK_EX": 1, "LOCK_NB": 2, "flock": staticmethod(lambda *_args: None)
+    }))
+    monkeypatch.setattr(provision.os, "geteuid", lambda: 0, raising=False)
+    monkeypatch.setattr(provision.sys, "platform", "linux")
+    monkeypatch.setattr(provision, "require_tools", lambda: None)
+    monkeypatch.setattr(provision, "root_disk", lambda: "/dev/sda")
+    monkeypatch.setattr(provision, "partition_rows", lambda _disk: (
+        initial_rows if not any(call[:3] == ["parted", "--script", "--align"]
+                                for call in commands) else [*initial_rows, data_row]
+    ))
+    monkeypatch.setattr(provision.pathlib.Path, "is_symlink", lambda _self: False)
+    monkeypatch.setattr(provision, "MOUNTPOINT", tmp_path / "solarminer")
+    monkeypatch.setattr(provision, "MARKER", tmp_path / "etc" / "data-volume.uuid")
+    monkeypatch.setattr(provision, "FSTAB", tmp_path / "etc" / "fstab")
+    monkeypatch.setattr(provision.pathlib.Path, "mkdir", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(provision, "write_fstab", lambda uuid: commands.append(["write-fstab", uuid]))
+    monkeypatch.setattr(provision, "mount_data", lambda uuid: commands.append(["mount-data", uuid]))
+    monkeypatch.setattr(provision, "mounted_targets", lambda _partition: [])
+
+    def fake_run(args, **_kwargs):
+        commands.append(args)
+        if args[0] == "parted" and "print" in args:
+            return PARTED.replace("/dev/nvme0n1", "/dev/sda")
+        if args[0] == "findmnt" and "SOURCE" in args:
+            return "/dev/sda2"
+        if args[0] == "blkid":
+            return "new-data-uuid"
+        return ""
+
+    monkeypatch.setattr(provision, "run", fake_run)
+    monkeypatch.setattr(provision.subprocess, "run", lambda *_args, **_kwargs:
+                        type("Result", (), {"returncode": 1, "stdout": "", "stderr": ""})())
+    monkeypatch.setattr("builtins.open", lambda *_args, **_kwargs: FakeLock())
+
+    assert provision.main() == 0
+    assert ["parted", "--script", "--align", "optimal", "/dev/sda", "mkpart",
+            provision.LABEL, "ext4", "70000MiB", "199999MiB"] in commands
+    assert ["mkfs.ext4", "-F", "-L", provision.LABEL, "/dev/sda6"] in commands
+    assert ["write-fstab", "new-data-uuid"] in commands
+    assert ["mount-data", "new-data-uuid"] in commands
+
+
 def test_partition_uuid_uses_portable_blkid_value_options(monkeypatch):
     calls = []
     monkeypatch.setattr(provision, "run", lambda args: calls.append(args) or "data-uuid\n")
@@ -146,13 +223,20 @@ def test_existing_named_ext4_partition_is_reused_without_a_size_limit(monkeypatc
     assert calls == []
 
 
-def test_existing_named_non_ext4_partition_is_never_formatted(monkeypatch):
+def test_existing_named_non_ext4_partition_is_reset_as_unidentifiable_owner(monkeypatch):
     calls = []
     monkeypatch.setattr(provision, "mounted_targets", lambda _partition: [])
-    monkeypatch.setattr(provision, "run", lambda args: calls.append(args) or "")
-    with pytest.raises(RuntimeError, match="não será formatada"):
-        provision.ensure_ext4_data_partition("/dev/sda6", "vfat", "")
-    assert calls == []
+    monkeypatch.setattr(provision, "run", lambda args, **kwargs: calls.append(args) or "fresh-data-uuid\n")
+    monkeypatch.setattr(
+        provision.subprocess, "run",
+        lambda args, **kwargs: type("Result", (), {"returncode": 0, "stdout": "vfat 0x0", "stderr": ""})(),
+    )
+    assert provision.ensure_ext4_data_partition("/dev/sda6", "vfat", "") == "fresh-data-uuid"
+    assert calls == [
+        ["wipefs", "--all", "/dev/sda6"],
+        ["mkfs.ext4", "-F", "-L", "SOLARMINER_DATA", "/dev/sda6"],
+        ["blkid", "--output", "value", "--match-tag", "UUID", "/dev/sda6"],
+    ]
 
 
 def test_named_blank_partition_left_by_interrupted_installer_is_initialized(monkeypatch):
@@ -164,27 +248,33 @@ def test_named_blank_partition_left_by_interrupted_installer_is_initialized(monk
     monkeypatch.setattr(provision, "run", fake_run)
     monkeypatch.setattr(
         provision.subprocess, "run",
-        lambda args, **kwargs: type("Result", (), {"returncode": 2, "stdout": "", "stderr": ""})(),
+        lambda args, **kwargs: type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
     )
     result = provision.ensure_ext4_data_partition("/dev/sda3", "", "")
     assert result == "fresh-data-uuid"
     assert calls == [
-        ["mkfs.ext4", "-L", "SOLARMINER_DATA", "/dev/sda3"],
+        ["wipefs", "--all", "/dev/sda3"],
+        ["mkfs.ext4", "-F", "-L", "SOLARMINER_DATA", "/dev/sda3"],
         ["blkid", "--output", "value", "--match-tag", "UUID", "/dev/sda3"],
     ]
 
 
-def test_named_blank_partition_with_existing_signature_is_not_formatted(monkeypatch):
+def test_named_partition_with_existing_signature_is_formatted_as_unidentifiable_owner(monkeypatch):
     calls = []
     monkeypatch.setattr(provision, "mounted_targets", lambda _partition: [])
-    monkeypatch.setattr(provision, "run", lambda args, **kwargs: calls.append(args) or "")
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return "fresh-data-uuid\n" if args[0] == "blkid" else ""
+    monkeypatch.setattr(provision, "run", fake_run)
     monkeypatch.setattr(
         provision.subprocess, "run",
-        lambda args, **kwargs: type("Result", (), {"returncode": 0, "stdout": "TYPE=crypto_LUKS", "stderr": ""})(),
+        lambda args, **kwargs: type("Result", (), {"returncode": 0, "stdout": "crypto_LUKS 0x0", "stderr": ""})(),
     )
-    with pytest.raises(RuntimeError, match="contém assinaturas"):
-        provision.ensure_ext4_data_partition("/dev/sda3", "", "")
-    assert calls == []
+    assert provision.ensure_ext4_data_partition("/dev/sda3", "", "") == "fresh-data-uuid"
+    assert calls[:2] == [
+        ["wipefs", "--all", "/dev/sda3"],
+        ["mkfs.ext4", "-F", "-L", "SOLARMINER_DATA", "/dev/sda3"],
+    ]
 
 
 def test_named_non_ext4_partition_mounted_elsewhere_is_never_formatted(monkeypatch):
@@ -203,13 +293,28 @@ def test_named_partition_already_mounted_at_data_path_is_reused(monkeypatch):
     ) == "data-uuid"
 
 
-def test_ext4_partition_without_uuid_fails_without_formatting(monkeypatch):
+def test_ext4_partition_without_uuid_is_reformatted_when_owner_cannot_be_identified(monkeypatch):
     calls = []
     monkeypatch.setattr(provision, "mounted_targets", lambda _partition: [])
-    monkeypatch.setattr(provision, "run", lambda args: calls.append(args) or "")
-    with pytest.raises(RuntimeError, match="ext4 não tem UUID legível"):
-        provision.ensure_ext4_data_partition("/dev/sda6", "ext4", "")
-    assert calls == [["blkid", "--output", "value", "--match-tag", "UUID", "/dev/sda6"]]
+    count = {"blkid": 0}
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        if args[0] == "blkid":
+            count["blkid"] += 1
+            return "" if count["blkid"] == 1 else "fresh-data-uuid\n"
+        return ""
+    monkeypatch.setattr(provision, "run", fake_run)
+    monkeypatch.setattr(
+        provision.subprocess, "run",
+        lambda args, **kwargs: type("Result", (), {"returncode": 1, "stdout": "", "stderr": "probe failed"})(),
+    )
+    assert provision.ensure_ext4_data_partition("/dev/sda6", "ext4", "") == "fresh-data-uuid"
+    assert calls == [
+        ["blkid", "--output", "value", "--match-tag", "UUID", "/dev/sda6"],
+        ["wipefs", "--all", "/dev/sda6"],
+        ["mkfs.ext4", "-F", "-L", "SOLARMINER_DATA", "/dev/sda6"],
+        ["blkid", "--output", "value", "--match-tag", "UUID", "/dev/sda6"],
+    ]
 
 
 def test_duplicate_data_partition_labels_are_rejected():

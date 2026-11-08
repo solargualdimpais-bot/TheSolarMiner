@@ -34,7 +34,7 @@ def run(args: list[str], *, check: bool = True, env: dict[str, str] | None = Non
 
 def require_tools() -> None:
     missing = [name for name in ("findmnt", "lsblk", "parted", "partprobe",
-                                  "udevadm", "blkid", "mkfs.ext4", "mount",
+                                  "udevadm", "blkid", "wipefs", "mkfs.ext4", "mount",
                                   "mountpoint") if shutil.which(name) is None]
     if missing:
         raise RuntimeError("Ferramentas necessárias em falta: " + ", ".join(missing))
@@ -244,32 +244,36 @@ def ensure_ext4_data_partition(partition: str, filesystem: str, uuid: str) -> st
         raise RuntimeError("A partição com etiqueta SolarMiner já está montada noutro local; não foi alterada.")
     if filesystem.lower() == "ext4":
         if not uuid:
-            uuid = partition_uuid(partition)
-        if not uuid:
-            raise RuntimeError("A partição de dados ext4 não tem UUID legível; não foi alterada.")
-        return uuid
-    if not filesystem:
-        # A previous installer attempt may have created the explicitly named
-        # data partition and stopped before mkfs. Only initialize it when
-        # blkid confirms there are no signatures at all; preserve unknown data.
-        probe = subprocess.run(
-            ["blkid", "--probe", "--output", "export", partition],
-            check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-        if probe.returncode != 2:
-            raise RuntimeError(
-                f"A partição etiquetada {partition} contém assinaturas ou não pôde ser verificada; "
-                "não será formatada."
-            )
-        run(["mkfs.ext4", "-L", LABEL, partition])
-        uuid = partition_uuid(partition)
-        if not uuid:
-            raise RuntimeError("Não foi possível ler o UUID da nova partição de dados.")
-        return uuid
-    raise RuntimeError(
-        f"A partição existente {partition} tem sistema de ficheiros {filesystem or 'desconhecido'}; "
-        "não será formatada para proteger a base de dados e o Owner."
+            try:
+                uuid = partition_uuid(partition)
+            except (OSError, RuntimeError):
+                uuid = ""
+        if uuid:
+            return uuid
+    # The user selected the two-state first-install policy: a readable active
+    # Owner is authenticated later; if the data filesystem cannot be read, it
+    # is a fresh install and this dedicated, labeled data partition is reset.
+    signatures = subprocess.run(
+        ["wipefs", "--no-act", "--noheadings", "--output", "TYPE,OFFSET", partition],
+        check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
+    if signatures.returncode != 0:
+        print(f"Não foi possível identificar Owner em {partition}; a política de instalação limpa será aplicada.",
+              flush=True)
+    elif signatures.stdout.strip():
+        print(f"Owner não identificável em {partition}; a partição de dados será inicializada de novo.",
+              flush=True)
+    run(["wipefs", "--all", partition])
+    run(["mkfs.ext4", "-F", "-L", LABEL, partition])
+    uuid = partition_uuid(partition)
+    if not uuid:
+        raise RuntimeError("Não foi possível ler o UUID da nova partição de dados.")
+    return uuid
+
+
+def prepare_labeled_data_partition(row: tuple[str, str, str, str, str]) -> tuple[str, str]:
+    partition, _label, filesystem, uuid = data_partition_fields(row)
+    return partition, ensure_ext4_data_partition(partition, filesystem, uuid)
 
 
 def write_fstab(uuid: str) -> None:
@@ -341,8 +345,7 @@ def main() -> int:
                 and any(MOUNTPOINT.iterdir())):
             raise RuntimeError("/var/lib/solarminer já contém dados; instalação interrompida para os preservar.")
         if labelled:
-            partition, _label, filesystem, uuid = data_partition_fields(labelled)
-            uuid = ensure_ext4_data_partition(partition, filesystem, uuid)
+            partition, uuid = prepare_labeled_data_partition(labelled)
             print(f"A reutilizar a partição SolarMiner {partition}; o tamanho não limita a utilização.", flush=True)
         else:
             if MARKER.exists():
@@ -368,19 +371,7 @@ def main() -> int:
             labelled = [row for row in rows if row[1] == LABEL]
             if len(labelled) != 1 or not labelled[0][0]:
                 raise RuntimeError("A nova partição não apareceu com a etiqueta esperada; não foi formatada.")
-            partition, _label, filesystem, _uuid = data_partition_fields(labelled[0])
-            if filesystem:
-                raise RuntimeError("A nova partição já contém um sistema de ficheiros; por segurança não foi formatada.")
-            probe = subprocess.run(["blkid", "--probe", "--output", "value", "--match-tag", "TYPE", partition],
-                                   check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            if probe.returncode not in (0, 2):
-                raise RuntimeError("Não foi possível verificar assinaturas existentes na nova partição.")
-            if probe.returncode == 0 and probe.stdout.strip():
-                raise RuntimeError("A nova partição contém uma assinatura existente; por segurança não foi formatada.")
-            run(["mkfs.ext4", "-L", LABEL, partition])
-            uuid = partition_uuid(partition)
-            if not uuid:
-                raise RuntimeError("Não foi possível ler o UUID da partição criada.")
+            partition, uuid = prepare_labeled_data_partition(labelled[0])
         write_fstab(uuid)
         mount_data(uuid)
         print("Volume de dados SolarMiner preparado e montado em /var/lib/solarminer.", flush=True)

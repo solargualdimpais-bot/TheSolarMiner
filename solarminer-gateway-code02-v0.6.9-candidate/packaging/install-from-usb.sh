@@ -167,7 +167,7 @@ import sqlite3
 import sys
 import time
 from pathlib import Path
-from argon2 import PasswordHasher
+from argon2 import PasswordHasher, extract_parameters
 from argon2.exceptions import VerifyMismatchError, VerificationError
 try:
     from argon2.exceptions import InvalidHashError
@@ -186,27 +186,30 @@ def offer_fresh_install(reason):
     return input().strip() == "APAGAR DADOS"
 
 if not database.is_file():
-    print(("reset_data" if offer_fresh_install("A base marcada como inicializada não foi encontrada.") else "recovery")
-          if marker.exists() else "fresh")
+    print("reset_data")
     raise SystemExit(0)
 try:
     with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=5) as connection:
         tables = {row[0] for row in connection.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
         if not tables:
-            print(("reset_data" if offer_fresh_install("A base marcada como inicializada está vazia.") else "recovery")
-                  if marker.exists() else "fresh")
+            print("reset_data")
             raise SystemExit(0)
         if "users" not in tables:
             raise sqlite3.DatabaseError("existing persistent database has no users table")
         active_owners = [row[0] for row in connection.execute(
             "SELECT password_hash FROM users WHERE role='owner' AND status='active'")]
-        owners = [stored_hash for stored_hash in active_owners
-                  if isinstance(stored_hash, str) and stored_hash.strip()]
-        if active_owners and not owners:
-            print("reset_data" if offer_fresh_install(
-                "Existe um Owner ativo, mas não há hash válido para confirmar a palavra-passe."
-            ) else "recovery")
+        owners = []
+        for stored_hash in active_owners:
+            if not isinstance(stored_hash, str) or not stored_hash.strip():
+                continue
+            try:
+                extract_parameters(stored_hash)
+            except (InvalidHashError, TypeError, ValueError):
+                continue
+            owners.append(stored_hash)
+        if not owners:
+            print("reset_data")
             raise SystemExit(0)
         if owners:
             print("ESTADO DO OWNER: foi encontrado um Owner ativo na base de dados persistente.", file=sys.stderr)
@@ -225,8 +228,7 @@ try:
                     except VerifyMismatchError:
                         continue
                     except (VerificationError, InvalidHashError) as exc:
-                        reason = "O hash de palavra-passe do Owner está inválido e não pode confirmar nenhuma palavra-passe."
-                        print("reset_data" if offer_fresh_install(reason) else "recovery")
+                        print("reset_data")
                         raise SystemExit(0) from exc
                 supplied = ""
                 if matched:
@@ -240,32 +242,17 @@ try:
                 print("A base continua intacta. Podes tentar novamente; não há limite de tentativas.", file=sys.stderr)
             print("active")
             raise SystemExit(0)
-        if "bootstrap" not in tables:
-            print("reset_data" if offer_fresh_install("Não existe registo de bootstrap utilizável.") else "recovery")
-        else:
-            columns = {row[1] for row in connection.execute("PRAGMA table_info(bootstrap)")}
-            if not {"consumed_at", "expires_at"}.issubset(columns):
-                print("reset_data" if offer_fresh_install("O registo de bootstrap não permite criar um Owner novo.") else "recovery")
-            else:
-                setup_column = ",setup_password_hash" if "setup_password_hash" in columns else ""
-                row = connection.execute("SELECT consumed_at,expires_at" + setup_column + " FROM bootstrap WHERE id=1").fetchone()
-                setup_hash_exists = bool(len(row) > 2 and row[2]) if row else False
-                setup_available = bool(row and row[0] is None and
-                                       (setup_hash_exists or int(row[1]) >= int(time.time())))
-                print("setup" if setup_available else (
-                    "reset_data" if offer_fresh_install("Não existe Owner ativo nem bootstrap utilizável.") else "recovery"
-                ))
+        # There is no active Owner with a verifiable password hash, so follow
+        # the agreed fresh-install path instead of attempting ambiguous setup.
+        print("reset_data")
 except sqlite3.Error as exc:
-    reason = f"Não foi possível validar a base persistente ({type(exc).__name__})."
-    print("reset_data" if offer_fresh_install(reason) else "recovery")
+    print("reset_data")
 PY
 ) || fail "A verificação do Owner falhou; o Gateway não foi instalado e a base de dados não foi alterada."
 case "$OWNER_STATE" in
   active) log "ESTADO DO OWNER: palavra-passe confirmada. A instalação pode continuar e manterá a conta existente." ;;
-  fresh) log "ESTADO DO OWNER: base de dados realmente nova, sem marcador de instalação anterior; será configurado o primeiro Owner." ;;
-  setup) log "ESTADO DO OWNER: não há Owner ativo, mas o bootstrap inicial está disponível; será configurado o primeiro Owner." ;;
-  reset_data) log "ESTADO DO OWNER: foi pedida uma instalação limpa. Será apagada apenas a partição SOLARMINER_DATA identificada e confirmada."; python3 "$DATA_RESETTER" >>"$LOG" 2>&1 || fail "Não foi possível reformatar a partição de dados identificada. Consulta $LOG"; OWNER_STATE=fresh ;;
-  recovery) fail "ESTADO DO OWNER: não foi possível validar o acesso e não foi confirmada a formatação limpa. A instalação parou antes de instalar o Gateway; os dados foram preservados. Resolve o acesso ao Owner ou volta a executar o instalador e confirma a instalação limpa se aceitares apagar os dados." ;;
+  fresh) log "ESTADO DO OWNER: será configurado um Owner novo." ;;
+  reset_data) log "ESTADO DO OWNER: nenhum Owner pôde ser validado; a partição SOLARMINER_DATA será formatada para instalação limpa."; python3 "$DATA_RESETTER" >>"$LOG" 2>&1 || fail "Não foi possível reformatar a partição de dados identificada. Consulta $LOG"; OWNER_STATE=fresh ;;
   *) fail "Estado do Owner inesperado; a instalação parou antes de instalar o Gateway." ;;
 esac
 
@@ -314,17 +301,10 @@ case "$OWNER_STATE" in
   active)
     log "Owner existente validado antes da instalação. A manter a conta, a palavra-passe e a base persistente; não será criado outro Owner."
     ;;
-  fresh|setup)
-    if [ "$OWNER_STATE" = "fresh" ]; then
-      log "ESTADO DO OWNER: nenhum Owner encontrado porque a base persistente ainda não está inicializada; será configurado o primeiro Owner."
-    else
-      log "ESTADO DO OWNER: nenhum Owner ativo encontrado; a base ainda permite o bootstrap inicial, por isso será configurado o primeiro Owner."
-    fi
-  log "A configurar a palavra-passe inicial do Owner na consola local. O que escreveres será visível e não será guardado em texto simples."
-  solarminer-gateway owner-password || fail "A configuração local da palavra-passe inicial falhou. Consulta $LOG"
-    ;;
-  recovery)
-    fail "A base persistente está inicializada, mas não tem um Owner ativo nem bootstrap inicial disponível. A instalação parou sem recriar Owner nem alterar a base; usa o procedimento de recuperação Owner."
+  fresh)
+    log "ESTADO DO OWNER: nenhum Owner pôde ser validado; será configurado um Owner novo."
+    log "A configurar a palavra-passe inicial do Owner na consola local. O que escreveres será visível e não será guardado em texto simples."
+    solarminer-gateway owner-password || fail "A configuração local da palavra-passe inicial falhou. Consulta $LOG"
     ;;
   *)
     fail "Estado da base persistente inesperado; a instalação parou sem alterar o Owner."
