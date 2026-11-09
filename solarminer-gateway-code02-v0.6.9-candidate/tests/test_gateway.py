@@ -2060,6 +2060,8 @@ def test_zigbee2mqtt_profiles_share_catalog_without_crossing_tuya_dps(client):
     auth = login(client, owner, private)
     assert auth.status_code == 200, auth.text
     headers = {"Authorization": f"Bearer {auth.json()['access_token']}"}
+    with gateway.db() as conn:
+        assert conn.execute("SELECT 1 FROM smart_product_catalog_sources WHERE source_key='zigbee2mqtt-device-catalog'").fetchone() is None
     response = client.get("/api/v1/smart-products/zigbee2mqtt-catalog?limit=2", headers=headers)
     assert response.status_code == 200, response.text
     payload = response.json()

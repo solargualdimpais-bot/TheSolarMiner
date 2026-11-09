@@ -1306,7 +1306,6 @@ def initialize() -> None:
         return
     with db() as conn:
         conn.executescript(SCHEMA)
-        _sync_zigbee2mqtt_catalog(conn)
         shelly_product_registry.ensure_schema(conn)
         _sync_tuya_canonical_features(conn)
         bootstrap_columns = {row[1] for row in conn.execute("PRAGMA table_info(bootstrap)")}
@@ -3520,6 +3519,9 @@ def read_zigbee2mqtt_device_catalog(request: Request, session: dict[str, Any] = 
         actor = _revalidate_actor(conn, session, "manage_gateway")
         if actor["role"] != "owner":
             raise HTTPException(403, "owner_required")
+        # Import on explicit Owner catalog use, not on Gateway startup. This
+        # keeps normal device polling and startup independent from the 16 MB dataset.
+        _sync_zigbee2mqtt_catalog(conn)
     query = request.query_params.get("q", "").strip().casefold()[:120]
     try:
         limit = max(1, min(100, int(request.query_params.get("limit", "50"))))
