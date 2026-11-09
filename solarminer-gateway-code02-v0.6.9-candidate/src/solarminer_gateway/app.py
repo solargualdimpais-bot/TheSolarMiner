@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.223"
+PACKAGE_VERSION = "0.6.224"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -3652,32 +3652,47 @@ def save_tuya_pid_dps_map(payload: dict[str, Any], session: dict[str, Any] = Dep
         declared_statuses = {str(item.get("code")) for item in cloud_schema.get("status_spec", []) if isinstance(item, dict) and isinstance(item.get("code"), str)}
         for item in conn.execute("SELECT source_kind,code FROM tuya_pid_capabilities WHERE product_id=?", (product_id,)):
             (declared_functions if item["source_kind"] == "function" else declared_statuses).add(str(item["code"]))
-        for row in rows:
-            if not isinstance(row, dict) or set(row) - {"dps_id", "code", "label_pt", "source", "data_type", "unit", "scale", "details", "semantic_code", "write_supported"}:
-                raise HTTPException(422, "tuya_pid_dps_row_invalid")
+        seen_code_rows = {}
+        for row_index, row in enumerate(rows, start=1):
+            def row_error(code: str, field: str, reason: str, dps: Any = None) -> HTTPException:
+                return HTTPException(422, f"{code}|row={row_index}|dps={dps if dps is not None else '?'}|field={field}|reason={reason}")
+            if not isinstance(row, dict):
+                raise row_error("tuya_pid_dps_row_invalid", "linha", "object_expected")
+            extra_fields = sorted(set(row) - {"dps_id", "code", "label_pt", "source", "data_type", "unit", "scale", "details", "semantic_code", "write_supported"})
+            if extra_fields:
+                raise row_error("tuya_pid_dps_row_invalid", ",".join(extra_fields), "unexpected_field", row.get("dps_id"))
             dps_id = row.get("dps_id")
             if isinstance(dps_id, bool) or not isinstance(dps_id, int) or not 1 <= dps_id <= 65535 or dps_id in seen:
-                raise HTTPException(422, "tuya_pid_dps_id_invalid")
+                raise row_error("tuya_pid_dps_id_invalid", "dps_id", "invalid_or_repeated", dps_id)
             seen.add(dps_id)
             code, label = row.get("code", ""), row.get("label_pt", "")
             source, data_type = row.get("source", "status"), row.get("data_type", "unknown")
-            if not isinstance(code, str) or len(code) > 96 or not isinstance(label, str) or len(label.strip()) > 120 or source not in {"function", "status", "unknown"} or data_type not in allowed_types:
-                raise HTTPException(422, "tuya_pid_dps_row_invalid")
+            if not isinstance(code, str) or len(code) > 96:
+                raise row_error("tuya_pid_dps_row_invalid", "code", "must_be_text_up_to_96_chars", dps_id)
+            if not isinstance(label, str) or len(label.strip()) > 120:
+                raise row_error("tuya_pid_dps_row_invalid", "label_pt", "must_be_text_up_to_120_chars", dps_id)
+            if not isinstance(source, str) or source not in {"function", "status", "unknown"}:
+                raise row_error("tuya_pid_dps_row_invalid", "source", "unsupported_value", dps_id)
+            if not isinstance(data_type, str) or data_type not in allowed_types:
+                raise row_error("tuya_pid_dps_row_invalid", "data_type", "unsupported_value", dps_id)
             unit, scale = row.get("unit", ""), row.get("scale")
-            if not isinstance(unit, str) or len(unit) > 24 or scale is not None and (isinstance(scale, bool) or not isinstance(scale, (int, float)) or not math.isfinite(float(scale)) or abs(float(scale)) > 1e12):
-                raise HTTPException(422, "tuya_pid_dps_row_invalid")
+            if not isinstance(unit, str) or len(unit) > 24:
+                raise row_error("tuya_pid_dps_row_invalid", "unit", "must_be_text_up_to_24_chars", dps_id)
+            if scale is not None and (isinstance(scale, bool) or not isinstance(scale, (int, float)) or not math.isfinite(float(scale)) or abs(float(scale)) > 1e12):
+                raise row_error("tuya_pid_dps_row_invalid", "scale", "must_be_finite_number_or_empty", dps_id)
             semantic = row.get("semantic_code", "unknown")
-            if semantic not in {"unknown", "voltage", "current", "power", "daily_accumulated_energy", "total_energy", "switch", "countdown", "child_lock", "relay_status", "power_on_state", "custom_label", "brightness", "color_temperature"}:
-                raise HTTPException(422, "tuya_pid_dps_semantic_invalid")
+            if not isinstance(semantic, str) or semantic not in {"unknown", "voltage", "current", "power", "daily_accumulated_energy", "total_energy", "switch", "countdown", "child_lock", "relay_status", "power_on_state", "custom_label", "brightness", "color_temperature"}:
+                raise row_error("tuya_pid_dps_semantic_invalid", "semantic_code", "unsupported_value", dps_id)
             if source == "function" and (not code.strip() or code.strip() not in declared_functions):
-                raise HTTPException(422, "tuya_pid_dps_function_not_in_cloud_schema")
+                raise row_error("tuya_pid_dps_function_not_in_cloud_schema", "code", "function_not_declared_for_pid", dps_id)
             if source == "status" and (not code.strip() or code.strip() not in declared_statuses):
-                raise HTTPException(422, "tuya_pid_dps_status_not_in_cloud_schema")
+                raise row_error("tuya_pid_dps_status_not_in_cloud_schema", "code", "status_not_declared_for_pid", dps_id)
             code_identity = (source, code.strip())
             if source in {"function", "status"} and code_identity in seen_codes:
-                raise HTTPException(422, "tuya_pid_dps_cloud_code_mapped_more_than_once")
+                raise row_error("tuya_pid_dps_cloud_code_mapped_more_than_once", "code", f"already_used_on_row_{seen_code_rows[code_identity]}", dps_id)
             if source in {"function", "status"}:
                 seen_codes.add(code_identity)
+                seen_code_rows[code_identity] = row_index
             # An order is recognized only when its code exists in the exact PID
             # cloud function list; status codes remain read-only.
             accepted.append({"dps_id": dps_id, "code": code.strip(), "label_pt": label.strip(), "source": source,

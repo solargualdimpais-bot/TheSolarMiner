@@ -111,7 +111,7 @@ test("Tuya PID DPS catalog separates cloud commands, readings, and observed LAN 
   assert.match(app, /Último valor lido pela LAN/);
   assert.match(app, /Analisar texto e guardar/);
   assert.match(app, /Incongruência · confirmar associação/);
-  assert.match(app, /mapped more than once/);
+  assert.match(app, /tuya_pid_dps_cloud_code_mapped_more_than_once/);
   assert.match(gateway, /CREATE TABLE IF NOT EXISTS tuya_pid_capabilities/);
   assert.match(gateway, /_persist_tuya_pid_capabilities\(conn, tuya\.get\("product_schemas"\)\)/);
   assert.match(integrations, /_tuya_merge_pid_dps_rows\([\s\S]*?item\.get\("functions"[\s\S]*?item\.get\("status_spec"/);
@@ -140,6 +140,12 @@ test("Tuya PID map editor imports text, saves per DPS and highlights ambiguity",
   assert.match(auth, /const acceptedFields = \["dps_id", "code", "label_pt", "source", "data_type", "unit", "scale", "details", "semantic_code", "write_supported"\]/);
   assert.match(auth, /const cleanRows = rows\.map\(row => Object\.fromEntries\(acceptedFields/);
   assert.match(app, /Código Tuya duplicado neste PID/);
+  const errorFormatter = app.match(/function tuyaPidDpsSaveErrorText\([\s\S]*?\n\}/)?.[0];
+  assert.ok(errorFormatter, "DPS save errors include row and field context");
+  const formatError = new Function(`${errorFormatter}; return tuyaPidDpsSaveErrorText;`)();
+  assert.equal(formatError(new Error("tuya_pid_dps_row_invalid|row=2|dps=20|field=data_type|reason=unsupported_value")), "Linha 2 da lista DPS (DPS 20), campo tipo de dado: valor não aceite.");
+  assert.match(app, /Erro no mapa DPS — \$\{tuyaPidDpsSaveErrorText\(error\)\}/);
+  assert.match(css, /\.connection-result\.tuya-dps-error\{[^}]*background:#351d1c/);
   assert.match(css, /\.tuya-dps-compact-row\.is-ambiguous/);
   assert.match(css, /\.tuya-dps-compact-row\.is-conflict/);
 });

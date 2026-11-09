@@ -25,6 +25,18 @@ def test_runtime_package_version_matches_debian_metadata_and_usb_repair_target()
     assert gateway.PACKAGE_VERSION == package_version
     assert f"TARGET_VERSION={package_version}" in repair
 
+def test_tuya_pid_dps_validation_identifies_invalid_row_and_field(client):
+    headers = {"Authorization": f"Bearer {owner_session(client)}"}
+    response = client.put("/api/v1/integrations/tuya/product-dps-map", headers=headers, json={
+        "product_id": "test-pid",
+        "rows": [
+            {"dps_id": 1, "label_pt": "Interruptor", "source": "unknown", "data_type": "bool", "semantic_code": "switch"},
+            {"dps_id": 20, "label_pt": "Tensão", "source": "unknown", "data_type": "boolean", "semantic_code": "voltage"},
+        ],
+    })
+    assert response.status_code == 422
+    assert response.json()["detail"] == "tuya_pid_dps_row_invalid|row=2|dps=20|field=data_type|reason=unsupported_value"
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway, "DB_PATH", tmp_path / "gateway.db")

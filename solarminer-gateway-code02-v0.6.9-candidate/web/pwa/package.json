@@ -1,9 +1,9 @@
 {
   "name": "the-solar-miner-pwa-demo",
-  "version": "0.5.161",
+  "version": "0.5.162",
   "private": true,
   "type": "module",
-  "description": "The Solar Miner PWA v0.5.161 fixes Tuya PID DPS map saving.",
+  "description": "The Solar Miner PWA v0.5.162 identifies invalid Tuya DPS map rows and fields.",
   "scripts": {
     "test": "node --test tests/*.test.js",
     "serve": "python3 -m http.server 4173 --bind 127.0.0.1"
