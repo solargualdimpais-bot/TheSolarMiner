@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.158: menos pedidos repetidos ao Gateway.",
+  "description": "The Solar Miner PWA v0.5.160: cartões inteligentes no padrão Shelly.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",

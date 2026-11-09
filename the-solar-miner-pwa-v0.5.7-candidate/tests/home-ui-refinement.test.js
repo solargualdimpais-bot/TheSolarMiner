@@ -197,7 +197,7 @@ test("Tuya profiles are inferred automatically and breakers expose one control",
   assert.match(app, /<small>Tipo de equipamento<\/small>/);
   assert.match(app, /device\.product_name_pt\|\|device\.product/);
   assert.match(app, /refreshTuyaSchemaIfNeeded/);
-  assert.match(app, /Outras leituras DPS recebidas/);
+  assert.doesNotMatch(app, /Outras leituras DPS recebidas/);
   assert.match(app, /device\.device_kind_label\|\|"Equipamento Tuya"/);
   assert.match(app, /if\(\(device\.device_kind_override\|\|device\.device_kind\)==="breaker"\)codes=\[/);
 });
@@ -211,6 +211,12 @@ test("Breaker name details show measured values and Settings; arrow opens only t
   assert.match(app, /data-breaker-tab="lock"/);
   assert.match(app, /data-breaker-countdown-save/);
   assert.match(app, /data-breaker-lock-code/);
+  assert.match(app, /quickPanelDevice=Boolean\(!kgHybrid&&!evCharger&&channels\.length===1&&\(physicalBreaker\|\|breakerCountdown\|\|breakerLocks\.length\)\)/);
+  assert.match(app, /data-breaker-tab="switch"[^>]*aria-label="Ligar ou desligar"/);
+  assert.match(app, /data-breaker-tab="countdown"[^>]*aria-label="Temporizador"/);
+  assert.match(app, /function tuyaEnumValuePt\(value\)/);
+  assert.match(app, /durationLabel\(input\.value\)/);
+  assert.match(app, /breaker-countdown-value/);
   assert.match(app, /breaker\?breakerMenu/);
 });
 
