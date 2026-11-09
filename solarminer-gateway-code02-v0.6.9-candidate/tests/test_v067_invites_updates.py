@@ -31,11 +31,24 @@ def test_tuya_pid_dps_validation_identifies_invalid_row_and_field(client):
         "product_id": "test-pid",
         "rows": [
             {"dps_id": 1, "label_pt": "Interruptor", "source": "unknown", "data_type": "bool", "semantic_code": "switch"},
-            {"dps_id": 20, "label_pt": "Tensão", "source": "unknown", "data_type": "boolean", "semantic_code": "voltage"},
+            {"dps_id": 20, "label_pt": "Tensão", "source": "unknown", "data_type": "tipo inválido", "semantic_code": "voltage"},
         ],
     })
     assert response.status_code == 422
     assert response.json()["detail"] == "tuya_pid_dps_row_invalid|row=2|dps=20|field=data_type|reason=unsupported_value"
+
+def test_tuya_pid_dps_accepts_portuguese_type_labels(client):
+    headers = {"Authorization": f"Bearer {owner_session(client)}"}
+    response = client.put("/api/v1/integrations/tuya/product-dps-map", headers=headers, json={
+        "product_id": "test-pid-portuguese-types",
+        "rows": [
+            {"dps_id": 1, "label_pt": "Interruptor", "source": "unknown", "data_type": "Booleano", "semantic_code": "switch"},
+            {"dps_id": 9, "label_pt": "Temporizador", "source": "unknown", "data_type": "Valor numérico", "unit": "s", "scale": 1, "semantic_code": "countdown"},
+            {"dps_id": 40, "label_pt": "Luz", "source": "unknown", "data_type": "Enumeração", "semantic_code": "unknown"},
+        ],
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()["dps_count"] == 3
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):

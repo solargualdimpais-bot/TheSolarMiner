@@ -91,6 +91,7 @@ html[data-theme="light"]{color-scheme:light;--bg:#f3f0e8;--panel:#fffdf8;--panel
 .connection-result{padding:11px;border:1px solid var(--line);border-radius:10px;background:#111110}
 .connection-result.tuya-dps-error{border-color:#b84a45;background:#351d1c;color:#ffd7d2;font-weight:650;box-shadow:inset 4px 0 0 #e45b50}
 @media(max-width:680px){dialog.favorite-device-details[open]{top:calc(env(safe-area-inset-top,0px) + 12px);bottom:auto;margin-block:0;max-height:calc(100dvh - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px) - 24px);overflow:auto;overscroll-behavior:contain;border:1px solid #4b4638;box-shadow:0 0 0 1px #000,0 24px 80px #000b}}
+.tuya-dps-paste-review [data-review-original],.tuya-dps-paste-review [data-review-corrected]{min-height:110px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.9rem;line-height:1.5}.tuya-dps-paste-review [data-review-original].has-error,.tuya-dps-review-errors.has-error{border-color:#ef5d58!important;color:#ffaaa5!important;background:#351d1c!important}.tuya-dps-review-errors{min-height:1.5em}.tuya-dps-review-nav{justify-content:space-between}
 @media(max-width:680px){.gateway-status-strip{margin-top:9px;padding:10px;gap:9px;align-items:flex-start}.gateway-status-copy strong{font-size:9px}.gateway-status-copy small{font-size:9px}.gateway-manage{width:auto;padding:8px;font-size:8px;white-space:normal;max-width:100px}.gateway-status-dot{margin-top:3px}}
 
 /* v0.5.2 — shared house identity, compact tabs, and contextual editing */

@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.225"
+PACKAGE_VERSION = "0.6.226"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -3640,6 +3640,7 @@ def save_tuya_pid_dps_map(payload: dict[str, Any], session: dict[str, Any] = Dep
         product_id, rows = payload.get("product_id"), payload.get("rows")
         if not isinstance(product_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", product_id) or not isinstance(rows, list) or len(rows) > 128:
             raise HTTPException(422, "tuya_pid_dps_map_invalid")
+        type_aliases = {"booleano": "bool", "boolean": "bool", "valor numérico": "value", "valor numerico": "value", "numérico": "value", "numerico": "value", "numérico inteiro": "value", "enumeração": "enum", "enumeracao": "enum", "falha": "fault", "texto": "string", "dados binários": "raw", "dados binarios": "raw", "desconhecido": "unknown"}
         allowed_types = {"bool", "value", "enum", "fault", "string", "raw", "unknown"}
         accepted = []
         seen = set()
@@ -3667,6 +3668,8 @@ def save_tuya_pid_dps_map(payload: dict[str, Any], session: dict[str, Any] = Dep
             seen.add(dps_id)
             code, label = row.get("code", ""), row.get("label_pt", "")
             source, data_type = row.get("source", "status"), row.get("data_type", "unknown")
+            if isinstance(data_type, str):
+                data_type = type_aliases.get(data_type.strip().lower(), data_type.strip().lower())
             if not isinstance(code, str) or len(code) > 96:
                 raise row_error("tuya_pid_dps_row_invalid", "code", "must_be_text_up_to_96_chars", dps_id)
             if not isinstance(label, str) or len(label.strip()) > 120:
