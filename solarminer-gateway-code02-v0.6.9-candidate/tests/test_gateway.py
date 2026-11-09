@@ -1993,6 +1993,28 @@ def test_tuya_product_import_accepts_explicit_json_schema_without_enabling_write
     assert profiles["kg_ev"]["schema_source"] == "EXTERNAL_REFERENCE"
 
 
+def test_smart_product_catalog_keeps_legacy_tuya_dps_rows_visible(client):
+    owner, private, _ = create_owner(client)
+    auth = login(client, owner, private)
+    assert auth.status_code == 200, auth.text
+    headers = {"Authorization": f"Bearer {auth.json()['access_token']}"}
+    with gateway.db() as conn:
+        conn.executemany("""INSERT INTO tuya_product_dps_map
+            (product_id,product_name,category,dps_id,dps_code,semantic_code,description,data_type,
+             confidence,source,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            [("legacy_pid_11", "Legacy switch", "switch", dps_id, f"dps_{dps_id}", "unknown",
+              f"DPS {dps_id}", "Boolean", "reference", "imported_catalog", gateway.utcnow())
+             for dps_id in range(1, 12)])
+    response = client.get("/api/v1/smart-products/catalog", headers=headers)
+    assert response.status_code == 200, response.text
+    profile = next(item for item in response.json()["tuya_profiles"] if item["product_id"] == "legacy_pid_11")
+    assert [item["dps_id"] for item in profile["dps"]] == list(range(1, 12))
+    assert profile["dps"][0]["display_name"] == "DPS 1"
+    assert profile["dps"][0]["origin"] == "reference"
+    assert all(not item["write_supported"] for item in profile["dps"])
+
+
 def test_tuya_product_import_accepts_csv_product_and_dps_rows_as_reference_only():
     payload = "product_id,product_name,category,dps_id,dps_name\nkg_ev,EV Charger,charger,7,Charging state\nkg_ev,EV Charger,charger,8,Current"
     profiles = gateway._parse_tuya_product_import(payload, "catalog.csv")

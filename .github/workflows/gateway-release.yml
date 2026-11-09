@@ -245,10 +245,20 @@ jobs:
               cp "$SOURCE/solarminer-gateway_${VERSION}_amd64.deb" "$DEST/"
               cp "$SOURCE/solarminer-release-${VERSION}.json" "$DEST/solarminer-release.json"
             else
-              gh release download "gateway-v$VERSION" \
-                --pattern "solarminer-gateway_${VERSION}_amd64.deb" \
-                --pattern solarminer-release.json \
-                --dir "$DEST" --repo "$GITHUB_REPOSITORY"
+              DOWNLOADED=0
+              for ATTEMPT in 1 2 3 4 5; do
+                rm -f "$DEST/solarminer-gateway_${VERSION}_amd64.deb" "$DEST/solarminer-release.json"
+                if gh release download "gateway-v$VERSION" \
+                  --pattern "solarminer-gateway_${VERSION}_amd64.deb" \
+                  --pattern solarminer-release.json \
+                  --dir "$DEST" --repo "$GITHUB_REPOSITORY"; then
+                  DOWNLOADED=1
+                  break
+                fi
+                echo "Rollback assets for $VERSION were unavailable on attempt $ATTEMPT/5; retrying."
+                sleep "$((ATTEMPT * 2))"
+              done
+              [ "$DOWNLOADED" -eq 1 ] || { echo "Could not download rollback assets for $VERSION after retries." >&2; exit 1; }
             fi
             python3 - "$VERSION" "$DEST" "$PUBLIC_KEY" <<'PY'
           import hashlib, json, pathlib, sys

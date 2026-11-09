@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.218"
+PACKAGE_VERSION = "0.6.219"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -3469,6 +3469,11 @@ def read_smart_product_catalog(session: dict[str, Any] = Depends(require_permiss
             if isinstance(value, dict): owner_rows.setdefault(str(row["product_id"]), {})[int(row["dps_id"])] = value
         profiles = []
         product_ids = set(schemas)
+        # Older imported Tuya reference profiles are persisted canonically in
+        # tuya_product_dps_map. Include these rows in the product editor even
+        # when the integration config has no product_schemas entry.
+        product_ids.update(str(row["product_id"]) for row in conn.execute(
+            "SELECT DISTINCT product_id FROM tuya_product_dps_map WHERE protocol='tuya'"))
         product_ids.update(str(row["product_id"]) for row in conn.execute("SELECT DISTINCT product_id FROM tuya_product_dps_map_scoped"))
         product_ids.update(owner_rows)
         for product_id in sorted(product_ids):
@@ -3496,6 +3501,11 @@ def read_smart_product_catalog(session: dict[str, Any] = Depends(require_permiss
                 if isinstance(mapping, dict) and str(mapping.get("product_id") or "") == product_id:
                     scoped_profile = mapping.get("dps_profile") if isinstance(mapping.get("dps_profile"), dict) else {}
                     add_rows(scoped_profile.get("dps"), "owner_map")
+            for row in conn.execute("""SELECT dps_id,dps_code,semantic_code,description,data_type,unit,scale,
+                confidence,source,read_supported,write_supported FROM tuya_product_dps_map
+                WHERE protocol='tuya' AND product_id=?""", (product_id,)):
+                add_rows([{**dict(row), "dps_id": row["dps_id"], "display_name": row["description"],
+                           "code": row["dps_code"]}], "reference")
             for row in conn.execute("SELECT dps_id,dps_code,semantic_code,description,data_type,unit,scale,write_supported FROM tuya_product_dps_map_scoped WHERE product_id=?", (product_id,)):
                 add_rows([{**dict(row), "dps_id": row["dps_id"], "display_name": row["description"], "code": row["dps_code"]}], "owner_map")
             for dps_id, override in owner_rows.get(product_id, {}).items():

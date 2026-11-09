@@ -103,6 +103,7 @@ cp "$ROOT/docs/CHANGELOG_V0623.md" "$STAGE/usr/share/doc/solarminer-gateway/CHAN
 cp "$ROOT/docs/CHANGELOG_V0627.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0627.md"
 cp "$ROOT/docs/CHANGELOG_V0628.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0628.md"
 cp "$ROOT/docs/CHANGELOG_V06218.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V06218.md"
+cp "$ROOT/docs/CHANGELOG_V06219.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V06219.md"
 cp "$ROOT/docs/CHANGELOG_V0629.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0629.md"
 cp "$ROOT/docs/CHANGELOG_V0649.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0649.md"
 cp "$ROOT/docs/CHANGELOG_V0630.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V0630.md"
