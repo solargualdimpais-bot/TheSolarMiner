@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.226"
+PACKAGE_VERSION = "0.6.227"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -3635,12 +3635,12 @@ def save_tuya_pid_dps_map(payload: dict[str, Any], session: dict[str, Any] = Dep
     """Save editable DPS metadata under the exact Product ID; command semantics remain schema-bound."""
     with db() as conn:
         _require_owner(session, conn)
-        if not isinstance(payload, dict) or set(payload) != {"product_id", "rows"}:
+        if not isinstance(payload, dict) or set(payload) not in ({"product_id", "rows"}, {"product_id", "rows", "partial"}) or ("partial" in payload and not isinstance(payload.get("partial"), bool)):
             raise HTTPException(422, "tuya_pid_dps_map_invalid")
-        product_id, rows = payload.get("product_id"), payload.get("rows")
+        product_id, rows, partial = payload.get("product_id"), payload.get("rows"), payload.get("partial", False)
         if not isinstance(product_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", product_id) or not isinstance(rows, list) or len(rows) > 128:
             raise HTTPException(422, "tuya_pid_dps_map_invalid")
-        type_aliases = {"booleano": "bool", "boolean": "bool", "valor numérico": "value", "valor numerico": "value", "numérico": "value", "numerico": "value", "numérico inteiro": "value", "enumeração": "enum", "enumeracao": "enum", "falha": "fault", "texto": "string", "dados binários": "raw", "dados binarios": "raw", "desconhecido": "unknown"}
+        type_aliases = {"booleano": "bool", "boolean": "bool", "valor numérico": "value", "valor numerico": "value", "numérico": "value", "numerico": "value", "integer": "value", "number": "value", "numeric": "value", "numérico inteiro": "value", "enumeração": "enum", "enumeracao": "enum", "enumeration": "enum", "falha": "fault", "texto": "string", "dados binários": "raw", "dados binarios": "raw", "desconhecido": "unknown"}
         allowed_types = {"bool", "value", "enum", "fault", "string", "raw", "unknown"}
         accepted = []
         seen = set()
@@ -3654,6 +3654,35 @@ def save_tuya_pid_dps_map(payload: dict[str, Any], session: dict[str, Any] = Dep
         for item in conn.execute("SELECT source_kind,code FROM tuya_pid_capabilities WHERE product_id=?", (product_id,)):
             (declared_functions if item["source_kind"] == "function" else declared_statuses).add(str(item["code"]))
         seen_code_rows = {}
+        existing_by_id: dict[int, dict[str, Any]] = {}
+        updated_ids = {row.get("dps_id") for row in rows if isinstance(row, dict) and isinstance(row.get("dps_id"), int) and not isinstance(row.get("dps_id"), bool)} if partial else set()
+        if partial:
+            profile = cloud_schema.get("dps_profile") if isinstance(cloud_schema.get("dps_profile"), dict) else {}
+            for item in profile.get("dps", []) if isinstance(profile.get("dps"), list) else []:
+                if not isinstance(item, dict): continue
+                try: dps_id = int(item.get("dps_id", item.get("dp_id", item.get("id"))))
+                except (TypeError, ValueError): continue
+                if not 1 <= dps_id <= 65535: continue
+                source = item.get("source_kind") or item.get("source") or "unknown"
+                if source not in {"function", "status", "unknown"}: source = "unknown"
+                raw_type = str(item.get("data_type") or item.get("type") or "unknown").strip().lower()
+                scale = item.get("scale")
+                if isinstance(scale, str):
+                    try: scale = float(scale) if scale.strip() else None
+                    except ValueError: scale = None
+                code = item.get("function_code") or (item.get("code") if source in {"function", "status"} else "") or ""
+                existing_by_id[dps_id] = {"dps_id": dps_id, "code": str(code)[:96], "label_pt": str(item.get("label_pt") or item.get("display_name") or item.get("name") or f"DPS {dps_id}")[:120], "source": source, "data_type": type_aliases.get(raw_type, raw_type) if type_aliases.get(raw_type, raw_type) in allowed_types else "unknown", "unit": str(item.get("unit") or "")[:24], "scale": scale, "details": str(item.get("details") or "")[:512], "semantic_code": item.get("semantic_code") if item.get("semantic_code") in {"unknown", "voltage", "current", "power", "daily_accumulated_energy", "total_energy", "switch", "countdown", "child_lock", "relay_status", "power_on_state", "custom_label", "brightness", "color_temperature"} else "unknown", "write_supported": bool(item.get("write_supported", False))}
+            for stored in conn.execute("SELECT dps_id,payload_json FROM tuya_pid_dps_editor WHERE product_id=?", (product_id,)):
+                try: item = json.loads(stored["payload_json"])
+                except (TypeError, json.JSONDecodeError): continue
+                if isinstance(item, dict): existing_by_id[int(stored["dps_id"])] = item
+            for dps_id in updated_ids: existing_by_id.pop(dps_id, None)
+            for item in existing_by_id.values():
+                source, code = item.get("source"), str(item.get("code") or "").strip()
+                if source in {"function", "status"} and code:
+                    identity = (source, code)
+                    seen_codes.add(identity)
+                    seen_code_rows[identity] = f"existing_dps_{item.get('dps_id')}"
         for row_index, row in enumerate(rows, start=1):
             def row_error(code: str, field: str, reason: str, dps: Any = None) -> HTTPException:
                 return HTTPException(422, f"{code}|row={row_index}|dps={dps if dps is not None else '?'}|field={field}|reason={reason}")
@@ -3702,6 +3731,9 @@ def save_tuya_pid_dps_map(payload: dict[str, Any], session: dict[str, Any] = Dep
                 "data_type": data_type, "unit": unit.strip(), "scale": scale, "details": str(row.get("details") or "")[:512],
                 "semantic_code": semantic, "read_supported": source in {"status", "unknown"},
                 "write_supported": source == "function" and code.strip() in declared_functions})
+        if partial:
+            existing_by_id.update({row["dps_id"]: row for row in accepted})
+            accepted = [existing_by_id[key] for key in sorted(existing_by_id)]
         stamp = utcnow()
         conn.execute("DELETE FROM tuya_pid_dps_editor WHERE product_id=?", (product_id,))
         conn.executemany("INSERT INTO tuya_pid_dps_editor(product_id,dps_id,payload_json,updated_at) VALUES(?,?,?,?)",

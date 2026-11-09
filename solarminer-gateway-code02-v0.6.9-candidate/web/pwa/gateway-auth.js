@@ -609,14 +609,14 @@ export async function readGatewayDeviceInventory() {
 export async function readGatewaySmartProductCatalog() {
   return gatewayApi("/api/v1/smart-products/catalog");
 }
-export async function saveGatewayTuyaPidDpsMap(productId, rows) {
+export async function saveGatewayTuyaPidDpsMap(productId, rows, { partial = false } = {}) {
   if (typeof productId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(productId) || !Array.isArray(rows)) throw new Error("Mapa DPS do produto inválido.");
   const acceptedFields = ["dps_id", "code", "label_pt", "source", "data_type", "unit", "scale", "details", "semantic_code", "write_supported"];
   const typeAliases = {"booleano":"bool","boolean":"bool","valor numérico":"value","valor numerico":"value","numérico":"value","numerico":"value","enumeração":"enum","enumeracao":"enum","falha":"fault","texto":"string","dados binários":"raw","dados binarios":"raw","desconhecido":"unknown"};
   const cleanRows = rows.map(row => Object.fromEntries(acceptedFields
     .filter(key => Object.prototype.hasOwnProperty.call(row || {}, key))
     .map(key => [key, key === "data_type" && typeof row[key] === "string" ? (typeAliases[row[key].trim().toLowerCase()] || row[key].trim().toLowerCase()) : row[key]])));
-  return gatewayApi("/api/v1/integrations/tuya/product-dps-map", { method: "PUT", body: { product_id: productId, rows: cleanRows } });
+  return gatewayApi("/api/v1/integrations/tuya/product-dps-map", { method: "PUT", body: { product_id: productId, rows: cleanRows, ...(partial ? { partial: true } : {}) } });
 }
 export async function readGatewayDeviceCards() {
   return gatewayApi("/api/v1/device-cards");

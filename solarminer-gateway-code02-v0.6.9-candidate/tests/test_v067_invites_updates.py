@@ -50,11 +50,34 @@ def test_tuya_pid_dps_accepts_portuguese_type_labels(client):
     assert response.status_code == 200, response.text
     assert response.json()["dps_count"] == 3
 
+def test_tuya_pid_dps_partial_update_only_replaces_the_submitted_dps(client):
+    headers = {"Authorization": f"Bearer {owner_session(client)}"}
+    first = client.put("/api/v1/integrations/tuya/product-dps-map", headers=headers, json={
+        "product_id": "partial-pid",
+        "rows": [
+            {"dps_id": 1, "label_pt": "Interruptor", "source": "unknown", "data_type": "bool", "semantic_code": "switch"},
+            {"dps_id": 23, "label_pt": "Calibração", "source": "unknown", "data_type": "value", "scale": 1, "semantic_code": "unknown"},
+        ],
+    })
+    assert first.status_code == 200, first.text
+    updated = client.put("/api/v1/integrations/tuya/product-dps-map", headers=headers, json={
+        "product_id": "partial-pid", "partial": True,
+        "rows": [{"dps_id": 23, "label_pt": "Calibração corrente", "source": "unknown", "data_type": "value", "scale": 0.001, "semantic_code": "current"}],
+    })
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["dps_count"] == 2
+    with gateway.db() as conn:
+        stored = {row["dps_id"]: json.loads(row["payload_json"]) for row in conn.execute("SELECT dps_id,payload_json FROM tuya_pid_dps_editor WHERE product_id='partial-pid'")}
+    assert stored[1]["label_pt"] == "Interruptor"
+    assert stored[23]["label_pt"] == "Calibração corrente"
+    assert stored[23]["scale"] == 0.001
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway, "DB_PATH", tmp_path / "gateway.db")
     monkeypatch.setattr(gateway, "BOOTSTRAP_PATH", tmp_path / "bootstrap.token")
     monkeypatch.setattr(gateway, "INSTANCE_MARKER", tmp_path / "initialized.marker")
+    monkeypatch.setenv("SOLARMINER_DATA_DIR", str(tmp_path / "data"))
     gwpriv, gwpub = keypair()
     privpath, pubpath = tmp_path / "gw.key", tmp_path / "gw.pub"
     privpath.write_bytes(gwpriv.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))

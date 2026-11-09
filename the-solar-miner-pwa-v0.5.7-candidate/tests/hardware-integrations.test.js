@@ -132,6 +132,7 @@ test("Tuya PID map editor imports text, saves per DPS and highlights ambiguity",
   const rows = [{dps_id:20,code:"",source:"unknown",label_pt:"Por identificar"},{dps_id:9,code:"",source:"unknown",label_pt:"Por identificar"}];
   const result = parse("DPS 20 | Tensão | cur_voltage | V | 0.1\nDPS 9 | Temporizador | countdown_1 | s | 1", profile, rows);
   assert.deepEqual(result.mapped, [20,9]);
+  assert.deepEqual(result.updatedRows.map(row=>row.dps_id), [20,9]);
   assert.equal(result.rows.find(row=>row.dps_id===20).code, "cur_voltage");
   assert.equal(result.rows.find(row=>row.dps_id===9).source, "function");
   const inferred = parse("DPS 20 | Tensão medida | V | 0.1", profile, rows);
@@ -149,6 +150,9 @@ test("Tuya PID map editor imports text, saves per DPS and highlights ambiguity",
   assert.equal(imported.rows.find(row=>row.dps_id===9).source, "function");
   assert.equal(imported.rows.find(row=>row.dps_id===17).data_type, "value");
   assert.equal(imported.rows.find(row=>row.dps_id===40).data_type, "enum");
+  assert.deepEqual(imported.updatedRows.map(row=>row.dps_id), pasted.map(row=>row.dps_id));
+  const oneDps = parse("DPS 23 | Corrente | cur_current | A | 0.001", fullProfile, pasted);
+  assert.deepEqual(oneDps.updatedRows.map(row=>row.dps_id), [23], "partial paste only submits DPS IDs explicitly present in the text");
   const analyzer = app.match(/function analyzeTuyaPidDpsPaste\([\s\S]*?\n\}/)?.[0];
   assert.ok(analyzer, "DPS text review identifies invalid rows before saving");
   const analyze = new Function(`${parser}; ${analyzer}; return analyzeTuyaPidDpsPaste;`)();
@@ -166,7 +170,8 @@ test("Tuya PID map editor imports text, saves per DPS and highlights ambiguity",
   assert.match(app, /data-review-next/);
   assert.match(app, /Gravar correções/);
   assert.match(css, /data-review-original\]\.has-error/);
-  assert.match(app, /saveGatewayTuyaPidDpsMap\(productId,parsed\.rows\)/);
+  assert.match(app, /saveGatewayTuyaPidDpsMap\(productId,\[row\],\{partial:true\}\)/);
+  assert.match(app, /saveGatewayTuyaPidDpsMap\(productId,updates,\{partial:true\}\)/);
   assert.match(auth, /const acceptedFields = \["dps_id", "code", "label_pt", "source", "data_type", "unit", "scale", "details", "semantic_code", "write_supported"\]/);
   assert.match(auth, /"booleano":"bool"/);
   assert.match(auth, /const cleanRows = rows\.map\(row => Object\.fromEntries\(acceptedFields/);
