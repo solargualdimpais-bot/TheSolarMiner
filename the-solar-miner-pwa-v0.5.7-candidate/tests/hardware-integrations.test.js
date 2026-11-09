@@ -120,6 +120,7 @@ test("Tuya PID DPS catalog separates cloud commands, readings, and observed LAN 
 
 test("Tuya PID map editor imports text, saves per DPS and highlights ambiguity", () => {
   const app = read("../app.js");
+  const auth = read("../gateway-auth.js");
   const css = read("../styles.css");
   const parser = app.match(/function parseTuyaPidDpsPaste\([\s\S]*?\n\}/)?.[0];
   assert.ok(parser, "text import parser exists");
@@ -136,6 +137,8 @@ test("Tuya PID map editor imports text, saves per DPS and highlights ambiguity",
   const inferred = parse("DPS 20 | Tensão medida | V | 0.1", profile, rows);
   assert.equal(inferred.rows.find(row=>row.dps_id===20).code, "cur_voltage", "known descriptions should link to the matching PID capability without requiring the AI to know its cloud code");
   assert.match(app, /saveGatewayTuyaPidDpsMap\(productId,parsed\.rows\)/);
+  assert.match(auth, /const acceptedFields = \["dps_id", "code", "label_pt", "source", "data_type", "unit", "scale", "details", "semantic_code", "write_supported"\]/);
+  assert.match(auth, /const cleanRows = rows\.map\(row => Object\.fromEntries\(acceptedFields/);
   assert.match(app, /Código Tuya duplicado neste PID/);
   assert.match(css, /\.tuya-dps-compact-row\.is-ambiguous/);
   assert.match(css, /\.tuya-dps-compact-row\.is-conflict/);

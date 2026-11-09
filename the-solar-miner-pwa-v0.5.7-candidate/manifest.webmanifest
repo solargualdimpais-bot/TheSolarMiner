@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.160: cartões inteligentes no padrão Shelly.",
+  "description": "The Solar Miner PWA v0.5.161: correção de gravação do mapa DPS Tuya.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",
