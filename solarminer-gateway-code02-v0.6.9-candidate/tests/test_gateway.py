@@ -2053,3 +2053,29 @@ def test_tuya_product_import_preview_is_read_only_and_apply_skips_owner_selected
     assert "kg_one" in after and "kg_two" not in after
     with gateway.db() as conn:
         assert conn.execute("SELECT 1 FROM tuya_product_dps_map WHERE product_id='kg_one' AND dps_id=2").fetchone()
+
+
+def test_zigbee2mqtt_profiles_share_catalog_without_crossing_tuya_dps(client):
+    owner, private, _ = create_owner(client)
+    auth = login(client, owner, private)
+    assert auth.status_code == 200, auth.text
+    headers = {"Authorization": f"Bearer {auth.json()['access_token']}"}
+    response = client.get("/api/v1/smart-products/zigbee2mqtt-catalog?limit=2", headers=headers)
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["protocol"] == "zigbee2mqtt"
+    assert payload["tuya_dps_merged"] is False
+    assert payload["total"] > 5000
+    assert len(payload["profiles"]) == 2
+    profile = payload["profiles"][0]
+    assert profile["profile"]["protocol"] == "zigbee2mqtt"
+    assert profile["source_url"].startswith("https://www.zigbee2mqtt.io/devices/")
+
+    product_code = profile["product_code"]
+    assert profile["product_id"] == product_code
+    with gateway.db() as conn:
+        conn.execute("INSERT INTO smart_product_catalog(manufacturer,protocol,product_code,product_name,updated_at) VALUES(?,?,?,?,?)",
+                     (profile["manufacturer"], "tuya", product_code, "Tuya de teste", gateway.utcnow()))
+        rows = conn.execute("SELECT protocol,product_name FROM smart_product_catalog WHERE manufacturer=? AND product_code=? ORDER BY protocol",
+                            (profile["manufacturer"], product_code)).fetchall()
+    assert [(row["protocol"], row["product_name"]) for row in rows] == [("tuya", "Tuya de teste"), ("zigbee2mqtt", profile["product_name"])]

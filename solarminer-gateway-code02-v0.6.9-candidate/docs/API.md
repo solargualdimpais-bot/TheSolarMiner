@@ -171,6 +171,8 @@ A lista de origens é configurada pelo administrador, contém apenas origens HTT
 The CODE 02 routes are authenticated with existing Gateway sessions and RBAC. See `CODE02_CONNECTOR_MANAGER.md` for payload examples, signature trust, bounded discovery and limitations.
 
 - `GET /api/v1/connectors/catalog` — returns catalog only after Ed25519 signature and schema verification.
+- `GET /api/v1/smart-products/catalog` — returns the existing Tuya/Shelly product identities and Tuya DPS profiles. Zigbee models are stored in the same SQLite master catalog but queried separately so a large reference catalog does not inflate normal PWA responses.
+- `GET /api/v1/smart-products/zigbee2mqtt-catalog?q=&limit=&offset=` — Owner-only, paginated lookup of Zigbee2MQTT profiles from the shared catalog. It returns Zigbee properties and never merges them into Tuya DPS maps.
 - `GET /api/v1/connectors` — installed connector records.
 - `POST /api/v1/connectors/{id}/install` — JSON `{"confirmed": true}`; requires `manage_gateway`.
 - `POST /api/v1/connectors/{id}/update` — JSON `{"confirmed":true}`; reconciles metadata after a trusted Debian package upgrade, not a code downloader.

@@ -609,6 +609,17 @@ export async function readGatewayDeviceInventory() {
 export async function readGatewaySmartProductCatalog() {
   return gatewayApi("/api/v1/smart-products/catalog");
 }
+export async function saveGatewayTuyaPidDpsMap(productId, rows) {
+  if (typeof productId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(productId) || !Array.isArray(rows)) throw new Error("Mapa DPS do produto inválido.");
+  return gatewayApi("/api/v1/integrations/tuya/product-dps-map", { method: "PUT", body: { product_id: productId, rows } });
+}
+export async function readGatewayDeviceCards() {
+  return gatewayApi("/api/v1/device-cards");
+}
+export async function saveGatewayDeviceCard(cardCode, card) {
+  if (typeof cardCode !== "string" || !/^[A-Za-z0-9_-]{2,32}$/.test(cardCode) || !card || typeof card !== "object") throw new Error("Cartão inválido.");
+  return gatewayApi(`/api/v1/device-cards/${encodeURIComponent(cardCode)}`, { method: "PUT", body: card });
+}
 export async function readGatewayShellyProductProfiles() {
   return gatewayApi("/api/v1/smart-products/shelly-profiles");
 }

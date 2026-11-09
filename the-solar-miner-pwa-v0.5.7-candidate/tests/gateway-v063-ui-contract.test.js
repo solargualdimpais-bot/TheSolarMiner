@@ -204,7 +204,7 @@ test("Home Tuya favorites keep optimistic state until a matching LAN reading and
 test("Devices inventory waits to distinguish a single card click from a double click on the name", () => {
   assert.match(app, /let inventoryCardClickTimer = null/);
   assert.match(app, /inventoryCardClickTimer=setTimeout\(\(\)=>\{inventoryCardClickTimer=null;openFavoriteDeviceDetails\(deviceId,"tuya"\);\},280\)/);
-  assert.match(app, /addEventListener\("dblclick",event=>\{const card=event\.target\.closest\("\[data-inventory-device\]"\);if\(!card\|\|!event\.target\.closest\("\.favorite-device-info"\)\)return/);
+  assert.match(app, /addEventListener\("dblclick",event=>\{const cardCodeButton=event\.target\.closest\("\[data-card-open\]"\);if\(cardCodeButton\)/);
 });
 
 test("Favorite card render retains the switch code list for its controls", () => {

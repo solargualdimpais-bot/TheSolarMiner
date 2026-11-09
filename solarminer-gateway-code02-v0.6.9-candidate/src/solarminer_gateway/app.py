@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.217"
+PACKAGE_VERSION = "0.6.218"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -232,6 +232,17 @@ CREATE TABLE IF NOT EXISTS smart_product_catalog(
  confidence TEXT NOT NULL DEFAULT 'observed', updated_at TEXT NOT NULL,
  PRIMARY KEY(manufacturer,protocol,product_code)
 );
+CREATE TABLE IF NOT EXISTS smart_product_profile_details(
+ manufacturer TEXT NOT NULL, protocol TEXT NOT NULL, product_code TEXT NOT NULL,
+ profile_json TEXT NOT NULL, source_url TEXT NOT NULL DEFAULT '', source_revision TEXT NOT NULL DEFAULT '',
+ updated_at TEXT NOT NULL,
+ PRIMARY KEY(manufacturer,protocol,product_code),
+ FOREIGN KEY(manufacturer,protocol,product_code) REFERENCES smart_product_catalog(manufacturer,protocol,product_code)
+);
+CREATE TABLE IF NOT EXISTS smart_product_catalog_sources(
+ source_key TEXT PRIMARY KEY, source_revision TEXT NOT NULL, imported_count INTEGER NOT NULL,
+ imported_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS shelly_product_profiles(
  manufacturer TEXT NOT NULL, protocol TEXT NOT NULL, product_code TEXT NOT NULL,
  product_name TEXT NOT NULL, generation INTEGER NOT NULL, device_kind TEXT NOT NULL,
@@ -251,6 +262,22 @@ CREATE TABLE IF NOT EXISTS tuya_product_dps_map_scoped(
  semantic_code TEXT NOT NULL DEFAULT 'unknown', description TEXT NOT NULL DEFAULT '', data_type TEXT NOT NULL DEFAULT 'unknown',
  unit TEXT, scale REAL, write_supported INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL,
  PRIMARY KEY(product_id,product,category,device_kind,dps_id)
+);
+CREATE TABLE IF NOT EXISTS tuya_pid_dps_editor(
+ product_id TEXT NOT NULL, dps_id INTEGER NOT NULL, payload_json TEXT NOT NULL,
+ updated_at TEXT NOT NULL, PRIMARY KEY(product_id,dps_id)
+);
+CREATE TABLE IF NOT EXISTS device_card_templates(
+ card_code TEXT PRIMARY KEY, manufacturer TEXT NOT NULL, protocol TEXT NOT NULL,
+ product_id TEXT NOT NULL DEFAULT '', product_name TEXT NOT NULL DEFAULT '',
+ available INTEGER NOT NULL DEFAULT 1, layout_json TEXT NOT NULL DEFAULT '{}',
+ updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_device_card_templates_product
+ ON device_card_templates(manufacturer,protocol,product_id);
+CREATE TABLE IF NOT EXISTS device_card_assignments(
+ device_id TEXT PRIMARY KEY, card_code TEXT NOT NULL REFERENCES device_card_templates(card_code),
+ updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_shelly_command_history_device_time ON shelly_command_history(device_id,occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_gateway_device_inventory_mac ON gateway_device_inventory(mac);
@@ -456,6 +483,25 @@ def _remember_shelly_blu_scan(conn: sqlite3.Connection, devices: list[dict[str, 
             VALUES(?,?,?,?) ON CONFLICT(bridge_mac,mac) DO UPDATE SET observed_at=excluded.observed_at,
             details_json=excluded.details_json""",
             (bridge_mac, mac, now, json.dumps(item, separators=(",", ":"))))
+
+
+def _recent_shelly_blu_scan_observations(conn: sqlite3.Connection, *, max_age_seconds: int = 300) -> list[dict[str, Any]]:
+    """Return recent BLE observations without starting a blocking bridge scan."""
+    cutoff = time.time() - max(1, int(max_age_seconds))
+    rows = conn.execute("""SELECT mac,observed_at,details_json FROM shelly_blu_scan_observations
+        WHERE observed_at>=? ORDER BY observed_at DESC""", (cutoff,)).fetchall()
+    latest: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        mac = _inventory_mac(row["mac"])
+        if not mac or mac in latest:
+            continue
+        try:
+            item = json.loads(row["details_json"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(item, dict):
+            latest[mac] = {**item, "mac": mac, "observed_at": float(row["observed_at"])}
+    return list(latest.values())
 
 
 def _scan_registered_shelly_blu_bridges(conn: sqlite3.Connection, *, duration_seconds: float = 30.0,
@@ -954,6 +1000,54 @@ def _upsert_smart_product_catalog(conn: sqlite3.Connection, *, manufacturer: str
          json.dumps(caps, separators=(",", ":")), str(source or "observed")[:80], str(confidence or "observed")[:40], utcnow()))
 
 
+def _sync_zigbee2mqtt_catalog(conn: sqlite3.Connection) -> int:
+    """Import Zigbee2MQTT models into the shared protocol-keyed product catalog once per source revision."""
+    source_key = "zigbee2mqtt-device-catalog"
+    expected_revision = "e4881099197488956c6ea500355a839e052be764"
+    previous = conn.execute("SELECT source_revision FROM smart_product_catalog_sources WHERE source_key=?", (source_key,)).fetchone()
+    if previous and previous["source_revision"] == expected_revision:
+        return 0
+    path = Path(__file__).with_name("zigbee2mqtt-device-catalog.json")
+    try:
+        catalog = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        LOG.warning("Bundled Zigbee2MQTT catalog unavailable (%s)", type(exc).__name__)
+        return 0
+    revision = str(catalog.get("source_commit") or "")[:64]
+    if revision != expected_revision or not isinstance(catalog.get("profiles"), list):
+        LOG.warning("Bundled Zigbee2MQTT catalog has invalid metadata")
+        return 0
+    stamp = utcnow()
+    catalog_rows, detail_rows = [], []
+    for profile in catalog["profiles"]:
+        if not isinstance(profile, dict):
+            continue
+        manufacturer = str(profile.get("manufacturer") or "").strip()[:80]
+        model = str(profile.get("model") or profile.get("product_id") or "").strip()[:128]
+        if not manufacturer or not model:
+            continue
+        capabilities = profile.get("capabilities") if isinstance(profile.get("capabilities"), list) else []
+        features = profile.get("features") if isinstance(profile.get("features"), list) else []
+        labels = sorted({str(item.get("label") or "")[:64] for item in capabilities if isinstance(item, dict) and item.get("label")})
+        catalog_rows.append((manufacturer, "zigbee2mqtt", model, str(profile.get("description") or model)[:120],
+            "smart", json.dumps(labels or features, ensure_ascii=False, separators=(",", ":")),
+            "Koenkk/zigbee2mqtt.io", "manufacturer_documented", stamp))
+        detail_rows.append((manufacturer, "zigbee2mqtt", model,
+            json.dumps(profile, ensure_ascii=False, separators=(",", ":")), str(profile.get("source_url") or "")[:512], revision, stamp))
+    conn.executemany("""INSERT INTO smart_product_catalog(manufacturer,protocol,product_code,product_name,device_kind,capabilities_json,source,confidence,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(manufacturer,protocol,product_code) DO UPDATE SET
+        product_name=excluded.product_name,capabilities_json=excluded.capabilities_json,source=excluded.source,
+        confidence=excluded.confidence,updated_at=excluded.updated_at""", catalog_rows)
+    conn.executemany("""INSERT INTO smart_product_profile_details(manufacturer,protocol,product_code,profile_json,source_url,source_revision,updated_at)
+        VALUES(?,?,?,?,?,?,?) ON CONFLICT(manufacturer,protocol,product_code) DO UPDATE SET
+        profile_json=excluded.profile_json,source_url=excluded.source_url,source_revision=excluded.source_revision,updated_at=excluded.updated_at""", detail_rows)
+    conn.execute("""INSERT INTO smart_product_catalog_sources(source_key,source_revision,imported_count,imported_at)
+        VALUES(?,?,?,?) ON CONFLICT(source_key) DO UPDATE SET source_revision=excluded.source_revision,
+        imported_count=excluded.imported_count,imported_at=excluded.imported_at""", (source_key, revision, len(detail_rows), stamp))
+    LOG.info("Imported %d Zigbee2MQTT models into the shared catalog (%s)", len(detail_rows), revision)
+    return len(detail_rows)
+
+
 def _sync_gateway_device_inventory(conn: sqlite3.Connection, config: dict[str, Any]) -> None:
     """Project saved provider identities into the Gateway's shared inventory."""
     tuya = config.get("tuya", {}) if isinstance(config.get("tuya"), dict) else {}
@@ -1208,6 +1302,7 @@ def initialize() -> None:
         return
     with db() as conn:
         conn.executescript(SCHEMA)
+        _sync_zigbee2mqtt_catalog(conn)
         shelly_product_registry.ensure_schema(conn)
         _sync_tuya_canonical_features(conn)
         bootstrap_columns = {row[1] for row in conn.execute("PRAGMA table_info(bootstrap)")}
@@ -3348,9 +3443,261 @@ def read_smart_product_catalog(session: dict[str, Any] = Depends(require_permiss
         actor = _revalidate_actor(conn, session, "manage_gateway")
         if actor["role"] != "owner":
             raise HTTPException(403, "owner_required")
+        # Keep legacy Tuya/Shelly clients light; the complete Zigbee catalog is
+        # available through the paginated protocol-specific endpoint below.
         rows = [dict(row) for row in conn.execute(
-            "SELECT * FROM smart_product_catalog ORDER BY manufacturer COLLATE NOCASE, product_name COLLATE NOCASE, product_code")]
-        return {"products": rows, "product_count": len(rows), "source": "gateway_sqlite"}
+            "SELECT * FROM smart_product_catalog WHERE protocol<>'zigbee2mqtt' ORDER BY manufacturer COLLATE NOCASE, product_name COLLATE NOCASE, product_code")]
+        config = hardware_integrations.load_config()
+        tuya = config.get("tuya") if isinstance(config.get("tuya"), dict) else {}
+        schemas = hardware_integrations._bounded_tuya_product_schemas(tuya.get("product_schemas"))
+        catalog_schemas = hardware_integrations._bounded_tuya_product_schemas(tuya.get("product_catalog"))
+        for product_id, product_schema in catalog_schemas.items():
+            current = schemas.get(product_id, {})
+            schemas[product_id] = {**current, **product_schema}
+            for key in ("functions", "status_spec"):
+                if not schemas[product_id].get(key) and current.get(key): schemas[product_id][key] = current[key]
+            if not isinstance(schemas[product_id].get("dps_profile"), dict) or not schemas[product_id]["dps_profile"].get("dps"):
+                if isinstance(current.get("dps_profile"), dict): schemas[product_id]["dps_profile"] = current["dps_profile"]
+        scoped = tuya.get("product_dps_maps") if isinstance(tuya.get("product_dps_maps"), dict) else {}
+        owner_rows: dict[str, dict[int, dict[str, Any]]] = {}
+        for row in conn.execute("SELECT product_id,dps_id,payload_json FROM tuya_pid_dps_editor"):
+            try: value = json.loads(row["payload_json"])
+            except (TypeError, json.JSONDecodeError): continue
+            if isinstance(value, dict): owner_rows.setdefault(str(row["product_id"]), {})[int(row["dps_id"])] = value
+        profiles = []
+        product_ids = set(schemas)
+        product_ids.update(str(row["product_id"]) for row in conn.execute("SELECT DISTINCT product_id FROM tuya_product_dps_map_scoped"))
+        product_ids.update(owner_rows)
+        for product_id in sorted(product_ids):
+            schema = schemas.get(product_id) if isinstance(schemas.get(product_id), dict) else {}
+            merged: dict[int, dict[str, Any]] = {}
+            def add_rows(source_rows: Any, origin: str) -> None:
+                if isinstance(source_rows, dict): source_rows = list(source_rows.values())
+                if not isinstance(source_rows, list): return
+                for item in source_rows:
+                    if not isinstance(item, dict): continue
+                    raw_id = item.get("dps_id", item.get("dp_id", item.get("dpId", item.get("id"))))
+                    try: dps_id = int(raw_id)
+                    except (TypeError, ValueError): continue
+                    if not 1 <= dps_id <= 65535: continue
+                    current = merged.setdefault(dps_id, {"dps_id": dps_id, "origin": origin})
+                    current.update({key: value for key, value in item.items() if value is not None})
+                    current["dps_id"] = dps_id
+                    current.setdefault("origin", origin)
+            add_rows(schema.get("functions"), "function")
+            add_rows(schema.get("status_spec"), "status")
+            profile = schema.get("dps_profile") if isinstance(schema.get("dps_profile"), dict) else {}
+            add_rows(profile.get("dps"), "schema")
+            add_rows(profile.get("reference_dps"), "reference")
+            for mapping in scoped.values():
+                if isinstance(mapping, dict) and str(mapping.get("product_id") or "") == product_id:
+                    scoped_profile = mapping.get("dps_profile") if isinstance(mapping.get("dps_profile"), dict) else {}
+                    add_rows(scoped_profile.get("dps"), "owner_map")
+            for row in conn.execute("SELECT dps_id,dps_code,semantic_code,description,data_type,unit,scale,write_supported FROM tuya_product_dps_map_scoped WHERE product_id=?", (product_id,)):
+                add_rows([{**dict(row), "dps_id": row["dps_id"], "display_name": row["description"], "code": row["dps_code"]}], "owner_map")
+            for dps_id, override in owner_rows.get(product_id, {}).items():
+                merged.setdefault(dps_id, {"dps_id": dps_id}).update(override)
+            for item in merged.values():
+                item["origin"] = item.get("origin") or ("function" if item.get("type") in {"function", "function_point"} else "status")
+            profiles.append({"product_id": product_id, "product_name": schema.get("product_name") or "",
+                "product_name_pt": ((tuya.get("product_metadata") or {}).get(product_id) or {}).get("product_name_pt", "") if isinstance(tuya.get("product_metadata"), dict) else "",
+                "category": schema.get("category") or "", "device_kind": schema.get("device_kind") or "unknown",
+                "schema_source": schema.get("schema_source") or "Gateway / mapa DPS", "dps": sorted(merged.values(), key=lambda item: item["dps_id"]),
+                "functions": schema.get("functions") if isinstance(schema.get("functions"), list) else [],
+                "status_spec": schema.get("status_spec") if isinstance(schema.get("status_spec"), list) else []})
+        return {"products": rows, "product_count": len(rows), "tuya_profiles": profiles,
+                "tuya_profile_count": len(profiles), "source": "gateway_sqlite_and_product_schema"}
+
+
+@app.get("/api/v1/smart-products/zigbee2mqtt-catalog")
+def read_zigbee2mqtt_device_catalog(request: Request, session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Search protocol-specific profiles from the shared catalog without mixing them into Tuya DPS data."""
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+    query = request.query_params.get("q", "").strip().casefold()[:120]
+    try:
+        limit = max(1, min(100, int(request.query_params.get("limit", "50"))))
+        offset = max(0, min(100000, int(request.query_params.get("offset", "0"))))
+    except ValueError as exc:
+        raise HTTPException(422, "zigbee2mqtt_catalog_pagination_invalid") from exc
+    with db() as conn:
+        where = "WHERE c.protocol='zigbee2mqtt'"
+        params: list[Any] = []
+        if query:
+            where += " AND (lower(c.manufacturer) LIKE ? OR lower(c.product_code) LIKE ? OR lower(c.product_name) LIKE ?)"
+            term = f"%{query}%"
+            params.extend((term, term, term))
+        total = int(conn.execute(f"SELECT COUNT(*) FROM smart_product_catalog c {where}", params).fetchone()[0])
+        rows = conn.execute(f"""SELECT c.manufacturer,c.protocol,c.product_code,c.product_name,c.device_kind,c.capabilities_json,
+            c.source,c.confidence,d.profile_json,d.source_url,d.source_revision FROM smart_product_catalog c
+            LEFT JOIN smart_product_profile_details d USING(manufacturer,protocol,product_code) {where}
+            ORDER BY c.manufacturer COLLATE NOCASE,c.product_code LIMIT ? OFFSET ?""", [*params, limit, offset]).fetchall()
+        source = conn.execute("SELECT source_revision FROM smart_product_catalog_sources WHERE source_key='zigbee2mqtt-device-catalog'").fetchone()
+    profiles = []
+    for row in rows:
+        item = dict(row)
+        # Keep product identifiers consistent with Tuya's Product ID and the card-template API.
+        item["product_id"] = item["product_code"]
+        try: item["capabilities"] = json.loads(item.pop("capabilities_json") or "[]")
+        except (TypeError, json.JSONDecodeError): item["capabilities"] = []
+        try: item["profile"] = json.loads(item.pop("profile_json")) if item.get("profile_json") else None
+        except (TypeError, json.JSONDecodeError): item["profile"] = None
+        profiles.append(item)
+    return {"protocol": "zigbee2mqtt", "profiles": profiles, "total": total,
+            "limit": limit, "offset": offset,
+            "source_revision": source["source_revision"] if source else None,
+            "source_url": "https://github.com/Koenkk/zigbee2mqtt.io",
+            "tuya_dps_merged": False}
+
+
+@app.put("/api/v1/integrations/tuya/product-dps-map")
+def save_tuya_pid_dps_map(payload: dict[str, Any], session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Save editable DPS metadata under the exact Product ID; command semantics remain schema-bound."""
+    with db() as conn:
+        _require_owner(session, conn)
+        if not isinstance(payload, dict) or set(payload) != {"product_id", "rows"}:
+            raise HTTPException(422, "tuya_pid_dps_map_invalid")
+        product_id, rows = payload.get("product_id"), payload.get("rows")
+        if not isinstance(product_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", product_id) or not isinstance(rows, list) or len(rows) > 128:
+            raise HTTPException(422, "tuya_pid_dps_map_invalid")
+        allowed_types = {"bool", "value", "enum", "fault", "string", "raw", "unknown"}
+        accepted = []
+        seen = set()
+        for row in rows:
+            if not isinstance(row, dict) or set(row) - {"dps_id", "code", "label_pt", "source", "data_type", "unit", "scale", "details", "semantic_code", "write_supported"}:
+                raise HTTPException(422, "tuya_pid_dps_row_invalid")
+            dps_id = row.get("dps_id")
+            if isinstance(dps_id, bool) or not isinstance(dps_id, int) or not 1 <= dps_id <= 65535 or dps_id in seen:
+                raise HTTPException(422, "tuya_pid_dps_id_invalid")
+            seen.add(dps_id)
+            code, label = row.get("code", ""), row.get("label_pt", "")
+            source, data_type = row.get("source", "status"), row.get("data_type", "unknown")
+            if not isinstance(code, str) or len(code) > 96 or not isinstance(label, str) or len(label.strip()) > 120 or source not in {"function", "status", "unknown"} or data_type not in allowed_types:
+                raise HTTPException(422, "tuya_pid_dps_row_invalid")
+            unit, scale = row.get("unit", ""), row.get("scale")
+            if not isinstance(unit, str) or len(unit) > 24 or scale is not None and (isinstance(scale, bool) or not isinstance(scale, (int, float)) or not math.isfinite(float(scale)) or abs(float(scale)) > 1e12):
+                raise HTTPException(422, "tuya_pid_dps_row_invalid")
+            semantic = row.get("semantic_code", "unknown")
+            if semantic not in {"unknown", "voltage", "current", "power", "daily_accumulated_energy", "total_energy", "switch", "countdown", "child_lock", "custom_label", "brightness", "color_temperature"}:
+                raise HTTPException(422, "tuya_pid_dps_semantic_invalid")
+            # Never let a free-form edit enable a command for a product. Existing command routes still require their exact supported mapping.
+            accepted.append({"dps_id": dps_id, "code": code.strip(), "label_pt": label.strip(), "source": source,
+                "data_type": data_type, "unit": unit.strip(), "scale": scale, "details": str(row.get("details") or "")[:512],
+                "semantic_code": semantic, "write_supported": False})
+        stamp = utcnow()
+        conn.execute("DELETE FROM tuya_pid_dps_editor WHERE product_id=?", (product_id,))
+        conn.executemany("INSERT INTO tuya_pid_dps_editor(product_id,dps_id,payload_json,updated_at) VALUES(?,?,?,?)",
+            [(product_id, row["dps_id"], json.dumps(row, ensure_ascii=False, separators=(",", ":")), stamp) for row in accepted])
+        config = hardware_integrations.load_config()
+        tuya = config.setdefault("tuya", {})
+        schemas = tuya.setdefault("product_schemas", {})
+        if not isinstance(schemas, dict): schemas = {}; tuya["product_schemas"] = schemas
+        schema = schemas.setdefault(product_id, {"protocol": "tuya", "manufacturer": "Tuya", "product_name": "", "device_kind": "unknown", "dps_profile": {"dps": []}})
+        if not isinstance(schema, dict): schema = {"protocol": "tuya", "manufacturer": "Tuya", "dps_profile": {"dps": []}}; schemas[product_id] = schema
+        old_profile = schema.get("dps_profile") if isinstance(schema.get("dps_profile"), dict) else {}
+        old_rows = old_profile.get("dps") if isinstance(old_profile.get("dps"), list) else []
+        old_by_id = {int(row.get("dps_id")): row for row in old_rows if isinstance(row, dict) and isinstance(row.get("dps_id"), int) and not isinstance(row.get("dps_id"), bool)}
+        profile_rows = []
+        for row in accepted:
+            base = old_by_id.get(row["dps_id"], {})
+            profile_rows.append({**base, "dps_id": row["dps_id"], "dp_id": row["dps_id"],
+                "code": row["code"] or str(base.get("code") or f"dps_{row['dps_id']}"),
+                "function_code": row["code"] or str(base.get("function_code") or ""),
+                "display_name": row["label_pt"] or str(base.get("display_name") or base.get("name") or f"DPS {row['dps_id']}"),
+                "semantic_code": row["semantic_code"], "data_type": row["data_type"], "unit": row["unit"] or None,
+                "scale": row["scale"], "source_kind": row["source"], "details": row["details"],
+                "confidence": "OWNER_CUSTOM", "source": "Gateway PID DPS editor", "write_supported": False})
+        schema["dps_profile"] = {**old_profile, "dps": profile_rows}
+        maps = tuya.setdefault("product_dps_maps", {})
+        if not isinstance(maps, dict): maps = {}; tuya["product_dps_maps"] = maps
+        matching_devices = [device for device in tuya.get("devices", []) if isinstance(device, dict) and str(device.get("product_id") or "") == product_id]
+        identities = {hardware_integrations.tuya_product_identity_key(device): hardware_integrations.tuya_product_identity(device) for device in matching_devices}
+        for identity_key, identity in identities.items():
+            mapping = maps.get(identity_key)
+            if not isinstance(mapping, dict): mapping = {"product_id": identity[0], "product": identity[1], "category": identity[2], "device_kind": identity[3]}
+            mapping["dps_profile"] = {"dps": profile_rows}
+            maps[identity_key] = mapping
+        config["tuya"] = tuya
+        try:
+            hardware_integrations.save_config(config)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise HTTPException(500, "tuya_pid_dps_map_save_failed") from exc
+        _persist_tuya_product_dps_map(conn, schemas)
+        _persist_tuya_product_dps_maps_scoped(conn, maps)
+        audit(conn, session["user_id"], "hardware.tuya.product_dps_map", product_id, "success", {"dps_count": len(accepted)})
+        return {"saved": True, "product_id": product_id, "dps_count": len(accepted), "write_commands_enabled": False}
+
+
+@app.get("/api/v1/device-cards")
+def list_device_cards(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    with db() as conn:
+        _require_owner(session, conn)
+        config = hardware_integrations.load_config()
+        integrations = config if isinstance(config, dict) else {}
+        candidates = []
+        tuya = integrations.get("tuya") if isinstance(integrations.get("tuya"), dict) else {}
+        for device in tuya.get("devices", []) if isinstance(tuya.get("devices"), list) else []:
+            if isinstance(device, dict) and device.get("device_id") and device.get("product_id"):
+                candidates.append((str(device["device_id"]), "Tuya", "tuya", str(device["product_id"]), str(device.get("product_name_pt") or device.get("product_name") or device.get("name") or "Tuya")))
+        for device in conn.execute("SELECT device_id,name,model,protocol,device_type FROM shelly_devices WHERE enabled=1").fetchall():
+            model = str(device["model"] or device["device_type"] or "")
+            product_id = model or str(device["device_id"])
+            protocol = "shelly_blu" if "blu" in str(device["protocol"] or "").casefold() or "blu" in str(device["device_type"] or "").casefold() else "shelly"
+            candidates.append((str(device["device_id"]), "Shelly", protocol, product_id, str(device["name"] or model or "Shelly")))
+        for device_id, manufacturer, protocol, product_id, product_name in candidates:
+            existing = conn.execute("SELECT card_code FROM device_card_assignments WHERE device_id=?", (device_id,)).fetchone()
+            if existing: continue
+            digest = hashlib.sha256(f"{protocol}:{product_id}".encode("utf-8")).hexdigest()[:8].upper()
+            prefix = {"tuya": "T", "zigbee2mqtt": "Z"}.get(protocol, "S")
+            kind = "D" if any(word in (product_name + " " + product_id).casefold() for word in ("breaker", "switch", "disjuntor", "interruptor", "dlq")) else "E"
+            card_code = f"{prefix}{kind}-{digest}"
+            layout = {"version": 1, "width": 360, "height": 520, "items": [
+                {"id": "title", "type": "text", "label": product_name, "x": 16, "y": 16, "width": 328, "height": 48, "font_size": 20, "color": "#f3f0e8", "visible": True},
+                {"id": "status", "type": "status", "label": "Estado", "x": 16, "y": 72, "width": 328, "height": 32, "font_size": 14, "color": "#d6c17c", "visible": True},
+                {"id": "metrics", "type": "metrics", "label": "Leituras", "x": 16, "y": 120, "width": 328, "height": 96, "font_size": 14, "color": "#e9e6df", "visible": True},
+                {"id": "controls", "type": "controls", "label": "Controlos", "x": 16, "y": 240, "width": 328, "height": 160, "font_size": 16, "color": "#e9e6df", "visible": True}
+            ]}
+            conn.execute("INSERT OR IGNORE INTO device_card_templates(card_code,manufacturer,protocol,product_id,product_name,available,layout_json,updated_at) VALUES(?,?,?,?,?,1,?,?)",
+                (card_code, manufacturer, protocol, product_id, product_name[:160], json.dumps(layout, ensure_ascii=False, separators=(",", ":")), utcnow()))
+            conn.execute("INSERT OR IGNORE INTO device_card_assignments(device_id,card_code,updated_at) VALUES(?,?,?)", (device_id, card_code, utcnow()))
+        rows = [dict(row) for row in conn.execute("SELECT * FROM device_card_templates ORDER BY manufacturer COLLATE NOCASE,card_code COLLATE NOCASE")]
+        for row in rows:
+            try: row["layout"] = json.loads(row.pop("layout_json") or "{}")
+            except (TypeError, json.JSONDecodeError): row["layout"] = {}
+        bindings = {row["device_id"]: row["card_code"] for row in conn.execute("SELECT device_id,card_code FROM device_card_assignments")}
+        return {"cards": rows, "assignments": bindings}
+
+
+@app.put("/api/v1/device-cards/{card_code}")
+def save_device_card(card_code: str, payload: dict[str, Any], session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    with db() as conn:
+        _require_owner(session, conn)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{2,32}", card_code) or not isinstance(payload, dict) or set(payload) != {"code", "manufacturer", "protocol", "product_id", "product_name", "available", "layout"}:
+            raise HTTPException(422, "device_card_invalid")
+        new_code = payload.get("code")
+        manufacturer, protocol, product_id, product_name = (payload.get(key) for key in ("manufacturer", "protocol", "product_id", "product_name"))
+        layout = payload.get("layout")
+        if not isinstance(new_code, str) or not re.fullmatch(r"[A-Za-z0-9_-]{2,32}", new_code) or any(not isinstance(value, str) for value in (manufacturer, protocol, product_id, product_name)) or len(manufacturer) > 80 or protocol not in {"tuya", "shelly", "shelly_blu", "zigbee2mqtt", "other"} or len(product_id) > 128 or len(product_name) > 160 or not isinstance(payload.get("available"), bool) or not isinstance(layout, dict) or len(json.dumps(layout)) > 20000:
+            raise HTTPException(422, "device_card_invalid")
+        stamp = utcnow()
+        if new_code != card_code:
+            if conn.execute("SELECT 1 FROM device_card_templates WHERE card_code=?", (new_code,)).fetchone():
+                raise HTTPException(409, "device_card_code_exists")
+            old = conn.execute("SELECT manufacturer,protocol,product_id,product_name,available,layout_json FROM device_card_templates WHERE card_code=?", (card_code,)).fetchone()
+            if old:
+                conn.execute("INSERT INTO device_card_templates(card_code,manufacturer,protocol,product_id,product_name,available,layout_json,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                    (new_code, *tuple(old), utcnow()))
+            conn.execute("UPDATE device_card_assignments SET card_code=?,updated_at=? WHERE card_code=?", (new_code, stamp, card_code))
+            conn.execute("DELETE FROM device_card_templates WHERE card_code=?", (card_code,))
+            card_code = new_code
+        conn.execute("""INSERT INTO device_card_templates(card_code,manufacturer,protocol,product_id,product_name,available,layout_json,updated_at)
+            VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(card_code) DO UPDATE SET manufacturer=excluded.manufacturer,protocol=excluded.protocol,
+            product_id=excluded.product_id,product_name=excluded.product_name,available=excluded.available,layout_json=excluded.layout_json,updated_at=excluded.updated_at""",
+            (card_code, manufacturer.strip(), protocol, product_id.strip(), product_name.strip(), int(payload["available"]), json.dumps(layout, ensure_ascii=False, separators=(",", ":")), stamp))
+        audit(conn, session["user_id"], "device.card.save", card_code, "success", {"protocol": protocol, "product_id": product_id})
+        return {"saved": True, "card_code": card_code, "updated_at": stamp}
 
 
 @app.get("/api/v1/smart-products/shelly-profiles")
@@ -4149,10 +4496,12 @@ def scan_local_network(session: dict[str, Any] = Depends(require_permission("man
         try:
             report = network_scanner.scan_attached_networks()
             _enrich_shelly_scan(report)
-            blu_devices, blu_bridges = _scan_registered_shelly_blu_bridges(conn)
-            _remember_shelly_blu_scan(conn, blu_devices)
-            report["blu_devices"] = blu_devices
-            report["blu_bridges"] = blu_bridges
+            # The general LAN scan must not wait on BLE bridge scans. Those can
+            # take up to 30 seconds per bridge; explicit bridge discovery owns
+            # that work. Show only observations collected by a recent explicit scan.
+            report["blu_devices"] = _recent_shelly_blu_scan_observations(conn)
+            report["blu_bridges"] = []
+            report["blu_scan_source"] = "recent_observations_only"
             report.setdefault("networks", [])
             report.setdefault("skipped_networks", [])
             report.setdefault("scanned_count", 0)
