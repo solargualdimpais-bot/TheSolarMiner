@@ -106,14 +106,49 @@ test("Tuya PID DPS catalog separates cloud commands, readings, and observed LAN 
   assert.match(app, /tuyaPidRows\(profile\)[\s\S]*?source_kind\|\|row\.source/);
   assert.match(app, /data-tuya-pid-read=[\s\S]*?Ler num equipamento/);
   assert.match(app, /runGatewayTuyaLanDiagnostics\(1,deviceId\)/);
-  assert.match(app, /Associar à função\/estado Tuya/);
-  assert.match(app, /\[source,code\]=val\("capability"\)\.split\("::"\)/);
-  assert.match(app, /Ordem enviada ao equipamento/);
-  assert.match(app, /Leitura recebida do equipamento/);
+  assert.match(app, /tuya-dps-compact-head/);
+  assert.match(app, /data-edit-capability/);
+  assert.match(app, /Último valor lido pela LAN/);
+  assert.match(app, /Analisar texto e guardar/);
+  assert.match(app, /Incongruência · confirmar associação/);
+  assert.match(app, /mapped more than once/);
   assert.match(gateway, /CREATE TABLE IF NOT EXISTS tuya_pid_capabilities/);
   assert.match(gateway, /_persist_tuya_pid_capabilities\(conn, tuya\.get\("product_schemas"\)\)/);
   assert.match(integrations, /_tuya_merge_pid_dps_rows\([\s\S]*?item\.get\("functions"[\s\S]*?item\.get\("status_spec"/);
   assert.match(integrations, /row\.update\(\{"dps_id": dps_id, "dp_id": dps_id, "code": item\["code"\]/);
+});
+
+test("Tuya PID map editor imports text, saves per DPS and highlights ambiguity", () => {
+  const app = read("../app.js");
+  const css = read("../styles.css");
+  const parser = app.match(/function parseTuyaPidDpsPaste\([\s\S]*?\n\}/)?.[0];
+  assert.ok(parser, "text import parser exists");
+  const parse = new Function(`${parser}; return parseTuyaPidDpsPaste;`)();
+  const profile = {
+    functions: [{code:"countdown_1", type:"Integer", values:{unit:"s",min:0,max:86400,step:1}}],
+    status_spec: [{code:"cur_voltage", type:"Integer", values:{unit:"V",scale:0.1}}]
+  };
+  const rows = [{dps_id:20,code:"",source:"unknown",label_pt:"Por identificar"},{dps_id:9,code:"",source:"unknown",label_pt:"Por identificar"}];
+  const result = parse("DPS 20 | Tensão | cur_voltage | V | 0.1\nDPS 9 | Temporizador | countdown_1 | s | 1", profile, rows);
+  assert.deepEqual(result.mapped, [20,9]);
+  assert.equal(result.rows.find(row=>row.dps_id===20).code, "cur_voltage");
+  assert.equal(result.rows.find(row=>row.dps_id===9).source, "function");
+  const inferred = parse("DPS 20 | Tensão medida | V | 0.1", profile, rows);
+  assert.equal(inferred.rows.find(row=>row.dps_id===20).code, "cur_voltage", "known descriptions should link to the matching PID capability without requiring the AI to know its cloud code");
+  assert.match(app, /saveGatewayTuyaPidDpsMap\(productId,parsed\.rows\)/);
+  assert.match(app, /Código Tuya duplicado neste PID/);
+  assert.match(css, /\.tuya-dps-compact-row\.is-ambiguous/);
+  assert.match(css, /\.tuya-dps-compact-row\.is-conflict/);
+});
+
+test("runtime device-card layout scales item coordinates to the card width", () => {
+  const app = read("../app.js");
+  const css = read("../styles.css");
+  assert.match(app, /left:\$\{x\/ canvasWidth\*100\}%/);
+  assert.match(app, /aspect-ratio:\$\{canvasWidth\}\/\$\{canvasHeight\}/);
+  assert.match(app, /container-type:inline-size/);
+  assert.match(css, /\.device-card-runtime-item\{[^}]*position:absolute/);
+  assert.match(css, /\.device-card-runtime-item\.favorite-device-info/);
 });
 
 test("Tuya PID map enriches every matching device card and its controls", () => {
