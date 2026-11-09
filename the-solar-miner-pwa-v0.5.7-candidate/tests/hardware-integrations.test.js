@@ -96,6 +96,50 @@ test("Saving a Tuya device in either form runs only the selected LAN reachabilit
   assert.match(integrations, /socket\.create_connection\(\(address, 6668\), timeout=timeout\)/);
 });
 
+test("Tuya PID DPS catalog separates cloud commands, readings, and observed LAN IDs", () => {
+  const app = read("../app.js");
+  const gateway = read("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/app.py");
+  const integrations = read("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/integrations.py");
+  assert.match(app, /Capacidades recebidas da cloud · ainda sem ID numérico/);
+  assert.match(app, /Ordem · função/);
+  assert.match(app, /Leitura · estado/);
+  assert.match(app, /tuyaPidRows\(profile\)[\s\S]*?source_kind\|\|row\.source/);
+  assert.match(app, /data-tuya-pid-read=[\s\S]*?Ler num equipamento/);
+  assert.match(app, /runGatewayTuyaLanDiagnostics\(1,deviceId\)/);
+  assert.match(app, /Associar à função\/estado Tuya/);
+  assert.match(app, /\[source,code\]=val\("capability"\)\.split\("::"\)/);
+  assert.match(app, /Ordem enviada ao equipamento/);
+  assert.match(app, /Leitura recebida do equipamento/);
+  assert.match(gateway, /CREATE TABLE IF NOT EXISTS tuya_pid_capabilities/);
+  assert.match(gateway, /_persist_tuya_pid_capabilities\(conn, tuya\.get\("product_schemas"\)\)/);
+  assert.match(integrations, /_tuya_merge_pid_dps_rows\([\s\S]*?item\.get\("functions"[\s\S]*?item\.get\("status_spec"/);
+  assert.match(integrations, /row\.update\(\{"dps_id": dps_id, "dp_id": dps_id, "code": item\["code"\]/);
+});
+
+test("Tuya PID map enriches every matching device card and its controls", () => {
+  const app = read("../app.js");
+  const helper = app.match(/function tuyaDeviceWithPidMap\(device\)\{[\s\S]*?\n\}/)?.[0];
+  assert.ok(helper, "PID-to-device card mapping helper exists");
+  const applyMap = new Function("state", `${helper}; return tuyaDeviceWithPidMap;`)({smartProductCatalog:[{
+    product_id:"pid-a",dps:[
+      {dps_id:1,code:"switch_1",source_kind:"function",data_type:"bool",semantic_code:"switch",write_supported:true},
+      {dps_id:20,code:"cur_voltage",source_kind:"status",data_type:"value",unit:"V",scale:0.1},
+      {dps_id:21,code:"countdown_1",source_kind:"function",data_type:"integer",unit:"s",values:{min:0,max:86400,step:1}}
+    ]
+  }]});
+  const device=applyMap({device_id:"dev-a",product_id:"pid-a",functions:[{code:"switch_1",type:"bool"}],status_spec:[{code:"cur_voltage",type:"value"}],local_dps_map:{}});
+  assert.equal(device.functions[0].dp_id,1);
+  assert.equal(device.local_dps_map.switch_1,"1");
+  assert.equal(device.status_spec[0].dp_id,20);
+  assert.equal(device.dps_knowledge.dps.find(row=>row.dps_id===20).semantic_code,"voltage");
+  assert.equal(device.dps_knowledge.dps.find(row=>row.dps_id===20).confidence,"SCHEMA_INFERRED");
+  assert.equal(device.dps_knowledge.dps.find(row=>row.dps_id===21).semantic_code,"countdown");
+  const other=applyMap({device_id:"dev-b",product_id:"pid-b",functions:[]});
+  assert.equal(other.dps_knowledge,undefined,"a different PID must not inherit this mapping");
+  assert.match(app,/state\.smartProductCatalog=Array\.isArray\(result\.tuya_profiles\)\?result\.tuya_profiles:\[\]/);
+  assert.match(app,/normalizeTuyaInventory\(state\.tuyaDevices\)\.map\(tuyaDeviceWithPidMap\)/);
+});
+
 test("Tuya editor can resolve a missing local IP by unique MAC before LAN testing", () => {
   const app = read("../app.js");
   assert.match(app, /if\(!requestedIp&&!requestedMac\)/);

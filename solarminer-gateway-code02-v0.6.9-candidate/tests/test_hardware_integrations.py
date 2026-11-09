@@ -91,6 +91,37 @@ def test_tuya_local_dps_prefers_tuya_dp_id_to_channel_suffix():
         integrations._tuya_local_dps({"functions": []}, "switch_2")
 
 
+def test_cloud_refresh_preserves_pid_dps_edits_and_joins_only_declared_numeric_ids():
+    previous = {"dps": [{"dps_id": 1, "display_name": "Nome escolhido", "semantic_code": "switch",
+                         "source_kind": "function", "code": "switch", "unit": "W"}],
+                "reference_dps": [{"id": 41, "name": "Community reference"}]}
+    functions = [{"code": "switch", "name": "Switch", "type": "Boolean", "dp_id": 1},
+                 {"code": "countdown_1", "name": "Countdown", "type": "Integer"}]
+    statuses = [{"code": "cur_power", "name": "Power", "type": "Integer", "dpId": 9}]
+    merged = integrations._tuya_merge_pid_dps_rows(previous, {"dps": [{"dps_id": 1, "display_name": "Default"}]}, functions, statuses)
+    by_id = {row["dps_id"]: row for row in merged["dps"]}
+    assert by_id[1]["display_name"] == "Nome escolhido"
+    assert (by_id[1]["source_kind"], by_id[1]["code"], by_id[1]["write_supported"]) == ("function", "switch", True)
+    assert (by_id[9]["source_kind"], by_id[9]["code"], by_id[9]["read_supported"]) == ("status", "cur_power", True)
+    assert 2 not in by_id  # No numeric DPS ID is invented for a cloud-only capability.
+    assert merged["reference_dps"] == previous["reference_dps"]
+
+
+def test_pid_editor_mapping_applies_cloud_function_and_status_ids_without_mutating_device():
+    device = {"device_id": "unit", "product_id": "pid", "functions": [{"code": "switch", "type": "Boolean"}],
+              "status_spec": [{"code": "cur_power", "type": "Integer"}]}
+    schema = {"pid": {"functions": [{"code": "switch", "type": "Boolean"}],
+                      "status_spec": [{"code": "cur_power", "type": "Integer"}]}}
+    maps = {"pid": {"dps_profile": {"dps": [
+        {"dps_id": 1, "code": "switch", "source_kind": "function"},
+        {"dps_id": 9, "code": "cur_power", "source_kind": "status"}]}}}
+    enriched = integrations._tuya_apply_product_dps_overrides(device, schema, maps)
+    assert enriched["functions"][0]["dp_id"] == 1
+    assert enriched["status_spec"][0]["dp_id"] == 9
+    assert enriched["local_dps_map"]["switch"] == "1"
+    assert "dp_id" not in device["functions"][0] and "dp_id" not in device["status_spec"][0]
+
+
 def test_tuya_multichannel_switch_requires_real_dp_mapping():
     device = {"functions": [
         {"code": f"switch_{index}", "type": "Boolean"}

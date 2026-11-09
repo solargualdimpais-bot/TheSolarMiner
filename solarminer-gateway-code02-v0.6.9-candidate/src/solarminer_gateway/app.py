@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.219"
+PACKAGE_VERSION = "0.6.220"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -266,6 +266,11 @@ CREATE TABLE IF NOT EXISTS tuya_product_dps_map_scoped(
 CREATE TABLE IF NOT EXISTS tuya_pid_dps_editor(
  product_id TEXT NOT NULL, dps_id INTEGER NOT NULL, payload_json TEXT NOT NULL,
  updated_at TEXT NOT NULL, PRIMARY KEY(product_id,dps_id)
+);
+CREATE TABLE IF NOT EXISTS tuya_pid_capabilities(
+ product_id TEXT NOT NULL, source_kind TEXT NOT NULL CHECK(source_kind IN ('function','status')),
+ code TEXT NOT NULL, payload_json TEXT NOT NULL, synchronized_at TEXT NOT NULL,
+ PRIMARY KEY(product_id,source_kind,code)
 );
 CREATE TABLE IF NOT EXISTS device_card_templates(
  card_code TEXT PRIMARY KEY, manufacturer TEXT NOT NULL, protocol TEXT NOT NULL,
@@ -1207,7 +1212,9 @@ def _persist_tuya_product_dps_map(conn: sqlite3.Connection, product_schemas: Any
                 "OWNER_CUSTOM" if override else str(item.get("confidence") or "UNKNOWN")[:32],
                 "Gateway Product ID mapping" if override else str(item.get("source") or "")[:160],
                 str(item.get("validation_status") or "reference_only")[:64],
-                int(bool(item.get("read_supported", True))), int(bool(override.get("write_enabled")) and str(override.get("semantic_code")) in {"switch", "countdown", "child_lock"}), stamp,
+                int(bool(item.get("read_supported", item.get("source_kind") == "status"))),
+                int(bool(item.get("write_supported")) and item.get("source_kind") == "function"
+                    or bool(override.get("write_enabled")) and str(override.get("semantic_code")) in {"switch", "countdown", "child_lock"}), stamp,
             )
             conn.execute("""INSERT INTO tuya_product_dps_map(protocol,manufacturer,product_id,product_name,category,device_kind,dps_id,dps_code,semantic_code,description,data_type,unit,scale,confidence,source,validation_status,read_supported,write_supported,updated_at)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(protocol,product_id,dps_id) DO UPDATE SET
@@ -1216,6 +1223,43 @@ def _persist_tuya_product_dps_map(conn: sqlite3.Connection, product_schemas: Any
                 unit=excluded.unit,scale=excluded.scale,confidence=excluded.confidence,source=excluded.source,
                 validation_status=excluded.validation_status,read_supported=excluded.read_supported,write_supported=excluded.write_supported,updated_at=excluded.updated_at""", values)
             saved += 1
+    return saved
+
+
+def _persist_tuya_pid_capabilities(conn: sqlite3.Connection, product_schemas: Any) -> int:
+    """Index cloud-declared functions and statuses by exact Tuya Product ID."""
+    if not isinstance(product_schemas, dict):
+        return 0
+    saved = 0
+    stamp = utcnow()
+    for product_id, product in product_schemas.items():
+        if not isinstance(product_id, str) or not product_id or not isinstance(product, dict):
+            continue
+        for source_kind, key in (("function", "functions"), ("status", "status_spec")):
+            entries = product.get(key)
+            if not isinstance(entries, list) or not entries:
+                continue
+            # A cloud refresh is authoritative for the declared schema of this
+            # exact PID; stale capabilities of the same origin are removed.
+            conn.execute("DELETE FROM tuya_pid_capabilities WHERE product_id=? AND source_kind=?",
+                         (product_id, source_kind))
+            seen: set[str] = set()
+            for item in entries[:128]:
+                if not isinstance(item, dict) or not isinstance(item.get("code"), str):
+                    continue
+                code = item["code"].strip()[:128]
+                if not code or code in seen:
+                    continue
+                seen.add(code)
+                payload = {**item, "code": code, "source_kind": source_kind,
+                           "read_supported": source_kind == "status",
+                           "write_supported": source_kind == "function"}
+                conn.execute("""INSERT INTO tuya_pid_capabilities(product_id,source_kind,code,payload_json,synchronized_at)
+                    VALUES(?,?,?,?,?) ON CONFLICT(product_id,source_kind,code) DO UPDATE SET
+                    payload_json=excluded.payload_json,synchronized_at=excluded.synchronized_at""",
+                    (product_id, source_kind, code,
+                     json.dumps(payload, ensure_ascii=False, separators=(",", ":")), stamp))
+                saved += 1
     return saved
 
 
@@ -2699,9 +2743,11 @@ def _tuya_devices_sync_work(session: dict[str, Any], cancelled: threading.Event)
             hardware_integrations.save_config(config)
             _sync_gateway_device_inventory(conn, config)
             dps_maps_saved = _persist_tuya_product_dps_map(conn, tuya.get("product_schemas"))
+            capabilities_saved = _persist_tuya_pid_capabilities(conn, tuya.get("product_schemas"))
             audit(conn, session["user_id"], "hardware.tuya.sync", "gateway", "success", {
                 "device_count": synced["device_count"],
                 "product_dps_maps": dps_maps_saved,
+                "product_capabilities": capabilities_saved,
                 "local_keys_available": synced["local_keys_available"],
                 "schema_failures": synced["schema_failures"],
                 "cloud_pages": synced["pages"],
@@ -3461,6 +3507,19 @@ def read_smart_product_catalog(session: dict[str, Any] = Depends(require_permiss
                 if not schemas[product_id].get(key) and current.get(key): schemas[product_id][key] = current[key]
             if not isinstance(schemas[product_id].get("dps_profile"), dict) or not schemas[product_id]["dps_profile"].get("dps"):
                 if isinstance(current.get("dps_profile"), dict): schemas[product_id]["dps_profile"] = current["dps_profile"]
+        # The local capability index is the durable, PID-scoped copy of what
+        # Tuya declared during the last successful cloud synchronization.
+        for row in conn.execute("SELECT product_id,source_kind,code,payload_json FROM tuya_pid_capabilities ORDER BY code"):
+            product_id, source_kind = str(row["product_id"]), str(row["source_kind"])
+            schema = schemas.setdefault(product_id, {"product_id": product_id, "dps_profile": {"dps": []}})
+            key = "functions" if source_kind == "function" else "status_spec"
+            try: capability = json.loads(row["payload_json"])
+            except (TypeError, json.JSONDecodeError): continue
+            if not isinstance(capability, dict): continue
+            entries = schema.setdefault(key, [])
+            if not isinstance(entries, list): entries = []; schema[key] = entries
+            if not any(isinstance(item, dict) and item.get("code") == row["code"] for item in entries):
+                entries.append(capability)
         scoped = tuya.get("product_dps_maps") if isinstance(tuya.get("product_dps_maps"), dict) else {}
         owner_rows: dict[str, dict[int, dict[str, Any]]] = {}
         for row in conn.execute("SELECT product_id,dps_id,payload_json FROM tuya_pid_dps_editor"):
@@ -3511,7 +3570,10 @@ def read_smart_product_catalog(session: dict[str, Any] = Depends(require_permiss
             for dps_id, override in owner_rows.get(product_id, {}).items():
                 merged.setdefault(dps_id, {"dps_id": dps_id}).update(override)
             for item in merged.values():
-                item["origin"] = item.get("origin") or ("function" if item.get("type") in {"function", "function_point"} else "status")
+                explicit_source = item.get("source_kind") or item.get("source")
+                item["origin"] = explicit_source if explicit_source in {"function", "status", "unknown"} else item.get("origin") or ("function" if item.get("type") in {"function", "function_point"} else "status")
+                item["read_supported"] = bool(item.get("read_supported", item["origin"] == "status"))
+                item["write_supported"] = bool(item.get("write_supported", item["origin"] == "function"))
             profiles.append({"product_id": product_id, "product_name": schema.get("product_name") or "",
                 "product_name_pt": ((tuya.get("product_metadata") or {}).get(product_id) or {}).get("product_name_pt", "") if isinstance(tuya.get("product_metadata"), dict) else "",
                 "category": schema.get("category") or "", "device_kind": schema.get("device_kind") or "unknown",
@@ -3581,6 +3643,15 @@ def save_tuya_pid_dps_map(payload: dict[str, Any], session: dict[str, Any] = Dep
         allowed_types = {"bool", "value", "enum", "fault", "string", "raw", "unknown"}
         accepted = []
         seen = set()
+        seen_codes = set()
+        config = hardware_integrations.load_config()
+        tuya_config = config.get("tuya") if isinstance(config.get("tuya"), dict) else {}
+        product_schemas = tuya_config.get("product_schemas") if isinstance(tuya_config.get("product_schemas"), dict) else {}
+        cloud_schema = product_schemas.get(product_id) if isinstance(product_schemas.get(product_id), dict) else {}
+        declared_functions = {str(item.get("code")) for item in cloud_schema.get("functions", []) if isinstance(item, dict) and isinstance(item.get("code"), str)}
+        declared_statuses = {str(item.get("code")) for item in cloud_schema.get("status_spec", []) if isinstance(item, dict) and isinstance(item.get("code"), str)}
+        for item in conn.execute("SELECT source_kind,code FROM tuya_pid_capabilities WHERE product_id=?", (product_id,)):
+            (declared_functions if item["source_kind"] == "function" else declared_statuses).add(str(item["code"]))
         for row in rows:
             if not isinstance(row, dict) or set(row) - {"dps_id", "code", "label_pt", "source", "data_type", "unit", "scale", "details", "semantic_code", "write_supported"}:
                 raise HTTPException(422, "tuya_pid_dps_row_invalid")
@@ -3596,17 +3667,27 @@ def save_tuya_pid_dps_map(payload: dict[str, Any], session: dict[str, Any] = Dep
             if not isinstance(unit, str) or len(unit) > 24 or scale is not None and (isinstance(scale, bool) or not isinstance(scale, (int, float)) or not math.isfinite(float(scale)) or abs(float(scale)) > 1e12):
                 raise HTTPException(422, "tuya_pid_dps_row_invalid")
             semantic = row.get("semantic_code", "unknown")
-            if semantic not in {"unknown", "voltage", "current", "power", "daily_accumulated_energy", "total_energy", "switch", "countdown", "child_lock", "custom_label", "brightness", "color_temperature"}:
+            if semantic not in {"unknown", "voltage", "current", "power", "daily_accumulated_energy", "total_energy", "switch", "countdown", "child_lock", "relay_status", "power_on_state", "custom_label", "brightness", "color_temperature"}:
                 raise HTTPException(422, "tuya_pid_dps_semantic_invalid")
-            # Never let a free-form edit enable a command for a product. Existing command routes still require their exact supported mapping.
+            if source == "function" and (not code.strip() or code.strip() not in declared_functions):
+                raise HTTPException(422, "tuya_pid_dps_function_not_in_cloud_schema")
+            if source == "status" and (not code.strip() or code.strip() not in declared_statuses):
+                raise HTTPException(422, "tuya_pid_dps_status_not_in_cloud_schema")
+            code_identity = (source, code.strip())
+            if source in {"function", "status"} and code_identity in seen_codes:
+                raise HTTPException(422, "tuya_pid_dps_cloud_code_mapped_more_than_once")
+            if source in {"function", "status"}:
+                seen_codes.add(code_identity)
+            # An order is recognized only when its code exists in the exact PID
+            # cloud function list; status codes remain read-only.
             accepted.append({"dps_id": dps_id, "code": code.strip(), "label_pt": label.strip(), "source": source,
                 "data_type": data_type, "unit": unit.strip(), "scale": scale, "details": str(row.get("details") or "")[:512],
-                "semantic_code": semantic, "write_supported": False})
+                "semantic_code": semantic, "read_supported": source in {"status", "unknown"},
+                "write_supported": source == "function" and code.strip() in declared_functions})
         stamp = utcnow()
         conn.execute("DELETE FROM tuya_pid_dps_editor WHERE product_id=?", (product_id,))
         conn.executemany("INSERT INTO tuya_pid_dps_editor(product_id,dps_id,payload_json,updated_at) VALUES(?,?,?,?)",
             [(product_id, row["dps_id"], json.dumps(row, ensure_ascii=False, separators=(",", ":")), stamp) for row in accepted])
-        config = hardware_integrations.load_config()
         tuya = config.setdefault("tuya", {})
         schemas = tuya.setdefault("product_schemas", {})
         if not isinstance(schemas, dict): schemas = {}; tuya["product_schemas"] = schemas
@@ -3624,7 +3705,8 @@ def save_tuya_pid_dps_map(payload: dict[str, Any], session: dict[str, Any] = Dep
                 "display_name": row["label_pt"] or str(base.get("display_name") or base.get("name") or f"DPS {row['dps_id']}"),
                 "semantic_code": row["semantic_code"], "data_type": row["data_type"], "unit": row["unit"] or None,
                 "scale": row["scale"], "source_kind": row["source"], "details": row["details"],
-                "confidence": "OWNER_CUSTOM", "source": "Gateway PID DPS editor", "write_supported": False})
+                "confidence": "OWNER_CUSTOM", "source": "Gateway PID DPS editor",
+                "read_supported": row["read_supported"], "write_supported": row["write_supported"]})
         schema["dps_profile"] = {**old_profile, "dps": profile_rows}
         maps = tuya.setdefault("product_dps_maps", {})
         if not isinstance(maps, dict): maps = {}; tuya["product_dps_maps"] = maps
@@ -3641,6 +3723,7 @@ def save_tuya_pid_dps_map(payload: dict[str, Any], session: dict[str, Any] = Dep
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             raise HTTPException(500, "tuya_pid_dps_map_save_failed") from exc
         _persist_tuya_product_dps_map(conn, schemas)
+        _persist_tuya_pid_capabilities(conn, schemas)
         _persist_tuya_product_dps_maps_scoped(conn, maps)
         audit(conn, session["user_id"], "hardware.tuya.product_dps_map", product_id, "success", {"dps_count": len(accepted)})
         return {"saved": True, "product_id": product_id, "dps_count": len(accepted), "write_commands_enabled": False}
@@ -4075,6 +4158,7 @@ def apply_tuya_product_catalog_import(payload: dict[str, Any], session: dict[str
         except (OSError, ValueError) as exc:
             raise HTTPException(500, "product_import_save_failed") from exc
         _persist_tuya_product_dps_map(conn, tuya.get("product_schemas", {}))
+        _persist_tuya_pid_capabilities(conn, tuya.get("product_schemas", {}))
         audit(conn, session["user_id"], "hardware.tuya.product_catalog.import", "product-catalog", "success",
               {"accepted_count": len(accepted), "excluded_count": len(excluded)})
         return {"applied_count": len(accepted), "excluded_count": len(excluded), "product_schema_count": len(existing)}
@@ -5478,6 +5562,7 @@ def tuya_product_dps_description(payload: dict[str, Any], session: dict[str, Any
         # save_config returns a public view that deliberately omits private
         # schema internals; persist from the validated in-memory profiles.
         _persist_tuya_product_dps_map(conn, profiles)
+        _persist_tuya_pid_capabilities(conn, profiles)
         _persist_tuya_product_dps_maps_scoped(conn, scoped_maps)
         audit(conn, session["user_id"], "hardware.tuya.dps_description", f"{product_id}:{dps_id}", "success",
               {"device_id": device_id, "product_id": product_id, "dps_id": dps_id, "semantic_code": semantic})

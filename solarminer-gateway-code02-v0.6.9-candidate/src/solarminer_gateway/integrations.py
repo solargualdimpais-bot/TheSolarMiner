@@ -1130,6 +1130,65 @@ def _tuya_schema_entries(value: Any) -> list[dict[str, Any]]:
     return entries
 
 
+def _tuya_merge_pid_dps_rows(previous_profile: Any, generated_profile: Any,
+                             functions: Any, statuses: Any) -> dict[str, Any]:
+    """Keep PID DPS edits and attach cloud numeric IDs without guessing IDs."""
+    previous = previous_profile if isinstance(previous_profile, dict) else {}
+    generated = generated_profile if isinstance(generated_profile, dict) else {}
+    merged: dict[int, dict[str, Any]] = {}
+    for source_rows in (generated.get("dps"), previous.get("dps")):
+        if not isinstance(source_rows, list):
+            continue
+        for row in source_rows:
+            if not isinstance(row, dict):
+                continue
+            raw_id = row.get("dps_id", row.get("dp_id", row.get("dpId", row.get("id"))))
+            try:
+                dps_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if not 1 <= dps_id <= 65535:
+                continue
+            # The existing PID map wins over generated defaults; fresh live
+            # values from generated rows remain as a fallback only.
+            merged[dps_id] = {**merged.get(dps_id, {}), **row, "dps_id": dps_id}
+    for source, entries in (("function", functions), ("status", statuses)):
+        if not isinstance(entries, list):
+            continue
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            raw_id = item.get("dp_id", item.get("dpId"))
+            try:
+                dps_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if not 1 <= dps_id <= 65535 or not isinstance(item.get("code"), str):
+                continue
+            row = merged.setdefault(dps_id, {"dps_id": dps_id})
+            # Cloud source is authoritative for the function/status association;
+            # owner labels, units, scale, semantic and value notes are retained.
+            row.update({"dps_id": dps_id, "dp_id": dps_id, "code": item["code"],
+                        "function_code": item["code"], "source_kind": source,
+                        "origin": source, "data_type": item.get("type", row.get("data_type", "unknown")),
+                        "display_name": row.get("display_name") or item.get("name") or item["code"],
+                        "details": row.get("details") or item.get("values") or item.get("desc") or "",
+                        "read_supported": source == "status",
+                        "write_supported": source == "function"})
+    old_refs = previous.get("reference_dps") if isinstance(previous.get("reference_dps"), list) else []
+    generated_refs = generated.get("reference_dps") if isinstance(generated.get("reference_dps"), list) else []
+    result = {**generated, **previous, "dps": sorted(merged.values(), key=lambda row: row["dps_id"])}
+    if old_refs or generated_refs:
+        refs_by_id: dict[str, dict[str, Any]] = {}
+        for row in (*generated_refs, *old_refs):
+            if isinstance(row, dict):
+                identifier = str(row.get("id", row.get("dps_id", "")))
+                if identifier:
+                    refs_by_id[identifier] = {**refs_by_id.get(identifier, {}), **row}
+        result["reference_dps"] = list(refs_by_id.values())
+    return result
+
+
 def _bounded_tuya_product_schemas(value: Any) -> dict[str, dict[str, Any]]:
     if not isinstance(value, dict):
         return {}
@@ -1246,10 +1305,39 @@ def _tuya_apply_product_dps_overrides(device: dict[str, Any], product_schemas: A
     # Product name/category/kind are editable metadata, not map-key fragments.
     overrides = scoped.get("custom_dps_overrides", {}) if isinstance(scoped, dict) else {}
     if not isinstance(overrides, dict) or not overrides:
-        return dict(device)
+        overrides = {}
     result = dict(device)
     functions = [dict(item) for item in device.get("functions", []) if isinstance(item, dict)]
+    statuses = [dict(item) for item in device.get("status_spec", []) if isinstance(item, dict)]
     local_map = dict(device.get("local_dps_map", {})) if isinstance(device.get("local_dps_map"), dict) else {}
+    # The PID editor is the canonical place where a live LAN DPS is joined to
+    # a cloud function (writable order) or status (read-only measurement).
+    # Apply those exact-code associations to every device with this PID without
+    # editing per-device configuration or guessing from code suffixes.
+    profile_rows: list[dict[str, Any]] = []
+    for source in (product.get("dps_profile") if isinstance(product, dict) else None,
+                   scoped.get("dps_profile") if isinstance(scoped, dict) else None):
+        values = source.get("dps") if isinstance(source, dict) else None
+        if isinstance(values, list):
+            profile_rows.extend(row for row in values if isinstance(row, dict))
+    for row in profile_rows:
+        try:
+            dp_id = int(row.get("dps_id", row.get("dp_id", row.get("dpId"))))
+        except (TypeError, ValueError):
+            continue
+        if not 1 <= dp_id <= 65535:
+            continue
+        source = str(row.get("source_kind") or row.get("source") or row.get("origin") or "")
+        code = str(row.get("function_code") or row.get("code") or "")
+        target = functions if source == "function" else statuses if source == "status" else None
+        if target is None or not code:
+            continue
+        match = next((entry for entry in target if entry.get("code") == code), None)
+        if match is None:
+            continue
+        match["dp_id"] = dp_id
+        if source == "function":
+            local_map[code] = str(dp_id)
     enabled_codes: list[str] = []
     for dp_text, override in overrides.items():
         if not isinstance(override, dict) or override.get("semantic_code") not in {"switch", "countdown", "child_lock", "light_mode", "relay_status", "power_on_state"} or not override.get("write_enabled"):
@@ -1278,9 +1366,12 @@ def _tuya_apply_product_dps_overrides(device: dict[str, Any], product_schemas: A
                               "owner_product_mapping": True})
         local_map[code] = str(dp_id)
         enabled_codes.append(code)
-    if enabled_codes:
+    if enabled_codes or profile_rows:
         result["functions"] = functions
+        result["status_spec"] = statuses
+    if enabled_codes or any(row.get("source_kind", row.get("source")) == "function" for row in profile_rows):
         result["local_dps_map"] = local_map
+    if enabled_codes:
         switch_codes = [code for code in enabled_codes if code.startswith("switch_")]
         if len(switch_codes) == 1 and not result.get("switch_code"):
             result["switch_code"] = switch_codes[0]
@@ -1480,6 +1571,10 @@ def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Eve
             previous_profile = product_schemas.get(item["product_id"], {})
             product_dps_overrides = previous_profile.get("custom_dps_overrides", {}) if isinstance(previous_profile, dict) else {}
             profile_device = {**item, "product_dps_overrides": product_dps_overrides}
+            generated_dps_profile = tuya_dps_registry.product_profile(profile_device)
+            dps_profile = _tuya_merge_pid_dps_rows(
+                previous_profile.get("dps_profile") if isinstance(previous_profile, dict) else None,
+                generated_dps_profile, item.get("functions", []), item.get("status_spec", []))
             product_schemas[item["product_id"]] = {
                 "category": item.get("category", ""),
                 "product_name": item.get("product_name", ""),
@@ -1489,7 +1584,7 @@ def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Eve
                 "schema_source": item.get("schema_source", "TUYA_DEVICE_SPEC"),
                 "functions": item.get("functions", []),
                 "status_spec": item.get("status_spec", []),
-                "dps_profile": tuya_dps_registry.product_profile(profile_device),
+                "dps_profile": dps_profile,
                 "custom_dps_overrides": product_dps_overrides,
                 "cached_at": int(time.time()),
             }
