@@ -1008,6 +1008,10 @@ def _sync_zigbee2mqtt_catalog(conn: sqlite3.Connection) -> int:
     if previous and previous["source_revision"] == expected_revision:
         return 0
     path = Path(__file__).with_name("zigbee2mqtt-device-catalog.json")
+    if not path.is_file():
+        # Development/tests keep the generated source artifact under resources/;
+        # the Debian package copies it alongside this module.
+        path = Path(__file__).resolve().parents[2] / "resources" / "zigbee2mqtt-device-catalog.json"
     try:
         catalog = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
