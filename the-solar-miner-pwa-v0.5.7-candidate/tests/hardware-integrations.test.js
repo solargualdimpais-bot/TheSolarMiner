@@ -136,6 +136,19 @@ test("Tuya PID map editor imports text, saves per DPS and highlights ambiguity",
   assert.equal(result.rows.find(row=>row.dps_id===9).source, "function");
   const inferred = parse("DPS 20 | Tensão medida | V | 0.1", profile, rows);
   assert.equal(inferred.rows.find(row=>row.dps_id===20).code, "cur_voltage", "known descriptions should link to the matching PID capability without requiring the AI to know its cloud code");
+  const fullProfile = {
+    functions: [{code:"switch",type:"Boolean"},{code:"countdown_1",type:"Integer",values:{unit:"s",min:0,max:86400,scale:0,step:1}}],
+    status_spec: ["add_ele","cur_current","cur_power","cur_voltage","test_bit","voltage_coe","electric_coe","power_coe","electricity_coe","fault","relay_status","light_mode","child_lock","cycle_time","online_state"].map(code=>({code,type:code==="fault"?"Fault":code==="light_mode"||code==="relay_status"?"Enum":"Integer"}))
+  };
+  const pasted = [1,9,17,18,19,20,21,22,23,24,25,26,38,40,41,42,66].map(dps_id=>({dps_id,code:"",source:"unknown",label_pt:"Por identificar"}));
+  const aiText = "DPS 1 | Interruptor | Ordem • Interruptor • switch | Por identificar | Booleano | — | 1\nDPS 9 | Contagem decrescente | Ordem • Contagem decrescente • countdown_1 | Por identificar | Valor numérico | s | 1\nDPS 17 | Energia acumulada | Leitura • Energia acumulada • add_ele | Por identificar | Valor numérico | kWh | 0.001\nDPS 18 | Corrente atual | Leitura • Corrente atual • cur_current | Por identificar | Valor numérico | A | 0.001\nDPS 19 | Potência atual | Leitura • Potência atual • cur_power | Por identificar | Valor numérico | W | 0.1\nDPS 20 | Tensão atual | Leitura • Tensão atual • cur_voltage | Por identificar | Valor numérico | V | 0.1\nDPS 21 | Função Tuya | Leitura • Função Tuya • test_bit | Por identificar | Desconhecido | — | 1\nDPS 22 | Tensão | Leitura • Tensão • voltage_coe | Por identificar | Valor numérico | — | 1\nDPS 23 | Corrente | Leitura • Corrente • electric_coe | Por identificar | Valor numérico | — | 1\nDPS 24 | Potência | Leitura • Potência • power_coe | Por identificar | Valor numérico | — | 1\nDPS 25 | Energia | Leitura • Energia • electricity_coe | Por identificar | Valor numérico | — | 1\nDPS 26 | Falha | Leitura • Falha • fault | Por identificar | Falha | — | 1\nDPS 38 | Estado do relé | Leitura • Estado do relé • relay_status | Por identificar | Booleano | — | 1\nDPS 40 | Luz | Leitura • Luz • light_mode | Por identificar | Enumeração | — | 1\nDPS 41 | Bloqueio infantil | Leitura • Bloqueio infantil • child_lock | Por identificar | Booleano | — | 1\nDPS 42 | Temporizador | Leitura • Temporizador • cycle_time | Por identificar | Valor numérico | s | 1\nDPS 66 | Estado | Leitura • Estado • online_state | Por identificar | Booleano | — | 1";
+  const imported = parse(aiText, fullProfile, pasted);
+  assert.equal(imported.mapped.length, pasted.length);
+  assert.equal(imported.rows.find(row=>row.dps_id===1).data_type, "bool");
+  assert.equal(imported.rows.find(row=>row.dps_id===9).scale, 1);
+  assert.equal(imported.rows.find(row=>row.dps_id===9).source, "function");
+  assert.equal(imported.rows.find(row=>row.dps_id===17).data_type, "value");
+  assert.equal(imported.rows.find(row=>row.dps_id===40).data_type, "enum");
   assert.match(app, /saveGatewayTuyaPidDpsMap\(productId,parsed\.rows\)/);
   assert.match(auth, /const acceptedFields = \["dps_id", "code", "label_pt", "source", "data_type", "unit", "scale", "details", "semantic_code", "write_supported"\]/);
   assert.match(auth, /const cleanRows = rows\.map\(row => Object\.fromEntries\(acceptedFields/);
@@ -158,6 +171,12 @@ test("runtime device-card layout scales item coordinates to the card width", () 
   assert.match(app, /container-type:inline-size/);
   assert.match(css, /\.device-card-runtime-item\{[^}]*position:absolute/);
   assert.match(css, /\.device-card-runtime-item\.favorite-device-info/);
+});
+
+test("mobile device-detail card clears the phone status area and keeps a visible outline", () => {
+  const css = read("../styles.css");
+  assert.match(css, /@media\(max-width:680px\)\{dialog\.favorite-device-details\[open\]\{[^}]*top:calc\(env\(safe-area-inset-top,0px\) \+ 12px\)/);
+  assert.match(css, /dialog\.favorite-device-details\[open\]\{[^}]*border:1px solid #4b4638/);
 });
 
 test("Tuya PID map enriches every matching device card and its controls", () => {

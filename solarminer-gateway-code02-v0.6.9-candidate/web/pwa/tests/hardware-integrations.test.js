@@ -160,6 +160,12 @@ test("runtime device-card layout scales item coordinates to the card width", () 
   assert.match(css, /\.device-card-runtime-item\.favorite-device-info/);
 });
 
+test("mobile device-detail card clears the phone status area and keeps a visible outline", () => {
+  const css = read("../styles.css");
+  assert.match(css, /@media\(max-width:680px\)\{dialog\.favorite-device-details\[open\]\{[^}]*top:calc\(env\(safe-area-inset-top,0px\) \+ 12px\)/);
+  assert.match(css, /dialog\.favorite-device-details\[open\]\{[^}]*border:1px solid #4b4638/);
+});
+
 test("Tuya PID map enriches every matching device card and its controls", () => {
   const app = read("../app.js");
   const helper = app.match(/function tuyaDeviceWithPidMap\(device\)\{[\s\S]*?\n\}/)?.[0];
