@@ -63,6 +63,7 @@ jobs:
       - name: Check USB installer shell syntax
         working-directory: solarminer-gateway-code02-v0.6.9-candidate
         run: |
+          set -euxo pipefail
           bash -n tools/tesla_oauth_relay/install-ubuntu.sh tools/tesla_oauth_relay/bootstrap-ubuntu.sh
           sh -n packaging/install-from-usb.sh
           python3 -m py_compile packaging/reset-data-volume.py
