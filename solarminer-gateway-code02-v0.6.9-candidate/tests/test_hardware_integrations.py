@@ -1376,6 +1376,80 @@ def test_tuya_inventory_pagination_sorts_query_parameters_for_signature(monkeypa
     assert inventory_paths[2] == "/v2.0/cloud/thing/device?last_id=device_39&page_size=20"
 
 
+def test_tuya_cloud_specification_is_fetched_once_per_product_id(monkeypatch):
+    product_id = "shared-pid"
+    specification_paths = []
+    existing_mapping = {"dps_id": 30, "code": "owner_verified", "function_code": "owner_verified",
+                        "semantic_code": "unknown", "data_type": "raw", "write_supported": False}
+
+    def request(config, path, token=None, *, method="GET", payload=None):
+        if path == "/v1.0/token?grant_type=1":
+            return {"result": {"access_token": "temporary-token"}}
+        if path.startswith("/v2.0/cloud/thing/device?"):
+            return {"result": [{"id": "device-a", "productId": product_id},
+                                {"id": "device-b", "productId": product_id}]}
+        if path.startswith("/v2.0/cloud/thing/"):
+            return {"result": {"product_id": product_id}}
+        if path.endswith("/specification"):
+            specification_paths.append(path)
+            return {"result": {"functions": [{"code": "switch", "name": "Switch",
+                                                  "type": "Boolean", "dp_id": 1,
+                                                  "values": {"range": [True, False]}}],
+                                "status": [{"code": "cur_voltage", "name": "Voltage",
+                                            "type": "Integer", "dp_id": 20,
+                                            "values": {"unit": "V", "scale": 1}}]}}
+        return {"result": []}
+
+    monkeypatch.setattr(integrations, "_tuya_request", request)
+    result = integrations.synchronize_tuya_devices({
+        "region": "eu_central", "client_id": "client", "client_secret": "secret", "uid": "uid",
+        "devices": [], "product_schemas": {product_id: {"dps_profile": {"dps": [existing_mapping]}}},
+    })
+
+    assert len(specification_paths) == 1
+    assert [device["product_id"] for device in result["devices"]] == [product_id, product_id]
+    assert all(device["functions"][0]["dp_id"] == 1 for device in result["devices"])
+    assert result["product_schemas"][product_id]["status_spec"][0]["values"] == {"unit": "V", "scale": 1}
+    rows = result["product_schemas"][product_id]["dps_profile"]["dps"]
+    assert any(row["dps_id"] == 30 and row["function_code"] == "owner_verified" for row in rows)
+
+
+def test_lan_dps_discovery_adds_unmapped_ids_without_overwriting_pid_mapping():
+    product_id = "shared-pid"
+    confirmed = {"dps_id": 20, "function_code": "cur_voltage", "code": "cur_voltage",
+                 "source_kind": "status", "semantic_code": "voltage", "unit": "V", "scale": 0.1,
+                 "data_type": "value", "write_supported": False}
+    config = {
+        "devices": [{"device_id": "device-a", "product_id": product_id,
+                      "functions": [{"code": "switch", "type": "Boolean", "dp_id": 1}],
+                      "status_spec": [{"code": "switch", "type": "Boolean", "dp_id": 1},
+                                      {"code": "cur_voltage", "type": "Integer", "dp_id": 20}]}],
+        "product_schemas": {product_id: {"functions": [{"code": "switch", "type": "Boolean", "dp_id": 1}],
+                                         "status_spec": [{"code": "switch", "type": "Boolean", "dp_id": 1},
+                                                         {"code": "cur_voltage", "type": "Integer", "dp_id": 20}],
+                                         "dps_profile": {"dps": [confirmed]}}},
+    }
+    readings = [{"device_id": "device-a", "connection_state": "local_responded", "observed_at": 1234,
+                 "status": [{"dps_id": 1, "code": "switch", "value": True},
+                            {"dps_id": 20, "code": "cur_voltage", "value": 2329},
+                            {"dps_id": 30, "code": "dps_30", "value": 7.5}]}]
+
+    assert integrations.merge_tuya_lan_dps_discoveries(config, readings) is True
+    rows = config["product_schemas"][product_id]["dps_profile"]["dps"]
+    by_id = {row["dps_id"]: row for row in rows}
+    assert by_id[20] == confirmed
+    assert by_id[1]["source_kind"] == "function"
+    assert by_id[1]["function_code"] == "switch"
+    assert by_id[1]["data_type"] == "bool"
+    assert by_id[1]["read_supported"] is True
+    assert by_id[1]["write_supported"] is True
+    assert by_id[30]["source_kind"] == "unknown"
+    assert by_id[30]["code"] == ""
+    assert by_id[30]["data_type"] == "value"
+    assert "value" not in by_id[30]
+    assert integrations.merge_tuya_lan_dps_discoveries(config, readings) is False
+
+
 def test_tuya_reports_devices_individually_when_one_status_request_fails(monkeypatch):
     monkeypatch.setattr(integrations, "_tuya_request", lambda *args, **kwargs: pytest.fail("Tuya status read used Cloud"))
     def local_status(device):

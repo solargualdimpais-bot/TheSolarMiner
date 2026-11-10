@@ -1119,15 +1119,184 @@ def _tuya_schema_entries(value: Any) -> list[dict[str, Any]]:
         if not isinstance(entry, dict) or not isinstance(entry.get("code"), str):
             continue
         clean: dict[str, Any] = {"code": entry["code"][:128]}
-        for key, limit in (("name", 120), ("type", 32), ("values", 2048), ("desc", 256)):
+        for key, limit in (("name", 120), ("type", 32), ("desc", 256)):
             field = entry.get(key)
             if isinstance(field, str) and len(field) <= limit:
                 clean[key] = field
+        values = entry.get("values")
+        if isinstance(values, str) and len(values) <= 2048:
+            clean["values"] = values
+        elif isinstance(values, (dict, list)):
+            try:
+                encoded_values = json.dumps(values, ensure_ascii=False, separators=(",", ":"))
+            except (TypeError, ValueError):
+                encoded_values = ""
+            if encoded_values and len(encoded_values) <= 2048:
+                clean["values"] = values
         dp_id = entry.get("dp_id", entry.get("dpId"))
         if isinstance(dp_id, int) and not isinstance(dp_id, bool) and 1 <= dp_id <= 65535:
             clean["dp_id"] = dp_id
         entries.append(clean)
     return entries
+
+
+def _tuya_observed_data_type(value: Any) -> str:
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, (int, float)):
+        return "value"
+    if isinstance(value, str):
+        return "string"
+    return "raw"
+
+
+def _tuya_profile_data_type(value: Any, fallback: str = "unknown") -> str:
+    aliases = {"boolean": "bool", "bool": "bool", "integer": "value", "int": "value",
+               "number": "value", "numeric": "value", "value": "value", "enum": "enum",
+               "enumeration": "enum", "string": "string", "char": "string", "raw": "raw"}
+    return aliases.get(str(value or "").strip().casefold(), fallback)
+
+
+def merge_tuya_lan_dps_discoveries(config: dict[str, Any], readings: Any) -> bool:
+    """Add newly observed LAN datapoint IDs to their exact PID profiles only."""
+    if not isinstance(config, dict) or not isinstance(readings, list):
+        return False
+    devices = {str(item.get("device_id")): item for item in config.get("devices", [])
+               if isinstance(item, dict) and isinstance(item.get("device_id"), str)}
+    schemas = config.get("product_schemas")
+    if not isinstance(schemas, dict):
+        schemas = {}
+        config["product_schemas"] = schemas
+    changed = False
+    for reading in readings:
+        if not isinstance(reading, dict) or reading.get("connection_state") != "local_responded":
+            continue
+        device_id = reading.get("device_id")
+        device = devices.get(str(device_id))
+        product_id = str(device.get("product_id") or "").strip() if isinstance(device, dict) else ""
+        status = reading.get("status")
+        if not product_id or not isinstance(status, list):
+            continue
+        profile = schemas.get(product_id)
+        if not isinstance(profile, dict):
+            profile = {"protocol": "tuya", "manufacturer": "Tuya",
+                       "product_name": str(device.get("product_name") or device.get("product") or "")[:120],
+                       "category": str(device.get("category") or "")[:64],
+                       "device_kind": str(device.get("device_kind") or "unknown")[:32],
+                       "schema_source": "TUYA_LAN_DISCOVERY", "functions": [],
+                       "status_spec": [], "dps_profile": {"dps": []}}
+            schemas[product_id] = profile
+            changed = True
+        for key in ("functions", "status_spec"):
+            if not isinstance(profile.get(key), list) or not profile[key]:
+                declared = _tuya_schema_entries(device.get(key))
+                if declared:
+                    profile[key] = declared
+                    changed = True
+        dps_profile = profile.get("dps_profile")
+        if not isinstance(dps_profile, dict):
+            dps_profile = {"dps": []}
+            profile["dps_profile"] = dps_profile
+            changed = True
+        rows = dps_profile.get("dps")
+        if not isinstance(rows, list):
+            rows = []
+            dps_profile["dps"] = rows
+            changed = True
+        by_id: dict[int, dict[str, Any]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            raw_id = row.get("dps_id", row.get("dp_id", row.get("dpId", row.get("id"))))
+            try:
+                dps_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= dps_id <= 65535:
+                row["dps_id"] = dps_id
+                by_id[dps_id] = row
+        stored_maps = config.get("product_dps_maps")
+        if isinstance(stored_maps, dict):
+            for mapping in stored_maps.values():
+                if not isinstance(mapping, dict) or str(mapping.get("product_id") or "") != product_id:
+                    continue
+                stored_profile = mapping.get("dps_profile")
+                stored_rows = stored_profile.get("dps") if isinstance(stored_profile, dict) else None
+                if not isinstance(stored_rows, list):
+                    continue
+                for row in stored_rows:
+                    if not isinstance(row, dict):
+                        continue
+                    try:
+                        dps_id = int(row.get("dps_id", row.get("dp_id", row.get("dpId", row.get("id")))))
+                    except (TypeError, ValueError):
+                        continue
+                    if 1 <= dps_id <= 65535:
+                        row["dps_id"] = dps_id
+                        by_id.setdefault(dps_id, row)
+        function_codes = {str(item.get("code")): item for item in device.get("functions", [])
+                          if isinstance(item, dict) and isinstance(item.get("code"), str)}
+        status_codes = {str(item.get("code")): item for item in device.get("status_spec", [])
+                        if isinstance(item, dict) and isinstance(item.get("code"), str)}
+        for observed in status:
+            if not isinstance(observed, dict):
+                continue
+            raw_id = observed.get("dps_id", observed.get("dp_id", observed.get("dpId")))
+            try:
+                dps_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if not 1 <= dps_id <= 65535:
+                continue
+            code = str(observed.get("code") or "")
+            if code == f"dps_{dps_id}":
+                code = ""
+            function = function_codes.get(code)
+            state = status_codes.get(code)
+            # A datapoint can be declared both writable and readable (for
+            # example `switch`). Preserve the command classification while
+            # retaining its read capability too.
+            source = "function" if function else "status" if state else "unknown"
+            capability = function if source == "function" else state if source == "status" else None
+            row = by_id.get(dps_id)
+            if row is None:
+                value = observed.get("raw_value", observed.get("value"))
+                raw_type = capability.get("type") if capability else ""
+                row = {"dps_id": dps_id, "dp_id": dps_id,
+                       "code": code if capability else "",
+                       "function_code": code if capability else "",
+                       "display_name": str((capability or {}).get("name") or f"DPS {dps_id}")[:120],
+                       "data_type": _tuya_profile_data_type(raw_type, _tuya_observed_data_type(value)),
+                       "source_kind": source,
+                       "source": "TUYA_LAN" if not capability else "TUYA_LAN+TUYA_DEVICE_SPEC",
+                       "first_observed_at": reading.get("observed_at"),
+                       "first_observed_device_id": str(device_id)[:128],
+                       "read_supported": bool(state) or source != "function",
+                       "write_supported": bool(function)}
+                if capability:
+                    if isinstance(capability.get("values"), (str, dict, list)):
+                        row["values"] = capability["values"]
+                    if isinstance(capability.get("desc"), str):
+                        row["details"] = capability["desc"][:512]
+                rows.append(row)
+                by_id[dps_id] = row
+                changed = True
+                continue
+            # Upgrade only unclassified LAN rows when an exact code is now
+            # supplied by the device schema. Existing owner mappings win.
+            if (capability and row.get("source_kind", row.get("origin", row.get("source")))
+                    in {None, "unknown", "TUYA_LAN"}
+                    and not str(row.get("function_code") or row.get("code") or "").strip()):
+                row.update({"code": code, "function_code": code, "source_kind": source,
+                            "source": "TUYA_LAN+TUYA_DEVICE_SPEC",
+                            "display_name": str(capability.get("name") or row.get("display_name") or f"DPS {dps_id}")[:120],
+                            "data_type": _tuya_profile_data_type(capability.get("type"), str(row.get("data_type") or "unknown")),
+                            "read_supported": bool(state), "write_supported": bool(function)})
+                if isinstance(capability.get("values"), (str, dict, list)):
+                    row["values"] = capability["values"]
+                changed = True
+        rows.sort(key=lambda item: int(item.get("dps_id", 0)) if isinstance(item, dict) else 0)
+    return changed
 
 
 def _tuya_merge_pid_dps_rows(previous_profile: Any, generated_profile: Any,
@@ -1475,6 +1644,7 @@ def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Eve
     # Read each device's latest metadata and DP schema. Per-device failures are
     # reported without discarding the successfully imported inventory.
     details_failures = 0
+    specification_by_product: dict[str, dict[str, Any] | None] = {}
     for item in discovered:
         check_cancelled()
         quoted = urllib.parse.quote(item["device_id"], safe="")
@@ -1504,27 +1674,33 @@ def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Eve
                 item["last_status_at"] = previous_status.get("last_status_at")
         except (RuntimeError, ValueError):
             details_failures += 1
-        try:
-            spec = _tuya_request(config, f"/v1.0/iot-03/devices/{quoted}/specification", token).get("result")
-            if isinstance(spec, dict):
-                item["functions"] = _tuya_schema_entries(spec.get("functions"))
-                item["status_spec"] = _tuya_schema_entries(spec.get("status"))
-                item["category"] = str(spec.get("category") or item["category"])[:64]
-                if item["functions"] or item["status_spec"]:
-                    item["schema_source"] = "TUYA_DEVICE_SPEC"
-                    if item.get("product_id"):
-                        previous_profile = product_schemas.get(item["product_id"], {})
-                        product_schemas[item["product_id"]] = {
-                            "category": item.get("category", ""),
-                            "product_name": item.get("product_name", ""),
-                            "schema_source": "TUYA_DEVICE_SPEC",
-                            "functions": item["functions"],
-                            "status_spec": item["status_spec"],
-                            "custom_dps_overrides": previous_profile.get("custom_dps_overrides", {}) if isinstance(previous_profile, dict) else {},
-                            "cached_at": int(time.time()),
-                        }
-        except (RuntimeError, ValueError):
-            details_failures += 1
+        spec_key = str(item.get("product_id") or f"device:{item['device_id']}")
+        if spec_key not in specification_by_product:
+            try:
+                spec = _tuya_request(config, f"/v1.0/iot-03/devices/{quoted}/specification", token).get("result")
+                specification_by_product[spec_key] = spec if isinstance(spec, dict) else None
+            except (RuntimeError, ValueError):
+                specification_by_product[spec_key] = None
+                details_failures += 1
+        spec = specification_by_product[spec_key]
+        if isinstance(spec, dict):
+            item["functions"] = _tuya_schema_entries(spec.get("functions"))
+            item["status_spec"] = _tuya_schema_entries(spec.get("status"))
+            item["category"] = str(spec.get("category") or item["category"])[:64]
+            if item["functions"] or item["status_spec"]:
+                item["schema_source"] = "TUYA_DEVICE_SPEC"
+                if item.get("product_id"):
+                    previous_profile = product_schemas.get(item["product_id"], {})
+                    product_schemas[item["product_id"]] = {
+                        **(previous_profile if isinstance(previous_profile, dict) else {}),
+                        "category": item.get("category", ""),
+                        "product_name": item.get("product_name", ""),
+                        "schema_source": "TUYA_DEVICE_SPEC",
+                        "functions": item["functions"],
+                        "status_spec": item["status_spec"],
+                        "custom_dps_overrides": previous_profile.get("custom_dps_overrides", {}) if isinstance(previous_profile, dict) else {},
+                        "cached_at": int(time.time()),
+                    }
         if not item.get("functions") and not item.get("status_spec") and item.get("product_id"):
             cached = product_schemas.get(item["product_id"])
             if isinstance(cached, dict) and (not item.get("category") or not cached.get("category") or item["category"] == cached["category"]):

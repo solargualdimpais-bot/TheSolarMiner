@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.227"
+PACKAGE_VERSION = "0.6.228"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -1619,6 +1619,7 @@ def _run_automatic_dispatch() -> dict[str, Any]:
             tuya_states = {}
             if any(action.get("control_type") in {"tuya_smart", "tuya_breaker"} for action in plan.get("actions", [])):
                 tuya_readings = hardware_integrations.read_tuya(tuya_config)
+                _merge_tuya_lan_dps_discoveries(integration_config, tuya_readings, conn)
                 _persist_tuya_device_events(conn, tuya_readings)
                 energy_engine.persist_tuya_telemetry(conn, tuya_readings, tuya_config.get("devices", []), tuya_config.get("product_schemas", {}))
                 _update_tuya_device_records(integration_config, tuya_readings)
@@ -1845,7 +1846,8 @@ def _collect_tuya_device_events_once() -> int:
             LOG.warning(message, *values)
         else:
             LOG.info(message, *values)
-    if _update_tuya_device_records(integration_config, readings, record_status=False):
+    discovered_dps = _merge_tuya_lan_dps_discoveries(integration_config, readings)
+    if discovered_dps or _update_tuya_device_records(integration_config, readings, record_status=False):
         hardware_integrations.save_config(integration_config)
     return recorded
 
@@ -3086,7 +3088,10 @@ def hardware_integrations_read(session: dict[str, Any] = Depends(require_permiss
         actor = _revalidate_actor(conn, session, "manage_gateway")
         if actor["role"] != "owner": raise HTTPException(403, "owner_required")
         try:
-            result = hardware_integrations.collect(hardware_integrations.load_config())
+            integration_config = hardware_integrations.load_config()
+            result = hardware_integrations.collect(integration_config)
+            if _merge_tuya_lan_dps_discoveries(integration_config, result.get("tuya", []), conn):
+                hardware_integrations.save_config(integration_config)
             conn.execute("BEGIN")
             result["energy_readings_persisted"] = _persist_deye_telemetry(conn, result.get("deye"))
             result["antminer_energy_readings_persisted"] = _persist_antminer_telemetry(conn, result.get("antminer"))
@@ -3154,6 +3159,23 @@ def _persist_tuya_device_events(conn: sqlite3.Connection, readings: list[dict[st
                               old_json, new_json, "TUYA_LAN"))
                 recorded += 1
     return recorded
+
+
+def _merge_tuya_lan_dps_discoveries(config: dict[str, Any], readings: Any,
+                                   conn: sqlite3.Connection | None = None) -> bool:
+    """Merge LAN-discovered DPS IDs into the existing exact-PID profiles."""
+    tuya = config.get("tuya") if isinstance(config.get("tuya"), dict) else None
+    if not tuya:
+        return False
+    changed = hardware_integrations.merge_tuya_lan_dps_discoveries(tuya, readings)
+    if changed:
+        if conn is not None:
+            _persist_tuya_product_dps_map(conn, tuya.get("product_schemas"))
+        else:
+            with db() as persist_conn:
+                _persist_tuya_product_dps_map(persist_conn, tuya.get("product_schemas"))
+                persist_conn.commit()
+    return changed
 
 
 def _update_tuya_device_records(config: dict[str, Any], readings: list[dict[str, Any]], *,
@@ -3299,7 +3321,13 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
         elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
         verified_ids = {device_id for device_id, rows in samples.items()
                         if any(row.get("ok") and row.get("status") for row in rows)}
-        if verified_ids:
+        latest_lan_readings = [{"device_id": device_id, "connection_state": "local_responded",
+                                "status": next((row["status"] for row in reversed(rows)
+                                                if row.get("ok") and row.get("status")), []),
+                                "observed_at": time.time()}
+                               for device_id, rows in samples.items() if device_id in verified_ids]
+        discovered_dps = _merge_tuya_lan_dps_discoveries(full_config, latest_lan_readings, conn)
+        if verified_ids or discovered_dps:
             configured_devices = config.get("devices", []) if isinstance(config.get("devices"), list) else []
             for item in configured_devices:
                 if not isinstance(item, dict) or item.get("device_id") not in verified_ids:
@@ -5220,6 +5248,7 @@ def hardware_provider_read(provider: str, payload: dict[str, Any] | None = None,
                         raise HTTPException(404, "tuya_device_not_configured")
                     tuya_config = {**item, "devices": [d for d in item["devices"] if d.get("device_id") == device_id]}
                 result = {"tuya": hardware_integrations.read_tuya(tuya_config)}
+                _merge_tuya_lan_dps_discoveries(config, result["tuya"], conn)
                 _persist_tuya_device_events(conn, result["tuya"])
                 energy_engine.persist_tuya_telemetry(conn, result["tuya"], item.get("devices", []), item.get("product_schemas", {}))
                 _update_tuya_device_records(config, result["tuya"])
