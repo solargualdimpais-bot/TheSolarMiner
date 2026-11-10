@@ -7,7 +7,7 @@ const css = await readFile(new URL("../styles.css", import.meta.url), "utf8");
 
 test("device-name detail opens the Shelly-reference Tuya card", () => {
   assert.match(app, /function openFavoriteDeviceDetails\([\s\S]*?if\(isTuya\)\{openTuyaReferenceDeviceCard\(deviceId\);return;\}/);
-  assert.match(app, /\['bell','Notificações'\].*\['settings','Definições'\]/);
+  assert.match(app, /\['bell','Notificações','notifications'\].*\['settings','Definições','settings'\]/);
   assert.match(app, /reference-rail.*Opções do dispositivo/);
 });
 
@@ -16,6 +16,13 @@ test("reference cards include per-channel dimmer and ON/OFF layouts", () => {
   assert.match(app, /reference-channel-grid \$\{channels\.length===2\?"is-two":""\}/);
   assert.match(app, /reference-group-action/);
   assert.match(app, /data-reference-brightness="\$\{esc\(dimmer\.code\)\}"/);
+});
+
+test("six-channel device popup keeps the 2-by-3 channel grid and group action", () => {
+  assert.match(app, /channels\.map\(channelMarkup\)\.join\(""\)/);
+  assert.match(app, /reference-channel-grid/);
+  assert.match(app, /const groupAction=multi\?/);
+  assert.match(css, /\.reference-channel-grid\{[^}]*grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
 });
 
 test("breaker card shows the four requested readings without inventing zeroes", () => {

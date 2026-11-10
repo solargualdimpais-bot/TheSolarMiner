@@ -201,12 +201,14 @@ test("Home Tuya favorites keep optimistic state until a matching LAN reading and
   assert.match(confirmation, /aguardar a leitura LAN normal/);
 });
 
-test("Device card code opens the rendered preview while the pencil remains the editor", () => {
+test("Device model code opens its real details popup and the pencil edits popup menu order", () => {
   assert.match(app, /let inventoryCardClickTimer = null/);
   assert.match(app, /inventoryCardClickTimer=setTimeout\(\(\)=>\{inventoryCardClickTimer=null;openFavoriteDeviceDetails\(deviceId,"tuya"\);\},280\)/);
   assert.match(app, /const cardOpen=event\.target\.closest\("\[data-card-open\]"\);if\(cardOpen\).*?openDeviceCardPreview\(card\)/);
-  assert.match(app, /const cardEdit=event\.target\.closest\("\[data-card-edit\]"\);if\(cardEdit\).*?openDeviceCardEditor\(card\)/);
-  assert.match(app, /function openDeviceCardPreview\(card\)[\s\S]*?renderDeviceCardFromTemplate\(card,sample,status,metricMarkup,switchButton/);
+  assert.match(app, /const cardEdit=event\.target\.closest\("\[data-card-edit\]"\);if\(cardEdit\).*?openDevicePopupMenuEditor\(card\)/);
+  assert.match(app, /function openDeviceCardPreview\(card\)[\s\S]*?openFavoriteDeviceDetails\(device\.device_id,"tuya"\)/);
+  assert.match(app, /function openDevicePopupMenuEditor\(card\)[\s\S]*?popup_menu:\{\.\.\.\(card\.layout\?\.popup_menu\|\|\{\}\),order:\[\.\.\.order\]\}/);
+  assert.match(app, /function deviceCardPopupMenuOrder\(card\)[\s\S]*?card\?\.layout\?\.popup_menu\?\.order/);
   assert.doesNotMatch(app, /addEventListener\("dblclick",event=>\{const cardCodeButton=event\.target\.closest\("\[data-card-open\]"\)/);
 });
 
@@ -214,6 +216,9 @@ test("Two-channel Tuya dimmers keep distinct declared brightness controls", () =
   assert.match(app, /const ordered=channels\.length>1&&brightnessSpecs\.length===channels\.length/);
   assert.match(app, /return specific\|\|single\|\|ordered\|\|fallback/);
   assert.match(app, /brightnessSpecs\.length===channels\.length/);
+  assert.match(app, /function tuyaDeviceSpecs\(device\)[\s\S]*?category_functions[\s\S]*?product_profile\?\.status_spec/);
+  assert.match(app, /const brightnessSpecs=tuyaDeviceSpecs\(device\)/);
+  assert.match(app, /const fromSchema=tuyaDeviceSpecs\(device\)/);
 });
 
 test("Favorite card render retains the switch code list for its controls", () => {
