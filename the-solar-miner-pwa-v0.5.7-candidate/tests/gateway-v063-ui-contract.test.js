@@ -252,6 +252,19 @@ test("Tuya cards mirror the Home layout and expose schema-driven quick controls"
   assert.match(app, /data-tuya-channel-label=/);
 });
 
+test("PID DPS editor can refresh Tuya Cloud capabilities without replacing the DPS map", () => {
+  assert.match(app, /data-dps-cloud-refresh>Reler funções e estados da Tuya Cloud/);
+  assert.match(app, /await syncGatewayTuyaDevices\(\);await refreshHardwareIntegrationConfig\(\);await refreshTuyaProductCatalogViews\(\)/);
+  assert.match(app, /O mapa DPS foi mantido/);
+  assert.match(app, /capabilities=\[\.\.\.profile\.functions\.map/);
+});
+
+test("Tuya device settings expose declared LED controls and update dialogs show rollback reasons", () => {
+  assert.ok(app.includes("switch.?led|led.?type|indicator.?light|backlight"));
+  assert.match(app, /Luzes indicadoras/);
+  assert.match(app, /Motivo registado:/);
+});
+
 test("Tuya state uses the product DPS catalog and breaker menu tolerates optional controls", () => {
   assert.match(app, /function tuyaSpecDpsId\(device,spec\)[\s\S]*?device\?\.product_profile\?\.dps/);
   assert.match(app, /status\.find\(item=>Number\(item\?\.dps_id\?\?item\?\.dp_id\)===dpId/);

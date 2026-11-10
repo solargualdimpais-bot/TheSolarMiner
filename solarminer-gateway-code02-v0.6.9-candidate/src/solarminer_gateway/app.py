@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.228"
+PACKAGE_VERSION = "0.6.229"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -7570,12 +7570,32 @@ def system_update_status(session: dict[str, Any] = Depends(require_permission("r
     # operation (for example a previous rollback) as the current status.
     with db() as conn:
         row = conn.execute("SELECT * FROM update_operations ORDER BY updated_at DESC, rowid DESC LIMIT 1").fetchone()
+        recent_rows = conn.execute("SELECT state,updated_at,details_json FROM update_operations "
+                                   "ORDER BY updated_at DESC,rowid DESC LIMIT 20").fetchall()
     if not row:
         return {"status": "IDLE", "installed_version": PACKAGE_VERSION, "activation_available": False}
-    return {"operation_id": row["id"], "status": row["state"], "installed_version": row["installed_version"],
+    latest_pipeline = None
+    for recent in recent_rows:
+        try:
+            recent_details = json.loads(recent["details_json"] or "{}")
+        except json.JSONDecodeError:
+            continue
+        pipeline = recent_details.get("pipeline") if isinstance(recent_details, dict) else None
+        if not isinstance(pipeline, dict):
+            continue
+        safe_pipeline = {key: pipeline[key] for key in
+                         ("state", "failure", "rollback_failure", "recovery", "rollback_reason", "finished_at_utc")
+                         if isinstance(pipeline.get(key), (str, int, float, bool))}
+        if safe_pipeline.get("failure") or safe_pipeline.get("rollback_failure"):
+            latest_pipeline = {**safe_pipeline, "updated_at": recent["updated_at"]}
+            break
+    result = {"operation_id": row["id"], "status": row["state"], "installed_version": row["installed_version"],
             "target_version": row["target_version"], "created_at": row["created_at"], "updated_at": row["updated_at"],
             "details": json.loads(row["details_json"]),
             "activation_available": bool(json.loads(row["details_json"]).get("activation_available", False))}
+    if latest_pipeline:
+        result["last_pipeline_diagnostic"] = latest_pipeline
+    return result
 
 
 @app.post("/api/v1/system/update/apply", status_code=202)

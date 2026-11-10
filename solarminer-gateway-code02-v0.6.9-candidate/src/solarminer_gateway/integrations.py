@@ -1910,7 +1910,7 @@ def control_tuya_setting(config: dict[str, Any], device_id: str, code: str, valu
     values = raw_values if isinstance(raw_values, dict) else {}
     category_key = "".join(char for char in str(device.get("category") or "").casefold() if char.isalnum())
     allowed_by_semantic = bool(re.search(
-        r"count.?down|child.?lock|maintenance.?lock|light.?mode|relay.?status|power.?on.?state|alarm|over.?power|under.?power|over.?current|under.?current|over.?voltage|under.?voltage|trip",
+        r"count.?down|child.?lock|maintenance.?lock|light.?mode|relay.?status|power.?on.?state|switch.?led|led.?type|indicator.?light|backlight|alarm|over.?power|under.?power|over.?current|under.?current|over.?voltage|under.?voltage|trip",
         semantic)) or (category_key == "kg" and bool(re.search(r"switch.?type|io.?set|scene|number", semantic)))
     # Validate the requested value before requiring a local datapoint mapping.
     # This keeps a bad value from being misreported as a missing DPS mapping.

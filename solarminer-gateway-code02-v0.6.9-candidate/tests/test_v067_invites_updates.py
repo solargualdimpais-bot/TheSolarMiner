@@ -267,6 +267,22 @@ def test_update_check_reports_not_configured_and_apply_stays_disabled(client, mo
     assert "independent_recovery_deployment" in apply.json()["detail"]
 
 
+def test_update_status_keeps_last_rollback_reason_after_a_later_check(client):
+    token=owner_session(client); headers={"Authorization":f"Bearer {token}"}
+    with gateway.db() as conn:
+        conn.execute("INSERT INTO update_operations(id,state,installed_version,target_version,created_at,updated_at,details_json) "
+                     "VALUES(?,?,?,?,?,?,?)", ("old-rollback", "ROLLED_BACK", "0.6.226", "0.6.227", 1, 1,
+                     json.dumps({"pipeline":{"state":"ROLLED_BACK","failure":"new_release_health_check_failed_after_60s"}})))
+        conn.execute("INSERT INTO update_operations(id,state,installed_version,target_version,created_at,updated_at,details_json) "
+                     "VALUES(?,?,?,?,?,?,?)", ("new-check", "FAILED", "0.6.226", None, 2, 2,
+                     json.dumps({"reason":"manifest_unavailable"})))
+    response=client.get("/api/v1/system/update/status",headers=headers)
+    assert response.status_code == 200
+    body=response.json()
+    assert body["status"] == "FAILED"
+    assert body["last_pipeline_diagnostic"]["failure"] == "new_release_health_check_failed_after_60s"
+
+
 def test_energy_categories_report_embedded_pwa_version(client):
     token=owner_session(client)
     response=client.get("/api/v1/energy/categories",headers={"Authorization":f"Bearer {token}"})

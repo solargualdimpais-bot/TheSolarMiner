@@ -1819,6 +1819,27 @@ def test_tuya_setting_control_rejects_undeclared_or_out_of_range_values(monkeypa
         integrations.control_tuya_setting(config, "breaker-1", "child_lock", True)
 
 
+@pytest.mark.parametrize(("code", "type_name", "values", "value"), [
+    ("switch_led", "Boolean", "{}", True),
+    ("led_type", "Enum", '{"range":["relay","pos","none","on"]}', "pos"),
+])
+def test_tuya_led_settings_accept_only_declared_values_and_mapped_dps(monkeypatch, code, type_name, values, value):
+    calls = []
+
+    class LocalDevice:
+        def set_value(self, dps, requested):
+            calls.append((dps, requested))
+            return {"dps": {str(dps): requested}}
+
+    device = {"device_id": "dimmer", "local_ip": "192.168.1.20", "local_key": "local-key-123",
+              "local_dps_map": {code: "12"},
+              "functions": [{"code": code, "name": code, "type": type_name, "values": values}]}
+    monkeypatch.setattr(integrations, "_tuya_lan_client", lambda item: LocalDevice())
+    result = integrations.control_tuya_setting({"devices": [device]}, "dimmer", code, value)
+    assert calls == [(12, value)]
+    assert result["command_accepted"] is True
+
+
 def test_tesla_config_keeps_credentials_private_and_validates_selected_vehicle_ids():
     tesla = integrations.validate_tesla_config({
         "region": "europe", "client_id": "tesla-client",
