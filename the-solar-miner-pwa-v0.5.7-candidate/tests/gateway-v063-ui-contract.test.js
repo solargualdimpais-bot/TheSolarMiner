@@ -201,10 +201,19 @@ test("Home Tuya favorites keep optimistic state until a matching LAN reading and
   assert.match(confirmation, /aguardar a leitura LAN normal/);
 });
 
-test("Devices inventory waits to distinguish a single card click from a double click on the name", () => {
+test("Device card code opens the rendered preview while the pencil remains the editor", () => {
   assert.match(app, /let inventoryCardClickTimer = null/);
   assert.match(app, /inventoryCardClickTimer=setTimeout\(\(\)=>\{inventoryCardClickTimer=null;openFavoriteDeviceDetails\(deviceId,"tuya"\);\},280\)/);
-  assert.match(app, /addEventListener\("dblclick",event=>\{const cardCodeButton=event\.target\.closest\("\[data-card-open\]"\);if\(cardCodeButton\)/);
+  assert.match(app, /const cardOpen=event\.target\.closest\("\[data-card-open\]"\);if\(cardOpen\).*?openDeviceCardPreview\(card\)/);
+  assert.match(app, /const cardEdit=event\.target\.closest\("\[data-card-edit\]"\);if\(cardEdit\).*?openDeviceCardEditor\(card\)/);
+  assert.match(app, /function openDeviceCardPreview\(card\)[\s\S]*?renderDeviceCardFromTemplate\(card,sample,status,metricMarkup,switchButton/);
+  assert.doesNotMatch(app, /addEventListener\("dblclick",event=>\{const cardCodeButton=event\.target\.closest\("\[data-card-open\]"\)/);
+});
+
+test("Two-channel Tuya dimmers keep distinct declared brightness controls", () => {
+  assert.match(app, /const ordered=channels\.length>1&&brightnessSpecs\.length===channels\.length/);
+  assert.match(app, /return specific\|\|single\|\|ordered\|\|fallback/);
+  assert.match(app, /brightnessSpecs\.length===channels\.length/);
 });
 
 test("Favorite card render retains the switch code list for its controls", () => {
