@@ -218,7 +218,15 @@ test("Two-channel Tuya dimmers keep distinct declared brightness controls", () =
   assert.match(app, /brightnessSpecs\.length===channels\.length/);
   assert.match(app, /function tuyaDeviceSpecs\(device\)[\s\S]*?category_functions[\s\S]*?product_profile\?\.status_spec/);
   assert.match(app, /const brightnessSpecs=tuyaDeviceSpecs\(device\)/);
-  assert.match(app, /const fromSchema=tuyaDeviceSpecs\(device\)/);
+  assert.match(app, /const extraSwitchCodes=tuyaDeviceSpecs\(device\)/);
+});
+
+test("Tuya capability collection tolerates optional schema fields in non-array formats", () => {
+  const start = app.indexOf("function tuyaDeviceSpecs(device)");
+  const end = app.indexOf("\nfunction tuyaSwitchCodes", start);
+  assert.ok(start >= 0 && end > start);
+  const collect = new Function(`${app.slice(start, end)}; return tuyaDeviceSpecs;`)();
+  assert.deepEqual(collect({ functions: [{ code: "switch_1", type: "bool" }], category_functions: { code: "not-an-array" }, product_profile: { status_spec: null } }), [{ code: "switch_1", type: "bool" }]);
 });
 
 test("Favorite card render retains the switch code list for its controls", () => {

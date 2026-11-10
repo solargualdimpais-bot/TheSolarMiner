@@ -885,11 +885,11 @@ function equipmentIconSvg(device,kind=""){
   return `<svg ${common}><rect x="7" y="7" width="34" height="34" rx="8"/><path d="M15 24h18M24 15v18"/></svg>`;
 }
 const favoriteControlPending=new Set();
-function tuyaDeviceSpecs(device){const rows=[...(device?.functions||[]),...(device?.status_spec||[]),...(device?.category_functions||[]),...(device?.category_status_spec||[]),...(device?.product_profile?.functions||[]),...(device?.product_profile?.status_spec||[])],byCode=new Map();for(const row of rows)if(row&&typeof row.code==="string"&&!byCode.has(row.code))byCode.set(row.code,row);return [...byCode.values()];}
+function tuyaDeviceSpecs(device){const sources=[device?.functions,device?.status_spec,device?.category_functions,device?.category_status_spec,device?.product_profile?.functions,device?.product_profile?.status_spec],rows=sources.flatMap(source=>Array.isArray(source)?source:[]),byCode=new Map();for(const row of rows)if(row&&typeof row.code==="string"&&!byCode.has(row.code))byCode.set(row.code,row);return [...byCode.values()];}
 function tuyaSwitchCodes(device){
   if(tuyaIsEvCharger(device)){const category=String(device?.category||"").toLowerCase().replace(/[^a-z0-9]/g,"");if(category==="qccdz"){const declared=(Array.isArray(device?.functions)?device.functions:[]).filter(item=>item&&typeof item.code==="string"&&["bool","boolean"].includes(String(item.type||"").toLowerCase())&&/^switch(?:_1)?$/i.test(item.code)).map(item=>item.code);return [...new Set([...declared,device?.switch_code||"switch"])]}return (Array.isArray(device?.functions)?device.functions:[]).filter(item=>item&&typeof item.code==="string"&&["bool","boolean"].includes(String(item.type||"").toLowerCase())&&/(charge|charging|start.?charge|stop.?charge|charger)/i.test(`${item.code} ${item.name||""} ${item.desc||""}`)&&device.local_dps_map?.[item.code]).map(item=>item.code)}
   const switchCode=/^(?:switch(?:_all|_[1-9]\d*)?|switch_led|switch_usb[1-9]\d*)$/i;
-  const fromSchema=tuyaDeviceSpecs(device).filter(item=>typeof item.code==="string"&&switchCode.test(item.code)&&["bool","boolean"].includes(String(item.type||"").toLowerCase())).map(item=>item.code);
+  const fromSchema=(Array.isArray(device?.functions)?device.functions:[]).filter(item=>item&&typeof item.code==="string"&&switchCode.test(item.code)&&["bool","boolean"].includes(String(item.type||"").toLowerCase())).map(item=>item.code);
   const configured=(Array.isArray(device?.switch_channels)?device.switch_channels:[]).filter(code=>typeof code==="string"&&switchCode.test(code));
   const explicit=typeof device?.switch_code==="string"&&device.switch_code? [device.switch_code]:[];
   return [...new Set([...configured,...fromSchema,...explicit])];
@@ -911,7 +911,7 @@ function tuyaSwitchState(device,reading,code,ignorePending=false){
   const boolValue=value=>typeof value==="boolean"?value:typeof value==="number"&&(value===0||value===1)?Boolean(value):typeof value==="string"&&/^(true|false|0|1)$/i.test(value)?value.toLowerCase()==="true"||value==="1":undefined;
   const direct=boolValue(directItem?.value);
   if(typeof direct==="boolean")return direct;
-  const spec=tuyaDeviceSpecs(device).find(item=>item?.code===code);
+  const spec=[...(device?.functions||[]),...(device?.status_spec||[])].find(item=>item?.code===code);
   const kgMatch=tuyaIsKgHybrid(device)&&String(code||"").match(/^switch_([1-6])$/i);
   const dpId=spec?tuyaSpecDpsId(device,spec):Number.isInteger(Number(device?.local_dps_map?.[code]))?Number(device.local_dps_map[code]):kgMatch?Number(kgMatch[1]):tuyaIsKgHybrid(device)&&code==="switch_all"?13:null;
   if(dpId!==null){const byId=boolValue(status.find(item=>Number(item?.dps_id??item?.dp_id)===dpId||item?.code===`dps_${dpId}`)?.value);if(typeof byId==="boolean")return byId;}
@@ -924,7 +924,7 @@ function tuyaSwitchState(device,reading,code,ignorePending=false){
 function tuyaSwitchCodeHasLocalMapping(device,code){
   if(device?.local_dps_map&&Object.prototype.hasOwnProperty.call(device.local_dps_map,code))return true;
   if((device?.dps_knowledge?.mapping_conflicts||[]).some(conflict=>(conflict?.codes||[]).includes(code)))return false;
-  const spec=tuyaDeviceSpecs(device).find(item=>item?.code===code);
+  const spec=(device?.functions||[]).find(item=>item?.code===code);
   if(Number.isInteger(spec?.dp_id)||Number.isInteger(spec?.dpId))return true;
   if(tuyaIsKgHybrid(device)&&code==="switch_all")return true;
   if(tuyaIsKgHybrid(device)&&/^switch_[1-6]$/.test(code))return true;
@@ -1022,7 +1022,7 @@ function openTuyaReferenceDeviceCard(deviceId){
   const raw=state.tuyaDevices.find(item=>item.device_id===deviceId),device=tuyaDeviceWithPidMap(raw);if(!device)return;
   const reading=state.tuyaReadings.find(item=>item.device_id===deviceId)||{status:device.current_status||[],connection_state:"stored_status"};
   const status=Array.isArray(reading.status)?reading.status:[],metrics=(()=>{try{return tuyaSimpleReadings(device,reading)}catch{return []}})();
-  const switches=tuyaSwitchChannelCodes(device),channels=(switches.length?switches:tuyaSwitchCodes(device).filter(code=>code!=="switch_all")).map((code,index)=>({code,index,value:tuyaSwitchState(device,reading,code),label:device.channel_labels?.[code]||device.capability_labels?.[code]||`Canal ${index+1}`}));
+  const extraSwitchCodes=tuyaDeviceSpecs(device).filter(item=>/^switch_[1-9]\d*$/i.test(String(item?.code||""))&&["bool","boolean"].includes(String(item?.type||"").toLowerCase())).map(item=>item.code),switchCodes=[...new Set([...tuyaSwitchCodes(device),...extraSwitchCodes])],switches=tuyaSwitchChannelCodes(device,switchCodes),channels=(switches.length?switches:switchCodes.filter(code=>code!=="switch_all")).map((code,index)=>({code,index,value:tuyaSwitchState(device,reading,code),label:device.channel_labels?.[code]||device.capability_labels?.[code]||`Canal ${index+1}`}));
   const brightnessSpecs=tuyaDeviceSpecs(device).filter(item=>/bright|brightness|dimmer|level/i.test(`${item.code||""} ${item.name||""}`));
   const brightnessForChannel=channel=>{
     const suffix=String(channel.index+1),specific=brightnessSpecs.find(item=>new RegExp(`(?:_|-)${suffix}$`).test(String(item.code||"")));

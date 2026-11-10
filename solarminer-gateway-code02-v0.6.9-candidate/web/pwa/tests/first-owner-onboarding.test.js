@@ -17,6 +17,6 @@ test("first PWA visit opens secure Gateway setup and keeps Owner bootstrap behin
   assert.match(app, /setTimeout\(openGatewayConnectionDialog,0\)/);
   assert.match(app, /if \(\["BOOTSTRAP_PENDING", "OWNER_SETUP_REQUIRED"\]\.includes\(bootstrap\.state\)\)/);
   assert.match(html, /Se o Gateway estiver à espera do primeiro Owner, abre-se então a janela/);
-  assert.equal(pkg.version, "0.5.168");
-  assert.match(sw, /the-solar-miner-static-v0\.5\.168-device-popup-menu-model/);
+  assert.equal(pkg.version, "0.5.169");
+  assert.match(sw, /the-solar-miner-static-v0\.5\.169-home-render-guard/);
 });
