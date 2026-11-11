@@ -250,20 +250,26 @@ def ensure_ext4_data_partition(partition: str, filesystem: str, uuid: str) -> st
                 uuid = ""
         if uuid:
             return uuid
-    # The user selected the two-state first-install policy: a readable active
-    # Owner is authenticated later; if the data filesystem cannot be read, it
-    # is a fresh install and this dedicated, labeled data partition is reset.
+    raise RuntimeError(
+        "A partição já marcada SOLARMINER_DATA não é um volume ext4 íntegro e identificável. "
+        "Não vou formatá-la automaticamente; recupera ou confirma os dados antes de continuar."
+    )
+
+
+def format_new_data_partition(partition: str) -> str:
+    """Format only a partition created in verified free space by this invocation."""
+    targets = mounted_targets(partition)
+    if targets:
+        raise RuntimeError("A nova partição já está montada; não será formatada.")
     signatures = subprocess.run(
         ["wipefs", "--no-act", "--noheadings", "--output", "TYPE,OFFSET", partition],
         check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
-    if signatures.returncode != 0:
-        print(f"Não foi possível identificar Owner em {partition}; a política de instalação limpa será aplicada.",
-              flush=True)
-    elif signatures.stdout.strip():
-        print(f"Owner não identificável em {partition}; a partição de dados será inicializada de novo.",
-              flush=True)
-    run(["wipefs", "--all", partition])
+    if signatures.returncode != 0 or signatures.stdout.strip():
+        raise RuntimeError(
+            "A partição criada no espaço livre tem assinaturas inesperadas; "
+            "não vou apagá-las nem formatá-la."
+        )
     run(["mkfs.ext4", "-F", "-L", LABEL, partition])
     uuid = partition_uuid(partition)
     if not uuid:
@@ -371,7 +377,8 @@ def main() -> int:
             labelled = [row for row in rows if row[1] == LABEL]
             if len(labelled) != 1 or not labelled[0][0]:
                 raise RuntimeError("A nova partição não apareceu com a etiqueta esperada; não foi formatada.")
-            partition, uuid = prepare_labeled_data_partition(labelled[0])
+            partition = labelled[0][0]
+            uuid = format_new_data_partition(partition)
         write_fstab(uuid)
         mount_data(uuid)
         print("Volume de dados SolarMiner preparado e montado em /var/lib/solarminer.", flush=True)

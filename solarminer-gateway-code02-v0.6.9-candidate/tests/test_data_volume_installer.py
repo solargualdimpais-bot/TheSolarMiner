@@ -136,9 +136,8 @@ def test_newly_created_partition_row_with_size_completes_initialization(monkeypa
         lambda args, **kwargs: type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
     )
     row = ("/dev/sda6", "SOLARMINER_DATA", "", "", "129000000000")
-    assert provision.prepare_labeled_data_partition(row) == ("/dev/sda6", "created-uuid")
+    assert provision.format_new_data_partition(row[0]) == "created-uuid"
     assert calls == [
-        ["wipefs", "--all", "/dev/sda6"],
         ["mkfs.ext4", "-F", "-L", "SOLARMINER_DATA", "/dev/sda6"],
         ["blkid", "--output", "value", "--match-tag", "UUID", "/dev/sda6"],
     ]
@@ -193,7 +192,7 @@ def test_clean_debian_partition_plus_unallocated_space_provisions_data_end_to_en
 
     monkeypatch.setattr(provision, "run", fake_run)
     monkeypatch.setattr(provision.subprocess, "run", lambda *_args, **_kwargs:
-                        type("Result", (), {"returncode": 1, "stdout": "", "stderr": ""})())
+                        type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})())
     monkeypatch.setattr("builtins.open", lambda *_args, **_kwargs: FakeLock())
 
     assert provision.main() == 0
@@ -223,58 +222,25 @@ def test_existing_named_ext4_partition_is_reused_without_a_size_limit(monkeypatc
     assert calls == []
 
 
-def test_existing_named_non_ext4_partition_is_reset_as_unidentifiable_owner(monkeypatch):
+def test_existing_named_non_ext4_partition_is_preserved_and_install_stops(monkeypatch):
     calls = []
     monkeypatch.setattr(provision, "mounted_targets", lambda _partition: [])
     monkeypatch.setattr(provision, "run", lambda args, **kwargs: calls.append(args) or "fresh-data-uuid\n")
-    monkeypatch.setattr(
-        provision.subprocess, "run",
-        lambda args, **kwargs: type("Result", (), {"returncode": 0, "stdout": "vfat 0x0", "stderr": ""})(),
-    )
-    assert provision.ensure_ext4_data_partition("/dev/sda6", "vfat", "") == "fresh-data-uuid"
-    assert calls == [
-        ["wipefs", "--all", "/dev/sda6"],
-        ["mkfs.ext4", "-F", "-L", "SOLARMINER_DATA", "/dev/sda6"],
-        ["blkid", "--output", "value", "--match-tag", "UUID", "/dev/sda6"],
-    ]
+    with pytest.raises(RuntimeError, match="SOLARMINER_DATA"):
+        provision.ensure_ext4_data_partition("/dev/sda6", "vfat", "")
+    assert calls == []
 
 
-def test_named_blank_partition_left_by_interrupted_installer_is_initialized(monkeypatch):
-    calls = []
+def test_existing_labelled_partition_without_filesystem_is_preserved(monkeypatch):
     monkeypatch.setattr(provision, "mounted_targets", lambda _partition: [])
-    def fake_run(args, *, check=True, env=None):
-        calls.append(args)
-        return "fresh-data-uuid\n" if args[0] == "blkid" and "--match-tag" in args else ""
-    monkeypatch.setattr(provision, "run", fake_run)
-    monkeypatch.setattr(
-        provision.subprocess, "run",
-        lambda args, **kwargs: type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
-    )
-    result = provision.ensure_ext4_data_partition("/dev/sda3", "", "")
-    assert result == "fresh-data-uuid"
-    assert calls == [
-        ["wipefs", "--all", "/dev/sda3"],
-        ["mkfs.ext4", "-F", "-L", "SOLARMINER_DATA", "/dev/sda3"],
-        ["blkid", "--output", "value", "--match-tag", "UUID", "/dev/sda3"],
-    ]
+    with pytest.raises(RuntimeError, match="SOLARMINER_DATA"):
+        provision.ensure_ext4_data_partition("/dev/sda3", "", "")
 
 
-def test_named_partition_with_existing_signature_is_formatted_as_unidentifiable_owner(monkeypatch):
-    calls = []
+def test_existing_named_partition_with_unknown_filesystem_is_preserved(monkeypatch):
     monkeypatch.setattr(provision, "mounted_targets", lambda _partition: [])
-    def fake_run(args, **kwargs):
-        calls.append(args)
-        return "fresh-data-uuid\n" if args[0] == "blkid" else ""
-    monkeypatch.setattr(provision, "run", fake_run)
-    monkeypatch.setattr(
-        provision.subprocess, "run",
-        lambda args, **kwargs: type("Result", (), {"returncode": 0, "stdout": "crypto_LUKS 0x0", "stderr": ""})(),
-    )
-    assert provision.ensure_ext4_data_partition("/dev/sda3", "", "") == "fresh-data-uuid"
-    assert calls[:2] == [
-        ["wipefs", "--all", "/dev/sda3"],
-        ["mkfs.ext4", "-F", "-L", "SOLARMINER_DATA", "/dev/sda3"],
-    ]
+    with pytest.raises(RuntimeError, match="SOLARMINER_DATA"):
+        provision.ensure_ext4_data_partition("/dev/sda3", "", "")
 
 
 def test_named_non_ext4_partition_mounted_elsewhere_is_never_formatted(monkeypatch):
@@ -293,28 +259,11 @@ def test_named_partition_already_mounted_at_data_path_is_reused(monkeypatch):
     ) == "data-uuid"
 
 
-def test_ext4_partition_without_uuid_is_reformatted_when_owner_cannot_be_identified(monkeypatch):
-    calls = []
+def test_ext4_partition_without_uuid_is_preserved_and_install_stops(monkeypatch):
     monkeypatch.setattr(provision, "mounted_targets", lambda _partition: [])
-    count = {"blkid": 0}
-    def fake_run(args, **kwargs):
-        calls.append(args)
-        if args[0] == "blkid":
-            count["blkid"] += 1
-            return "" if count["blkid"] == 1 else "fresh-data-uuid\n"
-        return ""
-    monkeypatch.setattr(provision, "run", fake_run)
-    monkeypatch.setattr(
-        provision.subprocess, "run",
-        lambda args, **kwargs: type("Result", (), {"returncode": 1, "stdout": "", "stderr": "probe failed"})(),
-    )
-    assert provision.ensure_ext4_data_partition("/dev/sda6", "ext4", "") == "fresh-data-uuid"
-    assert calls == [
-        ["blkid", "--output", "value", "--match-tag", "UUID", "/dev/sda6"],
-        ["wipefs", "--all", "/dev/sda6"],
-        ["mkfs.ext4", "-F", "-L", "SOLARMINER_DATA", "/dev/sda6"],
-        ["blkid", "--output", "value", "--match-tag", "UUID", "/dev/sda6"],
-    ]
+    monkeypatch.setattr(provision, "run", lambda *_args, **_kwargs: "")
+    with pytest.raises(RuntimeError, match="SOLARMINER_DATA"):
+        provision.ensure_ext4_data_partition("/dev/sda6", "ext4", "")
 
 
 def test_duplicate_data_partition_labels_are_rejected():

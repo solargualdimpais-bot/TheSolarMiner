@@ -14,6 +14,7 @@ def test_nginx_proxies_verify_backend_using_certificate_dns_san():
     assert 'nginx_diagnostic=$(nginx -t 2>&1)' in tailscale_script
     assert "printf '%s\\n' \"$nginx_diagnostic\" | tee -a \"$LOG\"" in tailscale_script
     postinst = (ROOT / "packaging/postinst").read_text()
+    usb_installer = (ROOT / "packaging/install-from-usb.sh").read_text()
 
     # postinst provisions DNS:localhost in the backend certificate. Nginx
     # must verify that DNS identity, rather than treating the upstream IP as a
@@ -35,3 +36,9 @@ def test_nginx_proxies_verify_backend_using_certificate_dns_san():
     assert "systemctl enable --now solarminer-tailscale-cert.timer" in postinst
     assert "systemctl disable --now solarminer-public-tls-renew.timer" in postinst
     assert "systemctl enable --now solarminer-public-tls-renew.timer" not in postinst
+    # A clean USB install must verify the same HTTPS MagicDNS/SNI route used by
+    # the PWA after the local Gateway health check has passed.
+    assert 'systemctl start solarminer-tailscale-cert.service' in usb_installer
+    assert '--resolve "$TAILSCALE_DNS:443:127.0.0.1"' in usb_installer
+    assert '"https://$TAILSCALE_DNS/api/v1/health"' in usb_installer
+    assert 'payload.get("status") != "ok"' in usb_installer

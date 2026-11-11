@@ -82,16 +82,18 @@ cleanup() {
   status=$?
   trap - EXIT HUP INT TERM
   if [ "$status" -ne 0 ]; then
-    log "Falha; a reverter a instalação inicial."
     if [ "$INSTALLED_PACKAGE" -eq 1 ]; then
+      log "Falha após instalar o pacote; a reverter a instalação inicial."
       systemctl stop solarminer-gateway.service >/dev/null 2>&1 || true
       dpkg --purge solarminer-gateway >>"$LOG" 2>&1 || true
+      log "Rollback do pacote concluído; consulta $LOG."
+    else
+      log "Instalação interrompida antes de instalar o Gateway; não foi necessário reverter o pacote."
     fi
     if [ "$CREATED_TRUST" -eq 1 ]; then
       rm -f /etc/solarminer/release-pubkey.pem /etc/solarminer/update-sources.json
       rmdir /etc/solarminer 2>/dev/null || true
     fi
-    log "Rollback terminado. Consulta $LOG"
   fi
   rm -rf "$WORK"
   exit "$status"
@@ -165,7 +167,7 @@ log "A verificar o estado persistente do Owner antes de instalar o novo Gateway.
 OWNER_STATE=$(python3 - <<'PY'
 import sqlite3
 import sys
-import time
+import getpass
 from pathlib import Path
 from argon2 import PasswordHasher, extract_parameters
 from argon2.exceptions import VerifyMismatchError, VerificationError
@@ -178,14 +180,21 @@ database = Path("/var/lib/solarminer/gateway.db")
 marker = Path("/var/lib/solarminer/initialized.marker")
 def offer_fresh_install(reason):
     print(reason, file=sys.stderr)
-    if not sys.stdin.isatty() or not sys.stderr.isatty():
+    if prompt is None:
         return False
     print("Para apagar a partição SOLARMINER_DATA e começar do zero, escreve exatamente APAGAR DADOS.",
-          file=sys.stderr, flush=True)
-    print("Confirmação: ", end="", file=sys.stderr, flush=True)
-    return input().strip() == "APAGAR DADOS"
+          file=prompt, flush=True)
+    print("Confirmação: ", end="", file=prompt, flush=True)
+    return prompt.readline().strip() == "APAGAR DADOS"
+
+try:
+    prompt = open("/dev/tty", "r+", encoding="utf-8", buffering=1)
+except OSError:
+    prompt = None
 
 if not database.is_file():
+    if marker.exists():
+        raise SystemExit("OWNER_DATABASE_MISSING: a base persistente está marcada como inicializada, mas a base de dados não existe; não será formatada.")
     print("reset_data")
     raise SystemExit(0)
 try:
@@ -193,6 +202,8 @@ try:
         tables = {row[0] for row in connection.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
         if not tables:
+            if marker.exists():
+                raise SystemExit("OWNER_DATABASE_EMPTY: a base persistente está marcada como inicializada, mas não contém tabelas; não será formatada.")
             print("reset_data")
             raise SystemExit(0)
         if "users" not in tables:
@@ -209,16 +220,17 @@ try:
                 continue
             owners.append(stored_hash)
         if not owners:
+            if marker.exists():
+                raise SystemExit("OWNER_ACTIVE_NOT_FOUND: a base persistente está marcada como inicializada, mas não foi encontrado um Owner verificável; não será formatada.")
             print("reset_data")
             raise SystemExit(0)
         if owners:
             print("ESTADO DO OWNER: foi encontrado um Owner ativo na base de dados persistente.", file=sys.stderr)
-            if not sys.stdin.isatty() or not sys.stderr.isatty():
-                raise SystemExit("É necessário um terminal local para confirmar a palavra-passe do Owner existente.")
+            if prompt is None:
+                raise SystemExit("OWNER_TERMINAL_REQUIRED: abre um terminal local e executa novamente; a base persistente foi mantida.")
             verifier = PasswordHasher()
             while True:
-                print("Palavra-passe de um Owner registado (entrada visível): ", end="", file=sys.stderr, flush=True)
-                supplied = input()
+                supplied = getpass.getpass("Palavra-passe do Owner existente: ", stream=prompt)
                 matched = False
                 for stored_hash in owners:
                     try:
@@ -228,8 +240,9 @@ try:
                     except VerifyMismatchError:
                         continue
                     except (VerificationError, InvalidHashError) as exc:
-                        print("reset_data")
-                        raise SystemExit(0) from exc
+                        raise SystemExit(
+                            "OWNER_HASH_INVALID: não foi possível verificar a palavra-passe armazenada; a base persistente será preservada."
+                        ) from exc
                 supplied = ""
                 if matched:
                     break
@@ -246,9 +259,10 @@ try:
         # the agreed fresh-install path instead of attempting ambiguous setup.
         print("reset_data")
 except sqlite3.Error as exc:
-    print("reset_data")
+    print(f"OWNER_DATABASE_INVALID: {type(exc).__name__}: {exc}", file=sys.stderr)
+    raise SystemExit(1)
 PY
-) || fail "A verificação do Owner falhou; o Gateway não foi instalado e a base de dados não foi alterada."
+) || fail "OWNER_CHECK_FAILED: não foi possível validar a base/Owner; instalação interrompida antes de instalar o pacote. A base persistente não foi alterada."
 case "$OWNER_STATE" in
   active) log "ESTADO DO OWNER: palavra-passe confirmada. A instalação pode continuar e manterá a conta existente." ;;
   fresh) log "ESTADO DO OWNER: será configurado um Owner novo." ;;
@@ -370,6 +384,39 @@ done
   } | tee -a "$LOG" "$PERSISTENT_LOG"
   fail "Health check não passou dentro de 60 segundos. O detalhe da resposta e o estado local foram guardados nos registos persistentes."
 }
+
+# The local probe above proves only that the Gateway serves HTTPS on loopback.
+# Also provision and probe the actual MagicDNS/SNI vhost used by the PWA.
+TAILSCALE_STATE=$(tailscale status --json 2>/dev/null || true)
+TAILSCALE_DNS=$(printf '%s' "$TAILSCALE_STATE" | python3 -c '
+import json,re,sys
+try:
+ d=json.load(sys.stdin); s=d.get("Self") or {}; n=(s.get("DNSName") or "").rstrip(".").lower()
+ if d.get("BackendState") != "Running" or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.ts\.net", n): raise ValueError()
+ print(n)
+except Exception: raise SystemExit(1)
+' 2>/dev/null || true)
+if [ -n "$TAILSCALE_DNS" ]; then
+  log "Tailscale autorizado; a emitir/atualizar certificado e configurar o HTTPS do Gateway."
+  systemctl start solarminer-tailscale-cert.service || fail "Não foi possível executar a configuração TLS do Tailscale. Consulta /var/log/solarminer-tailscale-cert.log"
+  [ -s /etc/solarminer/tailscale.crt ] && [ -s /etc/solarminer/tailscale.key ] || fail "O Tailscale está autorizado, mas não foi emitido o certificado HTTPS. Ativa HTTPS certificates na conta Tailscale e volta a executar a instalação."
+  grep -Fq "server_name $TAILSCALE_DNS;" /etc/nginx/conf.d/solarminer-tailscale.conf || fail "A configuração HTTPS do endereço Tailscale não foi criada. Consulta /var/log/solarminer-tailscale-cert.log"
+  curl --fail --silent --show-error --max-time 10 \
+    --resolve "$TAILSCALE_DNS:443:127.0.0.1" \
+    "https://$TAILSCALE_DNS/api/v1/health" \
+    --output "$WORK/tailscale-health.json" || fail "O HTTPS do endereço Tailscale não passou na verificação TLS/NGINX. Consulta /var/log/nginx/error.log e /var/log/solarminer-tailscale-cert.log"
+  python3 - "$WORK/tailscale-health.json" <<'PY' || fail "O endpoint Tailscale não devolveu uma resposta de saúde válida."
+import json,sys
+with open(sys.argv[1], encoding="utf-8") as stream:
+    payload=json.load(stream)
+if payload.get("status") != "ok":
+    raise SystemExit(1)
+PY
+  log "HTTPS Tailscale, certificado, Nginx e API confirmados pelo mesmo endereço usado pela PWA."
+else
+  log "Tailscale ainda não autorizado. O Gateway local está instalado, mas o acesso HTTPS da PWA fica pendente até a autorização da conta Tailscale."
+  log "A autorização inicial exige aprovação da conta; depois disso, o serviço de certificados tenta automaticamente e valida por timer."
+fi
 log "Instalação inicial SolarMiner Gateway $PACKAGE_VERSION concluída."
 log "O Gateway está configurado para verificar diariamente o repositório oficial; aplicar uma atualização continua a exigir ação Owner na PWA."
 trap - EXIT HUP INT TERM

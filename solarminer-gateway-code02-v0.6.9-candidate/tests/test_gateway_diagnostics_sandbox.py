@@ -33,17 +33,20 @@ def test_fresh_usb_installer_reuses_data_volume_and_classifies_owner_without_rec
     resetter = (root / "packaging" / "reset-data-volume.py").read_text(encoding="utf-8")
     assert 'LABEL = "SOLARMINER_DATA"' in provisioner
     assert 'if filesystem.lower() == "ext4"' in provisioner
-    assert '["wipefs", "--all", partition]' in provisioner
-    assert 'Owner não identificável em {partition}' in provisioner
+    assert '["wipefs", "--no-act", "--noheadings", "--output", "TYPE,OFFSET", partition]' in provisioner
+    assert 'Não vou formatá-la automaticamente' in provisioner
+    assert 'def format_new_data_partition(partition: str)' in provisioner
     assert 'marker = Path("/var/lib/solarminer/initialized.marker")' in installer
     assert 'print("active")' in installer
     assert 'ESTADO DO OWNER: foi encontrado um Owner ativo na base de dados persistente.' in installer
-    assert 'Palavra-passe de um Owner registado (entrada visível):' in installer
+    assert 'prompt = open("/dev/tty", "r+"' in installer
+    assert 'getpass.getpass("Palavra-passe do Owner existente: ", stream=prompt)' in installer
+    assert 'OWNER_TERMINAL_REQUIRED' in installer
     assert 'stored_hash.strip()' in installer
     assert 'if not owners:' in installer
     assert 'print("reset_data")' in installer
-    assert 'return input().strip() == "APAGAR DADOS"' in installer
-    assert 'Palavra-passe de um Owner registado (entrada visível)' in installer
+    assert 'prompt.readline().strip() == "APAGAR DADOS"' in installer
+    assert 'Palavra-passe do Owner existente' in installer
     assert 'OWNER_STATE=fresh' in installer
     assert 'LABEL = "SOLARMINER_DATA"' in resetter
     assert 'MARKER.read_text(encoding="ascii").strip() != old_uuid' in resetter
