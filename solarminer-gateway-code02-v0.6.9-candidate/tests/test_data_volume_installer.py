@@ -174,6 +174,7 @@ def test_clean_debian_partition_plus_unallocated_space_provisions_data_end_to_en
     monkeypatch.setattr(provision.pathlib.Path, "is_symlink", lambda _self: False)
     monkeypatch.setattr(provision, "MOUNTPOINT", tmp_path / "solarminer")
     monkeypatch.setattr(provision, "MARKER", tmp_path / "etc" / "data-volume.uuid")
+    monkeypatch.setattr(provision, "STATE", tmp_path / "solarminer-data-volume.state")
     monkeypatch.setattr(provision, "FSTAB", tmp_path / "etc" / "fstab")
     monkeypatch.setattr(provision.pathlib.Path, "mkdir", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(provision, "write_fstab", lambda uuid: commands.append(["write-fstab", uuid]))
@@ -201,6 +202,7 @@ def test_clean_debian_partition_plus_unallocated_space_provisions_data_end_to_en
     assert ["mkfs.ext4", "-F", "-L", provision.LABEL, "/dev/sda6"] in commands
     assert ["write-fstab", "new-data-uuid"] in commands
     assert ["mount-data", "new-data-uuid"] in commands
+    assert provision.STATE.read_text(encoding="ascii").strip() == "created"
 
 
 def test_partition_uuid_uses_portable_blkid_value_options(monkeypatch):

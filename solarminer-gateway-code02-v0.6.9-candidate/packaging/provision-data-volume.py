@@ -18,6 +18,7 @@ except ImportError:  # Allows pure parsing tests to run on Windows.
 MOUNTPOINT = pathlib.Path("/var/lib/solarminer")
 FSTAB = pathlib.Path("/etc/fstab")
 MARKER = pathlib.Path("/etc/solarminer/data-volume.uuid")
+STATE = pathlib.Path("/run/solarminer-data-volume.state")
 LABEL = "SOLARMINER_DATA"
 MIN_FREE_MIB = 40 * 1024
 MIN_UNLABELLED_DATA_BYTES = 2 * 1024 * 1024 * 1024
@@ -339,6 +340,9 @@ def main() -> int:
     pathlib.Path("/run/lock").mkdir(parents=True, exist_ok=True)
     with open("/run/lock/solarminer-data-volume.lock", "w", encoding="ascii") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if STATE.is_symlink():
+            raise RuntimeError("O registo temporário do volume é uma ligação simbólica; instalação interrompida.")
+        STATE.unlink(missing_ok=True)
         disk = root_disk()
         rows = partition_rows(disk)
         labelled = find_existing_data_partition(rows)
@@ -351,9 +355,11 @@ def main() -> int:
                 and any(MOUNTPOINT.iterdir())):
             raise RuntimeError("/var/lib/solarminer já contém dados; instalação interrompida para os preservar.")
         if labelled:
+            volume_state = "reused"
             partition, uuid = prepare_labeled_data_partition(labelled)
             print(f"A reutilizar a partição SolarMiner {partition}; o tamanho não limita a utilização.", flush=True)
         else:
+            volume_state = "created"
             if MARKER.exists():
                 raise RuntimeError("Existe registo de volume de dados, mas a partição marcada não foi encontrada.")
             root_source = run(["findmnt", "--noheadings", "--output", "SOURCE", "--target", "/"])
@@ -381,6 +387,11 @@ def main() -> int:
             uuid = format_new_data_partition(partition)
         write_fstab(uuid)
         mount_data(uuid)
+        temporary_state = STATE.with_name(STATE.name + ".tmp")
+        temporary_state.write_text(volume_state + "\n", encoding="ascii")
+        os.chmod(temporary_state, 0o600)
+        os.replace(temporary_state, STATE)
+        print(f"Estado do volume de dados: {volume_state}; dispositivo {partition}; UUID {uuid}.", flush=True)
         print("Volume de dados SolarMiner preparado e montado em /var/lib/solarminer.", flush=True)
     return 0
 

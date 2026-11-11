@@ -53,6 +53,17 @@ def test_fresh_usb_installer_reuses_data_volume_and_classifies_owner_without_rec
     assert 'mkfs.ext4", "-F", "-L", LABEL' in resetter
     assert '"TYPE", str(source_path)' in resetter
     assert 'OWNER_STATE=$(python3' in installer
+    assert 'DATA_VOLUME_STATE=$(cat /run/solarminer-data-volume.state' in installer
+    assert 'if [ "$DATA_VOLUME_STATE" = "created" ]; then' in installer
+    assert 'VOLUME CRIADO NESTA INSTALAÇÃO: a pesquisa de Owner anterior foi ignorada' in installer
+    assert 'volume_state = "created"' in provisioner
+    assert 'volume_state = "reused"' in provisioner
+    assert 'EXPECTED_DATA_UUID=$(cat /etc/solarminer/data-volume.uuid' in installer
+    assert 'DATA_MOUNT_UUID=$(findmnt --noheadings --output UUID --target /var/lib/solarminer' in installer
+    assert 'O volume montado em /var/lib/solarminer não corresponde ao UUID selecionado' in installer
+    assert 'BASE DE DADOS ENCONTRADA: $DATABASE_IDENTITY' in installer
+    assert 'if not marker.is_file():' in installer
+    assert 'OWNER_INITIALIZATION_MARKER_MISSING' in installer
     assert 'recovery)' not in installer
     assert 'There is no active Owner with a verifiable password hash' in installer
     assert 'solarminer-gateway owner-password' in installer

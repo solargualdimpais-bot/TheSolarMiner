@@ -163,7 +163,34 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y parted e2fsprogs util-linux py
 log "A preparar automaticamente a partição de dados no espaço não atribuído do disco do Debian."
 python3 "$DATA_PROVISIONER" >>"$LOG" 2>&1 || fail "Não foi possível preparar em segurança a partição de dados. Consulta $LOG"
 
+# Attest the exact persistent volume before looking at the Owner database. This
+# keeps the Owner check tied to the filesystem selected by the provisioner and
+# leaves an auditable device/UUID trail in the install log.
+EXPECTED_DATA_UUID=$(cat /etc/solarminer/data-volume.uuid 2>/dev/null) || fail "A preparação não registou o UUID do volume de dados."
+DATA_MOUNT_UUID=$(findmnt --noheadings --output UUID --target /var/lib/solarminer 2>/dev/null) || fail "O volume de dados não está montado em /var/lib/solarminer."
+DATA_MOUNT_SOURCE=$(findmnt --noheadings --output SOURCE --target /var/lib/solarminer 2>/dev/null) || fail "Não foi possível identificar o dispositivo montado para os dados."
+[ -n "$EXPECTED_DATA_UUID" ] && [ "$DATA_MOUNT_UUID" = "$EXPECTED_DATA_UUID" ] || fail "O volume montado em /var/lib/solarminer não corresponde ao UUID selecionado; verificação do Owner cancelada."
+log "ORIGEM DA BASE: mount=/var/lib/solarminer device=$DATA_MOUNT_SOURCE uuid=$DATA_MOUNT_UUID"
+DATA_VOLUME_STATE=$(cat /run/solarminer-data-volume.state 2>/dev/null) || fail "O provisionador não confirmou se criou ou reutilizou o volume de dados."
+case "$DATA_VOLUME_STATE" in
+  created|reused) log "ESTADO DO VOLUME: $DATA_VOLUME_STATE" ;;
+  *) fail "Estado do volume de dados inválido; verificação do Owner cancelada." ;;
+esac
+if [ -f /var/lib/solarminer/gateway.db ]; then
+  DATABASE_IDENTITY=$(stat -c 'device=%d inode=%i bytes=%s' /var/lib/solarminer/gateway.db 2>/dev/null) || fail "Não foi possível identificar a base de dados antes da verificação do Owner."
+  log "BASE DE DADOS ENCONTRADA: $DATABASE_IDENTITY"
+else
+  log "BASE DE DADOS ENCONTRADA: nenhuma em /var/lib/solarminer/gateway.db"
+fi
+
 log "A verificar o estado persistente do Owner antes de instalar o novo Gateway."
+if [ "$DATA_VOLUME_STATE" = "created" ]; then
+  # A partition formatted by this very run is known to be a blank fresh data
+  # store. Never interpret files from the Debian root or a stale mount as its
+  # Owner; the volume UUID was attested above.
+  OWNER_STATE=fresh
+  log "VOLUME CRIADO NESTA INSTALAÇÃO: a pesquisa de Owner anterior foi ignorada; será criado um Owner novo."
+else
 OWNER_STATE=$(python3 - <<'PY'
 import sqlite3
 import sys
@@ -197,6 +224,8 @@ if not database.is_file():
         raise SystemExit("OWNER_DATABASE_MISSING: a base persistente está marcada como inicializada, mas a base de dados não existe; não será formatada.")
     print("reset_data")
     raise SystemExit(0)
+if not marker.is_file():
+    raise SystemExit("OWNER_INITIALIZATION_MARKER_MISSING: existe gateway.db mas não existe o marcador de inicialização neste volume; não será tratado como Owner confirmado nem formatado automaticamente.")
 try:
     with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=5) as connection:
         tables = {row[0] for row in connection.execute(
@@ -263,6 +292,7 @@ except sqlite3.Error as exc:
     raise SystemExit(1)
 PY
 ) || fail "OWNER_CHECK_FAILED: não foi possível validar a base/Owner; instalação interrompida antes de instalar o pacote. A base persistente não foi alterada."
+fi
 case "$OWNER_STATE" in
   active) log "ESTADO DO OWNER: palavra-passe confirmada. A instalação pode continuar e manterá a conta existente." ;;
   fresh) log "ESTADO DO OWNER: será configurado um Owner novo." ;;
