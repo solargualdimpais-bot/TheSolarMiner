@@ -33,7 +33,8 @@ def test_fresh_usb_installer_reuses_data_volume_and_classifies_owner_without_rec
     resetter = (root / "packaging" / "reset-data-volume.py").read_text(encoding="utf-8")
     assert 'LABEL = "SOLARMINER_DATA"' in provisioner
     assert 'if filesystem.lower() == "ext4"' in provisioner
-    assert '["wipefs", "--no-act", "--noheadings", "--output", "TYPE,OFFSET", partition]' in provisioner
+    assert '["wipefs", "--all", "--force", partition]' in provisioner
+    assert '"--no-act"' not in provisioner
     assert 'Não vou formatá-la automaticamente' in provisioner
     assert 'def format_new_data_partition(partition: str)' in provisioner
     assert 'marker = Path("/var/lib/solarminer/initialized.marker")' in installer
