@@ -864,6 +864,7 @@ def test_tuya_lan_reachability_checks_only_selected_private_ip_without_reading_s
     assert probes == ["192.168.1.30"]
     assert response.json() == {"device_id": "target-device", "connection_state": "lan_reachable",
                                "reason": None, "local_ip": "192.168.1.30", "local_mac": "AA:BB:CC:DD:EE:30",
+                               "parent_device_id": None,
                                "port": 6668, "latency_ms": 4.2, "status_read": False,
                                "dps_read": False, "cloud_requested": False}
 
