@@ -435,21 +435,79 @@ except Exception: raise SystemExit(1)
 ' 2>/dev/null || true)
 if [ -n "$TAILSCALE_DNS" ]; then
   log "Tailscale autorizado; a emitir/atualizar certificado e configurar o HTTPS do Gateway."
-  systemctl start solarminer-tailscale-cert.service || fail "Não foi possível executar a configuração TLS do Tailscale. Consulta /var/log/solarminer-tailscale-cert.log"
-  [ -s /etc/solarminer/tailscale.crt ] && [ -s /etc/solarminer/tailscale.key ] || fail "O Tailscale está autorizado, mas não foi emitido o certificado HTTPS. Ativa HTTPS certificates na conta Tailscale e volta a executar a instalação."
-  grep -Fq "server_name $TAILSCALE_DNS;" /etc/nginx/conf.d/solarminer-tailscale.conf || fail "A configuração HTTPS do endereço Tailscale não foi criada. Consulta /var/log/solarminer-tailscale-cert.log"
-  curl --fail --silent --show-error --max-time 10 \
-    --resolve "$TAILSCALE_DNS:443:127.0.0.1" \
-    "https://$TAILSCALE_DNS/api/v1/health" \
-    --output "$WORK/tailscale-health.json" || fail "O HTTPS do endereço Tailscale não passou na verificação TLS/NGINX. Consulta /var/log/nginx/error.log e /var/log/solarminer-tailscale-cert.log"
-  python3 - "$WORK/tailscale-health.json" <<'PY' || fail "O endpoint Tailscale não devolveu uma resposta de saúde válida."
+  if ! systemctl start solarminer-tailscale-cert.service; then
+    log "AVISO: a configuração TLS inicial do Tailscale ainda não terminou; o temporizador continuará a tentar automaticamente."
+    journalctl --unit solarminer-tailscale-cert.service --lines=20 --no-pager 2>&1 | while IFS= read -r diagnostic_line; do
+      log "Causa TLS Tailscale: $diagnostic_line"
+    done
+  fi
+  if [ -s /etc/solarminer/tailscale.crt ] && [ -s /etc/solarminer/tailscale.key ] &&
+     grep -Fq "server_name $TAILSCALE_DNS;" /etc/nginx/conf.d/solarminer-tailscale.conf; then
+    tls_probe_ok=0
+    tls_probe_diagnostic="$WORK/tailscale-health-error.txt"
+    tls_attempt=1
+    while [ "$tls_attempt" -le 5 ]; do
+      if curl --fail --silent --show-error --max-time 10 \
+        --resolve "$TAILSCALE_DNS:443:127.0.0.1" \
+        "https://$TAILSCALE_DNS/api/v1/health" \
+        --output "$WORK/tailscale-health.json" 2>"$tls_probe_diagnostic"; then
+        if python3 - "$WORK/tailscale-health.json" 2>"$tls_probe_diagnostic" <<'PY'
 import json,sys
-with open(sys.argv[1], encoding="utf-8") as stream:
-    payload=json.load(stream)
+try:
+    with open(sys.argv[1], encoding="utf-8") as stream:
+        payload=json.load(stream)
+except (OSError, ValueError) as exc:
+    print(f"health response parse failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+    raise SystemExit(1)
 if payload.get("status") != "ok":
+    print("health response status was not ok", file=sys.stderr)
     raise SystemExit(1)
 PY
-  log "HTTPS Tailscale, certificado, Nginx e API confirmados pelo mesmo endereço usado pela PWA."
+        then
+          tls_probe_ok=1
+          break
+        else
+          [ -s "$tls_probe_diagnostic" ] || printf '%s\n' "HTTP health response did not contain status=ok" >"$tls_probe_diagnostic"
+        fi
+      fi
+      tls_attempt=$((tls_attempt + 1))
+      if [ "$tls_attempt" -le 5 ]; then
+        sleep 2
+      fi
+    done
+    if [ "$tls_probe_ok" -eq 1 ]; then
+      log "HTTPS Tailscale, certificado, Nginx e API confirmados pelo mesmo endereço usado pela PWA."
+    else
+      log "AVISO: o teste HTTPS Tailscale ainda falha; a instalação local do Gateway continua válida e o serviço de certificados voltará a tentar automaticamente."
+      if [ -s "$tls_probe_diagnostic" ]; then
+        while IFS= read -r diagnostic_line; do
+          log "ERRO TLS/Nginx (curl): $diagnostic_line"
+        done < "$tls_probe_diagnostic"
+      fi
+      if [ -f /var/log/nginx/error.log ]; then
+        tail -n 8 /var/log/nginx/error.log | while IFS= read -r diagnostic_line; do
+          log "Nginx: $diagnostic_line"
+        done
+      fi
+      if [ -f /var/log/solarminer-tailscale-cert.log ]; then
+        tail -n 8 /var/log/solarminer-tailscale-cert.log | while IFS= read -r diagnostic_line; do
+          log "TLS Tailscale: $diagnostic_line"
+        done
+      fi
+    fi
+  else
+    log "AVISO: certificado HTTPS ou configuração Nginx Tailscale ainda indisponível; o temporizador continuará a tentar automaticamente."
+    if [ -f /var/log/solarminer-tailscale-cert.log ]; then
+      tail -n 20 /var/log/solarminer-tailscale-cert.log | while IFS= read -r diagnostic_line; do
+        log "Causa TLS Tailscale: $diagnostic_line"
+      done
+    fi
+    if [ -f /var/log/nginx/error.log ]; then
+      tail -n 8 /var/log/nginx/error.log | while IFS= read -r diagnostic_line; do
+        log "Causa Nginx: $diagnostic_line"
+      done
+    fi
+  fi
 else
   log "Tailscale ainda não autorizado. O Gateway local está instalado, mas o acesso HTTPS da PWA fica pendente até a autorização da conta Tailscale."
   log "A autorização inicial exige aprovação da conta; depois disso, o serviço de certificados tenta automaticamente e valida por timer."

@@ -42,3 +42,10 @@ def test_nginx_proxies_verify_backend_using_certificate_dns_san():
     assert '--resolve "$TAILSCALE_DNS:443:127.0.0.1"' in usb_installer
     assert '"https://$TAILSCALE_DNS/api/v1/health"' in usb_installer
     assert 'payload.get("status") != "ok"' in usb_installer
+    assert 'if ! systemctl start solarminer-tailscale-cert.service;' in usb_installer
+    assert 'AVISO: o teste HTTPS Tailscale ainda falha' in usb_installer
+    assert 'ERRO TLS/Nginx (curl):' in usb_installer
+    assert '|| fail "O HTTPS do endereço Tailscale não passou' not in usb_installer
+    cert_timer = (ROOT / "packaging/solarminer-tailscale-cert.timer").read_text()
+    assert "OnBootSec=30s" in cert_timer
+    assert "OnUnitInactiveSec=2min" in cert_timer
