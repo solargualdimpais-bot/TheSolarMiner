@@ -56,8 +56,11 @@ jobs:
 
       - name: Install build and test dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y dpkg-dev python3-pytest python3-fastapi python3-uvicorn python3-argon2 python3-cryptography python3-qrcode python3-httpx python3-pip openssl adduser zip
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            sudo sed -i 's#mirror+file:/etc/apt/apt-mirrors.txt#https://archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list.d/ubuntu.sources
+          fi
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y dpkg-dev python3-pytest python3-fastapi python3-uvicorn python3-argon2 python3-cryptography python3-qrcode python3-httpx python3-pip openssl adduser zip
           python3 -m pip install --break-system-packages 'pydantic==2.10.6' 'fastapi==0.115.11'
 
       - name: Check USB installer shell syntax
