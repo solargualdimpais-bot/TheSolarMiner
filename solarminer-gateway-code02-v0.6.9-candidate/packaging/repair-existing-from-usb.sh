@@ -4,7 +4,7 @@ set -eu
 
 [ "$(id -u)" -eq 0 ] || { echo "Executa como root: sh repair-existing-from-usb.sh" >&2; exit 1; }
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-TARGET_VERSION=0.6.232
+TARGET_VERSION=0.6.233
 PACKAGE="$HERE/solarminer-gateway_${TARGET_VERSION}_amd64.deb"
 MANIFEST="$HERE/solarminer-release.json"
 PUBLIC_KEY="$HERE/release-pubkey.pem"
@@ -180,10 +180,18 @@ context = ssl.create_default_context(cafile="/var/lib/solarminer/server.crt")
 with urllib.request.urlopen("https://127.0.0.1:8443/api/v1/health", context=context, timeout=3) as response:
     data = json.load(response)
 if response.status != 200 or data.get("package_version") != sys.argv[1]: raise SystemExit(1)
+# Validate the same local Nginx proxy route used by the PWA, not just the
+# backend listener. This loopback-only probe permits Nginx's local TLS cert;
+# the backend probe above continues to verify its dedicated Gateway cert.
+proxy_context = ssl._create_unverified_context()
+with urllib.request.urlopen("https://127.0.0.1/api/v1/health", context=proxy_context, timeout=3) as response:
+    proxy_data = json.load(response)
+if response.status != 200 or proxy_data.get("status") != "ok" or proxy_data.get("package_version") != sys.argv[1]:
+    raise SystemExit(1)
 PY
   then
     SUCCESS=1
-    log "Instalação, ativação e health check de $TARGET_VERSION concluídos."
+    log "Instalação, ativação, health check da API e do proxy Nginx para $TARGET_VERSION concluídos."
     log "A release anterior $OLD_RELEASE_NAME e o backup $BACKUP foram preservados."
     exit 0
   fi

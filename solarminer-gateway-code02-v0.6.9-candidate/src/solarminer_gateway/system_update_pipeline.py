@@ -69,7 +69,8 @@ class SystemUpdatePipeline:
     def __init__(self, *, root: str | Path = "/opt/solarminer", data_dir: str | Path | None = None,
                  db_path: str | Path | None = None, public_key: str | Path = "/etc/solarminer/release-pubkey.pem",
                  service: str = "solarminer-gateway.service", recovery_timer: str = "solarminer-recovery.timer",
-                 health_url: str = "https://127.0.0.1:8443/api/v1/health", health_timeout: int = 60,
+                 health_url: str = "https://127.0.0.1:8443/api/v1/health",
+                 proxy_health_url: str = "https://127.0.0.1/api/v1/health", health_timeout: int = 60,
                  runner=subprocess.run, clock=time.monotonic, sleep=time.sleep):
         self.root = Path(root)
         self.data_dir = Path(data_dir or os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
@@ -78,6 +79,7 @@ class SystemUpdatePipeline:
         self.service = service
         self.recovery_timer = recovery_timer
         self.health_url = health_url
+        self.proxy_health_url = proxy_health_url
         self.health_timeout = min(max(int(health_timeout), 1), 60)
         self._last_health_diagnostic: dict[str, Any] = {"outcome": "not_run", "attempts": 0}
         self.runner = runner
@@ -325,12 +327,60 @@ class SystemUpdatePipeline:
                         reported_version = body.get("package_version") if isinstance(body, dict) else None
                         if (isinstance(body, dict) and body.get("status") == "ok"
                                 and (expected_package_version is None or reported_version == expected_package_version)):
-                            self._last_health_diagnostic = {
-                                "outcome": "healthy", "attempts": attempts,
-                                "expected_package_version": expected_package_version,
-                                "reported_package_version": reported_version,
-                            }
-                            return True
+                            # The direct API probe alone can pass while the
+                            # Nginx route used by the PWA returns 502. Probe
+                            # the local Nginx proxy as part of the same release
+                            # gate. TLS verification is intentionally disabled
+                            # only for this loopback-only proxy check; the
+                            # direct Gateway TLS probe above remains verified.
+                            proxy_req = urllib.request.Request(
+                                self.proxy_health_url,
+                                headers={"Cache-Control": "no-cache", "Connection": "close"},
+                            )
+                            try:
+                                with urllib.request.urlopen(
+                                    proxy_req, timeout=3, context=ssl._create_unverified_context()
+                                ) as proxy_response:
+                                    proxy_status = int(proxy_response.status)
+                                    proxy_body = json.loads(proxy_response.read(65536)) if proxy_status == 200 else {}
+                                proxy_version = proxy_body.get("package_version") if isinstance(proxy_body, dict) else None
+                                if (proxy_status == 200 and isinstance(proxy_body, dict)
+                                        and proxy_body.get("status") == "ok"
+                                        and (expected_package_version is None or proxy_version == expected_package_version)):
+                                    self._last_health_diagnostic = {
+                                        "outcome": "healthy", "attempts": attempts,
+                                        "expected_package_version": expected_package_version,
+                                        "reported_package_version": reported_version,
+                                        "proxy_outcome": "healthy",
+                                    }
+                                    return True
+                                if proxy_status != 200:
+                                    diagnostic = {"outcome": "proxy_http_error", "http_status": proxy_status}
+                                elif (not isinstance(proxy_body, dict)
+                                      or proxy_body.get("status") != "ok"):
+                                    diagnostic = {"outcome": "proxy_health_payload_not_ok", "http_status": proxy_status}
+                                else:
+                                    diagnostic = {"outcome": "proxy_package_version_mismatch",
+                                                  "http_status": proxy_status,
+                                                  "reported_package_version": proxy_version}
+                            except urllib.error.HTTPError as exc:
+                                diagnostic = {"outcome": "proxy_http_error", "http_status": int(exc.code)}
+                            except urllib.error.URLError as exc:
+                                reason = getattr(exc, "reason", None)
+                                kind = "tls_error" if isinstance(reason, ssl.SSLError) else (
+                                    "timeout" if isinstance(reason, TimeoutError) else "connection_error"
+                                )
+                                diagnostic = {"outcome": "proxy_" + kind,
+                                              "error_type": type(reason).__name__ if reason else "URLError"}
+                            except (OSError, ssl.SSLError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
+                                diagnostic = {"outcome": "proxy_endpoint_error",
+                                              "error_type": type(exc).__name__}
+                            diagnostic["reported_package_version"] = reported_version
+                            diagnostic["expected_package_version"] = expected_package_version
+                            diagnostic["attempts"] = attempts
+                            self._last_health_diagnostic = dict(diagnostic)
+                            self.sleep(min(2, max(0, deadline - self.clock())))
+                            continue
                         if not isinstance(body, dict) or body.get("status") != "ok":
                             diagnostic = {"outcome": "health_payload_not_ok", "http_status": status_code}
                         else:
@@ -588,6 +638,31 @@ class SystemUpdatePipeline:
         from .deployment_recovery import DeploymentReleaseSwitch
         connector_recovery = DeploymentReleaseSwitch(self.root).recover_pending()
         record = self._read_state()
+        if (record and record.get("state") == "ROLLED_BACK"
+                and record.get("rollback_health_check") == "pending_systemd_start"):
+            op_id = record.get("operation_id")
+            if not isinstance(op_id, str) or not UUID_RE.fullmatch(op_id):
+                raise PipelineError("recovery_operation_id_invalid")
+            row, _ = self._operation(op_id)
+            active_result = self._run(["/usr/bin/systemctl", "is-active", self.service], timeout=5)
+            if active_result.returncode == 0 and active_result.stdout.strip() == "active":
+                if self._health(str(row["installed_version"]), 12):
+                    self._record("ROLLED_BACK", rollback_health_check="passed",
+                                 rollback_health_diagnostic=dict(self._last_health_diagnostic),
+                                 rollback_health_checked_at_utc=_utc())
+                    return {"status": "clean", "state": "ROLLED_BACK",
+                            "rollback_health_check": "passed", "connector_recovery": connector_recovery}
+                action = "restart"
+            else:
+                action = "start"
+            self._run(["/usr/bin/systemctl", action, "--no-block", self.service], timeout=8, check=True)
+            self._record("ROLLED_BACK",
+                         rollback_health_check="pending_systemd_start",
+                         rollback_start_attempts=int(record.get("rollback_start_attempts", 0)) + 1,
+                         rollback_start_scheduled_at_utc=_utc(),
+                         rollback_health_diagnostic=dict(self._last_health_diagnostic))
+            return {"status": "gateway_start_scheduled", "state": "ROLLED_BACK",
+                    "connector_recovery": connector_recovery}
         # RECOVERY_BLOCKED is visible as a terminal result to the Owner, but
         # it must remain retryable by the independent recovery service. A
         # transient stop/start or health-check failure must not permanently
@@ -629,6 +704,13 @@ class SystemUpdatePipeline:
         if isinstance(backup_raw, str): self._restore_db(Path(backup_raw))
         if service_was_active:
             self._run(["/usr/bin/systemctl", "start", self.service], timeout=20, check=True)
+        else:
+            # Recovery can be launched by the independent timer after an
+            # interrupted update. In that case Gateway has no pending systemd
+            # start job. Queue the start asynchronously: Gateway has an
+            # After/Requires dependency on this recovery oneshot, so waiting
+            # synchronously here would deadlock the two units.
+            self._run(["/usr/bin/systemctl", "start", "--no-block", self.service], timeout=8, check=True)
         row, _ = self._operation(op_id)
         if service_was_active and not self._health(str(row["installed_version"]), 60):
             self._record("RECOVERY_BLOCKED", operation_id=op_id, previous_target=previous_raw,
@@ -636,8 +718,11 @@ class SystemUpdatePipeline:
             raise PipelineError("recovery_previous_release_health_check_failed")
         self._record("ROLLED_BACK", operation_id=op_id, previous_target=previous_raw,
                      backup_path=backup_raw, recovery="boot_or_timer_recovery",
-                     rollback_health_check="passed" if service_was_active else "pending_systemd_start")
-        return {"status": "recovered", "operation_id": op_id, "state": "ROLLED_BACK",
+                     rollback_health_check="passed" if service_was_active else "pending_systemd_start",
+                     rollback_start_attempts=0 if service_was_active else 1,
+                     rollback_health_diagnostic=dict(self._last_health_diagnostic))
+        return {"status": "recovered" if service_was_active else "gateway_start_scheduled",
+                "operation_id": op_id, "state": "ROLLED_BACK",
                 "connector_recovery": connector_recovery}
 
 

@@ -170,6 +170,33 @@ def test_health_check_records_reported_version_mismatch_without_payload_secrets(
     }
 
 
+def test_health_check_rejects_nginx_502_even_when_direct_api_is_healthy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    pipeline = SystemUpdatePipeline(root=tmp_path / "opt/solarminer", health_timeout=1)
+    monkeypatch.setattr("solarminer_gateway.system_update_pipeline.ssl.create_default_context", lambda **kwargs: object())
+
+    class Response:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def read(self, _limit): return b'{"status":"ok","package_version":"0.6.100"}'
+
+    def urlopen(request, **_kwargs):
+        if request.full_url == pipeline.health_url:
+            return Response()
+        raise urllib.error.HTTPError(request.full_url, 502, "Bad Gateway", {}, None)
+
+    monkeypatch.setattr("solarminer_gateway.system_update_pipeline.urllib.request.urlopen", urlopen)
+    now = [0.0]
+    pipeline.clock = lambda: now[0]
+    pipeline.sleep = lambda seconds: now.__setitem__(0, now[0] + seconds)
+
+    assert pipeline._health("0.6.100", 1) is False
+    assert pipeline._last_health_diagnostic["outcome"] == "proxy_http_error"
+    assert pipeline._last_health_diagnostic["http_status"] == 502
+
+
 @pytest.mark.parametrize(
     ("reason", "expected_outcome"),
     [
@@ -341,16 +368,61 @@ def test_recovery_reconciles_interrupted_switch_and_restores_database(tmp_path: 
     pipeline._record("SWITCHED", operation_id=op_id, target_version="0.6.9",
                      previous_target="releases/0.6.8", new_target="releases/0.6.9",
                      backup_path=backup["backup_path"])
+    scheduled = []
+    base_runner = pipeline.runner
+    def recording_runner(args, **kwargs):
+        if args[:4] == ["/usr/bin/systemctl", "start", "--no-block", "solarminer-gateway.service"]:
+            scheduled.append(args)
+        return base_runner(args, **kwargs)
+    pipeline.runner = recording_runner
     monkeypatch.setattr(pipeline, "_uid", lambda _name: 0)
     monkeypatch.setattr(pipeline, "_gid", lambda _name: 0)
     # Recovery logic is exercised without requiring chown privileges on the CI runner.
     monkeypatch.setattr("solarminer_gateway.system_update_pipeline.os.chown", lambda *_args: None)
     result = pipeline.recover()
-    assert result["status"] == "recovered"
+    assert result["status"] == "gateway_start_scheduled"
+    assert scheduled == [["/usr/bin/systemctl", "start", "--no-block", "solarminer-gateway.service"]]
     assert os.readlink(root / "current") == "releases/0.6.8"
-    assert json.loads((root / "update-state.json").read_text())["state"] == "ROLLED_BACK"
+    state = json.loads((root / "update-state.json").read_text())
+    assert state["state"] == "ROLLED_BACK"
+    assert state["rollback_health_check"] == "pending_systemd_start"
     with sqlite3.connect(db) as conn:
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+
+def test_recovery_retries_pending_gateway_start_and_attests_health(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    pipeline, root, _previous, _db, op_id = _pipeline_fixture(tmp_path, monkeypatch)
+    pipeline._record("ROLLED_BACK", operation_id=op_id, target_version="0.6.9",
+                     previous_target="releases/0.6.8", rollback_health_check="pending_systemd_start",
+                     rollback_start_attempts=1)
+    service_active = [False]
+    scheduled = []
+    base_runner = pipeline.runner
+    def runner(args, **kwargs):
+        if args[:3] == ["/usr/bin/systemctl", "is-active", "solarminer-gateway.service"]:
+            active = service_active[0]
+            return subprocess.CompletedProcess(args, 0 if active else 3,
+                                               "active\n" if active else "inactive\n", "")
+        if args[:4] == ["/usr/bin/systemctl", "start", "--no-block", "solarminer-gateway.service"]:
+            scheduled.append(args)
+            return subprocess.CompletedProcess(args, 0, "", "")
+        return base_runner(args, **kwargs)
+    pipeline.runner = runner
+    monkeypatch.setattr(pipeline, "_health", lambda expected, seconds: expected == "0.6.8")
+    monkeypatch.setattr(pipeline, "_uid", lambda _name: 0)
+    monkeypatch.setattr(pipeline, "_gid", lambda _name: 0)
+    monkeypatch.setattr("solarminer_gateway.system_update_pipeline.os.chown", lambda *_args: None)
+
+    first = pipeline.recover()
+    assert first["status"] == "gateway_start_scheduled"
+    assert scheduled
+    assert json.loads((root / "update-state.json").read_text())["rollback_start_attempts"] == 2
+
+    service_active[0] = True
+    second = pipeline.recover()
+    assert second["status"] == "clean"
+    state = json.loads((root / "update-state.json").read_text())
+    assert state["rollback_health_check"] == "passed"
 
 
 def test_recovery_retries_recovery_blocked_operation_with_valid_backup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
