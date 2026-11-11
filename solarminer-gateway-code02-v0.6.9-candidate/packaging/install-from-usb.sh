@@ -161,7 +161,14 @@ log "A instalar ferramentas oficiais de particionamento e ext4, se necessário."
 apt-get update >>"$LOG" 2>&1 || fail "apt-get update falhou antes de preparar a partição de dados. Consulta $LOG"
 DEBIAN_FRONTEND=noninteractive apt-get install -y parted e2fsprogs util-linux python3-argon2 >>"$LOG" 2>&1 || fail "Não foi possível instalar as ferramentas de partição/validação. Consulta $LOG"
 log "A preparar automaticamente a partição de dados no espaço não atribuído do disco do Debian."
-python3 "$DATA_PROVISIONER" >>"$LOG" 2>&1 || fail "Não foi possível preparar em segurança a partição de dados. Consulta $LOG"
+DATA_PROVISION_LOG="$WORK/data-volume-provision.log"
+if python3 "$DATA_PROVISIONER" >"$DATA_PROVISION_LOG" 2>&1; then
+  cat "$DATA_PROVISION_LOG" | tee -a "$LOG"
+else
+  log "Detalhe da falha ao preparar a partição de dados:"
+  cat "$DATA_PROVISION_LOG" | tee -a "$LOG" >&2
+  fail "Não foi possível preparar em segurança a partição de dados. O detalhe acima identifica a verificação que falhou."
+fi
 
 # Attest the exact persistent volume before looking at the Owner database. This
 # keeps the Owner check tied to the filesystem selected by the provisioner and

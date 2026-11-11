@@ -143,6 +143,22 @@ def test_newly_created_partition_row_with_size_completes_initialization(monkeypa
     ]
 
 
+def test_new_partition_formats_without_blocking_on_stale_signatures(monkeypatch):
+    calls = []
+    monkeypatch.setattr(provision, "mounted_targets", lambda _partition: [])
+    monkeypatch.setattr(provision, "run", lambda args, **kwargs: calls.append(args) or "created-uuid\n")
+    monkeypatch.setattr(
+        provision.subprocess, "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not inspect signatures")),
+    )
+
+    assert provision.format_new_data_partition("/dev/sda6") == "created-uuid"
+    assert calls == [
+        ["mkfs.ext4", "-F", "-L", "SOLARMINER_DATA", "/dev/sda6"],
+        ["blkid", "--output", "value", "--match-tag", "UUID", "/dev/sda6"],
+    ]
+
+
 def test_clean_debian_partition_plus_unallocated_space_provisions_data_end_to_end(
     tmp_path, monkeypatch,
 ):

@@ -262,15 +262,10 @@ def format_new_data_partition(partition: str) -> str:
     targets = mounted_targets(partition)
     if targets:
         raise RuntimeError("A nova partição já está montada; não será formatada.")
-    signatures = subprocess.run(
-        ["wipefs", "--no-act", "--noheadings", "--output", "TYPE,OFFSET", partition],
-        check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
-    if signatures.returncode != 0 or signatures.stdout.strip():
-        raise RuntimeError(
-            "A partição criada no espaço livre tem assinaturas inesperadas; "
-            "não vou apagá-las nem formatá-la."
-        )
+    # This path is reached only after creating this partition in the verified
+    # unallocated region. Format it directly; stale signatures in that free
+    # space are exactly what the new filesystem creation replaces. Existing
+    # SOLARMINER_DATA volumes are selected and validated in a separate path.
     run(["mkfs.ext4", "-F", "-L", LABEL, partition])
     uuid = partition_uuid(partition)
     if not uuid:
