@@ -263,9 +263,10 @@ def format_new_data_partition(partition: str) -> str:
     if targets:
         raise RuntimeError("A nova partição já está montada; não será formatada.")
     # This path is reached only after creating this partition in the verified
-    # unallocated region. Format it directly; stale signatures in that free
-    # space are exactly what the new filesystem creation replaces. Existing
-    # SOLARMINER_DATA volumes are selected and validated in a separate path.
+    # unallocated region. Clear any residual filesystem signatures without
+    # inspecting or rejecting them, then format it. Existing SOLARMINER_DATA
+    # volumes are selected and validated in a separate path.
+    run(["wipefs", "--all", "--force", partition])
     run(["mkfs.ext4", "-F", "-L", LABEL, partition])
     uuid = partition_uuid(partition)
     if not uuid:

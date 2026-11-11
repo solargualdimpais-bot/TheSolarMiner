@@ -138,6 +138,7 @@ def test_newly_created_partition_row_with_size_completes_initialization(monkeypa
     row = ("/dev/sda6", "SOLARMINER_DATA", "", "", "129000000000")
     assert provision.format_new_data_partition(row[0]) == "created-uuid"
     assert calls == [
+        ["wipefs", "--all", "--force", "/dev/sda6"],
         ["mkfs.ext4", "-F", "-L", "SOLARMINER_DATA", "/dev/sda6"],
         ["blkid", "--output", "value", "--match-tag", "UUID", "/dev/sda6"],
     ]
@@ -154,6 +155,7 @@ def test_new_partition_formats_without_blocking_on_stale_signatures(monkeypatch)
 
     assert provision.format_new_data_partition("/dev/sda6") == "created-uuid"
     assert calls == [
+        ["wipefs", "--all", "--force", "/dev/sda6"],
         ["mkfs.ext4", "-F", "-L", "SOLARMINER_DATA", "/dev/sda6"],
         ["blkid", "--output", "value", "--match-tag", "UUID", "/dev/sda6"],
     ]
