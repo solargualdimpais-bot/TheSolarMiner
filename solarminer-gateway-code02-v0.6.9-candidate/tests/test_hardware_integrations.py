@@ -1376,6 +1376,190 @@ def test_tuya_inventory_pagination_sorts_query_parameters_for_signature(monkeypa
     assert inventory_paths[2] == "/v2.0/cloud/thing/device?last_id=device_39&page_size=20"
 
 
+def test_tuya_subdevice_discovery_imports_parent_and_node_without_child_secrets(monkeypatch):
+    calls = []
+    def request(config, path, token=None, *, method="GET", payload=None):
+        calls.append((path, token))
+        if path == "/v1.0/token?grant_type=1":
+            return {"result": {"access_token": "cloud-token"}}
+        if path.endswith("/specification"):
+            return {"result": {"functions": [{"code": "battery", "type": "Integer", "dp_id": 2}],
+                                "status": [{"code": "motion", "type": "Boolean", "dp_id": 1}]}}
+        return {"result": [{"id": "child-1", "name": "Motion sensor", "online": True,
+                             "product_id": "pid-motion", "category": "zd" , "node_id": "00112233"},
+                            {"id": "child-no-cid", "name": "Incomplete", "online": True,
+                             "product_id": "pid-other"}]}
+    monkeypatch.setattr(integrations, "_tuya_request", request)
+    config = {"client_id": "client", "client_secret": "secret", "region": "eu_central", "devices": [
+        {"device_id": "hub-1", "name": "MOES panel", "local_key": "hub-secret-key",
+         "local_ip": "192.168.1.5", "local_protocol": "3.4"},
+        {"device_id": "child-1", "name": "My sensor", "name_source": "local", "room": "Hall",
+         "local_key": "stale-child-key", "local_ip": "192.168.1.99", "local_dps_map": {"motion": "1"}},
+    ]}
+    result = integrations.discover_tuya_subdevices(config, "hub-1")
+    child = result["devices"][0]
+    assert calls == [("/v1.0/token?grant_type=1", None),
+                     ("/v1.0/iot-03/devices/hub-1/sub-devices", "cloud-token"),
+                     ("/v1.0/iot-03/devices/child-1/specification", "cloud-token")]
+    assert result["device_count"] == 1
+    assert result["node_ids_missing"] == 1
+    assert child["name"] == "My sensor"
+    assert child["room"] == "Hall"
+    assert child["transport"] == "tuya_gateway"
+    assert child["parent_device_id"] == "hub-1"
+    assert child["node_id"] == "00112233"
+    assert child["functions"] == [{"code": "battery", "type": "Integer", "dp_id": 2}]
+    assert child["status_spec"] == [{"code": "motion", "type": "Boolean", "dp_id": 1}]
+    assert result["cloud_subdevice_count"] == 2
+    assert result["schema_failures"] == 0
+    assert child["local_dps_map"] == {"motion": "1"}
+    assert "local_key" not in child and "local_ip" not in child
+    assert "hub-secret-key" not in json.dumps(result)
+
+
+def test_tuya_child_reads_through_parent_using_configured_protocol_and_cid(monkeypatch):
+    created = []
+    class FakeDevice:
+        def __init__(self, device_id, address=None, local_key=None, *, version=None,
+                     connection_timeout=None, persist=False, parent=None, cid=None):
+            self.id, self.parent, self.cid = device_id, parent, cid
+            self.version = parent.version if parent else version
+            self.persist = persist
+            self.socket = None
+            created.append(self)
+        def set_socketTimeout(self, _timeout): pass
+        def set_retry(self, _retry): pass
+        def status(self):
+            if self.parent:
+                assert self.parent.persist is True
+                assert self.cid == "node-7"
+                return {"dps": {"1": True}}
+            return {"dps": {}}
+        def close(self): self.socket = None
+    monkeypatch.setattr(integrations, "tinytuya", type("Tiny", (), {"Device": FakeDevice}))
+    monkeypatch.setattr(integrations, "_TUYA_GATEWAY_SESSIONS", {})
+    parent = {"device_id": "hub", "name": "Hub", "is_gateway": True, "local_key": "parent-secret-key",
+              "local_ip": "192.168.1.10", "local_protocol": "3.4"}
+    child = {"device_id": "zigbee-7", "name": "Door sensor", "transport": "tuya_gateway",
+             "parent_device_id": "hub", "node_id": "node-7", "functions": [
+                 {"code": "contact", "type": "Boolean", "dp_id": 1}], "status_spec": []}
+    readings = integrations.read_tuya({"devices": [parent, child]}, background_poll=True)
+    by_id = {item["device_id"]: item for item in readings}
+    assert by_id["hub"]["connection_state"] == "local_responded_no_properties"
+    assert by_id["zigbee-7"]["connection_state"] == "local_responded"
+    assert by_id["zigbee-7"]["status"] == [{"code": "contact", "dps_id": 1, "value": True}]
+    assert by_id["zigbee-7"]["parent_device_id"] == "hub"
+    assert len([item for item in created if item.id == "hub"]) == 1
+    assert len([item for item in created if item.id == "zigbee-7"]) == 1
+
+
+def test_tuya_gateway_child_requires_parent_and_node_id(monkeypatch):
+    child = {"device_id": "child", "transport": "tuya_gateway", "parent_device_id": "missing",
+             "node_id": "node-1"}
+    monkeypatch.setattr(integrations, "tinytuya", type("Tiny", (), {"Device": object}))
+    with pytest.raises(RuntimeError, match="tuya_gateway_parent_unavailable"):
+        integrations._tuya_lan_client(child, [child])
+
+
+def test_tuya_gateway_topology_and_private_parent_key_survive_owner_edits():
+    existing = {"tuya": {"region": "eu_central", "client_id": "client-id",
+                          "client_secret": "secret-value-123", "devices": [
+        {"device_id": "hub", "name": "Painel", "is_gateway": True,
+         "local_key": "private-parent-key", "local_ip": "192.168.1.10", "local_protocol": "3.4"},
+        {"device_id": "child", "name": "Sensor", "transport": "tuya_gateway",
+         "parent_device_id": "hub", "node_id": "node-9", "product_id": "child-product",
+         "functions": [{"code": "switch", "type": "Boolean", "dp_id": 1}]},
+    ]}}
+    updated = integrations.validate_config({"tuya": {"devices": [
+        {"device_id": "hub", "name": "Painel"},
+        {"device_id": "child", "name": "Sensor corredor", "name_source": "local",
+         "local_dps_map": {"switch": "3"}},
+    ]}}, existing=existing)
+    hub, child = updated["tuya"]["devices"]
+    assert hub["is_gateway"] is True
+    assert hub["local_key"] == "private-parent-key"
+    assert child["transport"] == "tuya_gateway"
+    assert child["parent_device_id"] == "hub" and child["node_id"] == "node-9"
+    assert child["local_dps_map"] == {"switch": "3"}
+    public = integrations.public_config(updated)["tuya"]["devices"]
+    assert "local_key" not in public[0] and "local_key" not in public[1]
+    assert public[1]["parent_device_id"] == "hub" and public[1]["node_id"] == "node-9"
+
+
+def test_tuya_gateway_children_are_routed_to_their_own_node_and_isolate_failures(monkeypatch):
+    class FakeDevice:
+        def __init__(self, device_id, address=None, local_key=None, *, version=None,
+                     connection_timeout=None, persist=False, parent=None, cid=None):
+            self.id, self.parent, self.cid = device_id, parent, cid
+            self.version = parent.version if parent else version
+            self.persist = persist
+            self.socket = None
+        def set_socketTimeout(self, _timeout): pass
+        def set_retry(self, _retry): pass
+        def status(self):
+            if self.parent is None:
+                return {"dps": {}}
+            if self.cid == "sleeping-node":
+                raise OSError("child timed out")
+            return {"dps": {"1": self.cid}}
+        def close(self): self.socket = None
+    monkeypatch.setattr(integrations, "tinytuya", type("Tiny", (), {"Device": FakeDevice}))
+    monkeypatch.setattr(integrations, "_TUYA_GATEWAY_SESSIONS", {})
+    parent = {"device_id": "hub", "is_gateway": True, "local_key": "parent-secret-key",
+              "local_ip": "192.168.1.10", "local_protocol": "3.4"}
+    children = [{"device_id": "child-a", "transport": "tuya_gateway", "parent_device_id": "hub",
+                 "node_id": "node-a", "functions": [{"code": "probe", "type": "String", "dp_id": 1}]},
+                {"device_id": "child-b", "transport": "tuya_gateway", "parent_device_id": "hub",
+                 "node_id": "sleeping-node", "functions": [{"code": "probe", "type": "String", "dp_id": 1}]}]
+    results = {row["device_id"]: row for row in integrations.read_tuya(
+        {"devices": [parent, *children]}, background_poll=True)}
+    assert results["hub"]["connection_state"] == "local_responded_no_properties"
+    assert results["child-a"]["status"] == [{"code": "probe", "dps_id": 1, "value": "node-a"}]
+    assert results["child-a"]["connection_state"] == "local_responded"
+    assert results["child-b"]["connection_state"] == "failed"
+    assert results["child-b"]["parent_device_id"] == "hub"
+
+
+def test_tuya_gateway_child_without_parent_key_is_unavailable(monkeypatch):
+    monkeypatch.setattr(integrations, "tinytuya", type("Tiny", (), {"Device": object}))
+    monkeypatch.setattr(integrations, "_TUYA_GATEWAY_SESSIONS", {})
+    parent = {"device_id": "hub", "is_gateway": True, "local_ip": "192.168.1.10"}
+    child = {"device_id": "child", "transport": "tuya_gateway", "parent_device_id": "hub",
+             "node_id": "node-1"}
+    reading = integrations.read_tuya({"devices": [parent, child]})[1]
+    assert reading["connection_state"] == "failed"
+    assert reading["reason"] == "tuya_local_key_missing"
+
+
+def test_tuya_gateway_child_control_uses_parent_session_and_waits_for_independent_readback(monkeypatch):
+    commands = []
+    class FakeDevice:
+        def __init__(self, device_id, address=None, local_key=None, *, version=None,
+                     connection_timeout=None, persist=False, parent=None, cid=None):
+            self.id, self.parent, self.cid = device_id, parent, cid
+            self.version = parent.version if parent else version
+            self.persist = persist
+            self.socket = None
+        def set_socketTimeout(self, _timeout): pass
+        def set_retry(self, _retry): pass
+        def set_status(self, state, *, switch):
+            commands.append((self.id, self.cid, self.version, state, switch))
+            return {"Error": "no immediate child ack"}
+        def close(self): self.socket = None
+    monkeypatch.setattr(integrations, "tinytuya", type("Tiny", (), {"Device": FakeDevice}))
+    monkeypatch.setattr(integrations, "_TUYA_GATEWAY_SESSIONS", {})
+    parent = {"device_id": "hub", "is_gateway": True, "local_key": "parent-secret-key",
+              "local_ip": "192.168.1.10", "local_protocol": "3.4"}
+    child = {"device_id": "child", "transport": "tuya_gateway", "parent_device_id": "hub",
+             "node_id": "node-1", "switch_code": "switch", "functions": [
+                 {"code": "switch", "type": "Boolean", "dp_id": 4}]}
+    result = integrations.control_tuya_switch({"devices": [parent, child]}, "child", True)
+    assert commands == [("child", "node-1", 3.4, True, 4)]
+    assert result["command_sent"] is True
+    assert result["state_confirmed"] is False
+    assert result["connection_state"] == "command_sent_awaiting_independent_scan"
+
+
 def test_tuya_cloud_specification_is_fetched_once_per_product_id(monkeypatch):
     product_id = "shared-pid"
     specification_paths = []

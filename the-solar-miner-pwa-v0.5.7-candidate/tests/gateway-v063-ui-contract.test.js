@@ -11,14 +11,27 @@ const gatewayBuild = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.
 const workflow = readFileSync(new URL("../../.github/workflows/gateway-release.yml", import.meta.url), "utf8");
 
 test("Tuya LAN report exposes the saved target and key presence without the key", () => {
-  assert.match(gatewayApp, /"local_ip": item\.get\("local_ip", ""\)/);
-  assert.match(gatewayApp, /"local_key_configured": bool\(item\.get\("local_key"\)\)/);
+  assert.match(gatewayApp, /"local_ip": item\.get\("local_ip"\) or parent\.get\("local_ip", ""\)/);
+  assert.match(gatewayApp, /"local_key_configured": bool\(item\.get\("local_key"\) or by_id\.get\(item\.get\("parent_device_id"\), \{\}\)\.get\("local_key"\)\)/);
   assert.match(gatewayApp, /"ip_refreshed_by_mac": any\(row\.get\("ip_refreshed_by_mac"\) for row in rows\)/);
   assert.match(gatewayApp, /"ip_cleared_missing_mac": any\(row\.get\("ip_cleared_missing_mac"\) for row in rows\)/);
   assert.match(app, /IP guardado/);
   assert.match(app, /Atualizado pelo MAC/);
   assert.match(app, /Removido: MAC ausente/);
   assert.match(app, /local_key_configured\?"Configurada":"Em falta"/);
+});
+
+test("Tuya panel can request child discovery and the Gateway routes Zigbee children by parent and node id", () => {
+  const integrations = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/integrations.py", import.meta.url), "utf8");
+  const auth = readFileSync(new URL("../gateway-auth.js", import.meta.url), "utf8");
+  assert.match(app, /Procurar dispositivos ligados/);
+  assert.match(app, /syncGatewayTuyaSubdevices\(device\.device_id\)/);
+  assert.match(app, /Através do painel associado/);
+  assert.match(app, /local_dps_map:dpsMap/);
+  assert.match(auth, /\/api\/v1\/integrations\/tuya\/devices\/\$\{encodeURIComponent\(gatewayId\)\}\/sub-devices\/sync/);
+  assert.match(gatewayApp, /\/api\/v1\/integrations\/tuya\/devices\/\{gateway_id\}\/sub-devices\/sync/);
+  assert.match(integrations, /Device\(device\["device_id"\], parent=parent_client, cid=device\["node_id"\]\)/);
+  assert.match(integrations, /"local_responded_no_properties"/);
 });
 
 test("Tuya LAN recovery requires an exact unique MAC match and refreshes only after a failed read", () => {

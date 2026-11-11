@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.239"
+PACKAGE_VERSION = "0.6.240"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -1811,9 +1811,13 @@ def _collect_tuya_device_events_once() -> int:
     started = time.perf_counter()
     integration_config = hardware_integrations.load_config()
     config = integration_config.get("tuya", {})
-    devices = [item for item in config.get("devices", [])
-               if isinstance(item, dict) and item.get("local_key")
-               and (item.get("local_ip") or item.get("local_mac"))]
+    all_devices = [item for item in config.get("devices", []) if isinstance(item, dict)]
+    by_id = {item.get("device_id"): item for item in all_devices if isinstance(item.get("device_id"), str)}
+    devices = [item for item in all_devices if
+               (item.get("local_key") and (item.get("local_ip") or item.get("local_mac"))) or
+               (item.get("transport") == "tuya_gateway" and by_id.get(item.get("parent_device_id"), {}).get("local_key")
+                and (by_id.get(item.get("parent_device_id"), {}).get("local_ip")
+                     or by_id.get(item.get("parent_device_id"), {}).get("local_mac")))]
     if not devices:
         return 0
     recorded = 0
@@ -1835,7 +1839,7 @@ def _collect_tuya_device_events_once() -> int:
                   len(devices), round((time.perf_counter() - started) * 1000), type(exc).__name__)
         raise
     duration_ms = round((time.perf_counter() - started) * 1000)
-    successful = sum(1 for item in readings if item.get("connection_state") == "local_responded")
+    successful = sum(1 for item in readings if item.get("connection_state") in {"local_responded", "local_responded_no_properties"})
     failed = max(0, len(devices) - successful)
     now = time.monotonic()
     if failed or duration_ms >= 2000 or now - _tuya_last_diagnostic_log_at >= 60.0:
@@ -2782,6 +2786,59 @@ def _tuya_devices_sync_work(session: dict[str, Any], cancelled: threading.Event)
             raise HTTPException(503, "tuya_sync_unavailable") from exc
 
 
+@app.post("/api/v1/integrations/tuya/devices/{gateway_id}/sub-devices/sync")
+def tuya_gateway_subdevices_sync(gateway_id: str,
+                                 session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Discover Zigbee children of one selected Tuya gateway without writes."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", gateway_id):
+        raise HTTPException(422, "tuya_gateway_id_invalid")
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        config = hardware_integrations.load_config()
+        tuya = config.get("tuya", {}) if isinstance(config.get("tuya"), dict) else {}
+        try:
+            result = hardware_integrations.discover_tuya_subdevices(tuya, gateway_id)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)[:120]) from exc
+        except (RuntimeError, OSError) as exc:
+            reason = str(exc)[:120]
+            audit(conn, session["user_id"], "hardware.tuya.subdevice_discovery", gateway_id, "failed", {
+                "reason": reason, "cloud_requested": True, "commands_sent": False,
+                "secrets_returned": False,
+            })
+            conn.commit()
+            raise HTTPException(502, reason) from exc
+        current = {item.get("device_id"): item for item in tuya.get("devices", [])
+                   if isinstance(item, dict) and isinstance(item.get("device_id"), str)}
+        parent = current.get(gateway_id)
+        if not parent:
+            raise HTTPException(404, "tuya_gateway_not_configured")
+        parent["is_gateway"] = True
+        for child in result["devices"]:
+            current[child["device_id"]] = child
+        tuya["devices"] = list(current.values())
+        tuya["product_schemas"] = result.get("product_schemas", tuya.get("product_schemas", {}))
+        config["tuya"] = tuya
+        hardware_integrations.save_config(config)
+        _sync_gateway_device_inventory(conn, config)
+        _persist_tuya_product_dps_map(conn, tuya.get("product_schemas"))
+        _persist_tuya_pid_capabilities(conn, tuya.get("product_schemas"))
+        audit(conn, session["user_id"], "hardware.tuya.subdevice_discovery", gateway_id, "success", {
+            "device_count": result["device_count"],
+            "cloud_subdevice_count": result["cloud_subdevice_count"],
+            "node_ids_missing": result["node_ids_missing"],
+            "schema_failures": result["schema_failures"],
+            "cloud_requested": True, "commands_sent": False,
+            "secrets_returned": False,
+        })
+        conn.commit()
+        return {**result,
+                "inventory": hardware_integrations.public_config(config)["tuya"]["devices"],
+                "cloud_requested": True, "commands_sent": False, "secrets_returned": False}
+
+
 def _deye_energy_identity(conn: sqlite3.Connection, deye: dict[str, Any]) -> tuple[str, str | None]:
     """Prefer the inventoried network MAC over an IP that may change.
 
@@ -3139,7 +3196,7 @@ def _persist_tuya_device_events(conn: sqlite3.Connection, readings: list[dict[st
                     continue
             except (TypeError, ValueError):
                 pass
-        available = reading.get("connection_state") == "local_responded"
+        available = reading.get("connection_state") in {"local_responded", "local_responded_no_properties"}
         observations: list[tuple[str, Any, str]] = [("__availability", available, "availability")]
         if available:
             for row in reading.get("status", []):
@@ -3192,7 +3249,8 @@ def _update_tuya_device_records(config: dict[str, Any], readings: list[dict[str,
             continue
         valid = (reading.get("connection_state") == "local_responded"
                  and isinstance(reading.get("status"), list) and bool(reading.get("status")))
-        state = "ready" if valid else "unavailable"
+        state = ("transport_ready_no_properties" if reading.get("connection_state") == "local_responded_no_properties"
+                 else "ready" if valid else "unavailable")
         if device.get("local_control_state") != state:
             device["local_control_state"] = state
             changed = True
@@ -3274,7 +3332,19 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
         for _ in range(rounds):
             sweep_started = time.perf_counter()
             configured_lan = []
+            testable_ids: set[str] = set()
+            all_devices = config.get("devices", []) if isinstance(config.get("devices"), list) else []
+            by_id = {entry.get("device_id"): entry for entry in all_devices
+                     if isinstance(entry, dict) and isinstance(entry.get("device_id"), str)}
             for item in devices:
+                if item.get("transport") == "tuya_gateway":
+                    parent = by_id.get(item.get("parent_device_id"))
+                    if parent and parent.get("local_key") and (parent.get("local_ip") or parent.get("local_mac")):
+                        if parent not in configured_lan:
+                            configured_lan.append(parent)
+                        configured_lan.append(item)
+                        testable_ids.add(item["device_id"])
+                    continue
                 host = item.get("local_ip")
                 mac = hardware_integrations._tuya_normalize_mac(item.get("local_mac"))
                 if not item.get("local_key") or (not host and not mac):
@@ -3286,6 +3356,7 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
                         if not mac:
                             continue
                 configured_lan.append(item)
+                testable_ids.add(item["device_id"])
             readings = hardware_integrations.read_tuya({**config, "devices": configured_lan}) if configured_lan else []
             sweep_times.append(round((time.perf_counter() - sweep_started) * 1000, 1))
             by_id = {row.get("device_id"): row for row in readings}
@@ -3295,7 +3366,11 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
                 if row is None:
                     host = item.get("local_ip")
                     mac = hardware_integrations._tuya_normalize_mac(item.get("local_mac"))
-                    if not item.get("local_key"):
+                    if item.get("transport") == "tuya_gateway" and not by_id.get(item.get("parent_device_id"), {}).get("local_key"):
+                        reason = "tuya_local_key_missing"
+                    elif item.get("transport") == "tuya_gateway" and not by_id.get(item.get("parent_device_id"), {}).get("local_ip"):
+                        reason = "private_lan_target_required"
+                    elif not item.get("local_key") and item.get("transport") != "tuya_gateway":
                         reason = "tuya_local_key_missing"
                     elif not host:
                         reason = "tuya_local_ip_unresolved_from_mac" if mac else "private_lan_target_required"
@@ -3349,9 +3424,10 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
             schema = [entry for entry in item.get("status_spec", []) if isinstance(entry, dict)]
             power_telemetry = any(re.search(r"power|watt|cur_power|active_power", str(entry.get("code", "")) + " " + str(entry.get("name", "")), re.I)
                                   for entry in schema)
+            parent = by_id.get(item.get("parent_device_id"), {})
             result.append({"device_id": item["device_id"], "name": str(item.get("name") or "Tuya device")[:120],
-                           "local_ip": item.get("local_ip", ""),
-                           "local_key_configured": bool(item.get("local_key")),
+                           "local_ip": item.get("local_ip") or parent.get("local_ip", ""),
+                           "local_key_configured": bool(item.get("local_key") or by_id.get(item.get("parent_device_id"), {}).get("local_key")),
                            "success_count": sum(1 for row in rows if row["ok"]), "rounds": rounds,
                            "failure_count": sum(1 for row in rows if not row["ok"]),
                            "average_latency_ms": round(sum(times) / len(times), 1) if times else None,
@@ -3365,7 +3441,7 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
                            "reason": next((row["reason"] for row in rows if row.get("reason")),
                                           "private_lan_target_required" if not item.get("local_ip") else None)})
         return {"rounds": rounds, "configured_count": len(devices),
-                "lan_testable_count": len(configured_lan),
+                "lan_testable_count": len(testable_ids),
                 "confirmed_device_count": len(verified_ids),
                 "elapsed_ms": elapsed_ms, "sweep_times_ms": sweep_times,
                 "devices": result, "control_commands_sent": False}
@@ -3382,22 +3458,28 @@ def tuya_lan_reachability(payload: dict[str, Any],
         actor = _revalidate_actor(conn, session, "manage_gateway")
         if actor["role"] != "owner":
             raise HTTPException(403, "owner_required")
-        devices = hardware_integrations.load_config().get("tuya", {}).get("devices", [])
+        configured = hardware_integrations.load_config().get("tuya", {}).get("devices", [])
+        devices = configured if isinstance(configured, list) else []
         device = next((item for item in devices if isinstance(item, dict) and item.get("device_id") == device_id), None)
         if device is None:
             raise HTTPException(404, "tuya_device_not_configured")
-        host = device.get("local_ip")
+        parent = next((item for item in devices if isinstance(item, dict)
+                       and item.get("device_id") == device.get("parent_device_id")), None) if device.get("transport") == "tuya_gateway" else None
+        host = (parent or device).get("local_ip")
         if not host:
             return {"device_id": device_id, "connection_state": "failed", "reason": "private_lan_target_required",
-                    "local_mac": device.get("local_mac", ""), "status_read": False, "cloud_requested": False}
+                    "local_mac": (parent or device).get("local_mac", ""), "parent_device_id": device.get("parent_device_id"),
+                    "status_read": False, "cloud_requested": False}
         try:
             probe = hardware_integrations.probe_tuya_lan_reachability(host)
         except ValueError as exc:
             return {"device_id": device_id, "connection_state": "failed", "reason": str(exc),
-                    "local_mac": device.get("local_mac", ""), "status_read": False, "cloud_requested": False}
+                "local_mac": (parent or device).get("local_mac", ""), "parent_device_id": device.get("parent_device_id"),
+                "status_read": False, "cloud_requested": False}
         state = probe["state"]
         return {"device_id": device_id, "connection_state": state, "reason": probe.get("reason"),
-                "local_ip": probe.get("host", host), "local_mac": device.get("local_mac", ""),
+                "local_ip": probe.get("host", host), "local_mac": (parent or device).get("local_mac", ""),
+                "parent_device_id": device.get("parent_device_id"),
                 "port": probe.get("port"), "latency_ms": probe.get("latency_ms"),
                 "status_read": False, "dps_read": False, "cloud_requested": False}
 
@@ -5246,7 +5328,13 @@ def hardware_provider_read(provider: str, payload: dict[str, Any] | None = None,
                 if device_id is not None:
                     if not isinstance(device_id, str) or not any(d.get("device_id") == device_id for d in item["devices"]):
                         raise HTTPException(404, "tuya_device_not_configured")
-                    tuya_config = {**item, "devices": [d for d in item["devices"] if d.get("device_id") == device_id]}
+                    selected = next(d for d in item["devices"] if d.get("device_id") == device_id)
+                    selected_devices = [selected]
+                    if selected.get("transport") == "tuya_gateway":
+                        parent = next((d for d in item["devices"] if d.get("device_id") == selected.get("parent_device_id")), None)
+                        if parent is not None:
+                            selected_devices.insert(0, parent)
+                    tuya_config = {**item, "devices": selected_devices}
                 result = {"tuya": hardware_integrations.read_tuya(tuya_config)}
                 _merge_tuya_lan_dps_discoveries(config, result["tuya"], conn)
                 _persist_tuya_device_events(conn, result["tuya"])

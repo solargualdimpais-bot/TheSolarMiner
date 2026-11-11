@@ -45,6 +45,10 @@ except ImportError:  # Keep the rest of the Gateway usable if packaging is incom
 _TUYA_PROTOCOLS_WITH_PERSISTED_STATUS = ("3.3", "3.4", "3.5")
 _TUYA_PROTOCOL_CONFIG_LOCK = threading.Lock()
 _TUYA_MAC_SCAN_LOCK = threading.Lock()
+_TUYA_GATEWAY_SESSIONS_LOCK = threading.Lock()
+_TUYA_GATEWAY_SESSIONS: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+_TUYA_TRANSPORT_LOCKS_LOCK = threading.Lock()
+_TUYA_TRANSPORT_LOCKS: dict[str, threading.RLock] = {}
 _TUYA_MAC_SCAN_CACHE: tuple[float, dict[str, str]] = (0.0, {})
 
 
@@ -367,6 +371,7 @@ def public_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
         product_meta = tuya.get("product_metadata", {}).get(product_id, {}) if isinstance(tuya.get("product_metadata"), dict) else {}
         displayed_product_name = (product_meta.get("product_name_pt") if isinstance(product_meta, dict) else None) or item.get("product_name_pt") or item.get("product")
         public_devices.append({"device_id": item.get("device_id"), "name": item.get("name"), "room": item.get("room", ""), "floor": item.get("floor", ""), "name_source": item.get("name_source", "cloud"), "switch_code": item.get("switch_code"), "switch_channels": [entry.get("code") for entry in item.get("functions", []) if isinstance(entry, dict) and str(entry.get("type", "")).lower() in {"bool", "boolean"}], "channel_count": item.get("channel_count", 0), "device_kind": item.get("device_kind", "unknown"), "device_kind_label": item.get("device_kind_label", TUYA_DEVICE_KINDS["unknown"]), "device_kind_confidence": item.get("device_kind_confidence", "low"), "channel_labels": item.get("channel_labels", {}), "capability_labels": item.get("capability_labels", {}), "level_code": item.get("level_code"), "level_min": item.get("level_min", 0), "level_max": item.get("level_max", 100), "category": item.get("category"), "product_id": product_id or None, "product": item.get("product", ""), "product_name": item.get("product_name"), "product_name_pt": displayed_product_name, "schema_source": item.get("schema_source", "TUYA_DEVICE"), "online": item.get("online"), "ip": item.get("local_ip", ""), "local_ip": item.get("local_ip", ""), "local_mac": item.get("local_mac", ""), "local_protocol": item.get("local_protocol", "3.3"), "local_dps_map": item.get("local_dps_map", {}), "dps_preset_id": item.get("dps_preset_id"), "product_profile": exact_product_profile, "dps_knowledge": tuya_dps_registry.analyze_device(knowledge_device), "local_control_state": item.get("local_control_state", "not_tested"), "local_verified": bool(item.get("local_verified", False)), "cloud_source": item.get("cloud_source"), "cloud_missing": item.get("cloud_missing", False), "local_key_available": bool(item.get("local_key")), "functions": item.get("functions", []), "status_spec": item.get("status_spec", []), "category_functions": item.get("category_functions", []), "category_status_spec": item.get("category_status_spec", []), "category_schema_source": item.get("category_schema_source"), "current_status": item.get("current_status", []), "last_status_at": item.get("last_status_at")})
+        public_devices[-1].update({key: item[key] for key in ("transport", "parent_device_id", "node_id", "gateway_discovery_source", "is_gateway") if key in item})
     return {
         "deye": {k: config.get("deye", {}).get(k) for k in ("host", "port", "unit_id", "model") if config.get("deye", {}).get(k) is not None},
         "antminer": {k: config.get("antminer", {}).get(k) for k in ("host", "port", "rest_port", "model") if config.get("antminer", {}).get(k) is not None},
@@ -501,7 +506,7 @@ def validate_config(payload: Any, existing: dict[str, Any] | None = None) -> dic
             # Cloud-imported secrets and capability metadata can only come from
             # the Gateway's previous trusted inventory, never from PWA input.
             previous = existing_devices.get(device_id, {})
-            for key in ("local_key", "local_ip", "local_mac", "local_protocol", "local_dps_map", "local_control_state", "local_verified", "product_id", "product", "product_name", "product_name_pt", "product_name_pt_source", "category", "online", "ip", "functions", "status_spec", "category_functions", "category_status_spec", "category_schema_source", "schema_source", "current_status", "last_status_at", "cloud_source", "cloud_missing", "last_synced_at", "device_kind", "device_kind_label", "device_kind_confidence", "channel_count"):
+            for key in ("local_key", "local_ip", "local_mac", "local_protocol", "local_dps_map", "local_control_state", "local_verified", "product_id", "product", "product_name", "product_name_pt", "product_name_pt_source", "category", "online", "ip", "functions", "status_spec", "category_functions", "category_status_spec", "category_schema_source", "schema_source", "current_status", "last_status_at", "cloud_source", "cloud_missing", "last_synced_at", "device_kind", "device_kind_label", "device_kind_confidence", "channel_count", "transport", "parent_device_id", "node_id", "gateway_discovery_source", "is_gateway"):
                 if key in previous:
                     normalized_device[key] = previous[key]
             profile = classify_tuya_device(previous)
@@ -794,9 +799,74 @@ def _tuya_resolve_local_ip(device: dict[str, Any]) -> str:
     return host
 
 
-def _tuya_lan_client(device: dict[str, Any]):
+def _tuya_find_device(devices: Any, device_id: Any) -> dict[str, Any] | None:
+    if not isinstance(devices, list) or not isinstance(device_id, str):
+        return None
+    return next((item for item in devices if isinstance(item, dict) and item.get("device_id") == device_id), None)
+
+
+def _tuya_transport_identity(device: dict[str, Any]) -> str:
+    parent_id = device.get("parent_device_id") if device.get("transport") == "tuya_gateway" else None
+    return str(parent_id or device.get("device_id") or "")
+
+
+def _tuya_transport_lock(device: dict[str, Any]) -> threading.RLock:
+    identity = _tuya_transport_identity(device)
+    with _TUYA_TRANSPORT_LOCKS_LOCK:
+        return _TUYA_TRANSPORT_LOCKS.setdefault(identity, threading.RLock())
+
+
+def _tuya_gateway_client(parent: dict[str, Any]):
+    """Return a shared persistent LAN session for children of one Tuya hub."""
     if tinytuya is None:
         raise RuntimeError("tuya_lan_driver_unavailable")
+    key = parent.get("local_key")
+    if not isinstance(key, str) or len(key) < 8:
+        raise RuntimeError("tuya_local_key_missing")
+    host = _tuya_resolve_local_ip(parent)
+    protocol = str(parent.get("local_protocol", "3.3"))
+    if protocol not in {"3.1", "3.2", "3.3", "3.4", "3.5"}:
+        raise RuntimeError("tuya_local_protocol_unsupported")
+    cache_key = (str(parent.get("device_id") or ""), host, key, protocol)
+    with _TUYA_GATEWAY_SESSIONS_LOCK:
+        session = _TUYA_GATEWAY_SESSIONS.get(cache_key)
+        if session is None:
+            client = tinytuya.Device(cache_key[0], host, key, version=float(protocol),
+                                     connection_timeout=2, persist=True)
+            client.set_socketTimeout(2)
+            client.set_retry(False)
+            session = {"client": client, "lock": _tuya_transport_lock(parent), "last_used": time.monotonic()}
+            _TUYA_GATEWAY_SESSIONS[cache_key] = session
+        session["last_used"] = time.monotonic()
+        # Persistent sockets must not be kept indefinitely after the last child
+        # disappears. Close idle sessions opportunistically during new access.
+        now = time.monotonic()
+        stale = [(key_id, value) for key_id, value in _TUYA_GATEWAY_SESSIONS.items()
+                 if key_id != cache_key and now - float(value.get("last_used", now)) > 120]
+        for key_id, value in stale:
+            if value["lock"].acquire(blocking=False):
+                try:
+                    value["client"].close()
+                    _TUYA_GATEWAY_SESSIONS.pop(key_id, None)
+                finally:
+                    value["lock"].release()
+    return session["client"]
+
+
+def _tuya_lan_client(device: dict[str, Any], devices: Any = None):
+    if tinytuya is None:
+        raise RuntimeError("tuya_lan_driver_unavailable")
+    if device.get("is_gateway"):
+        return _tuya_gateway_client(device)
+    if device.get("transport") == "tuya_gateway" or device.get("parent_device_id"):
+        parent_id = device.get("parent_device_id")
+        if not isinstance(parent_id, str) or not parent_id or not isinstance(device.get("node_id"), str) or not device.get("node_id"):
+            raise RuntimeError("tuya_gateway_child_topology_incomplete")
+        parent = _tuya_find_device(devices, parent_id)
+        if parent is None:
+            raise RuntimeError("tuya_gateway_parent_unavailable")
+        parent_client = _tuya_gateway_client(parent)
+        return tinytuya.Device(device["device_id"], parent=parent_client, cid=device["node_id"])
     key = device.get("local_key")
     # Cloud-reported `ip` can be a public/NAT address. LAN control only uses
     # the separately configured or locally discovered address.
@@ -810,6 +880,21 @@ def _tuya_lan_client(device: dict[str, Any]):
     client.set_socketTimeout(2)
     client.set_retry(False)
     return client
+
+
+def _tuya_close_gateway_session(device: dict[str, Any], devices: Any = None) -> None:
+    if device.get("transport") != "tuya_gateway" and not device.get("parent_device_id"):
+        return
+    parent_id = device.get("parent_device_id")
+    parent = _tuya_find_device(devices, parent_id)
+    if not parent:
+        return
+    with _TUYA_GATEWAY_SESSIONS_LOCK:
+        keys = [key for key in _TUYA_GATEWAY_SESSIONS if key[0] == parent_id]
+        sessions = [_TUYA_GATEWAY_SESSIONS.pop(key) for key in keys]
+    for session in sessions:
+        with session["lock"]:
+            session["client"].close()
 
 
 def _tuya_command_rejection(response: Any, dps: str) -> RuntimeError:
@@ -878,34 +963,45 @@ def _tuya_local_dps(device: dict[str, Any], code: str, *, status: bool = False) 
     raise ValueError("tuya_local_datapoint_mapping_required")
 
 
-def _tuya_probe_local_status(device: dict[str, Any]):
+def _tuya_probe_local_status(device: dict[str, Any], devices: Any = None):
     """Read Tuya status once using the configured protocol, without protocol guessing."""
     if tinytuya is None:
         raise RuntimeError("tuya_lan_driver_unavailable")
-    key = device.get("local_key")
+    parent_id = device.get("parent_device_id") if device.get("transport") == "tuya_gateway" else None
+    parent = _tuya_find_device(devices, parent_id) if parent_id else None
+    if parent_id and parent is None:
+        raise RuntimeError("tuya_gateway_parent_unavailable")
+    key = (parent or device).get("local_key")
     if not isinstance(key, str) or len(key) < 8:
         raise RuntimeError("tuya_local_key_missing")
-    host = _tuya_resolve_local_ip(device)
-    device["local_ip"] = host
+    host = _tuya_resolve_local_ip(parent if parent else device)
+    if not parent:
+        device["local_ip"] = host
     failures = []
-    preferred = str(device.get("local_protocol") or "")
+    preferred = str(device.get("local_protocol") or (parent or {}).get("local_protocol") or "")
     # The selected protocol is part of the device configuration. Trying other
     # versions on every failed read multiplies LAN traffic and can overload a
     # large fleet; a mismatch is returned to the caller for explicit correction.
     protocol = preferred if preferred in _TUYA_PROTOCOLS_WITH_PERSISTED_STATUS else "3.3"
     protocols = (protocol,)
     for protocol in protocols:
-        candidate = {**device, "local_ip": host, "local_protocol": protocol}
+        candidate = {**device, "local_protocol": protocol}
+        if not parent:
+            candidate["local_ip"] = host
         try:
-            client = _tuya_lan_client(candidate)
-            result = client.status()
+            with _tuya_transport_lock(candidate):
+                client = (_tuya_lan_client(candidate, devices) if parent or device.get("is_gateway")
+                          else _tuya_lan_client(candidate))
+                result = client.status()
             if (not isinstance(result, dict) or result.get("Error")
-                    or not isinstance(result.get("dps"), dict) or not result["dps"]):
+                    or not isinstance(result.get("dps"), dict)
+                    or (not result["dps"] and not device.get("is_gateway"))):
                 failures.append(protocol)
                 continue
             device["local_protocol"] = protocol
             return client, result, protocol
         except Exception:
+            _tuya_close_gateway_session(candidate, devices)
             failures.append(protocol)
     raise RuntimeError("tuya_protocol_probe_failed:" + ",".join(failures))
 
@@ -946,8 +1042,9 @@ def _persist_tuya_protocols(protocols: dict[str, str], local_ips: dict[str, str 
                 return
 
 
-def _tuya_local_status(device: dict[str, Any]) -> dict[str, Any]:
-    _client, result, protocol = _tuya_probe_local_status(device)
+def _tuya_local_status(device: dict[str, Any], devices: Any = None) -> dict[str, Any]:
+    _client, result, protocol = (_tuya_probe_local_status(device, devices) if devices is not None
+                                 else _tuya_probe_local_status(device))
     codes_by_dps: dict[str, set[str]] = {}
     for entry, is_status in [*((item, False) for item in device.get("functions", [])),
                              *((item, True) for item in device.get("status_spec", []))]:
@@ -1004,9 +1101,13 @@ def _tuya_local_status(device: dict[str, Any]) -> dict[str, Any]:
             row["raw_value"] = value
         status.append(row)
     return {"device_id": device["device_id"], "name": device.get("name", "Tuya device"),
-            "status": status, "connection_state": "local_responded", "source": "TUYA_LAN",
+            "status": status,
+            "connection_state": "local_responded_no_properties" if not status and device.get("is_gateway") else "local_responded",
+            "properties_available": bool(status), "source": "TUYA_LAN",
             "trust": "LIVE_UNVERIFIED", "local_protocol": protocol,
-            "local_ip": device.get("local_ip", ""), "observed_at": time.time()}
+            "local_ip": device.get("local_ip", ""),
+            **({"parent_device_id": device.get("parent_device_id")} if device.get("parent_device_id") else {}),
+            "observed_at": time.time()}
 
 
 def read_tuya(config: dict[str, Any], *, on_reading: Callable[[dict[str, Any]], None] | None = None,
@@ -1021,7 +1122,8 @@ def read_tuya(config: dict[str, Any], *, on_reading: Callable[[dict[str, Any]], 
         started = time.perf_counter()
         observed_at = time.time()
         try:
-            result = _tuya_local_status(item)
+            result = (_tuya_local_status(item, devices) if item.get("transport") == "tuya_gateway" or item.get("is_gateway")
+                      else _tuya_local_status(item))
             result["latency_ms"] = round((time.perf_counter() - started) * 1000, 1)
             result["observed_at"] = observed_at
             return result
@@ -1029,6 +1131,7 @@ def read_tuya(config: dict[str, Any], *, on_reading: Callable[[dict[str, Any]], 
             return {"device_id": item["device_id"], "name": item.get("name", "Tuya device"),
                     "connection_state": "failed", "reason": str(exc)[:120],
                     "source": "TUYA_LAN", "trust": "UNAVAILABLE",
+                    **({"parent_device_id": item["parent_device_id"]} if isinstance(item.get("parent_device_id"), str) else {}),
                     "latency_ms": round((time.perf_counter() - started) * 1000, 1), "observed_at": observed_at}
 
     # Keep polling bounded. Consumers may persist each completed response before
@@ -1087,7 +1190,8 @@ def read_tuya(config: dict[str, Any], *, on_reading: Callable[[dict[str, Any]], 
                 device["local_ip"] = new_ip
                 started = time.perf_counter()
                 try:
-                    retried = _tuya_local_status(device)
+                    retried = (_tuya_local_status(device, devices) if device.get("transport") == "tuya_gateway"
+                               else _tuya_local_status(device))
                     retried["latency_ms"] = round((time.perf_counter() - started) * 1000, 1)
                     retried["ip_refreshed_by_mac"] = new_ip != current_ip
                     results[index] = retried
@@ -1100,11 +1204,15 @@ def read_tuya(config: dict[str, Any], *, on_reading: Callable[[dict[str, Any]], 
     if on_reading is not None:
         for index in failed_indexes:
             on_reading(results[index])
-    selected = {item["device_id"]: item["local_protocol"] for item in results
-                if item.get("connection_state") == "local_responded" and item.get("local_protocol") in _TUYA_PROTOCOLS_WITH_PERSISTED_STATUS}
+    selected = {}
+    for item in results:
+        if item.get("connection_state") not in {"local_responded", "local_responded_no_properties"} or item.get("local_protocol") not in _TUYA_PROTOCOLS_WITH_PERSISTED_STATUS:
+            continue
+        selected[item.get("parent_device_id") or item["device_id"]] = item["local_protocol"]
     local_ips: dict[str, str | None] = {item["device_id"]: item["local_ip"] for item in results
-                                       if item.get("local_ip") and (item.get("connection_state") == "local_responded"
-                                                                     or item.get("device_id") in refreshed_ips)}
+                                       if item.get("local_ip") and (item.get("connection_state") in {"local_responded", "local_responded_no_properties"}
+                                                                     or item.get("device_id") in refreshed_ips)
+                                       and not item.get("parent_device_id")}
     local_ips.update({device_id: None for device_id in cleared_ip_devices})
     if selected or local_ips:
         _persist_tuya_protocols(selected, local_ips)
@@ -1812,6 +1920,120 @@ def synchronize_tuya_devices(config: dict[str, Any], *, cancelled: threading.Eve
             "product_dps_maps": config.get("product_dps_maps", {}) if isinstance(config.get("product_dps_maps"), dict) else {}}
 
 
+def discover_tuya_subdevices(config: dict[str, Any], gateway_id: str) -> dict[str, Any]:
+    """Import the explicitly requested Cloud child list for one Tuya gateway.
+
+    Cloud discovery records topology only. LAN address/key remain properties of
+    the gateway and no write or pairing command is sent to either device.
+    Existing child records are retained when a child is absent from a later
+    response; a temporary Cloud omission is not treated as a detach command.
+    """
+    if not isinstance(config, dict) or not config.get("client_id") or not config.get("client_secret"):
+        raise ValueError("tuya_credentials_required")
+    gateway = _tuya_find_device(config.get("devices"), gateway_id)
+    if gateway is None:
+        raise ValueError("tuya_gateway_not_configured")
+    try:
+        auth = _tuya_request(config, "/v1.0/token?grant_type=1")
+        token = (auth.get("result") or {}).get("access_token")
+        if not isinstance(token, str) or not token:
+            raise RuntimeError("tuya_token_missing")
+        path = f"/v1.0/iot-03/devices/{urllib.parse.quote(gateway_id, safe='')}/sub-devices"
+        rows = _tuya_request(config, path, token).get("result")
+    except (RuntimeError, ValueError) as exc:
+        # Unsupported endpoints/scopes remain non-destructive. The caller can
+        # show this diagnostic and retry after enabling Tuya project access.
+        raise RuntimeError(f"tuya_subdevice_discovery_failed:{str(exc)[:80]}") from exc
+    if not isinstance(rows, list):
+        raise RuntimeError("tuya_subdevice_list_invalid")
+    current = {item.get("device_id"): item for item in config.get("devices", [])
+               if isinstance(item, dict) and isinstance(item.get("device_id"), str)}
+    product_schemas = _bounded_tuya_product_schemas(config.get("product_schemas"))
+    schemas_by_product: dict[str, dict[str, Any] | None] = {}
+    schema_failures = 0
+    discovered: list[dict[str, Any]] = []
+    for row in rows[:MAX_TUYA_DEVICES]:
+        if not isinstance(row, dict):
+            continue
+        child_id = row.get("id") or row.get("device_id")
+        node_id = row.get("node_id") or row.get("nodeId")
+        if (not isinstance(child_id, str) or not 1 <= len(child_id) <= 128
+                or not all(char.isalnum() or char in "_-" for char in child_id)
+                or child_id == gateway_id
+                or not isinstance(node_id, str) or not 1 <= len(node_id) <= 128
+                or not all(char.isalnum() or char in "_-:" for char in node_id)):
+            continue
+        previous = current.get(child_id, {})
+        local_name = (previous.get("local_name") or previous.get("name")
+                      if previous.get("name_source") == "local" else None)
+        product_id = str(row.get("product_id") or previous.get("product_id") or "")[:128]
+        category = str(row.get("category") or previous.get("category") or "")[:64]
+        child = {**previous,
+                 "device_id": child_id,
+                 "name": str(local_name or row.get("name") or previous.get("name") or "Tuya Zigbee device")[:120],
+                 "product_id": product_id,
+                 "category": category,
+                 "online": row.get("online") if isinstance(row.get("online"), bool) else previous.get("online"),
+                 "transport": "tuya_gateway",
+                 "parent_device_id": gateway_id,
+                 "node_id": node_id,
+                 "gateway_discovery_source": "TUYA_CLOUD_SUBDEVICE_LIST",
+                 "cloud_source": "TUYA_PROJECT_SUBDEVICE",
+                 "cloud_missing": False,
+                 "last_synced_at": int(time.time())}
+        # A Zigbee child uses its parent's LAN identity and private key. Remove
+        # stale direct-device addressing so it cannot accidentally be contacted
+        # as an independent IP device.
+        for field in ("local_key", "local_ip", "local_mac"):
+            child.pop(field, None)
+        if product_id:
+            cached_profile = product_schemas.get(product_id)
+            if (isinstance(cached_profile, dict)
+                    and (not category or not cached_profile.get("category") or category == cached_profile.get("category"))
+                    and (cached_profile.get("functions") or cached_profile.get("status_spec"))):
+                child["functions"] = cached_profile.get("functions", [])
+                child["status_spec"] = cached_profile.get("status_spec", [])
+                child["schema_source"] = cached_profile.get("schema_source", "TUYA_PRODUCT_SCHEMA_CACHE")
+            else:
+                if product_id not in schemas_by_product:
+                    try:
+                        path = f"/v1.0/iot-03/devices/{urllib.parse.quote(child_id, safe='')}/specification"
+                        schema = _tuya_request(config, path, token).get("result")
+                        schemas_by_product[product_id] = schema if isinstance(schema, dict) else None
+                    except (RuntimeError, ValueError):
+                        schemas_by_product[product_id] = None
+                        schema_failures += 1
+                schema = schemas_by_product[product_id]
+                if isinstance(schema, dict):
+                    functions = _tuya_schema_entries(schema.get("functions"))
+                    status_spec = _tuya_schema_entries(schema.get("status"))
+                    if functions or status_spec:
+                        child["functions"] = functions
+                        child["status_spec"] = status_spec
+                        child["schema_source"] = "TUYA_DEVICE_SPEC"
+                        category = str(schema.get("category") or category)[:64]
+                        child["category"] = category
+                        product_schemas[product_id] = {
+                            **(cached_profile if isinstance(cached_profile, dict) else {}),
+                            "category": category,
+                            "product_name": str(row.get("product_name") or (cached_profile or {}).get("product_name") or "")[:120],
+                            "schema_source": "TUYA_DEVICE_SPEC",
+                            "functions": functions,
+                            "status_spec": status_spec,
+                            "cached_at": int(time.time()),
+                        }
+        discovered.append(child)
+    if len(rows) > MAX_TUYA_DEVICES or len(set(current).union(child["device_id"] for child in discovered)) > MAX_TUYA_DEVICES:
+        raise RuntimeError("tuya_device_limit_exceeded")
+    return {"gateway_id": gateway_id, "gateway_name": gateway.get("name", "Tuya gateway"),
+            "devices": discovered, "device_count": len(discovered),
+            "cloud_subdevice_count": len(rows), "schema_failures": schema_failures,
+            "product_schemas": product_schemas,
+            "node_ids_missing": sum(1 for row in rows if isinstance(row, dict)
+                                    and (row.get("id") or row.get("device_id"))
+                                    and not (row.get("node_id") or row.get("nodeId")))}
+
+
 def control_tuya_switch(config: dict[str, Any], device_id: str, on: bool, code: str | None = None) -> dict[str, Any]:
     """Send an explicit ON/OFF value to a configured datapoint, without reading status."""
     if not isinstance(on, bool):
@@ -1842,9 +2064,11 @@ def control_tuya_switch(config: dict[str, Any], device_id: str, on: bool, code: 
     dps = _tuya_local_dps(device, code)
     # Commands use the protocol already stored by the independent read engine.
     # Do not issue a status/DPS probe as part of a user command.
-    client = _tuya_lan_client(device)
     command_started = time.perf_counter()
-    response = client.set_status(on, switch=int(dps))
+    with _tuya_transport_lock(device):
+        client = (_tuya_lan_client(device, config.get("devices")) if device.get("transport") == "tuya_gateway"
+                  else _tuya_lan_client(device))
+        response = client.set_status(on, switch=int(dps))
     command_latency_ms = round((time.perf_counter() - command_started) * 1000)
     # Some devices apply a relay command but omit the immediate DPS ACK. Treat
     # the write as unconfirmed and let the independent polling engine verify
@@ -1872,9 +2096,11 @@ def control_tuya_level(config: dict[str, Any], device_id: str, percent: int) -> 
         raise ValueError("tuya_level_function_not_configured")
     target = round(low + (high - low) * percent / 100)
     dps = _tuya_local_dps(device, code)
-    client = _tuya_lan_client(device)
     command_started = time.perf_counter()
-    response = client.set_value(int(dps), target)
+    with _tuya_transport_lock(device):
+        client = (_tuya_lan_client(device, config.get("devices")) if device.get("transport") == "tuya_gateway"
+                  else _tuya_lan_client(device))
+        response = client.set_value(int(dps), target)
     command_latency_ms = round((time.perf_counter() - command_started) * 1000)
     if not isinstance(response, dict) or (response.get("Error") and not response.get("dps")):
         raise _tuya_command_rejection(response, dps)
@@ -1954,9 +2180,11 @@ def control_tuya_setting(config: dict[str, Any], device_id: str, code: str, valu
     if dps_id is None:
         raise ValueError("tuya_local_datapoint_mapping_required")
     dps = dps_id
-    client = _tuya_lan_client(device)
     command_started = time.perf_counter()
-    response = client.set_value(int(dps), value)
+    with _tuya_transport_lock(device):
+        client = (_tuya_lan_client(device, config.get("devices")) if device.get("transport") == "tuya_gateway"
+                  else _tuya_lan_client(device))
+        response = client.set_value(int(dps), value)
     command_latency_ms = round((time.perf_counter() - command_started) * 1000)
     if not isinstance(response, dict) or (response.get("Error") and not response.get("dps")):
         raise _tuya_command_rejection(response, dps_id)

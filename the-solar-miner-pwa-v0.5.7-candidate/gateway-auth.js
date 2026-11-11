@@ -493,6 +493,10 @@ export async function importGatewayDeyeCloudHistory(stationId, onProgress = () =
 export async function syncGatewayTuyaDevices({ signal } = {}) {
   return gatewayApi("/api/v1/integrations/tuya/sync", { method: "POST", body: {}, signal });
 }
+export async function syncGatewayTuyaSubdevices(gatewayId, { signal } = {}) {
+  if (typeof gatewayId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(gatewayId)) throw new Error("Painel Tuya inválido.");
+  return gatewayApi(`/api/v1/integrations/tuya/devices/${encodeURIComponent(gatewayId)}/sub-devices/sync`, { method: "POST", body: {}, signal });
+}
 export async function previewGatewayTuyaProductImport(source, { signal } = {}) {
   if (!source || typeof source !== "object" || (source.url && typeof source.url !== "string") || (source.content && typeof source.content !== "string") || (source.content_base64 && typeof source.content_base64 !== "string")) throw new Error("Origem do catálogo inválida.");
   return gatewayApi("/api/v1/integrations/tuya/product-catalog/preview", { method: "POST", body: source, signal });
