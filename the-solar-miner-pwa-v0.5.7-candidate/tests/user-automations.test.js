@@ -47,6 +47,16 @@ test("Owner menu exposes rule simulation, ordered actions, and execution history
   assert.match(app, /Nenhum comando foi enviado/);
 });
 
+test("automation prototype exposes navigable tap and Tuya status menus without saving", () => {
+  assert.match(app, /data-automation-menu="create"/);
+  assert.match(app, /TOCAR PARA EXECUTAR/);
+  assert.match(app, /QUANDO O STATUS DO DISPOSITIVO MUDA/);
+  assert.match(app, /status-functions:/);
+  assert.match(app, /status-value:/);
+  assert.match(app, /A Cloud declarou um valor booleano, mas não forneceu um range explícito/);
+  assert.match(app, /automation-prototype-save" disabled/);
+});
+
 test("static cache is versioned for the automation menu release", () => {
-  assert.match(worker, /the-solar-miner-static-v0\.5\.171-user-automations/);
+  assert.match(worker, /the-solar-miner-static-v0\.5\.172-automation-menu-preview/);
 });
