@@ -63,10 +63,11 @@ from . import shelly_product_registry
 from . import update_helper_client
 from . import updates as update_manager
 from . import error_reporting
+from . import user_automation
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.241"
+PACKAGE_VERSION = "0.6.242"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -98,6 +99,7 @@ _deye_unreachable_since: dict[tuple[str, str, str, str], float] = {}
 _deye_last_ip_recovery_attempt: dict[tuple[str, str, str, str], float] = {}
 _tuya_last_diagnostic_log_at = 0.0
 _dispatch_lock = threading.Lock()
+_user_automation_lock = threading.Lock()
 _dispatch_last_sent: dict[str, tuple[str, float]] = {}
 _deye_history_jobs_lock = threading.Lock()
 _deye_history_jobs: dict[str, dict[str, Any]] = {}
@@ -1350,6 +1352,7 @@ def initialize() -> None:
         return
     with db() as conn:
         conn.executescript(SCHEMA)
+        user_automation.ensure_schema(conn)
         shelly_product_registry.ensure_schema(conn)
         _sync_tuya_canonical_features(conn)
         bootstrap_columns = {row[1] for row in conn.execute("PRAGMA table_info(bootstrap)")}
@@ -1768,6 +1771,226 @@ async def _energy_dispatch_loop() -> None:
         await asyncio.sleep(10)
 
 
+def _record_user_automation_event(conn, rule_id: str, name: str, outcome: str,
+                                 reason: str, details: dict[str, Any] | None = None) -> None:
+    conn.execute("INSERT INTO user_automation_runs(rule_id,rule_name,outcome,reason,details_json,occurred_at) VALUES(?,?,?,?,?,?)",
+        (rule_id, name[:100], outcome[:32], reason[:240], json.dumps(details or {}, ensure_ascii=False, separators=(",", ":")), utcnow()))
+    conn.execute("DELETE FROM user_automation_runs WHERE id NOT IN (SELECT id FROM user_automation_runs ORDER BY id DESC LIMIT ?)",
+                 (user_automation.MAX_HISTORY,))
+
+
+def _user_automation_capabilities() -> dict[str, Any]:
+    """Expose only locally configured, known-readable triggers and supported LAN outputs."""
+    config = hardware_integrations.load_config()
+    tuya = config.get("tuya", {}) if isinstance(config.get("tuya"), dict) else {}
+    triggers: list[dict[str, Any]] = []
+    targets: list[dict[str, Any]] = []
+    for device in tuya.get("devices", []):
+        if not isinstance(device, dict) or not device.get("device_id"):
+            continue
+        device_id = str(device["device_id"])
+        if device.get("local_key") and (device.get("local_ip") or device.get("local_mac")):
+            for spec in device.get("status_spec", []):
+                if not isinstance(spec, dict) or not isinstance(spec.get("code"), str):
+                    continue
+                kind = str(spec.get("type") or "").lower()
+                if kind not in {"bool", "boolean", "value", "integer", "number", "enum", "string"}:
+                    continue
+                triggers.append({"id": f"tuya|{device_id}|{spec['code']}", "device_id": device_id,
+                    "code": spec["code"], "name": str(device.get("name") or device_id)[:120],
+                    "label": str(spec.get("name") or spec["code"])[:100], "type": kind})
+            for spec in device.get("functions", []):
+                if not isinstance(spec, dict) or str(spec.get("type") or "").lower() not in {"bool", "boolean"}:
+                    continue
+                code = spec.get("code")
+                if not isinstance(code, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", code):
+                    continue
+                targets.append({"id": f"tuya|{device_id}|{code}", "type": "tuya", "device_id": device_id,
+                    "code": code, "label": f"Tuya · {device.get('name') or device_id} · {spec.get('name') or code}",
+                    "operations": ["switch"]})
+    with db() as conn:
+        rows = conn.execute("SELECT device_id,name,model,generation,device_type,capabilities_json FROM shelly_devices WHERE enabled=1 ORDER BY name").fetchall()
+    for row in rows:
+        if (int(row["generation"] or 0) < 1 or
+                str(row["device_type"] or "").lower() in {"smart_blugw", "smart_gateway"}):
+            continue
+        device_id = str(row["device_id"])
+        targets.append({"id": f"shelly|{device_id}|0", "type": "shelly", "device_id": device_id,
+                        "channel": 0, "label": f"Shelly · {row['name']} · canal 1", "operations": ["switch"]})
+        try:
+            caps = json.loads(row["capabilities_json"] or "[]")
+        except (TypeError, json.JSONDecodeError):
+            caps = []
+        identity = " ".join([str(row["model"] or ""), *[str(item) for item in caps if isinstance(item, str)]]).casefold()
+        if any(token in identity for token in ("dimmer", "brightness", "light", "rgb", "cct")):
+            targets.append({"id": f"shelly-light|{device_id}|light|0", "type": "shelly_light", "device_id": device_id,
+                            "component": "light", "channel": 0,
+                            "label": f"Shelly · {row['name']} · luminosidade", "operations": ["brightness"]})
+    return {"triggers": triggers[:5000], "targets": targets[:500],
+            "schedule_supported": True, "source": "gateway_local_integrations"}
+
+
+def _execute_user_automation_action(action: dict[str, Any]) -> dict[str, Any]:
+    """Execute only explicit target states through the existing local adapters."""
+    if action["target_type"] == "tuya":
+        config = hardware_integrations.load_config().get("tuya", {})
+        result = hardware_integrations.control_tuya_switch(config, action["device_id"], action["on"], code=action["code"])
+        return {"command_confirmed": bool(result.get("state_confirmed")),
+                "requested_on": action["on"], "observed_on": result.get("observed_state"),
+                "transport": "tuya_lan"}
+    with db() as conn:
+        row = conn.execute("SELECT * FROM shelly_devices WHERE device_id=? AND enabled=1", (action["device_id"],)).fetchone()
+    if not row:
+        raise ValueError("shelly_device_not_found")
+    device = dict(row)
+    credentials = shelly_credentials.open_credentials(DATA_DIR, device.get("auth_ciphertext"))
+    host = hardware_integrations._private_ip(device.get("host"))
+    if action["operation"] == "switch":
+        result = hardware_integrations.shelly_integration.control_switch(host, int(device.get("generation") or 0),
+            action["channel"], action["on"], username=str(credentials.get("username") or ""),
+            password=str(credentials.get("password") or ""))
+        return {"command_confirmed": result.get("command_state") == "CONFIRMED",
+                "requested_on": action["on"], "observed_on": result.get("observed_on"), "transport": "shelly_lan"}
+    result = hardware_integrations.shelly_integration.control_light(host, int(device.get("generation") or 0),
+        action["component"], action["channel"], brightness=action["percent"],
+        username=str(credentials.get("username") or ""), password=str(credentials.get("password") or ""))
+    return {"command_confirmed": bool(result.get("command_confirmed")), "requested_percent": action["percent"],
+            "transport": "shelly_lan"}
+
+
+def _run_user_automations_once() -> dict[str, int]:
+    """Evaluate rules serially; stale readings fail closed and rules fire once per true edge."""
+    if not _user_automation_lock.acquire(blocking=False):
+        return {"evaluated": 0, "fired": 0}
+    evaluated = fired = 0
+    try:
+        with db() as conn:
+            telemetry_row = conn.execute("SELECT value FROM system_state WHERE key='energy_engine_tuya_telemetry'").fetchone()
+            try:
+                telemetry = json.loads(telemetry_row[0]) if telemetry_row else {}
+            except (TypeError, json.JSONDecodeError):
+                telemetry = {}
+            rows = [dict(row) for row in conn.execute("SELECT * FROM user_automation_rules WHERE enabled=1 ORDER BY created_at,id")]
+        if not isinstance(telemetry, dict):
+            telemetry = {}
+        now = datetime.now().astimezone()
+        for row in rows:
+            evaluated += 1
+            trigger = user_automation._json(row["trigger_json"])
+            actions = user_automation._json(row["action_json"])
+            if isinstance(actions, dict): actions = [actions]
+            runtime = user_automation._json(row["runtime_json"])
+            previous_runtime_json = row["runtime_json"]
+            if not isinstance(runtime, dict): runtime = {}
+            if not isinstance(trigger, dict) or not isinstance(actions, list) or not actions or len(actions) > 8:
+                LOG.error("User automation rule is invalid id=%s", row["id"])
+                runtime.update({"last_outcome": "blocked", "last_reason": "Regra inválida; edita ou elimina esta regra"})
+                serialized = json.dumps(runtime, ensure_ascii=False, separators=(",", ":"))
+                if serialized != previous_runtime_json:
+                    with db() as conn:
+                        conn.execute("UPDATE user_automation_rules SET runtime_json=? WHERE id=?", (serialized, row["id"]))
+                        conn.commit()
+                continue
+            matched, reason = user_automation.evaluate_trigger(trigger, telemetry, now)
+            stamp = utcnow()
+            try: retry_after = float(runtime.get("retry_after", 0) or 0)
+            except (TypeError, ValueError, OverflowError): retry_after = time.time() + 300
+            retry_pending = runtime.get("pending_action") is True and retry_after <= time.time()
+            if retry_pending:
+                should_fire = True
+            elif runtime.get("pending_action") is True:
+                should_fire = False
+                runtime.update({"last_outcome": "waiting", "last_reason": "A aguardar repetição segura da ação"})
+            elif trigger.get("type") == "schedule":
+                day_key = now.date().isoformat()
+                should_fire = matched and runtime.get("last_schedule_day") != day_key
+                if not matched:
+                    runtime.update({"last_outcome": "waiting", "last_reason": reason})
+            else:
+                if not matched:
+                    runtime.update({"condition_since": None, "fired_for_condition": False,
+                                    "last_outcome": "waiting", "last_reason": reason})
+                    should_fire = False
+                else:
+                    since = runtime.get("condition_since")
+                    if not isinstance(since, (int, float)):
+                        since = time.time()
+                        runtime["condition_since"] = since
+                    due = time.time() - since >= int(trigger.get("for_seconds", 0))
+                    should_fire = due and runtime.get("fired_for_condition") is not True
+                    runtime.update({"last_outcome": "ready" if due else "waiting",
+                                    "last_reason": "Condição estabilizada" if due else "A aguardar estabilidade da condição"})
+            if should_fire:
+                # Explicit ON/OFF/level assignments are idempotent. Persist a bounded
+                # retry record before network I/O so a process restart can resume it.
+                if not retry_pending:
+                    runtime["pending_action"] = True
+                    runtime["pending_action_payload"] = actions
+                    runtime["attempts"] = 0
+                    if trigger.get("type") == "schedule": runtime["last_schedule_day"] = now.date().isoformat()
+                    else: runtime["fired_for_condition"] = True
+                actions = runtime.get("pending_action_payload") if isinstance(runtime.get("pending_action_payload"), list) else actions
+                runtime["attempts"] = int(runtime.get("attempts", 0) or 0) + 1
+                runtime.update({"last_outcome": "running", "last_reason": "A executar ação", "last_run_at": stamp})
+                with db() as conn:
+                    cursor = conn.execute("""UPDATE user_automation_rules SET runtime_json=?
+                        WHERE id=? AND enabled=1 AND trigger_json=? AND action_json=?""",
+                        (json.dumps(runtime, separators=(",", ":")), row["id"], row["trigger_json"], row["action_json"]))
+                    conn.commit()
+                # The Owner may have paused or removed the rule after this cycle
+                # read its snapshot. Do not send a command unless the pending run
+                # was still committed against an enabled rule.
+                if cursor.rowcount != 1:
+                    continue
+                try:
+                    results = [_execute_user_automation_action(action) for action in actions]
+                    result = {"actions": results, "action_count": len(results)}
+                    confirmed = all(item.get("command_confirmed") is True for item in results)
+                    outcome = "confirmed" if confirmed else "unconfirmed"
+                    reason = "Todas as ações foram confirmadas" if confirmed else "Pelo menos uma ação não teve confirmação de leitura"
+                    runtime.update({"pending_action": False, "retry_after": 0, "attempts": 0})
+                    runtime.pop("pending_action_payload", None)
+                    fired += 1
+                except Exception as exc:
+                    result = {"error": str(exc)[:160], "error_type": type(exc).__name__}
+                    attempts = int(runtime.get("attempts", 1) or 1)
+                    exhausted = attempts >= 12
+                    runtime.update({"pending_action": not exhausted,
+                                    "retry_after": time.time() + min(300, 5 * (2 ** min(attempts, 6))) if not exhausted else 0})
+                    if exhausted:
+                        runtime.pop("pending_action_payload", None)
+                    outcome, reason = "failed", (f"Ação falhou após {attempts} tentativas; repetição automática interrompida: {str(exc)[:150]}"
+                                                   if exhausted else f"Ação falhou; nova tentativa segura agendada: {str(exc)[:150]}")
+                runtime.update({"last_outcome": outcome, "last_reason": reason, "last_run_at": utcnow()})
+                with db() as conn:
+                    conn.execute("UPDATE user_automation_rules SET runtime_json=? WHERE id=?",
+                                 (json.dumps(runtime, ensure_ascii=False, separators=(",", ":")), row["id"]))
+                    _record_user_automation_event(conn, row["id"], row["name"], outcome, reason, result)
+                    audit(conn, None, "user_automation.execute", row["id"], outcome,
+                          {"action_count": len(actions), "action_types": [item.get("target_type") for item in actions]})
+                    conn.commit()
+            else:
+                serialized = json.dumps(runtime, ensure_ascii=False, separators=(",", ":"))
+                if serialized != previous_runtime_json:
+                    with db() as conn:
+                        conn.execute("UPDATE user_automation_rules SET runtime_json=? WHERE id=?", (serialized, row["id"]))
+                        conn.commit()
+        return {"evaluated": evaluated, "fired": fired}
+    finally:
+        _user_automation_lock.release()
+
+
+async def _user_automation_loop() -> None:
+    while True:
+        try:
+            await asyncio.to_thread(_run_user_automations_once)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            LOG.warning("User automation evaluation failed (%s)", type(exc).__name__)
+        await asyncio.sleep(5)
+
+
 def _read_tesla_local_presence() -> dict[str, Any]:
     """Match the configured Tesla MAC against locally learned neighbours."""
     config = hardware_integrations.load_config()
@@ -1890,6 +2113,7 @@ async def lifespan(_: FastAPI):
         _recent_deye_samples.clear()
     sampler = asyncio.create_task(_energy_sampling_loop(), name="solarminer-energy-sampler")
     dispatcher = asyncio.create_task(_energy_dispatch_loop(), name="solarminer-energy-dispatcher")
+    user_automations = asyncio.create_task(_user_automation_loop(), name="solarminer-user-automations")
     tesla_presence = asyncio.create_task(_tesla_presence_loop(), name="solarminer-tesla-presence")
     tuya_observer = asyncio.create_task(_tuya_device_event_loop(), name="solarminer-tuya-event-observer")
     history_retention = asyncio.create_task(_history_retention_loop(), name="solarminer-history-retention")
@@ -1898,6 +2122,7 @@ async def lifespan(_: FastAPI):
     finally:
         sampler.cancel()
         dispatcher.cancel()
+        user_automations.cancel()
         tesla_presence.cancel()
         tuya_observer.cancel()
         history_retention.cancel()
@@ -1907,6 +2132,10 @@ async def lifespan(_: FastAPI):
             pass
         try:
             await dispatcher
+        except asyncio.CancelledError:
+            pass
+        try:
+            await user_automations
         except asyncio.CancelledError:
             pass
         try:
@@ -2243,6 +2472,107 @@ def status_endpoint(session: dict[str, Any] = Depends(require_permission("read")
 @app.get("/api/v1/energy/categories")
 def energy_categories(session: dict[str, Any] = Depends(require_permission("read"))) -> dict[str, Any]:
     return {"categories": [{"id": key, "label": label, "api_category": key, "profile_path": "/api/v1/energy/equipment"} for key, label in energy_registry.CATEGORIES.items()], "pwa_source_available": True, "integration_state": "API_READY_PWA_V0_5_7_SAME_ORIGIN"}
+
+
+def _validate_user_automation_capability(rule: dict[str, Any]) -> None:
+    caps = _user_automation_capabilities()
+    trigger, actions = rule["trigger"], rule["actions"]
+    if trigger["type"] == "tuya_state" and not any(item["device_id"] == trigger["device_id"] and item["code"] == trigger["code"] for item in caps["triggers"]):
+        raise HTTPException(422, "automation_trigger_not_available_locally")
+    for action in actions:
+        expected_type = "tuya" if action["target_type"] == "tuya" else "shelly_light" if action["operation"] == "brightness" else "shelly"
+        if not any(item["type"] == expected_type and item["device_id"] == action["device_id"]
+                   and (item.get("code") == action.get("code") if expected_type == "tuya" else
+                        item.get("channel") == action.get("channel") and
+                        (expected_type != "shelly_light" or item.get("component") == action.get("component")))
+                   for item in caps["targets"]):
+            raise HTTPException(422, "automation_action_not_available_locally")
+
+
+@app.get("/api/v1/automations")
+def read_user_automations(session: dict[str, Any] = Depends(require_permission("read"))) -> dict[str, Any]:
+    with db() as conn:
+        rules = user_automation.list_rules(conn)
+        events = user_automation.history(conn, 50)
+    return {"rules": rules, "history": events, "capabilities": _user_automation_capabilities(),
+            "engine": {"state": "running", "evaluation_interval_seconds": 5, "local_only": True,
+                       "stale_reading_limit_seconds": user_automation.MAX_STALENESS_SECONDS}}
+
+
+@app.post("/api/v1/automations")
+def create_user_automation(payload: dict[str, Any], session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    try:
+        rule = user_automation.validate_rule(payload)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    _validate_user_automation_capability(rule)
+    rule_id, stamp = str(uuid.uuid4()), utcnow()
+    with db() as conn:
+        _require_owner(session, conn)
+        count = conn.execute("SELECT COUNT(*) FROM user_automation_rules").fetchone()[0]
+        if count >= user_automation.MAX_RULES:
+            raise HTTPException(409, "automation_limit_reached")
+        conn.execute("INSERT INTO user_automation_rules(id,name,enabled,trigger_json,action_json,runtime_json,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (rule_id, rule["name"], int(rule["enabled"]), json.dumps(rule["trigger"], ensure_ascii=False),
+             json.dumps(rule["actions"], ensure_ascii=False), "{}", session["user_id"], stamp, stamp))
+        audit(conn, session["user_id"], "user_automation.create", rule_id, "success", {"enabled": rule["enabled"]})
+        conn.commit()
+        created = next(item for item in user_automation.list_rules(conn) if item["id"] == rule_id)
+    return {"rule": created}
+
+
+@app.put("/api/v1/automations/{rule_id}")
+def update_user_automation(rule_id: str, payload: dict[str, Any], session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    if not re.fullmatch(r"[0-9a-f-]{36}", rule_id):
+        raise HTTPException(404, "automation_not_found")
+    try:
+        rule = user_automation.validate_rule(payload)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    _validate_user_automation_capability(rule)
+    with db() as conn:
+        _require_owner(session, conn)
+        old = conn.execute("SELECT runtime_json FROM user_automation_rules WHERE id=?", (rule_id,)).fetchone()
+        if not old:
+            raise HTTPException(404, "automation_not_found")
+        conn.execute("UPDATE user_automation_rules SET name=?,enabled=?,trigger_json=?,action_json=?,runtime_json=?,updated_at=? WHERE id=?",
+            (rule["name"], int(rule["enabled"]), json.dumps(rule["trigger"], ensure_ascii=False),
+             json.dumps(rule["actions"], ensure_ascii=False), "{}", utcnow(), rule_id))
+        audit(conn, session["user_id"], "user_automation.update", rule_id, "success", {"enabled": rule["enabled"]})
+        conn.commit()
+        saved = next(item for item in user_automation.list_rules(conn) if item["id"] == rule_id)
+    return {"rule": saved}
+
+
+@app.delete("/api/v1/automations/{rule_id}")
+def delete_user_automation(rule_id: str, session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    with db() as conn:
+        _require_owner(session, conn)
+        cursor = conn.execute("DELETE FROM user_automation_rules WHERE id=?", (rule_id,))
+        if not cursor.rowcount:
+            raise HTTPException(404, "automation_not_found")
+        audit(conn, session["user_id"], "user_automation.delete", rule_id, "success", {})
+        conn.commit()
+    return {"deleted": True, "id": rule_id}
+
+
+@app.post("/api/v1/automations/dry-run")
+def dry_run_user_automation(payload: dict[str, Any], session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    """Evaluate a rule against the latest local state; this endpoint never sends commands."""
+    try:
+        rule = user_automation.validate_rule({**payload, "enabled": False})
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    _validate_user_automation_capability(rule)
+    with db() as conn:
+        _require_owner(session, conn)
+        row = conn.execute("SELECT value FROM system_state WHERE key='energy_engine_tuya_telemetry'").fetchone()
+    try:
+        telemetry = json.loads(row[0]) if row else {}
+    except (TypeError, json.JSONDecodeError):
+        telemetry = {}
+    matched, reason = user_automation.evaluate_trigger(rule["trigger"], telemetry if isinstance(telemetry, dict) else {}, datetime.now().astimezone())
+    return {"matched": matched, "reason": reason, "command_sent": False}
 
 
 @app.get("/api/v1/site/profile")

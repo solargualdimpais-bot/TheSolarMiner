@@ -95,10 +95,10 @@ test("Owner recovery file parser accepts a generated key and rejects malformed/o
 });
 
 test("new PWA static cache version is changed and USB limitations are documented", () => {
-  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.170-shelly-dimmer-menu/);
+  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.171-user-automations/);
   assert.match(serviceWorker, /\.\/favorite-list\.js/);
   assert.match(manifest, /v0\.5\.165/);
-  assert.equal(packageJson.version, "0.5.170");
+  assert.equal(packageJson.version, "0.5.171");
   assert.doesNotMatch(html, /gateway-update-refresh|Atualizar estado/);
   assert.doesNotMatch(app, /gateway-update-refresh/);
   const docs = read("OWNER_USB_AND_ACCESS.md");

@@ -459,6 +459,25 @@ export async function saveGatewayEnergyEngineConfig(config) {
 export async function readGatewayEnergyEngineConfig() {
   return gatewayApi("/api/v1/energy/engine/config");
 }
+export async function readGatewayUserAutomations() {
+  return gatewayApi("/api/v1/automations");
+}
+export async function createGatewayUserAutomation(rule) {
+  if (!rule || typeof rule !== "object") throw new Error("Automatismo inválido.");
+  return gatewayApi("/api/v1/automations", { method: "POST", body: rule });
+}
+export async function updateGatewayUserAutomation(id, rule) {
+  if (typeof id !== "string" || !/^[0-9a-f-]{36}$/i.test(id) || !rule || typeof rule !== "object") throw new Error("Automatismo inválido.");
+  return gatewayApi(`/api/v1/automations/${encodeURIComponent(id)}`, { method: "PUT", body: rule });
+}
+export async function deleteGatewayUserAutomation(id) {
+  if (typeof id !== "string" || !/^[0-9a-f-]{36}$/i.test(id)) throw new Error("Automatismo inválido.");
+  return gatewayApi(`/api/v1/automations/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+export async function dryRunGatewayUserAutomation(rule) {
+  if (!rule || typeof rule !== "object") throw new Error("Automatismo inválido.");
+  return gatewayApi("/api/v1/automations/dry-run", { method: "POST", body: rule });
+}
 export async function readGatewayHardwareIntegrationConfig({ signal } = {}) {
   return gatewayApi("/api/v1/integrations/hardware", { signal });
 }
