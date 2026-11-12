@@ -4,9 +4,10 @@ on:
   push:
     branches: [main]
     paths:
-      - ".github/workflows/gateway-release.yml"
       - "solarminer-gateway-code02-v0.6.9-candidate/**"
+      - "!solarminer-gateway-code02-v0.6.9-candidate/web/pwa/**"
       - "the-solar-miner-pwa-v0.5.7-candidate/**"
+      - "!the-solar-miner-pwa-v0.5.7-candidate/tests/user-automations.test.js"
   workflow_dispatch:
     inputs:
       release_tag:
