@@ -67,7 +67,7 @@ from . import user_automation
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.242"
+PACKAGE_VERSION = "0.6.243"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -2820,7 +2820,11 @@ def hardware_integrations_status(session: dict[str, Any] = Depends(require_permi
             # Keep that sample usable for a short grace window while exposing the
             # latest attempt reason separately; UI clients retain values through
             # transient LAN timeouts instead of flickering offline immediately.
-            telemetry = energy_engine.read_tuya_telemetry(conn, max_age_seconds=15)
+            # A slow fleet pass (or several children sharing one Tuya hub) can
+            # exceed one 5 s poll interval. Keep the last sample available for
+            # display for 30 s; `fresh` still reflects the latest successful
+            # LAN attempt and the UI reports the sample age separately.
+            telemetry = energy_engine.read_tuya_telemetry(conn, max_age_seconds=30)
             feature_rows = conn.execute("SELECT canonical_key,display_name,canonical_type,units_json FROM tuya_canonical_features ORDER BY category,display_name COLLATE NOCASE").fetchall()
         normalized = []
         for feature in feature_rows:
@@ -2846,10 +2850,15 @@ def hardware_integrations_status(session: dict[str, Any] = Depends(require_permi
                 continue
             device["current_status"] = row.get("status", [])
             device["last_status_at"] = row.get("observed_at")
+            device["last_latency_ms"] = row.get("last_latency_ms")
+            device["last_attempt_latency_ms"] = row.get("last_attempt_latency_ms")
+            device["last_read_attempt_at"] = row.get("last_attempt_at")
+            device["last_read_attempt_age_seconds"] = row.get("last_attempt_age_seconds")
+            device["last_read_error"] = row.get("reason")
             device["local_control_state"] = "ready" if row.get("fresh") else "unavailable"
             device["local_verified"] = bool(device.get("local_verified") or row.get("verified"))
             device["current_connection_state"] = "local_responded" if row.get("fresh") else "failed"
-            device["current_status_reason"] = None if row.get("fresh") else row.get("reason")
+            device["current_status_reason"] = None if row.get("fresh") else row.get("reason") or "tuya_last_read_not_recent"
             device["last_read_attempt_state"] = row.get("connection_state", "failed")
             device["last_read_attempt_at"] = row.get("last_attempt_at")
             device["last_read_error"] = row.get("reason")

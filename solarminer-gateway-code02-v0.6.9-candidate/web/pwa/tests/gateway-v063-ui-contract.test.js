@@ -5,14 +5,14 @@ import { readFileSync } from "node:fs";
 const app = readFileSync(new URL("../app.js", import.meta.url), "utf8");
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
-const gatewayApp = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/app.py", import.meta.url), "utf8");
-const energyEngine = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/energy_engine.py", import.meta.url), "utf8");
-const gatewayBuild = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/packaging/build-deb.sh", import.meta.url), "utf8");
-const workflow = readFileSync(new URL("../../.github/workflows/gateway-release.yml", import.meta.url), "utf8");
+const gatewayApp = readFileSync(new URL("../../../src/solarminer_gateway/app.py", import.meta.url), "utf8");
+const energyEngine = readFileSync(new URL("../../../src/solarminer_gateway/energy_engine.py", import.meta.url), "utf8");
+const gatewayBuild = readFileSync(new URL("../../../packaging/build-deb.sh", import.meta.url), "utf8");
+const workflow = readFileSync(new URL("../../../../.github/workflows/gateway-release.yml", import.meta.url), "utf8");
 
 test("Tuya LAN report exposes the saved target and key presence without the key", () => {
-  assert.match(gatewayApp, /"local_ip": item\.get\("local_ip", ""\)/);
-  assert.match(gatewayApp, /"local_key_configured": bool\(item\.get\("local_key"\)\)/);
+  assert.match(gatewayApp, /"local_ip": item\.get\("local_ip"\) or parent\.get\("local_ip", ""\)/);
+  assert.match(gatewayApp, /"local_key_configured": bool\(item\.get\("local_key"\) or by_id\.get\(item\.get\("parent_device_id"\), \{\}\)\.get\("local_key"\)\)/);
   assert.match(gatewayApp, /"ip_refreshed_by_mac": any\(row\.get\("ip_refreshed_by_mac"\) for row in rows\)/);
   assert.match(gatewayApp, /"ip_cleared_missing_mac": any\(row\.get\("ip_cleared_missing_mac"\) for row in rows\)/);
   assert.match(app, /IP guardado/);
@@ -22,7 +22,7 @@ test("Tuya LAN report exposes the saved target and key presence without the key"
 });
 
 test("Tuya LAN recovery requires an exact unique MAC match and refreshes only after a failed read", () => {
-  const integrations = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/integrations.py", import.meta.url), "utf8");
+  const integrations = readFileSync(new URL("../../../src/solarminer_gateway/integrations.py", import.meta.url), "utf8");
   assert.match(integrations, /failed_indexes[\s\S]*_tuya_scan_local_ips_by_mac\(refresh=True\)/);
   assert.match(integrations, /by_mac = \{mac: next\(iter\(ips\)\) for mac, ips in candidates\.items\(\) if len\(ips\) == 1\}/);
   assert.match(integrations, /tuya_local_ip_not_found_for_mac/);
@@ -140,7 +140,7 @@ test("Favorite commands use the cached state and never trigger a LAN read", () =
 
 test("Devices inventory uses the latest Gateway reading instead of stale LAN probes and places power before voltage", () => {
   assert.match(app, /async function refreshTuyaInventoryStatus\(\)/);
-  assert.match(app, /setInterval\(\(\) => \{ if\(document\.visibilityState==="visible"\)void refreshTuyaInventoryStatus\(\); \},15_000\)/);
+  assert.match(app, /setInterval\(\(\) => \{ if\(document\.visibilityState==="visible"\)void refreshTuyaInventoryStatus\(\); \},5_000\)/);
   assert.match(app, /setInterval\(\(\) => \{ if\(state\.page==="devices"&&document\.visibilityState==="visible"\)void refreshShellyInventoryStatus\(\{quiet:true\}\); \},15_000\)/);
   assert.match(app, /!\[\"devices\",\"inicio\"\]\.includes\(state\.page\)/);
   assert.match(app, /function tuyaCachedReadings\(devices\)/);
@@ -148,11 +148,12 @@ test("Devices inventory uses the latest Gateway reading instead of stale LAN pro
   assert.doesNotMatch(app, /tuyaReadingsFromConfig\(devices\)\{[^}]*lan_probe/);
   assert.match(app, /state\.tuyaReadings=readings/);
   assert.match(app, /const changed=changedSet\.size>0/);
-  assert.match(app, /function tuyaDeviceState\(device,reading\)\{[\s\S]*?if\(typeof value==="boolean"\)return value\?"Ligado":"Desligado";[\s\S]*?if\(reading\?\.connection_state==="failed"\)/);
+  assert.match(app, /function tuyaDeviceState\(device,reading\)\{[\s\S]*?if\(typeof value==="boolean"\)return reading\?\.connection_state==="local_responded"\?\(value\?"Ligado":"Desligado"\):`Último estado: \$\{value\?"Ligado":"Desligado"\}`;[\s\S]*?if\(reading\?\.connection_state==="failed"\)/);
   assert.match(app, /current_connection_state===\"local_responded\"&&device\.local_control_state===\"ready\"/);
   assert.match(app, /metrics\.find\(metric=>metric\.label===\"Potência\"\),voltage=metrics\.find\(metric=>metric\.label===\"Tensão\"\)/);
   assert.match(app, /class="inventory-device-metrics"><span>/);
-  assert.match(app, /if\(reading\?\.connection_state!==\"local_responded\"\)return \[\]/);
+  assert.match(app, /sampleAge>120_000\)return \[\]/);
+  assert.match(app, /stale\?" · última leitura":""/);
 });
 
 test("The per-device LAN button only checks TCP reachability and never reads DPS", () => {
@@ -305,7 +306,8 @@ test("Tuya engine readings update open device popups without a page refresh", ()
   assert.match(app, /async function sendTuyaSwitchCommand\(device,code,desired\)\{[\s\S]*?pendingTuyaSwitchStates\.set\([\s\S]*?updateVisibleTuyaCard\(device\.device_id\);updateOpenTuyaDeviceDialog\(device\.device_id\);[\s\S]*?await controlGatewayTuyaSwitch/);
   assert.match(app, /tuyaSwitchState\(device,reading,code\)[\s\S]*?if\(pending\)return pending\.timedOut\?undefined:pending\.value/);
   assert.match(app, /function mergeTuyaReadings\(incoming\)/);
-  assert.match(app, /previousLive&&\(!incomingLive\|\|tuyaReadingTimestamp\(reading\)<=tuyaReadingTimestamp\(previous\)\)/);
+  assert.match(app, /tuyaReadingAttemptTimestamp\(reading\)<tuyaReadingAttemptTimestamp\(previous\)/);
+  assert.match(app, /hasNewerGoodStatus=\!previous\|\|tuyaReadingTimestamp\(reading\)>=tuyaReadingTimestamp\(previous\)/);
   assert.match(app, /pending\.timedOut=true;pending\.mismatchCount=0/);
   assert.match(app, /transportUncertain=error instanceof TypeError\|\|\/load failed\|failed to fetch\|networkerror\/i/);
   assert.match(app, /uncertain\.outcomeUnknown=true/);
@@ -332,10 +334,11 @@ test("Devices inventory tolerates missing optional Tuya arrays", () => {
 test("Devices uses Home card styling and tolerates temporary Tuya sample gaps", () => {
   assert.match(app, /class="home-favorites"><div class="favorite-device-grid inventory-device-grid"/);
   assert.match(app, /equipmentIconSvg\(device,"tuya"\)/);
-  assert.match(app, /Date\.now\(\)-observedAt>15_000/);
-  assert.match(app, /Sem leitura recente há mais de 15 s/);
+  assert.match(app, /sampleAge>120_000\)return \[\]/);
+  assert.match(app, /stale\?" · última leitura":""/);
   assert.match(app, /data-favorite-toggle="\$\{esc\(device\.device_id\)\}"/);
-  assert.match(gatewayApp, /read_tuya_telemetry\(conn, max_age_seconds=15\)/);
+  assert.match(gatewayApp, /read_tuya_telemetry\(conn, max_age_seconds=30\)/);
+  assert.match(gatewayApp, /last_latency_ms/);
   assert.match(gatewayApp, /current_connection_state"\] = "local_responded" if row\.get\("fresh"\) else "failed"/);
   assert.match(gatewayApp, /last_read_attempt_state/);
 });
@@ -356,7 +359,7 @@ test("LAN discovery tries the local neighbor cache after broadcast errors", () =
 });
 
 test("Gateway release package embeds the PWA and optional Tesla relay environment", () => {
-  const service = readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/packaging/solarminer-gateway.service", import.meta.url), "utf8");
+  const service = readFileSync(new URL("../../../packaging/solarminer-gateway.service", import.meta.url), "utf8");
   assert.ok(service.includes('EnvironmentFile=-/etc/solarminer/tesla-relay.env'));
   assert.ok(gatewayBuild.includes('cp -R "$ROOT/web/pwa/." "$STAGE/usr/share/solarminer/pwa/'));
 });
@@ -367,6 +370,6 @@ test("USB release rollback verification includes prior Gateway releases", () => 
   assert.equal(rollbackLoops.length, 2);
   for (const loop of rollbackLoops) {
     assert.match(loop, /0\.6\.112 0\.6\.113 0\.6\.114 0\.6\.115 0\.6\.116 0\.6\.117 0\.6\.118 0\.6\.119 0\.6\.120 0\.6\.121 0\.6\.122 0\.6\.123 0\.6\.124 0\.6\.125 0\.6\.126 0\.6\.127 0\.6\.128 0\.6\.129 0\.6\.130 0\.6\.131 0\.6\.132 0\.6\.133 0\.6\.134 0\.6\.135/);
-  assert.match(loop, /0\.6\.139 0\.6\.140 0\.6\.141 0\.6\.142 0\.6\.143 0\.6\.145 0\.6\.146 0\.6\.147 0\.6\.148 0\.6\.149 0\.6\.150 0\.6\.151 0\.6\.152 0\.6\.153 0\.6\.154 0\.6\.155 0\.6\.156 0\.6\.157 0\.6\.158 0\.6\.159 0\.6\.160 0\.6\.161 0\.6\.162 0\.6\.163 0\.6\.164 0\.6\.165 0\.6\.166 0\.6\.169 0\.6\.171 0\.6\.172 0\.6\.173 0\.6\.174 0\.6\.175 0\.6\.176 0\.6\.177 0\.6\.188 0\.6\.189 0\.6\.190 0\.6\.191 0\.6\.192 0\.6\.193 0\.6\.194 0\.6\.195 0\.6\.196 0\.6\.197; do/);
+    assert.match(loop, /0\.6\.139 0\.6\.140 0\.6\.141 0\.6\.142 0\.6\.143 0\.6\.145 0\.6\.146 0\.6\.147 0\.6\.148 0\.6\.149 0\.6\.150 0\.6\.151 0\.6\.152 0\.6\.153 0\.6\.154 0\.6\.155 0\.6\.156 0\.6\.157 0\.6\.158 0\.6\.159 0\.6\.160 0\.6\.161 0\.6\.162 0\.6\.163 0\.6\.164 0\.6\.165 0\.6\.166 0\.6\.169 0\.6\.171 0\.6\.172 0\.6\.173 0\.6\.174 0\.6\.175 0\.6\.176 0\.6\.177 0\.6\.188 0\.6\.189 0\.6\.190 0\.6\.191 0\.6\.192 0\.6\.193 0\.6\.194 0\.6\.195 0\.6\.196 0\.6\.197 0\.6\.216 0\.6\.232 0\.6\.235 0\.6\.236 0\.6\.237 0\.6\.238 0\.6\.239 0\.6\.240 0\.6\.241 0\.6\.242; do/);
   }
 });

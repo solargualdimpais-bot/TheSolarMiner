@@ -112,6 +112,27 @@ def test_tuya_poll_keeps_last_sample_fresh_for_five_seconds_and_discards_late_ol
     conn.close()
 
 
+def test_tuya_failed_attempt_keeps_last_good_dps_and_success_latency_but_marks_not_live():
+    conn = database()
+    now = datetime.now(timezone.utc)
+    status = [{"code": "switch", "dps_id": 1, "value": True}]
+    energy_engine.persist_tuya_telemetry(conn, [{"device_id": "tuya-latency", "name": "Luz",
+        "connection_state": "local_responded", "observed_at": now.isoformat(), "latency_ms": 45.4,
+        "status": status}], [{"device_id": "tuya-latency", "functions": [], "status_spec": []}])
+    energy_engine.persist_tuya_telemetry(conn, [{"device_id": "tuya-latency", "name": "Luz",
+        "connection_state": "failed", "observed_at": (now + timedelta(seconds=1)).isoformat(),
+        "latency_ms": 1000.0, "reason": "lan_response_timeout"}],
+        [{"device_id": "tuya-latency", "functions": [], "status_spec": []}])
+
+    telemetry = energy_engine.read_tuya_telemetry(conn)["tuya-latency"]
+    assert telemetry["status"] == status
+    assert telemetry["last_latency_ms"] == 45.4
+    assert telemetry["last_attempt_latency_ms"] == 1000.0
+    assert telemetry["reason"] == "lan_response_timeout"
+    assert telemetry["fresh"] is False
+    conn.close()
+
+
 def test_owner_product_dps_19_power_mapping_survives_as_live_card_metric():
     conn = database()
     observed = datetime.now(timezone.utc).isoformat()

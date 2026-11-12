@@ -84,8 +84,8 @@ test("Owner hardware setup includes the Tesla Fleet configuration beside Deye, A
 test("Saving a Tuya device in either form runs only the selected LAN reachability test", () => {
   const app = read("../app.js");
   const auth = read("../gateway-auth.js");
-  const gateway = read("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/app.py");
-  const integrations = read("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/integrations.py");
+  const gateway = read("../../../src/solarminer_gateway/app.py");
+  const integrations = read("../../../src/solarminer_gateway/integrations.py");
   assert.match(app, /async function testTuyaLanReachability\(deviceId\)[\s\S]*?testGatewayTuyaLanReachability\(deviceId\)/);
   assert.match(app, /saveGatewayHardwareIntegrationConfig\([\s\S]*?testTuyaLanReachability\(id\)/);
   assert.match(app, /saveGatewayHardwareIntegrationConfig\(\{tuya:\{devices:next\}\}\)[\s\S]*?runGatewayTuyaLanDiagnostics\(1,device\.device_id\)/);
@@ -98,8 +98,8 @@ test("Saving a Tuya device in either form runs only the selected LAN reachabilit
 
 test("Tuya PID DPS catalog separates cloud commands, readings, and observed LAN IDs", () => {
   const app = read("../app.js");
-  const gateway = read("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/app.py");
-  const integrations = read("../../solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/integrations.py");
+  const gateway = read("../../../src/solarminer_gateway/app.py");
+  const integrations = read("../../../src/solarminer_gateway/integrations.py");
   assert.match(app, /Capacidades recebidas da cloud · ainda sem ID numérico/);
   assert.match(app, /Ordem · função/);
   assert.match(app, /Leitura · estado/);
@@ -166,7 +166,8 @@ test("Tuya PID map editor imports text, saves per DPS and highlights ambiguity",
   assert.match(app, /data-review-next/);
   assert.match(app, /Gravar correções/);
   assert.match(css, /data-review-original\]\.has-error/);
-  assert.match(app, /saveGatewayTuyaPidDpsMap\(productId,parsed\.rows\)/);
+  assert.match(app, /saveGatewayTuyaPidDpsMap\(productId,updates,\{partial:true\}\)/);
+  assert.match(app, /A guardar apenas o DPS \$\{row\.dps_id\}/);
   assert.match(auth, /const acceptedFields = \["dps_id", "code", "label_pt", "source", "data_type", "unit", "scale", "details", "semantic_code", "write_supported"\]/);
   assert.match(auth, /"booleano":"bool"/);
   assert.match(auth, /const cleanRows = rows\.map\(row => Object\.fromEntries\(acceptedFields/);
@@ -344,6 +345,6 @@ test("live navigation renders Gateway data without the demo renderer overriding 
 });
 
 test("Gateway package embeds the source PWA assets used by the release build", () => {
-  const build = read("../../solarminer-gateway-code02-v0.6.9-candidate/packaging/build-deb.sh");
+  const build = read("../../../packaging/build-deb.sh");
   assert.match(build, /cp -R "\$ROOT\/web\/pwa\/\." "\$STAGE\/usr\/share\/solarminer\/pwa\/"/);
 });

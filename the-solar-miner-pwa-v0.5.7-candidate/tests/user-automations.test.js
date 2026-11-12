@@ -68,5 +68,5 @@ test("status-device selector filters favorites, configured divisions, then all d
 });
 
 test("static cache is versioned for the automation menu release", () => {
-  assert.match(worker, /the-solar-miner-static-v0\.5\.173-automation-status-device-filters/);
+  assert.match(worker, /the-solar-miner-static-v0\.5\.174-tuya-lan-responsive-readback/);
 });

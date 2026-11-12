@@ -15,6 +15,7 @@ let antminerActiveSubmenu="state";
 let antminerActiveEquipmentId="";
 const state = { page: "inicio", devicesTab: "confirmed", deviceCards: [], deviceCardsLoaded: false, mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], energyEngine: null, siteProfile: null, tuyaDevices: [], shellyDevices: [], shellyDiscovered: [], shellyReadings: [], shellyProductProfiles: [], shellyProfilesLoaded: false, shellyRefreshing: false, gatewayDeviceInventory: [], smartProductCatalog: [], tuyaReadings: [], tuyaInventorySignature: "", lastUpdated: null, lastMeasurementAt: null, refreshing: false, tuyaInventoryRefreshing: false, pendingLiveRender: false, energyConfigStatus: "", demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [], engineHistoryChart: { open: false, dateKey: "", loading: false, error: null } };
 let lastLocalNetworkScanReport = null;
+let lastLocalNetworkScanFilter = "all";
 let inventoryCardClickTimer = null;
 let favoriteCardClickTimer = null;
 let favoriteReorderPressTimer=null,favoriteReorder=null,favoriteDragSuppressClickUntil=0;
@@ -480,7 +481,8 @@ function tuyaCachedReadings(devices){
   return (Array.isArray(devices)?devices:[]).map(device=>{
     const status=Array.isArray(device.current_status)?device.current_status:[];
     const online=device.current_connection_state==="local_responded"&&device.local_control_state==="ready";
-    return {device_id:device.device_id,name:device.name||"Tuya",status,connection_state:online?"local_responded":device.local_control_state==="unavailable"||device.local_verified?"failed":"stored_status",reason:device.current_status_reason||undefined,observed_at:device.last_status_at||undefined,source:"TUYA_LAN",trust:online?"LIVE_UNVERIFIED":"UNAVAILABLE"};
+    const latency=device.last_latency_ms;
+    return {device_id:device.device_id,name:device.name||"Tuya",status,connection_state:online?"local_responded":device.local_control_state==="unavailable"||device.local_verified?"failed":"stored_status",reason:device.current_status_reason||device.last_read_error||undefined,observed_at:device.last_status_at||undefined,attempted_at:device.last_read_attempt_at||undefined,latency_ms:latency!==null&&latency!==undefined&&Number.isFinite(Number(latency))?Number(latency):undefined,source:"TUYA_LAN",trust:online?"LIVE_UNVERIFIED":"UNAVAILABLE"};
   });
 }
 function tuyaReadingsFromConfig(devices){
@@ -492,9 +494,12 @@ function tuyaReadingTimestamp(reading){
   const value=reading?.observed_at;if(typeof value==="number"&&Number.isFinite(value))return value<1e12?value*1000:value;
   const parsed=Date.parse(value||"");return Number.isFinite(parsed)?parsed:0;
 }
+function tuyaReadingAttemptTimestamp(reading){const value=reading?.attempted_at||reading?.checked_at||reading?.observed_at;if(typeof value==="number"&&Number.isFinite(value))return value<1e12?value*1000:value;const parsed=Date.parse(value||"");return Number.isFinite(parsed)?parsed:0;}
+function tuyaReadingAgeLabel(reading){const observedAt=tuyaReadingTimestamp(reading);if(!observedAt)return "idade desconhecida";const seconds=Math.max(0,Math.floor((Date.now()-observedAt)/1000));return seconds<2?"agora":seconds<60?`há ${seconds} s`:`há ${Math.floor(seconds/60)} min`;}
+function tuyaConnectionSummary(reading){const hasLatency=reading?.latency_ms!==null&&reading?.latency_ms!==undefined&&Number.isFinite(Number(reading.latency_ms)),latency=hasLatency?`última resposta LAN ${Number(reading.latency_ms).toLocaleString("pt-PT",{maximumFractionDigits:1})} ms`:"latência indisponível";return reading?.connection_state==="local_responded"?`Online · ${latency} · leitura ${tuyaReadingAgeLabel(reading)}`:`Sem confirmação LAN agora · ${latency} · última leitura ${tuyaReadingAgeLabel(reading)}`;}
 function mergeTuyaReadings(incoming){
   const merged=new Map((state.tuyaReadings||[]).map(reading=>[reading.device_id,reading]));
-  for(const reading of Array.isArray(incoming)?incoming:[]){if(!reading?.device_id)continue;const previous=merged.get(reading.device_id),previousLive=previous?.connection_state==="local_responded"&&Array.isArray(previous.status)&&previous.status.length>0,incomingLive=reading.connection_state==="local_responded"&&Array.isArray(reading.status)&&reading.status.length>0;if(previousLive&&(!incomingLive||tuyaReadingTimestamp(reading)<=tuyaReadingTimestamp(previous)))continue;merged.set(reading.device_id,reading);}
+  for(const reading of Array.isArray(incoming)?incoming:[]){if(!reading?.device_id)continue;const previous=merged.get(reading.device_id);if(previous&&tuyaReadingAttemptTimestamp(reading)<tuyaReadingAttemptTimestamp(previous))continue;const hasNewerGoodStatus=!previous||tuyaReadingTimestamp(reading)>=tuyaReadingTimestamp(previous);merged.set(reading.device_id,{...previous,...reading,status:hasNewerGoodStatus&&Array.isArray(reading.status)&&reading.status.length?reading.status:(previous?.status||reading.status||[]),observed_at:hasNewerGoodStatus?reading.observed_at:previous?.observed_at});}
   return [...merged.values()];
 }
 function settlePendingTuyaSwitchStates(devices,readings){
@@ -522,7 +527,7 @@ async function refreshTuyaInventoryStatus(){
     // Navigation may change while the request is in flight; background polls
     // must not redraw a different page when they complete.
     const devices=normalizeTuyaInventory(hardware.tuya?.devices);
-    const signatureRows=devices.map(device=>[device.device_id,device.current_connection_state,device.local_control_state,device.current_status_reason,device.current_status]);
+    const signatureRows=devices.map(device=>[device.device_id,device.current_connection_state,device.local_control_state,device.current_status_reason,device.current_status,device.last_status_at,device.last_latency_ms,device.last_read_attempt_at]);
     let previousRows=[];try{previousRows=JSON.parse(state.tuyaInventorySignature||"[]");}catch{}
     const previousById=new Map(previousRows.map(row=>[row[0],JSON.stringify(row.slice(1))]));
     const changedIds=signatureRows.filter(row=>previousById.get(row[0])!==JSON.stringify(row.slice(1))).map(row=>row[0]);
@@ -569,6 +574,8 @@ function updateOpenTuyaDeviceDialog(deviceId){
   const rawDevice=state.tuyaDevices.find(item=>item.device_id===deviceId),device=tuyaDeviceWithPidMap(rawDevice),reading=state.tuyaReadings.find(item=>item.device_id===deviceId);
   if(!device||!reading)return;
   document.querySelectorAll(`dialog[open][data-tuya-device-id="${CSS.escape(deviceId)}"]`).forEach(dialog=>{
+    const connectionNode=dialog.querySelector("[data-reference-status]");if(connectionNode)connectionNode.textContent=`${tuyaDeviceState(device,reading)} · ${tuyaConnectionSummary(reading)}`;
+    dialog.querySelectorAll("[data-tuya-detail-lan-status]").forEach(node=>{if(!node.textContent||node.textContent.includes("a aguardar a leitura LAN normal"))node.textContent=tuyaConnectionSummary(reading);});
     dialog.querySelectorAll("[data-tuya-quick-toggle],[data-breaker-detail-toggle],.reference-power[data-favorite-toggle]").forEach(button=>{
       const code=button.dataset.tuyaQuickToggle||button.dataset.breakerDetailToggle||button.dataset.favoriteCode,pending=pendingTuyaSwitchStates.get(`${deviceId}::${code}`),value=pending?.timedOut?undefined:pending?.value??tuyaSwitchState(device,reading,code);
       button.classList.remove("on","off","unknown");button.classList.add(value===true?"on":value===false?"off":"unknown");button.classList.toggle("pending",pendingTuyaSwitchStates.has(`${deviceId}::${code}`));
@@ -985,7 +992,7 @@ async function sendTuyaSwitchCommand(device,code,desired){
   recentTuyaSwitchCommands.set(device.device_id,requestedAt+5_000);
   for(const pendingCode of pendingCodes)pendingTuyaSwitchStates.set(`${device.device_id}::${pendingCode}`,{deviceId:device.device_id,code:pendingCode,value:desired,requestedAt});
   updateVisibleTuyaCard(device.device_id);updateOpenTuyaDeviceDialog(device.device_id);
-  try{const started=performance.now(),result=code==="switch_all"?await setTuyaSwitchGroup(device,desired):{results:[await controlGatewayTuyaSwitch(device.device_id,desired,code)],codes:[code]},deviceCommandMs=result.results?.reduce((sum,item)=>sum+(Number(item?.device_command_latency_ms)||0),0);confirmTuyaCommandInBackground(device,requestedAt,pendingCodes,desired,performance.now()-started,deviceCommandMs);return result;}
+  try{const started=performance.now(),result=code==="switch_all"?await setTuyaSwitchGroup(device,desired):{results:[await controlGatewayTuyaSwitch(device.device_id,desired,code)],codes:[code]},deviceCommandMs=result.results?.reduce((sum,item)=>sum+(Number(item?.device_command_latency_ms)||0),0),commandRoundTripMs=performance.now()-started,statusNode=document.querySelector(`dialog[open][data-tuya-device-id="${CSS.escape(device.device_id)}"] [data-tuya-quick-status],dialog[open][data-tuya-device-id="${CSS.escape(device.device_id)}"] [data-tuya-detail-lan-status]`)||document.querySelector(`[data-favorite-status="${CSS.escape(device.device_id)}"]`);refreshTuyaDeviceAfterAction(device.device_id,statusNode,requestedAt,commandRoundTripMs,"Ordem enviada",deviceCommandMs);confirmTuyaCommandInBackground(device,requestedAt,pendingCodes,desired,commandRoundTripMs,deviceCommandMs);return result;}
   catch(error){
     const transportUncertain=error instanceof TypeError||/load failed|failed to fetch|networkerror/i.test(String(error?.message||""));
     if(!transportUncertain)for(const pendingCode of pendingCodes)pendingTuyaSwitchStates.delete(`${device.device_id}::${pendingCode}`);
@@ -1074,7 +1081,7 @@ function openTuyaReferenceDeviceCard(deviceId){
   const readings=metricLabels.map(label=>{const metric=metrics.find(item=>item.label===label);const value=metric&&metric.value!==null&&metric.value!==undefined&&metric.value!==""?metric.value:"Sem leitura";return `<div class="reference-metric"><small>${label}</small><strong data-reference-metric="${label}">${esc(value)}</strong></div>`}).join("");
   const groupAction=multi?referenceDimmerGroupAction({deviceId,isOn,provider:"tuya",enabled:admin&&channels.every(channel=>tuyaSwitchCodeHasLocalMapping(device,channel.code))}):"";
   const dialog=document.createElement("dialog");dialog.className="settings-dialog reference-smart-card-dialog";dialog.dataset.tuyaDeviceId=deviceId;
-  dialog.innerHTML=`<div class="reference-card"><nav class="reference-rail" aria-label="Opções do dispositivo">${rail}</nav><main class="reference-main"><header class="reference-heading"><div><p class="eyebrow">${isBreaker?"DISJUNTOR":"DISPOSITIVO"} · ${esc(device.category||"TUYA")}</p><h2>${esc(device.name||"Dispositivo")}</h2></div><button type="button" class="reference-edit-name" aria-label="Editar nome" title="Editar nome">✎</button><button type="button" class="reference-close" aria-label="Fechar">×</button></header><p class="reference-subtitle">Controlos principais · ${esc(device.room||device.floor||"Localização por definir")}</p><div class="reference-pills"><span>⚡ <b data-reference-power-watts>${power?esc(power.value):"Sem leitura"}</b></span>${isDimmable?`<span>◐ <b data-reference-brightness-summary>${esc(brightnessReading(brightnessForChannel(channels[0]||{index:0}))===null?"Sem leitura":`${brightnessReading(brightnessForChannel(channels[0]||{index:0}))}%`)}</b></span>`:""}</div>${isBreaker&&!isDimmable?`<div class="reference-breaker-state">${channelButton(mainSwitch||{code:"",value:undefined,label:"Interruptor"})}<strong data-reference-main-state>${mainSwitch?.value===true?"Ligado":mainSwitch?.value===false?"Desligado":"Sem leitura"}</strong></div><div class="reference-metrics">${readings}</div>`:mainControl}${groupAction}<p class="reference-status" data-reference-status>${esc(statusLabel)} · ${esc(reading.connection_state==="local_responded"?`${Math.round(Number(reading.latency_ms)||0)} ms`:"sem leitura local confirmada")}</p></main></div>`;
+  dialog.innerHTML=`<div class="reference-card"><nav class="reference-rail" aria-label="Opções do dispositivo">${rail}</nav><main class="reference-main"><header class="reference-heading"><div><p class="eyebrow">${isBreaker?"DISJUNTOR":"DISPOSITIVO"} · ${esc(device.category||"TUYA")}</p><h2>${esc(device.name||"Dispositivo")}</h2></div><button type="button" class="reference-edit-name" aria-label="Editar nome" title="Editar nome">✎</button><button type="button" class="reference-close" aria-label="Fechar">×</button></header><p class="reference-subtitle">Controlos principais · ${esc(device.room||device.floor||"Localização por definir")}</p><div class="reference-pills"><span>⚡ <b data-reference-power-watts>${power?esc(power.value):"Sem leitura"}</b></span>${isDimmable?`<span>◐ <b data-reference-brightness-summary>${esc(brightnessReading(brightnessForChannel(channels[0]||{index:0}))===null?"Sem leitura":`${brightnessReading(brightnessForChannel(channels[0]||{index:0}))}%`)}</b></span>`:""}</div>${isBreaker&&!isDimmable?`<div class="reference-breaker-state">${channelButton(mainSwitch||{code:"",value:undefined,label:"Interruptor"})}<strong data-reference-main-state>${mainSwitch?.value===true?"Ligado":mainSwitch?.value===false?"Desligado":"Sem leitura"}</strong></div><div class="reference-metrics">${readings}</div>`:mainControl}${groupAction}<p class="reference-status" data-reference-status>${esc(statusLabel)} · ${esc(tuyaConnectionSummary(reading))}</p></main></div>`;
   document.body.append(dialog);dialog.addEventListener("close",()=>dialog.remove(),{once:true});dialog.querySelector(".reference-close").addEventListener("click",()=>dialog.close());
   dialog.querySelector(".reference-edit-name").addEventListener("click",()=>{dialog.close();openTuyaDeviceEditor(device);});
   dialog.querySelectorAll("[data-reference-menu]").forEach(button=>button.addEventListener("click",()=>{const selected=button.dataset.referenceMenu;dialog.querySelectorAll("[data-reference-menu]").forEach(item=>item.classList.toggle("active",item===button));if(selected==="settings"&&admin){dialog.close();openTuyaDeviceSettings(device);return;}const note=dialog.querySelector("[data-reference-status]");note.textContent=selected==="settings"?"Definições disponíveis para o Owner autenticado.":`${button.getAttribute("aria-label")} · sem conteúdo disponível para este equipamento.`;}));
@@ -1247,9 +1254,9 @@ function refreshTuyaDeviceAfterAction(deviceId,statusNode,commandStartedAt,comma
       state.tuyaReadings=[...(state.tuyaReadings||[]).filter(item=>item.device_id!==deviceId),reading];
       settlePendingTuyaSwitchStates(state.tuyaDevices||[],state.tuyaReadings);
       updateVisibleTuyaCard(deviceId);updateOpenTuyaDeviceDialog(deviceId);
-      const elapsed=Math.max(0,Date.now()-commandStartedAt),lanMs=Math.round(Number(result.average_latency_ms)||Number(reading.latency_ms)||0);
+      const elapsed=Math.max(0,Date.now()-commandStartedAt),lanValue=Number(result.average_latency_ms??reading.latency_ms),lanMs=Number.isFinite(lanValue)?`${lanValue.toLocaleString("pt-PT",{maximumFractionDigits:1})} ms`:"indisponível";
       const devicePart=Number.isFinite(Number(deviceCommandMs))?` · Gateway→equipamento ${Math.round(Number(deviceCommandMs))} ms`:"";
-      if(statusNode)statusNode.textContent=reading.connection_state==="local_responded"?`${label}; leitura LAN atualizada · app→Gateway ${Math.round(commandRoundTripMs)} ms${devicePart} · leitura ${lanMs} ms · total ${elapsed} ms.`:`${label}; leitura LAN não confirmou o estado · app→Gateway ${Math.round(commandRoundTripMs)} ms${devicePart}.`;
+      if(statusNode)statusNode.textContent=reading.connection_state==="local_responded"?`${label}; leitura LAN atualizada · app→Gateway ${Math.round(commandRoundTripMs)} ms${devicePart} · leitura ${lanMs} · total ${elapsed} ms.`:`${label}; leitura LAN não confirmou o estado · app→Gateway ${Math.round(commandRoundTripMs)} ms${devicePart}.`;
     }catch(error){if(statusNode)statusNode.textContent=`${label}; confirmação LAN pendente: ${error.message}`;}
     finally{if(pendingTuyaReadbacks.get(deviceId)===timer)pendingTuyaReadbacks.delete(deviceId);}
   },120);
@@ -1285,7 +1292,7 @@ function tuyaDeviceState(device,reading){
   const status=Array.isArray(reading?.status)?reading.status.filter(item=>item&&typeof item==="object"):[],code=device?.switch_code||status.find(item=>typeof item.value==="boolean")?.code;
   const value=status.find(item=>item.code===code)?.value;
   // A short freshness gap must not erase a known ON/OFF datapoint and make the card flicker.
-  if(typeof value==="boolean")return value?"Ligado":"Desligado";
+  if(typeof value==="boolean")return reading?.connection_state==="local_responded"?(value?"Ligado":"Desligado"):`Último estado: ${value?"Ligado":"Desligado"}`;
   if(reading?.connection_state==="lan_reachable")return `Resposta LAN · ${Number(reading.latency_ms).toLocaleString("pt-PT")} ms · estado não consultado`;
   if(reading?.connection_state==="lan_host_responded")return "IP respondeu na LAN · porta Tuya fechada";
   if(reading?.connection_state==="failed")return device?.online===false?"Offline segundo a Tuya":"ON/OFF por confirmar";
@@ -1315,8 +1322,8 @@ function tuyaMeasurementCodes(device){
   return result;
 }
 function tuyaSimpleReadings(device,reading){
-  if(reading?.connection_state!=="local_responded")return [];
-  const observedAt=tuyaReadingTimestamp(reading);if(!observedAt||Date.now()-observedAt>15_000)return [];
+  const observedAt=tuyaReadingTimestamp(reading),sampleAge=observedAt?Date.now()-observedAt:Infinity;
+  if(!Array.isArray(reading?.status)||sampleAge<0||sampleAge>120_000)return [];
   const status=Array.isArray(reading?.status)?reading.status.filter(item=>item&&typeof item==="object"):[],specs=[...(Array.isArray(device?.status_spec)?device.status_spec:[]),...(Array.isArray(device?.functions)?device.functions:[])].filter(item=>item&&typeof item==="object");
   const mapRows=Array.isArray(device?.dps_knowledge?.dps)?device.dps_knowledge.dps:[],kinds=[{key:"voltage",label:"Tensão",unit:"V",semantics:["voltage","voltage_phase_a","voltage_phase_b","voltage_phase_c"],match:/(^|_)(cur_)?voltage($|_)/i},{key:"current",label:"Corrente",unit:"A",semantics:["current","current_phase_a","current_phase_b","current_phase_c"],match:/(^|_)(cur_)?current($|_)/i},{key:"power",label:"Potência",unit:"W",semantics:["power","active_power","active_power_phase_a","active_power_phase_b","active_power_phase_c"],match:/(^|_)(cur_)?(active_)?power($|_)/i},{key:"daily_energy",label:"Consumo diário",unit:"kWh",semantics:["daily_accumulated_energy","daily_energy"],match:/(^|_)(daily_energy|today_energy|energy_today)($|_)/i},{key:"incremental_energy",label:"Energia incremental",unit:"kWh",semantics:["energy_incremental"],match:/(^|_)(add_ele|energy_incremental)($|_)/i},{key:"total_energy",label:"Energia acumulada",unit:"kWh",semantics:["total_energy","energy_total","accumulated_energy"],match:/(^|_)(total_energy|energy_total|accumulated_energy)($|_)/i},{key:"energy_import",label:"Energia importada",unit:"kWh",semantics:["energy_import"],match:/(^|_)energy_import($|_)/i},{key:"energy_export",label:"Energia exportada",unit:"kWh",semantics:["energy_export"],match:/(^|_)energy_export($|_)/i},{key:"energy_session",label:"Energia da sessão",unit:"kWh",semantics:["energy_session"],match:/(^|_)energy_session($|_)/i}];
   return kinds.flatMap(kind=>{
@@ -1326,7 +1333,8 @@ function tuyaSimpleReadings(device,reading){
     if(definition&&(!definition.unit||!Number.isFinite(scale)||scale<=0))return [];
     if(unitFactor==null)return [];
     const value=Number(entry.value)/(scale||1)*unitFactor,unit=kind.key.includes("energy")?"kWh":kind.unit;
-    return [{label:kind.label,value:`${new Intl.NumberFormat("pt-PT",{maximumFractionDigits:2}).format(value)} ${unit}`,code:entry.code}];
+    const stale=reading.connection_state!=="local_responded"||sampleAge>15_000;
+    return [{label:kind.label,value:`${new Intl.NumberFormat("pt-PT",{maximumFractionDigits:2}).format(value)} ${unit}${stale?" · última leitura":""}`,code:entry.code,stale}];
   });
 }
 function tuyaDeviceWithPidMap(device){
@@ -3892,12 +3900,23 @@ function tuyaLanReasonText(reason){
 function renderLocalNetworkResults(report){
   lastLocalNetworkScanReport=report;
   const conflicts=new Set((report.mac_ip_conflicts||[]).map(item=>String(item.mac||"").toUpperCase()));
+  const stageFor=host=>{
+    const mac=String(host.mac||"").toUpperCase();
+    if(host.mac_ip_conflict||(mac&&conflicts.has(mac)))return "ambiguous";
+    if((host.matched_devices||[]).length)return "integrated";
+    if(host.manufacturer||host.model||host.protocol||host.shelly_generation)return "identified";
+    return "detected";
+  };
+  const stageLabel={integrated:"Associado · controlo não testado",identified:"Identidade provável",detected:"Só detetado",ambiguous:"Ambíguo · rever IP/MAC"};
+  const stageCounts={all:(report.hosts||[]).length,integrated:0,identified:0,detected:0,ambiguous:0};
+  for(const host of report.hosts||[])stageCounts[stageFor(host)]++;
   const hostRows=(report.hosts||[]).map((host,index)=>{
     const matches=(host.matched_devices||[]).map(device=>`${esc(device.name)}${device.device_id?` · ${esc(device.device_id)}`:""}`).join("<br>")||"—";
     const conflict=host.mac&&conflicts.has(String(host.mac).toUpperCase());
+    const stage=stageFor(host);
     const methods=(host.discovery_methods||[]).map(method=>({arp_sweep:"ARP ativo · resposta capturada",tcp:"TCP",icmp:"Ping",ssdp:"SSDP/UPnP",mdns:"mDNS/DNS-SD",arp_neighbor:"Tabela de vizinhos · IP respondeu"}[method]||method)).join(", ")||"—";
     const ipLabel=host.mac_ip_conflict?`IP ambíguo: ${(host.ip_candidates||[]).map(esc).join(", ")}`:esc(host.ip);
-    return `<tr${conflict?' class="warning-row"':''} data-network-device-row="${index}"><td>${ipLabel}${host.is_router?' <span class="source-tag">Router</span>':''}</td><td>${esc(host.mac||"MAC não visível")}${conflict?' <span class="source-tag">MAC em vários IPs</span>':''}</td><td>${esc(host.friendly_name||host.hostname||"—")}</td><td>${esc(host.manufacturer||"—")}</td><td>${esc(host.model||"—")}</td><td>${matches}</td><td>${esc(methods)}</td><td>${(host.open_ports||[]).map(port=>esc(port)).join(", ")||"—"}</td><td><button type="button" class="button secondary" data-network-device-open="${index}">Abrir / adicionar</button></td></tr>`;
+    return `<tr${conflict?' class="warning-row"':''} data-network-device-row="${index}" data-network-stage="${stage}"${lastLocalNetworkScanFilter!=="all"&&lastLocalNetworkScanFilter!==stage?' hidden':''}><td><span class="network-stage network-stage-${stage}">${stageLabel[stage]}</span></td><td>${ipLabel}${host.is_router?' <span class="source-tag">Router</span>':''}</td><td>${esc(host.mac||"MAC não visível")}${conflict?' <span class="source-tag">MAC em vários IPs</span>':''}</td><td>${esc(host.friendly_name||host.hostname||"—")}</td><td>${esc(host.manufacturer||"—")}</td><td>${esc(host.model||"—")}</td><td>${matches}</td><td>${esc(methods)}</td><td>${(host.open_ports||[]).map(port=>esc(port)).join(", ")||"—"}</td><td><button type="button" class="button secondary" data-network-device-open="${index}">${stage==="integrated"?"Ver associado":"Abrir / adicionar"}</button></td></tr>`;
   }).join("");
   const bluetoothRows=(report.blu_devices||[]).map((device,index)=>`<tr data-blu-device-row="${index}"><td>Via ponte · ${esc(device.bridge_name||device.bridge_model||"Shelly BLU Gateway")}</td><td>${esc(device.mac)}</td><td>${esc(device.name||"Sensor Bluetooth")}</td><td>${esc(device.manufacturer||"Shelly")}</td><td>${esc(device.model||"Shelly BLU")}</td><td>Sensor Bluetooth · ${esc(device.rssi??"—")} dBm</td><td>Bluetooth pela ponte</td><td>—</td><td><button type="button" class="button secondary" data-blu-device-open="${index}">Abrir / adicionar</button></td></tr>`).join("");
   const bridgeNotes=(report.blu_bridges||[]).map(item=>`${esc(item.name||"Ponte Shelly")}: ${item.state==="scanned"?"pesquisa concluída":item.reason||"não disponível"}`).join(" · ");
@@ -3910,8 +3929,10 @@ function renderLocalNetworkResults(report){
   const conflictNote=conflicts.size?`<p class="field-note" role="status">${conflicts.size} MAC(s) aparecem associados a vários IPs. Esses casos não serão guardados automaticamente; confirma a causa antes de corrigir a associação.</p>`:"";
   const box=(state.page==="devices"&&$("#device-add-results"))||$("#local-network-results");
   const routers=(report.router_ips||[]).map(esc).join(", ")||"Não identificado pela tabela de rotas do Gateway.";
-  box.innerHTML=`<p class="field-note">Redes verificadas: ${networks}. Endereços verificados: ${esc(report.scanned_count)}; dispositivos que responderam: ${esc(report.responsive_count)}. Router de saída indicado pela rota: ${routers}.${skipped}</p>${interfaceAddresses?`<p class="field-note">IPv4 atribuídos às interfaces: ${interfaceAddresses}.</p>`:""}${scanError?`<p class="field-note" role="status">${scanError}</p>`:""}${scanWarnings?`<p class="field-note" role="status">${scanWarnings}</p>`:""}${conflictNote}<div class="diagnostic-table-wrap"><table class="diagnostic-table"><thead><tr><th>IP</th><th>MAC</th><th>Nome / hostname</th><th>Fabricante</th><th>Modelo</th><th>Device reconhecido</th><th>Detetado por</th><th>Portas abertas</th><th>Ação</th></tr></thead><tbody>${hostRows||'<tr><td colspan="9">Nenhum dispositivo respondeu nesta pesquisa.</td></tr>'}${bluetoothRows}</tbody></table></div>${bridgeNotes?`<p class="field-note">Pontes Bluetooth: ${bridgeNotes}.</p>`:""}<p class="field-note">Usa “Abrir / adicionar” na linha para rever e guardar o equipamento. Ao guardar, o MAC entra no inventário central e aparece em Devices. A pesquisa LAN usa ARP ativo, ICMP, TCP, SSDP/UPnP e mDNS/DNS-SD. Sensores Shelly BLU só aparecem aqui se tiverem sido observados recentemente; para fazer uma nova pesquisa, usa a opção na ficha da ponte compatível.</p>`;
+  const filters=[["all","Todos"],["integrated","Associados"],["identified","Identidade provável"],["detected","Só detetados"],["ambiguous","Ambíguos"]].map(([key,label])=>`<button type="button" class="network-discovery-filter${lastLocalNetworkScanFilter===key?" active":""}" data-network-filter="${key}" aria-pressed="${lastLocalNetworkScanFilter===key}">${label} <span>${stageCounts[key]}</span></button>`).join("");
+  box.innerHTML=`<p class="field-note">Redes verificadas: ${networks}. Endereços verificados: ${esc(report.scanned_count)}; dispositivos que responderam: ${esc(report.responsive_count)}. Router de saída indicado pela rota: ${routers}.${skipped}</p>${interfaceAddresses?`<p class="field-note">IPv4 atribuídos às interfaces: ${interfaceAddresses}.</p>`:""}${scanError?`<p class="field-note" role="status">${scanError}</p>`:""}${scanWarnings?`<p class="field-note" role="status">${scanWarnings}</p>`:""}${conflictNote}<div class="network-discovery-filters" role="group" aria-label="Filtrar dispositivos encontrados">${filters}</div><p class="field-note">“Associado” significa que o MAC corresponde a um dispositivo configurado ou guardado; esta pesquisa não testa o seu controlo. “Identidade provável” vem de anúncios/protocolos ou fabricante detetado. A confirmação do modelo e do controlo acontece ao abrir e validar o dispositivo.</p><div class="diagnostic-table-wrap"><table class="diagnostic-table"><thead><tr><th>Estado no SolarMiner</th><th>IP</th><th>MAC</th><th>Nome / hostname</th><th>Fabricante</th><th>Modelo</th><th>Device associado</th><th>Detetado por</th><th>Portas abertas</th><th>Ação</th></tr></thead><tbody>${hostRows||'<tr><td colspan="10">Nenhum dispositivo respondeu nesta pesquisa.</td></tr>'}${bluetoothRows}</tbody></table></div>${bridgeNotes?`<p class="field-note">Pontes Bluetooth: ${bridgeNotes}.</p>`:""}<p class="field-note">Usa “Abrir / adicionar” para rever e guardar. Equipamentos guardados continuam no inventário mesmo quando não aparecem numa pesquisa posterior. O scanner usa ARP ativo, ICMP, TCP, SSDP/UPnP e mDNS/DNS-SD; pesquisa endereços IPv4 diretamente ligados ao Gateway. Sensores Shelly BLU só aparecem aqui se tiverem sido observados recentemente; para nova pesquisa, usa a opção na ficha da ponte compatível.</p>`;
   box.hidden=false;
+  box.querySelectorAll("[data-network-filter]").forEach(button=>button.addEventListener("click",event=>{event.preventDefault();event.stopPropagation();lastLocalNetworkScanFilter=button.dataset.networkFilter||"all";renderLocalNetworkResults(lastLocalNetworkScanReport);}));
   box.querySelectorAll("[data-network-device-open]").forEach(button=>button.addEventListener("click",event=>{event.preventDefault();event.stopPropagation();try{openLocalNetworkDeviceDetails(Number(button.dataset.networkDeviceOpen));}catch(error){const status=$(state.page==="devices"?"#device-add-status":"#local-network-status");if(status)status.textContent=`Não foi possível abrir o equipamento: ${error.message||"erro da interface."}`;}}));
   box.querySelectorAll("[data-blu-device-open]").forEach(button=>button.addEventListener("click",event=>{event.preventDefault();event.stopPropagation();try{openBluDeviceDetails(Number(button.dataset.bluDeviceOpen));}catch(error){const status=$(state.page==="devices"?"#device-add-status":"#local-network-status");if(status)status.textContent=`Não foi possível abrir o sensor: ${error.message||"erro da interface."}`;}}));
   return matchedMacs.size;
@@ -4805,7 +4826,7 @@ setInterval(() => {
     refreshGatewayReadings();
   }
 }, 5_000);
-setInterval(() => { if(document.visibilityState==="visible")void refreshTuyaInventoryStatus(); },15_000);
+setInterval(() => { if(document.visibilityState==="visible")void refreshTuyaInventoryStatus(); },5_000);
 setInterval(() => { if(state.page==="devices"&&document.visibilityState==="visible")void refreshShellyInventoryStatus({quiet:true}); },15_000);
 setInterval(() => {
   const info=sessionInfo();

@@ -132,6 +132,17 @@ def persist_tuya_telemetry(conn: sqlite3.Connection, readings: list[dict[str, An
             continue
         updated = {**previous, "device_id": device_id, "name": str(reading.get("name") or previous.get("name") or "Tuya")[:120],
                    "connection_state": reading.get("connection_state", "failed"), "last_attempt_at": observed_at}
+        latency_ms = reading.get("latency_ms")
+        valid_latency = (isinstance(latency_ms, (int, float)) and not isinstance(latency_ms, bool)
+                         and math.isfinite(float(latency_ms)) and latency_ms >= 0)
+        if valid_latency:
+            updated["last_attempt_latency_ms"] = round(float(latency_ms), 1)
+        if reading.get("connection_state") in {"local_responded", "local_responded_no_properties"}:
+            if valid_latency:
+                updated["last_latency_ms"] = round(float(latency_ms), 1)
+            updated.pop("reason", None)
+        elif reading.get("reason"):
+            updated["reason"] = str(reading.get("reason"))[:120]
         if reading.get("connection_state") == "local_responded" and isinstance(reading.get("status"), list) and reading["status"]:
             device = by_id.get(device_id, {})
             specs = [item for item in [*(device.get("functions") or []), *(device.get("status_spec") or [])] if isinstance(item, dict)]
@@ -257,8 +268,12 @@ def read_tuya_telemetry(conn: sqlite3.Connection, *, max_age_seconds: int = 120)
             continue
         stamp = _parse_utc(item.get("observed_at"))
         age = (now - stamp).total_seconds() if stamp else None
+        attempt_stamp = _parse_utc(item.get("last_attempt_at"))
+        attempt_age = (now - attempt_stamp).total_seconds() if attempt_stamp else None
         result[device_id] = {**item, "age_seconds": round(age, 1) if age is not None else None,
-                             "fresh": bool(item.get("verified") and age is not None and 0 <= age <= max_age_seconds)}
+                             "last_attempt_age_seconds": round(attempt_age, 1) if attempt_age is not None else None,
+                             "fresh": bool(item.get("verified") and age is not None and 0 <= age <= max_age_seconds
+                                           and item.get("connection_state") in {"local_responded", "local_responded_no_properties"})}
     return result
 
 

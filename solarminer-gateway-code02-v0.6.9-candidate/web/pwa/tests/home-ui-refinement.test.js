@@ -201,7 +201,7 @@ test("Tuya profiles are inferred automatically and breakers expose one control",
   assert.match(app, /<small>Tipo de equipamento<\/small>/);
   assert.match(app, /device\.product_name_pt\|\|device\.product/);
   assert.match(app, /refreshTuyaSchemaIfNeeded/);
-  assert.match(app, /Outras leituras DPS recebidas/);
+  assert.doesNotMatch(app, /Outras leituras DPS recebidas/);
   assert.match(app, /device\.device_kind_label\|\|"Equipamento Tuya"/);
   assert.match(app, /if\(\(device\.device_kind_override\|\|device\.device_kind\)==="breaker"\)codes=\[/);
 });
