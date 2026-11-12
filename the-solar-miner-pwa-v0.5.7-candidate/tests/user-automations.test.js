@@ -57,6 +57,16 @@ test("automation prototype exposes navigable tap and Tuya status menus without s
   assert.match(app, /automation-prototype-save" disabled/);
 });
 
+test("status-device selector filters favorites, configured divisions, then all devices without manufacturer tabs", () => {
+  assert.match(app, /automation-filter-pills" aria-label="Filtrar dispositivos"/);
+  assert.match(app, /allButton\("favorites","Favoritos"\)/);
+  assert.match(app, /favoriteIds\.has\(device\.device_id\)/);
+  assert.match(app, /divisionFor\(device\)/);
+  assert.match(app, /allButton\("all","Todos os dispositivos"\)/);
+  assert.match(app, /status-filter:/);
+  assert.doesNotMatch(app, /<span>Tuya<\/span>/);
+});
+
 test("static cache is versioned for the automation menu release", () => {
-  assert.match(worker, /the-solar-miner-static-v0\.5\.172-automation-menu-preview/);
+  assert.match(worker, /the-solar-miner-static-v0\.5\.173-automation-status-device-filters/);
 });
