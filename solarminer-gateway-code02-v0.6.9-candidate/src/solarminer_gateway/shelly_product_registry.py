@@ -26,7 +26,7 @@ PROFILES: tuple[dict[str, Any], ...] = (
             {"key":"night_mode","label":"Night Mode","endpoint":"/settings/night_mode","fields":["enabled","start_time","end_time","brightness"],"readable":True,"writable":True},
             {"key":"actions","label":"Actions","endpoint":"/settings/actions","fields":["out_on_url","out_off_url"],"readable":True,"writable":True,"network_required":True},
             {"key":"internet_security","label":"Internet & Security","endpoint":"/settings","fields":["wifi","access_point","login_restriction","cloud"],"readable":True,"writable":False,"note":"Leitura protegida; credenciais e rede não são expostas pelo catálogo."},
-            {"key":"settings","label":"Settings","endpoint":"/settings/light/0","fields":["default_state","transition","device_name","timezone","firmware","reboot","factory_reset"],"readable":True,"writable":False,"note":"Ações disruptivas ficam fora do controlo normal da PWA."},
+            {"key":"settings","label":"Settings","endpoint":"/settings/light/0","fields":["default_state","transition","channel_name"],"readable":True,"writable":True,"note":"Modo de arranque, transição e nome do canal. Reinício e reposição de fábrica não são expostos na PWA."},
             {"key":"charts_activity","label":"Charts & Activity","endpoint":"/status","fields":["power_history","energy_total","activity_log"],"readable":True,"writable":False},
         ],
         "sources": [VINTAGE_SOURCE, GEN1_SOURCE], "confidence": "manufacturer_documented",

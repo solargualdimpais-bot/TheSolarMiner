@@ -241,6 +241,96 @@ def control_light(host: str, generation: int, component: str, channel: int, *, o
             "reading": reading}
 
 
+VINTAGE_SETTINGS_SECTIONS = {
+    "timer": "/settings/light/0", "weekly_schedule": "/settings/light/0",
+    "night_mode": "/settings/night_mode", "actions": "/settings/actions", "settings": "/settings",
+    "internet_security": "/settings", "charts_activity": "/status",
+}
+
+
+def read_vintage_settings(host: str, section: str, *, username: str = "", password: str = "") -> dict[str, Any]:
+    """Read only documented Shelly Vintage Gen1 settings sections."""
+    endpoint = VINTAGE_SETTINGS_SECTIONS.get(section)
+    if not endpoint:
+        raise ValueError("shelly_settings_section_invalid")
+    return _request(_host(host), endpoint, username=username, password=password)
+
+
+def update_vintage_settings(host: str, section: str, values: dict[str, Any], *,
+                            username: str = "", password: str = "") -> dict[str, Any]:
+    """Write allowlisted, validated Shelly Vintage settings via its local Gen1 API."""
+    from urllib.parse import urlencode
+    if not isinstance(values, dict) or not values:
+        raise ValueError("shelly_settings_values_invalid")
+    endpoint = VINTAGE_SETTINGS_SECTIONS.get(section)
+    allowed = {"timer": {"auto_on", "auto_off"},
+               "weekly_schedule": {"schedule", "schedule_rules"},
+               "night_mode": {"enabled", "start_time", "end_time", "brightness"},
+               "actions": {"out_on_url", "out_off_url"},
+               "settings": {"transition", "default_state", "name"}}
+    if not endpoint or set(values) - allowed.get(section, set()):
+        raise ValueError("shelly_settings_fields_invalid")
+    query: list[tuple[str, str]] = []
+    action_urls: dict[str, list[str]] = {}
+    for key, value in values.items():
+        if key in {"auto_on", "auto_off"}:
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 86400:
+                raise ValueError("shelly_timer_seconds_invalid")
+        elif key == "schedule":
+            if not isinstance(value, bool): raise ValueError("shelly_schedule_enabled_invalid")
+            value = "true" if value else "false"
+        elif key == "schedule_rules":
+            if not isinstance(value, list) or len(value) > 20 or any(
+                    not isinstance(rule, str) or not re.fullmatch(r"\d{4}-[0-6]{1,7}-(?:on|off)", rule)
+                    for rule in value):
+                raise ValueError("shelly_schedule_rules_invalid")
+            value = ",".join(value)
+        elif key == "enabled":
+            if not isinstance(value, bool): raise ValueError("shelly_night_mode_enabled_invalid")
+            value = "true" if value else "false"
+        elif key in {"start_time", "end_time"}:
+            if not isinstance(value, str) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value):
+                raise ValueError("shelly_night_mode_time_invalid")
+        elif key == "brightness":
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 100:
+                raise ValueError("shelly_brightness_invalid")
+        elif key == "transition":
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 5000:
+                raise ValueError("shelly_transition_invalid")
+        elif key == "default_state" and value not in {"on", "off", "last"}:
+            raise ValueError("shelly_default_state_invalid")
+        elif key == "name":
+            if not isinstance(value, str) or len(value.strip()) > 64 or any(ord(ch) < 32 for ch in value):
+                raise ValueError("shelly_name_invalid")
+            value = value.strip()
+        elif key in {"out_on_url", "out_off_url"}:
+            if not isinstance(value, list) or len(value) > 5 or any(
+                    not isinstance(url, str) or len(url) > 240 or not url.startswith(("http://", "https://"))
+                    or any(ord(ch) < 32 for ch in url) for url in value):
+                raise ValueError("shelly_action_urls_invalid")
+            action_urls[key] = [item.strip() for item in value if item.strip()]
+            continue
+        query.append((key, str(value)))
+    result: dict[str, Any] = {}
+    groups: dict[str, list[tuple[str, str]]] = {}
+    for key, value in query:
+        target = "/settings" if section == "settings" and key == "transition" else endpoint
+        if section == "settings" and key != "transition": target = "/settings/light/0"
+        groups.setdefault(target, []).append((key, value))
+    for target, params in groups.items():
+        result[target] = _request(_host(host), f"{target}?{urlencode(params, doseq=True)}",
+                                  username=username, password=password)
+    for name, urls in action_urls.items():
+        params = [("index", "0"), ("name", name), ("enabled", "true" if urls else "false")]
+        params.extend(("urls[]", url) for url in urls)
+        if not urls:
+            params.append(("urls[]", ""))
+        result[f"/settings/actions:{name}"] = _request(
+            _host(host), f"/settings/actions?{urlencode(params, doseq=True)}",
+            username=username, password=password)
+    return result
+
+
 def control_switch(host: str, generation: int, channel: int, on: bool, *, username: str = "", password: str = "") -> dict[str, Any]:
     """Set an idempotent relay state once, then verify with a fresh read."""
     host = _host(host)

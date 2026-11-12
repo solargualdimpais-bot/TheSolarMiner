@@ -635,6 +635,14 @@ export async function readGatewayShellyProductProfiles() {
 export async function readGatewayShellyDevices() {
   return gatewayApi("/api/v1/integrations/shelly/read", { method: "POST", body: {} });
 }
+export async function readGatewayShellySettings(deviceId, section) {
+  if (typeof deviceId !== "string" || !deviceId.startsWith("shelly:") || !["timer", "weekly_schedule", "night_mode", "actions", "settings", "internet_security", "charts_activity"].includes(section)) throw new Error("Definições Shelly inválidas.");
+  return gatewayApi(`/api/v1/integrations/shelly/${encodeURIComponent(deviceId)}/settings?section=${encodeURIComponent(section)}`);
+}
+export async function saveGatewayShellySettings(deviceId, section, values) {
+  if (typeof deviceId !== "string" || !deviceId.startsWith("shelly:") || !["timer", "weekly_schedule", "night_mode", "actions", "settings"].includes(section) || !values || typeof values !== "object" || Array.isArray(values)) throw new Error("Definições Shelly inválidas.");
+  return gatewayApi(`/api/v1/integrations/shelly/${encodeURIComponent(deviceId)}/settings`, { method: "POST", body: { section, values } });
+}
 export async function discoverGatewayShellyDevices() {
   return gatewayApi("/api/v1/integrations/shelly/discover", { method: "POST", body: {} });
 }

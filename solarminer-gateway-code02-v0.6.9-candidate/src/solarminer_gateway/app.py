@@ -66,7 +66,7 @@ from . import error_reporting
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.240"
+PACKAGE_VERSION = "0.6.241"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -4590,6 +4590,64 @@ def read_shelly_devices(session: dict[str, Any] = Depends(require_permission("ma
         return {"devices": readings, "device_count": len(readings),
                 "connected_count": sum(item.get("connection_state") == "connected" for item in readings),
                 "observed_at": now, "source": "local_lan", "cloud_used": False, "commands_sent": False}
+
+
+def _vintage_device_credentials(device_id: str, session: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        row = conn.execute("SELECT * FROM shelly_devices WHERE device_id=? AND enabled=1", (device_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "shelly_device_not_found")
+    device = dict(row)
+    identity = " ".join(str(device.get(key) or "") for key in ("model", "device_type")).lower()
+    if int(device.get("generation") or 0) != 1 or not ("vintage" in identity or "shvin-1" in identity):
+        raise HTTPException(422, "shelly_vintage_gen1_required")
+    try:
+        credentials = shelly_credentials.open_credentials(DATA_DIR, device.get("auth_ciphertext"))
+        device["host"] = hardware_integrations._private_ip(device.get("host"))
+    except ValueError as exc:
+        raise HTTPException(409, "shelly_credentials_or_host_unavailable") from exc
+    return device, credentials
+
+
+@app.get("/api/v1/integrations/shelly/{device_id}/settings")
+def read_shelly_vintage_settings(device_id: str, section: str,
+                                session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    device, credentials = _vintage_device_credentials(device_id, session)
+    try:
+        settings = hardware_integrations.shelly_integration.read_vintage_settings(
+            device["host"], section, username=credentials.get("username", ""), password=credentials.get("password", ""))
+    except (RuntimeError, OSError, ValueError) as exc:
+        raise HTTPException(502, str(exc)[:100]) from exc
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        audit(conn, actor["user_id"], "smart_device.shelly.settings.read", device_id, "success", {"section": section})
+        conn.commit()
+    return {"device_id": device_id, "section": section, "settings": settings}
+
+
+@app.post("/api/v1/integrations/shelly/{device_id}/settings")
+def write_shelly_vintage_settings(device_id: str, payload: dict[str, Any],
+                                  session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    if not isinstance(payload, dict) or set(payload) != {"section", "values"} or not isinstance(payload.get("section"), str) or not isinstance(payload.get("values"), dict):
+        raise HTTPException(422, "shelly_settings_payload_invalid")
+    device, credentials = _vintage_device_credentials(device_id, session)
+    try:
+        result = hardware_integrations.shelly_integration.update_vintage_settings(
+            device["host"], payload["section"], payload["values"],
+            username=credentials.get("username", ""), password=credentials.get("password", ""))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except (RuntimeError, OSError) as exc:
+        raise HTTPException(502, str(exc)[:100]) from exc
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        audit(conn, actor["user_id"], "smart_device.shelly.settings.write", device_id, "success",
+              {"section": payload["section"], "fields": sorted(payload["values"].keys())})
+        conn.commit()
+    return {"device_id": device_id, "section": payload["section"], "saved": True, "device_response": result}
 
 
 @app.post("/api/v1/integrations/shelly/discover")
