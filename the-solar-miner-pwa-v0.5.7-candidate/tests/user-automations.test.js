@@ -64,12 +64,31 @@ test("Tuya status selector uses Portuguese capability names and hides technical 
   assert.doesNotMatch(statusMenu, /subtitle:/);
   assert.match(app, /online_state:"Estado online"/);
   assert.match(app, /light_mode:"Modo da luz"/);
-  assert.match(app, /declaredRange\.map\(value=>\(\{title:tuyaEnumValuePt\(value\)\}\)\)/);
+  assert.match(app, /declaredRange\.map\(value=>\(\{title:tuyaEnumValuePt\(value\),action:`status-enum:/);
   const header = app.slice(app.indexOf("function automationMenuHeader("), app.indexOf("function automationMenuRows("));
   assert.match(header, /aria-label="Voltar"/);
   assert.doesNotMatch(header, />‹ Voltar</);
   const css = fs.readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/web/pwa/styles.css", import.meta.url), "utf8");
   assert.match(css, /automation-prototype-header h2\{width:100%[^}]*text-align:center/);
+});
+
+test("Tuya automation condition preview supports operators, range input, multiple conditions, and all/any logic", () => {
+  const valueMenu = app.slice(app.indexOf('if(view.startsWith("status-value:"))'), app.indexOf('if(view==="status-conditions")'));
+  assert.match(valueMenu, /\[\["lt","Menor que"\],\["eq","Igual"\],\["gt","Maior que"\]\]/);
+  assert.match(valueMenu, /data-automation-operator=/);
+  assert.match(valueMenu, /data-automation-range/);
+  assert.match(valueMenu, /automationMenuHeader\(title,`status-functions:\$\{deviceId\}`,"status-next"\)/);
+  assert.match(app, /userAutomationPreviewConditions\.push\(/);
+  assert.match(app, /data-automation-menu="status-add"/);
+  assert.match(app, /Quando todas as condições forem cumpridas/);
+  assert.match(app, /Quando qualquer condição for cumprida/);
+  assert.match(app, /data-automation-mode="all"/);
+  assert.match(app, /data-automation-mode="any"/);
+  assert.match(app, /data-automation-edit-condition=/);
+  assert.match(app, /"status-next"/);
+  assert.match(app, /data-preview-range-value/);
+  assert.match(app, /automation-condition-section/);
+  assert.match(app, /Pré-visualização do submenu\. As escolhas ainda não guardam nem executam automatismos/);
 });
 
 test("status-device selector filters favorites, configured divisions, then all devices without manufacturer tabs", () => {
@@ -83,5 +102,5 @@ test("status-device selector filters favorites, configured divisions, then all d
 });
 
 test("static cache is versioned for the automation menu release", () => {
-  assert.match(worker, /the-solar-miner-static-v0\.5\.175-tuya-lan-responsive-readback/);
+  assert.match(worker, /the-solar-miner-static-v0\.5\.176-tuya-automation-condition-preview/);
 });
