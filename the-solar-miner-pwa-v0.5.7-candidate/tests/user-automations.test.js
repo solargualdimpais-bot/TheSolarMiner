@@ -57,6 +57,21 @@ test("automation prototype exposes navigable tap and Tuya status menus without s
   assert.match(app, /automation-prototype-save" disabled/);
 });
 
+test("Tuya status selector uses Portuguese capability names and hides technical schema metadata", () => {
+  const statusMenu = app.slice(app.indexOf('if(view.startsWith("status-functions:"))'), app.indexOf('if(view.startsWith("status-value:"))'));
+  assert.match(statusMenu, /tuyaFriendlyCapabilityLabel\(/);
+  assert.match(statusMenu, /return \{title:label,action:/);
+  assert.doesNotMatch(statusMenu, /subtitle:/);
+  assert.match(app, /online_state:"Estado online"/);
+  assert.match(app, /light_mode:"Modo da luz"/);
+  assert.match(app, /declaredRange\.map\(value=>\(\{title:tuyaEnumValuePt\(value\)\}\)\)/);
+  const header = app.slice(app.indexOf("function automationMenuHeader("), app.indexOf("function automationMenuRows("));
+  assert.match(header, /aria-label="Voltar"/);
+  assert.doesNotMatch(header, />‹ Voltar</);
+  const css = fs.readFileSync(new URL("../../solarminer-gateway-code02-v0.6.9-candidate/web/pwa/styles.css", import.meta.url), "utf8");
+  assert.match(css, /automation-prototype-header h2\{width:100%[^}]*text-align:center/);
+});
+
 test("status-device selector filters favorites, configured divisions, then all devices without manufacturer tabs", () => {
   assert.match(app, /automation-filter-pills" aria-label="Filtrar dispositivos"/);
   assert.match(app, /allButton\("favorites","Favoritos"\)/);
@@ -68,5 +83,5 @@ test("status-device selector filters favorites, configured divisions, then all d
 });
 
 test("static cache is versioned for the automation menu release", () => {
-  assert.match(worker, /the-solar-miner-static-v0\.5\.174-tuya-lan-responsive-readback/);
+  assert.match(worker, /the-solar-miner-static-v0\.5\.175-tuya-lan-responsive-readback/);
 });
