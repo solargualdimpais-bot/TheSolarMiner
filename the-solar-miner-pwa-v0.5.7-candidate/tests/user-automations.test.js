@@ -91,6 +91,16 @@ test("Tuya automation condition preview supports operators, range input, multipl
   assert.match(app, /Pré-visualização do submenu\. As escolhas ainda não guardam nem executam automatismos/);
 });
 
+test("automation Then section opens a selectable action menu and previews choices without executing them", () => {
+  assert.match(app, /data-automation-menu="tap-actions" aria-label="Adicionar tarefa"/);
+  assert.match(app, /automation-tap-action-heading/);
+  for (const title of ["Controlar um dispositivo", "Selecionar \/ ativar automatismos", "Atrasar a ação", "Enviar notificação", "Alterar modo de ativação"]) assert.ok(app.includes(title), `Then action ${title} is available`);
+  assert.match(app, /action-select:/);
+  assert.match(app, /userAutomationPreviewActions\.push\(/);
+  assert.match(app, /data-automation-remove-action=/);
+  assert.match(app, /As escolhas ainda não guardam nem executam automatismos/);
+});
+
 test("status-device selector filters favorites, configured divisions, then all devices without manufacturer tabs", () => {
   assert.match(app, /automation-filter-pills" aria-label="Filtrar dispositivos"/);
   assert.match(app, /allButton\("favorites","Favoritos"\)/);
@@ -102,5 +112,5 @@ test("status-device selector filters favorites, configured divisions, then all d
 });
 
 test("static cache is versioned for the automation menu release", () => {
-  assert.match(worker, /the-solar-miner-static-v0\.5\.176-tuya-automation-condition-preview/);
+  assert.match(worker, /the-solar-miner-static-v0\.5\.177-automation-actions-preview/);
 });
