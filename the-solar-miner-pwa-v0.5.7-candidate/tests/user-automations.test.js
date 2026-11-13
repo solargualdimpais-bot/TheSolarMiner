@@ -112,5 +112,19 @@ test("status-device selector filters favorites, configured divisions, then all d
 });
 
 test("static cache is versioned for the automation menu release", () => {
-  assert.match(worker, /the-solar-miner-static-v0\.5\.178-shelly-favorites-home-fix/);
+  assert.match(worker, /the-solar-miner-static-v0\.5\.179-agenda-navigation/);
+});
+
+test("Agenda trigger opens navigable time, sunrise, sunset, location, and repeat previews", () => {
+  assert.match(app, /id:"schedule",title:"AGENDA",icon:"◷",ready:true/);
+  assert.match(app, /if\(view==="schedule-type"\)/);
+  assert.match(app, /schedule-select:fixed/);
+  assert.match(app, /schedule-select:sunrise/);
+  assert.match(app, /schedule-select:sunset/);
+  assert.match(app, /if\(view==="schedule-config"\)/);
+  assert.match(app, /schedule-repeat/);
+  assert.match(app, /schedule-offset:/);
+  assert.match(app, /schedule-repeat-select:/);
+  assert.match(app, /userAutomationMenuView=trigger==="status"\?"status-device":trigger==="schedule"\?"schedule-type":"tap"/);
+  assert.match(app, /automation-prototype-save" disabled/);
 });
