@@ -103,3 +103,9 @@ test("Shelly inventory cards use the same compact layout and live only model-con
   assert.match(app, /shelly_blu_gateway_gwf_kz01/);
   assert.match(app, /shelly_vintage_gen1/);
 });
+
+test("adding a Shelly favorite does not break the Home favorites render", () => {
+  assert.match(gatewayApp, /if\(kind==="shelly"\)return \{id,kind,device,details,reading:device\}/);
+  assert.match(gatewayApp, /primaryChannel=kind==="tuya"\?\(channels\|\|\[\]\)\.find\(channel=>channel\.code===primaryCode\):null/);
+  assert.match(gatewayApp, /const shellyFavorite=event\.target\.closest\("\[data-shelly-favorite-toggle\]"\)/);
+});

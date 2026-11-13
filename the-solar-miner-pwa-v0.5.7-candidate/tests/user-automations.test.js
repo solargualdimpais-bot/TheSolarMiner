@@ -112,5 +112,5 @@ test("status-device selector filters favorites, configured divisions, then all d
 });
 
 test("static cache is versioned for the automation menu release", () => {
-  assert.match(worker, /the-solar-miner-static-v0\.5\.177-automation-actions-preview/);
+  assert.match(worker, /the-solar-miner-static-v0\.5\.178-shelly-favorites-home-fix/);
 });
