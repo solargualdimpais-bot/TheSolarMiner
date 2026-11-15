@@ -63,45 +63,40 @@ def test_gen1_vintage_identifies_light_channel_without_sending_commands(monkeypa
     assert result["command_sent"] is False
 
 
-def test_gen1_vintage_light_control_uses_local_api_once_and_verifies(monkeypatch):
+def test_gen1_vintage_light_control_writes_once_without_independent_readback(monkeypatch):
     calls = []
     def request(host, path, **kwargs):
         calls.append(path)
         return {}
-    def read(host, **kwargs):
-        return {"components": [{"component": "light", "id": 0,
-                "status": {"ison": True, "brightness": 72}}], "observed_at": 1.0}
     monkeypatch.setattr(shelly, "_request", request)
-    monkeypatch.setattr(shelly, "identify_and_read", read)
+    monkeypatch.setattr(shelly, "identify_and_read", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("readback bypassed device engine")))
     result = shelly.control_light("192.168.1.25", 1, "light", 0, on=True, brightness=72)
     assert calls == ["/light/0?turn=on&brightness=72"]
     assert result["command_accepted"] is True
-    assert result["command_confirmed"] is True
+    assert result["command_confirmed"] is False
+    assert result["command_state"] == "ACCEPTED_AWAITING_DEVICE_ENGINE"
 
 
-def test_switch_control_does_not_repeat_command_and_requires_readback(monkeypatch):
+def test_switch_control_sends_once_and_leaves_confirmation_to_device_engine(monkeypatch):
     calls = []
     def rpc(host, method, params=None, **auth):
         calls.append((method, params))
         return {}
-    def read(host, **auth):
-        return {"host": host, "components": [{"component": "switch", "id": 0,
-                "status": {"output": True}}], "observed_at": 1.0}
     monkeypatch.setattr(shelly, "_rpc", rpc)
-    monkeypatch.setattr(shelly, "identify_and_read", read)
+    monkeypatch.setattr(shelly, "identify_and_read", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("readback bypassed device engine")))
     result = shelly.control_switch("192.168.1.23", 2, 0, True)
     assert calls == [("Switch.Set", {"id": 0, "on": True})]
-    assert result["command_confirmed"] is True
-    assert result["command_state"] == "CONFIRMED"
+    assert result["command_confirmed"] is False
+    assert result["command_state"] == "ACCEPTED_AWAITING_DEVICE_ENGINE"
 
 
-def test_switch_control_marks_accepted_but_unverified_state_unknown(monkeypatch):
+def test_switch_control_reports_pending_device_engine_confirmation(monkeypatch):
     monkeypatch.setattr(shelly, "_rpc", lambda *args, **kwargs: {})
-    monkeypatch.setattr(shelly, "identify_and_read", lambda *args, **kwargs: {"components": [], "observed_at": 1.0})
+    monkeypatch.setattr(shelly, "identify_and_read", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("readback bypassed device engine")))
     result = shelly.control_switch("192.168.1.24", 2, 1, False)
     assert result["command_accepted"] is True
     assert result["command_confirmed"] is False
-    assert result["command_state"] == "UNKNOWN"
+    assert result["command_state"] == "ACCEPTED_AWAITING_DEVICE_ENGINE"
 
 
 def test_registered_identity_mac_mismatch_is_not_reported_as_connected(monkeypatch):

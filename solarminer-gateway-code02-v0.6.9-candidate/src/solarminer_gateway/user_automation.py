@@ -14,7 +14,6 @@ MAX_RULES = 100
 MAX_HISTORY = 1000
 MAX_NAME = 100
 MAX_FOR_SECONDS = 86400
-MAX_STALENESS_SECONDS = 60
 OPERATORS = {"eq", "ne", "gt", "gte", "lt", "lte"}
 
 SCHEMA = """
@@ -134,7 +133,9 @@ def evaluate_trigger(trigger: dict[str, Any], telemetry: dict[str, Any], now: da
         ready = now.strftime("%H:%M") == trigger["at"] and now.weekday() in trigger["weekdays"]
         return ready, "Agendado" if ready else "Fora do horário configurado"
     item = telemetry.get(trigger["device_id"])
-    if not isinstance(item, dict) or item.get("connection_state") != "local_responded" or item.get("verified") is not True:
+    if (not isinstance(item, dict) or item.get("connection_state") != "local_responded"
+            or item.get("verified") is not True or item.get("device_engine_managed") is not True
+            or item.get("measurement_valid") is not True):
         return False, "Equipamento Tuya sem leitura LAN confirmada"
     stamp = item.get("observed_at") or item.get("last_attempt_at")
     try:
@@ -144,7 +145,9 @@ def evaluate_trigger(trigger: dict[str, Any], telemetry: dict[str, Any], now: da
         age = time.time() - parsed.timestamp()
     except (TypeError, ValueError, OverflowError):
         return False, "Leitura sem data válida"
-    if age < -5 or age > MAX_STALENESS_SECONDS:
+    # The Device Engine sets measurement_valid from that device's own
+    # five-latency deadline. Do not replace that policy with a fixed timeout.
+    if age < -5:
         return False, "Leitura Tuya desatualizada"
     status = item.get("status") if isinstance(item.get("status"), list) else []
     row = next((entry for entry in status if isinstance(entry, dict) and entry.get("code") == trigger["code"]), None)

@@ -958,6 +958,31 @@ def test_antminer_can_store_its_associated_tuya_breaker_and_meter_codes():
     assert config["loads"][0]["tuya_measurement_codes"] == {"power": "cur_power", "voltage": "cur_voltage"}
 
 
+def test_stale_tuya_values_are_not_exposed_to_accounting_after_device_engine_timeout():
+    cached = {
+        "measurement_valid": False,
+        "metrics": {"power": {"code": "cur_power", "value": 1200, "unit": "W"}},
+        "status": [{"code": "switch", "value": True}],
+    }
+    sample = energy_engine._tuya_accounting_sample(cached, {"power": "cur_power"}, "switch")
+    assert sample == {"metrics": {}, "switch_on": None, "measurement_valid": False}
+
+
+def test_live_tuya_values_are_exposed_to_accounting_only_for_selected_codes():
+    cached = {
+        "measurement_valid": True,
+        "metrics": {
+            "power": {"code": "cur_power", "value": 1200, "unit": "W"},
+            "current": {"code": "cur_current", "value": 5, "unit": "A"},
+        },
+        "status": [{"code": "switch", "value": True}],
+    }
+    sample = energy_engine._tuya_accounting_sample(cached, {"power": "cur_power"}, "switch")
+    assert sample["metrics"] == {"power": cached["metrics"]["power"]}
+    assert sample["switch_on"] is True
+    assert sample["measurement_valid"] is True
+
+
 def test_shared_tuya_meter_is_not_attributed_as_each_miners_individual_power():
     config = {
         "automation": {"enabled": True, "commissioned": True, "deye_map_verified": True,

@@ -505,13 +505,11 @@ def test_hardware_provider_read_is_independent_and_owner_only(client, monkeypatc
             "tunerstatus": {"TUNERSTATUS": [{"ApproximateMinerPowerConsumption": 2300, "PowerLimit": 2500}]},
         }, "control_commands_sent": False,
     })
-    seen_tuya_configs = []
-    monkeypatch.setattr(gateway.hardware_integrations, "read_tuya", lambda config: (
-        seen_tuya_configs.append([device["device_id"] for device in config["devices"]]) or [
-            {"device_id": device["device_id"], "name": device["name"], "connection_state": "api_responded"}
-            for device in config["devices"]
-        ]
-    ))
+    monkeypatch.setattr(gateway, "_smart_engine_snapshot", lambda: {"schema": 1, "devices": {
+        "tuya:tuya_device_b": {"status": [{"code": "switch_1", "value": True}],
+                                "last_success_at": 1000.0, "latency_ms": 100.0}}})
+    monkeypatch.setattr(gateway.hardware_integrations, "read_tuya",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("PWA read initiated device I/O")))
     deye = client.post("/api/v1/integrations/hardware/deye/read", headers=headers, json={})
     assert deye.status_code == 200 and deye.json()["provider"] == "deye"
     miner = client.post("/api/v1/integrations/hardware/antminer/read", headers=headers, json={})
@@ -545,7 +543,8 @@ def test_hardware_provider_read_is_independent_and_owner_only(client, monkeypatc
 
     tuya = client.post("/api/v1/integrations/hardware/tuya/read", headers=headers, json={"device_id": "tuya_device_b"})
     assert tuya.status_code == 200 and len(tuya.json()["tuya"]) == 1
-    assert seen_tuya_configs == [["tuya_device_b"]]
+    assert tuya.json()["device_io_started"] is False
+    assert tuya.json()["tuya"][0]["status"] == [{"code": "switch_1", "value": True}]
     assert client.post("/api/v1/integrations/hardware/tuya/read", headers=headers,
                        json={"device_id": "not_configured"}).status_code == 404
     assert client.post("/api/v1/integrations/hardware/unknown/read", headers=headers, json={}).status_code == 404
@@ -804,7 +803,7 @@ def test_tuya_lan_diagnostics_excludes_setup_failures_from_response_latency(clie
     assert device["reason"] == "private_lan_target_required"
 
 
-def test_tuya_lan_diagnostics_can_probe_one_device_for_three_read_only_rounds(client, monkeypatch, tmp_path):
+def test_tuya_lan_diagnostics_reports_engine_snapshot_without_polling(client, monkeypatch, tmp_path):
     headers = {"Authorization": f"Bearer {owner_session(client)}"}
     monkeypatch.setattr(gateway.hardware_integrations, "_data_dir", lambda: tmp_path / "gateway-data")
     config = {"tuya": {"devices": [
@@ -815,34 +814,26 @@ def test_tuya_lan_diagnostics_can_probe_one_device_for_three_read_only_rounds(cl
          "local_key": "key-other"},
     ]}}
     monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: config)
-    calls = []
-    def read_tuya(config):
-        devices = config["devices"]
-        calls.append([item["device_id"] for item in devices])
-        return [{"device_id": item["device_id"], "connection_state": "local_responded",
-                 "latency_ms": 12.0, "local_protocol": "3.4",
-                 "status": [{"code": "switch_1", "value": True}]}
-                for item in devices]
-    monkeypatch.setattr(gateway.hardware_integrations, "read_tuya", read_tuya)
+    monkeypatch.setattr(gateway, "_smart_engine_snapshot", lambda: {"schema": 1, "devices": {
+        "tuya:target-device": {"connection_state": "online", "latency_ms": 12.0,
+            "last_success_at": gateway.time.time(), "observed_at": "2026-01-01T00:00:00Z",
+            "status": [{"code": "switch_1", "value": True}], "source": "TUYA_LAN"}}})
+    monkeypatch.setattr(gateway.hardware_integrations, "read_tuya",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("diagnostics initiated device I/O")))
     response = client.post("/api/v1/integrations/tuya/lan-diagnostics", headers=headers,
                            json={"rounds": 3, "device_id": "target-device"})
     assert response.status_code == 200, response.text
     report = response.json()
     assert report["configured_count"] == 1
-    assert calls == [["target-device"]] * 3
     device = report["devices"][0]
-    assert device["success_count"] == 3
+    assert device["success_count"] == 1
     assert device["rounds"] == 3
     assert device["average_latency_ms"] == 12.0
     assert device["connection_state"] == "local_responded"
-    assert device["local_protocol"] == "3.4"
     assert device["status"] == [{"code": "switch_1", "value": True}]
     assert report["control_commands_sent"] is False
     assert report["confirmed_device_count"] == 1
-    assert config["tuya"]["devices"][0]["local_verified"] is True
-    inventory = client.get("/api/v1/device-inventory", headers=headers).json()["devices"]
-    confirmed = next(item for item in inventory if item["source_device_id"] == "target-device")
-    assert confirmed["confirmation_status"] == "confirmed"
+    assert report["device_io_started"] is False
 
 
 def test_tuya_lan_reachability_checks_only_selected_private_ip_without_reading_status_or_cloud(client, monkeypatch):

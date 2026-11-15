@@ -97,8 +97,9 @@ def get_config(conn: sqlite3.Connection) -> dict[str, Any]:
 
 
 def persist_tuya_telemetry(conn: sqlite3.Connection, readings: list[dict[str, Any]],
-                           devices: list[dict[str, Any]], product_schemas: dict[str, Any] | None = None) -> int:
-    """Keep the latest verified LAN status and recognized SI measurements per Tuya device."""
+                           devices: list[dict[str, Any]], product_schemas: dict[str, Any] | None = None,
+                           *, measurement_validity_seconds: float | None = None) -> int:
+    """Persist Tuya readings, with freshness validity supplied by the device engine."""
     row = conn.execute("SELECT value FROM system_state WHERE key=?", (TUYA_TELEMETRY_KEY,)).fetchone()
     try:
         saved = json.loads(row[0]) if row else {}
@@ -130,8 +131,17 @@ def persist_tuya_telemetry(conn: sqlite3.Connection, readings: list[dict[str, An
         previous_attempt_stamp = _parse_utc(previous.get("last_attempt_at"))
         if incoming_stamp is not None and previous_attempt_stamp is not None and incoming_stamp <= previous_attempt_stamp:
             continue
+        attempt_state = reading.get("connection_state", "failed")
+        successful_lan_attempt = attempt_state in {"local_responded", "local_responded_no_properties"}
+        # Engine-managed samples stay valid until their per-device deadline,
+        # even if one poll times out. Legacy/ad-hoc polls have no such deadline,
+        # so a failed attempt must not leave the retained value marked live.
+        engine_managed = previous.get("device_engine_managed") is True
+        connection_state = (attempt_state if successful_lan_attempt else
+                            previous.get("connection_state", attempt_state) if engine_managed else attempt_state)
         updated = {**previous, "device_id": device_id, "name": str(reading.get("name") or previous.get("name") or "Tuya")[:120],
-                   "connection_state": reading.get("connection_state", "failed"), "last_attempt_at": observed_at}
+                   "connection_state": connection_state,
+                   "last_attempt_state": attempt_state, "last_attempt_at": observed_at}
         latency_ms = reading.get("latency_ms")
         valid_latency = (isinstance(latency_ms, (int, float)) and not isinstance(latency_ms, bool)
                          and math.isfinite(float(latency_ms)) and latency_ms >= 0)
@@ -245,6 +255,16 @@ def persist_tuya_telemetry(conn: sqlite3.Connection, readings: list[dict[str, An
                     count += 1
                     break
             updated.update({"verified": True, "status": raw_status, "metrics": metrics, "observed_at": observed_at})
+            if (isinstance(measurement_validity_seconds, (int, float))
+                    and not isinstance(measurement_validity_seconds, bool)
+                    and math.isfinite(float(measurement_validity_seconds))
+                    and measurement_validity_seconds > 0):
+                updated["device_engine_valid_until"] = time.time() + float(measurement_validity_seconds)
+                updated["device_engine_managed"] = True
+            else:
+                # Legacy or ad-hoc polls cannot certify a value for accounting.
+                updated.pop("device_engine_valid_until", None)
+                updated["device_engine_managed"] = False
         elif not previous.get("verified"):
             updated["verified"] = False
         saved[device_id] = updated
@@ -270,11 +290,42 @@ def read_tuya_telemetry(conn: sqlite3.Connection, *, max_age_seconds: int = 120)
         age = (now - stamp).total_seconds() if stamp else None
         attempt_stamp = _parse_utc(item.get("last_attempt_at"))
         attempt_age = (now - attempt_stamp).total_seconds() if attempt_stamp else None
+        engine_deadline = item.get("device_engine_valid_until")
+        engine_managed = item.get("device_engine_managed") is True
+        sample_age_valid = (age is not None and age >= 0 and
+                            (now.timestamp() <= float(engine_deadline) if engine_managed and
+                             isinstance(engine_deadline, (int, float)) and math.isfinite(float(engine_deadline))
+                             else (not engine_managed and age <= max_age_seconds)))
         result[device_id] = {**item, "age_seconds": round(age, 1) if age is not None else None,
                              "last_attempt_age_seconds": round(attempt_age, 1) if attempt_age is not None else None,
-                             "fresh": bool(item.get("verified") and age is not None and 0 <= age <= max_age_seconds
-                                           and item.get("connection_state") in {"local_responded", "local_responded_no_properties"})}
+                              "fresh": bool(item.get("verified") and sample_age_valid
+                                            and item.get("connection_state") in {"local_responded", "local_responded_no_properties"}),
+                              "measurement_valid": bool(item.get("verified") and sample_age_valid
+                                            and item.get("connection_state") == "local_responded")}
     return result
+
+
+def _tuya_accounting_sample(cached: dict[str, Any], selected_codes: dict[str, str],
+                            switch_code: str | None) -> dict[str, Any]:
+    """Expose Tuya values to energy accounting only while the Device Engine validates them.
+
+    The telemetry store intentionally retains the last good response for display.
+    That cached value must not silently become a current accounting/control input
+    after the per-device freshness deadline has expired.
+    """
+    valid = isinstance(cached, dict) and cached.get("measurement_valid") is True
+    selected_codes = selected_codes if isinstance(selected_codes, dict) else {}
+    source_metrics = cached.get("metrics") if valid and isinstance(cached.get("metrics"), dict) else {}
+    metrics = {field: metric for field, metric in source_metrics.items()
+               if isinstance(metric, dict) and selected_codes.get(field) == metric.get("code")}
+    switch_value = None
+    if valid and switch_code:
+        status = cached.get("status") if isinstance(cached.get("status"), list) else []
+        switch_row = next((item for item in status
+                           if isinstance(item, dict) and item.get("code") == switch_code), None)
+        if isinstance(switch_row, dict) and isinstance(switch_row.get("value"), bool):
+            switch_value = switch_row["value"]
+    return {"metrics": metrics, "switch_on": switch_value, "measurement_valid": valid}
 
 
 def save_config(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, Any]:
@@ -3133,14 +3184,13 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
         device_id = meter_load.get("tuya_device_id")
         cached = cached_tuya.get(device_id, {}) if device_id else {}
         selected_codes = meter_load.get("tuya_measurement_codes", {})
-        metrics = {field: metric for field, metric in (cached.get("metrics") or {}).items()
-                   if selected_codes.get(field) == metric.get("code")}
         switch_code = meter_load.get("tuya_switch_code")
-        switch_row = next((item for item in cached.get("status", []) if item.get("code") == switch_code), None)
+        accounting_sample = _tuya_accounting_sample(cached, selected_codes, switch_code)
         tuya_load_telemetry[load_item["id"]] = {"device_id": device_id, "name": cached.get("name"),
             "connection_state": cached.get("connection_state", "unknown"), "verified": bool(cached.get("verified")),
-            "fresh": bool(cached.get("fresh")), "observed_at": cached.get("observed_at"), "metrics": metrics,
-            "switch_on": switch_row.get("value") if isinstance(switch_row, dict) and isinstance(switch_row.get("value"), bool) else None}
+            "fresh": bool(cached.get("fresh")), "measurement_valid": accounting_sample["measurement_valid"],
+            "observed_at": cached.get("observed_at"), "metrics": accounting_sample["metrics"],
+            "switch_on": accounting_sample["switch_on"]}
     current["tuya_load_telemetry"] = tuya_load_telemetry
     sample_state = "UNKNOWN"
     if latest_sample is not None:

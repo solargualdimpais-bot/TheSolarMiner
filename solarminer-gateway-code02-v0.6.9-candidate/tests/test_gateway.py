@@ -485,86 +485,10 @@ def test_tuya_lan_event_history_records_switch_and_availability_transitions(clie
     assert rows[3]["new_value_json"] == "false"
 
 
-def test_tuya_event_collector_polls_devices_even_without_a_pwa_request(tmp_path, monkeypatch, caplog):
-    monkeypatch.setattr(gateway, "_tuya_last_diagnostic_log_at", 0.0)
-    monkeypatch.setattr(gateway.time, "monotonic", lambda: 61.0)
-    caplog.set_level("INFO")
-    monkeypatch.setenv("SOLARMINER_DATA_DIR", str(tmp_path / "solarminer-data"))
-    monkeypatch.setattr(gateway, "DB_PATH", tmp_path / "gateway.db")
-    monkeypatch.setattr(gateway, "BOOTSTRAP_PATH", tmp_path / "bootstrap.token")
-    monkeypatch.setattr(gateway, "INSTANCE_MARKER", tmp_path / "initialized.marker")
-    gateway.initialize()
-    config = {"devices": [
-        {"device_id": "lan-ready", "name": "Relay", "local_key": "local-key-valid", "local_ip": "192.168.1.20"},
-        {"device_id": "not-configured", "name": "No key", "local_ip": "192.168.1.21"},
-    ]}
-    monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: {"tuya": config})
-    monkeypatch.setattr(gateway.hardware_integrations, "save_config", lambda _config: None)
-    observed = []
-    def read_tuya(selected, *, on_reading=None, background_poll=False):
-        assert background_poll is True
-        observed.extend(item["device_id"] for item in selected["devices"])
-        readings = [{"device_id": "lan-ready", "name": "Relay", "connection_state": "local_responded",
-                     "status": [{"code": "switch_1", "value": True}]}]
-        if on_reading:
-            for reading in readings:
-                on_reading(reading)
-        return readings
-    monkeypatch.setattr(gateway.hardware_integrations, "read_tuya", read_tuya)
-
-    assert gateway._collect_tuya_device_events_once() == 2
-    assert observed == ["lan-ready"]
-    with gateway.db() as conn:
-        rows = conn.execute("SELECT event_type, new_value_json FROM device_events ORDER BY id").fetchall()
-    assert [(row["event_type"], row["new_value_json"]) for row in rows] == [
-        ("availability", "true"), ("switch_state", "true")]
-    assert config["devices"][0]["local_control_state"] == "ready"
-    assert "Periodic Tuya poll diagnostic outcome=success configured=1 successful=1 failed=0" in caplog.text
-    assert "lan-ready" not in caplog.text
-
-
-def test_tuya_event_collector_marks_a_failed_device_offline_without_rewriting_status(tmp_path, monkeypatch, caplog):
-    monkeypatch.setattr(gateway, "_tuya_last_diagnostic_log_at", 0.0)
-    monkeypatch.setenv("SOLARMINER_DATA_DIR", str(tmp_path / "solarminer-data"))
-    monkeypatch.setattr(gateway, "DB_PATH", tmp_path / "gateway.db")
-    monkeypatch.setattr(gateway, "BOOTSTRAP_PATH", tmp_path / "bootstrap.token")
-    monkeypatch.setattr(gateway, "INSTANCE_MARKER", tmp_path / "initialized.marker")
-    gateway.initialize()
-    config = {"devices": [{"device_id": "lan-offline", "name": "Breaker", "local_key": "local-key-valid",
-                          "local_ip": "192.168.1.20", "local_control_state": "ready",
-                          "current_status": [{"code": "power", "value": 500}], "last_status_at": 123}]}
-    saved = []
-    monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: {"tuya": config})
-    monkeypatch.setattr(gateway.hardware_integrations, "save_config", lambda value: saved.append(value))
-    def read_tuya(_selected, *, on_reading=None, background_poll=False):
-        assert background_poll is True
-        readings = [{"device_id": "lan-offline", "name": "Breaker", "connection_state": "failed",
-                     "reason": "tuya_local_ip_not_found_for_mac", "status": []}]
-        if on_reading:
-            for reading in readings:
-                on_reading(reading)
-        return readings
-    monkeypatch.setattr(gateway.hardware_integrations, "read_tuya", read_tuya)
-
-    gateway._collect_tuya_device_events_once()
-
-    assert config["devices"][0]["local_control_state"] == "unavailable"
-    assert config["devices"][0]["current_status"] == [{"code": "power", "value": 500}]
-    assert config["devices"][0]["last_status_at"] == 123
-    assert len(saved) == 1
-    assert "Periodic Tuya poll diagnostic outcome=partial configured=1 successful=0 failed=1" in caplog.text
-    assert "lan-offline" not in caplog.text
-
-
-def test_tuya_event_poll_interval_defaults_to_five_seconds_and_enforces_safe_minimum(monkeypatch):
-    monkeypatch.delenv("SOLARMINER_TUYA_EVENT_POLL_SECONDS", raising=False)
-    assert gateway._tuya_event_poll_interval_seconds() == 5.0
-    monkeypatch.setenv("SOLARMINER_TUYA_EVENT_POLL_SECONDS", "5")
-    assert gateway._tuya_event_poll_interval_seconds() == 5.0
-    monkeypatch.setenv("SOLARMINER_TUYA_EVENT_POLL_SECONDS", "1.5")
-    assert gateway._tuya_event_poll_interval_seconds() == 5.0
-    monkeypatch.setenv("SOLARMINER_TUYA_EVENT_POLL_SECONDS", "invalid")
-    assert gateway._tuya_event_poll_interval_seconds() == 5.0
+def test_legacy_tuya_event_collector_never_starts_a_competing_poll(monkeypatch):
+    monkeypatch.setattr(gateway.hardware_integrations, "read_tuya",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("legacy Tuya poll started")))
+    assert gateway._collect_tuya_device_events_once() == 0
 
 
 def test_password_login_rejects_wrong_password_without_registering_device(client):

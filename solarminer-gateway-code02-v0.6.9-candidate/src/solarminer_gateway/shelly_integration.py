@@ -172,7 +172,7 @@ def identify_and_read(host: str, *, username: str = "", password: str = "") -> d
 def control_light(host: str, generation: int, component: str, channel: int, *, on: bool | None = None,
                   brightness: int | None = None, rgb: list[int] | None = None, white: int | None = None,
                   color_temperature: int | None = None, username: str = "", password: str = "") -> dict[str, Any]:
-    """Apply a bounded light setting once and verify it through a fresh local read."""
+    """Apply a bounded light setting once; the device engine owns readback."""
     host = _host(host)
     allowed = {"light", "rgb", "rgbw", "cct", "color"}
     if component not in allowed or isinstance(channel, bool) or not isinstance(channel, int) or not 0 <= channel <= 31:
@@ -221,24 +221,9 @@ def control_light(host: str, generation: int, component: str, channel: int, *, o
     else:
         raise ValueError("shelly_generation_unsupported")
     device_command_latency_ms = round((time.perf_counter() - command_started) * 1000)
-    readback_started = time.perf_counter()
-    reading = identify_and_read(host, **auth)
-    readback_latency_ms = round((time.perf_counter() - readback_started) * 1000)
-    state = "CONFIRMED"
-    for item in reading.get("components", []):
-        if item.get("component") not in {component, "color" if component in {"rgb", "rgbw"} else component} or item.get("id") != channel:
-            continue
-        observed = item.get("status", {})
-        if on is not None and observed.get("output", observed.get("ison")) != on: state = "UNKNOWN"
-        if brightness is not None and observed.get("brightness") != brightness: state = "UNKNOWN"
-        if rgb is not None and observed.get("rgb", [observed.get("red"), observed.get("green"), observed.get("blue")]) != rgb: state = "UNKNOWN"
-        if color_temperature is not None and observed.get("ct", observed.get("temp")) != color_temperature: state = "UNKNOWN"
-        break
-    else:
-        state = "UNKNOWN"
-    return {"command_accepted": True, "command_confirmed": state == "CONFIRMED", "command_state": state,
-            "device_command_latency_ms": device_command_latency_ms, "readback_latency_ms": readback_latency_ms,
-            "reading": reading}
+    return {"command_accepted": True, "command_confirmed": False,
+            "command_state": "ACCEPTED_AWAITING_DEVICE_ENGINE", "device_command_latency_ms": device_command_latency_ms,
+            "observed_at": None}
 
 
 VINTAGE_SETTINGS_SECTIONS = {
@@ -332,7 +317,7 @@ def update_vintage_settings(host: str, section: str, values: dict[str, Any], *,
 
 
 def control_switch(host: str, generation: int, channel: int, on: bool, *, username: str = "", password: str = "") -> dict[str, Any]:
-    """Set an idempotent relay state once, then verify with a fresh read."""
+    """Set an idempotent relay state once; the device engine owns readback."""
     host = _host(host)
     if isinstance(channel, bool) or not isinstance(channel, int) or not 0 <= channel <= 31:
         raise ValueError("shelly_switch_channel_invalid")
@@ -348,23 +333,10 @@ def control_switch(host: str, generation: int, channel: int, on: bool, *, userna
     else:
         raise ValueError("shelly_generation_unsupported")
     device_command_latency_ms = round((time.perf_counter() - command_started) * 1000)
-    readback_started = time.perf_counter()
-    verified = identify_and_read(host, **auth)
-    readback_latency_ms = round((time.perf_counter() - readback_started) * 1000)
-    observed = None
-    for component in verified.get("components", []):
-        status = component.get("status", {})
-        if component.get("id") == channel and component.get("component") in {"switch", "relay"}:
-            observed = status.get("output", status.get("ison"))
-            break
-    if isinstance(observed, bool) and observed == on:
-        state = "CONFIRMED"
-    else:
-        state = "UNKNOWN"
-    return {"connection_state": "connected", "command_accepted": True,
-            "command_confirmed": state == "CONFIRMED", "command_state": state,
-            "requested_on": on, "observed_on": observed, "device_command_latency_ms": device_command_latency_ms,
-            "readback_latency_ms": readback_latency_ms, "reading": verified}
+    return {"connection_state": "command_accepted", "command_accepted": True,
+            "command_confirmed": False, "command_state": "ACCEPTED_AWAITING_DEVICE_ENGINE",
+            "requested_on": on, "observed_on": None, "device_command_latency_ms": device_command_latency_ms,
+            "observed_at": None}
 
 
 def read_devices(config: dict[str, Any]) -> list[dict[str, Any]]:

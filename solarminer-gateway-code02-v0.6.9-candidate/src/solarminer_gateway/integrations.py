@@ -1110,6 +1110,53 @@ def _tuya_local_status(device: dict[str, Any], devices: Any = None) -> dict[str,
             "observed_at": time.time()}
 
 
+def read_tuya_device(config: dict[str, Any], device_id: str) -> dict[str, Any]:
+    """Read exactly one configured Tuya device over LAN, without fleet polling or discovery."""
+    devices = [item for item in config.get("devices", [])
+               if isinstance(item, dict) and isinstance(item.get("device_id"), str)]
+    device = next((item for item in devices if item.get("device_id") == device_id), None)
+    if device is None:
+        return {"device_id": device_id, "connection_state": "failed", "reason": "tuya_device_not_configured",
+                "source": "TUYA_LAN", "trust": "UNAVAILABLE", "observed_at": time.time(), "latency_ms": 0.0}
+    started = time.perf_counter()
+    observed_at = time.time()
+    try:
+        parent_id = device.get("parent_device_id")
+        if device.get("transport") == "tuya_gateway" and isinstance(parent_id, str):
+            result = _tuya_local_status(device, devices)
+        else:
+            result = _tuya_local_status(device)
+        result["latency_ms"] = round((time.perf_counter() - started) * 1000, 1)
+        result["observed_at"] = observed_at
+        return result
+    except (RuntimeError, ValueError, OSError, TypeError) as exc:
+        return {"device_id": device_id, "name": device.get("name", "Tuya device"),
+                "connection_state": "failed", "reason": str(exc)[:120], "source": "TUYA_LAN",
+                "trust": "UNAVAILABLE", "observed_at": observed_at,
+                "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+                **({"parent_device_id": parent_id} if isinstance(parent_id, str) else {})}
+
+
+def tuya_cloud_device_availability(config: dict[str, Any], device_id: str) -> dict[str, Any]:
+    """Ask Tuya Cloud for only this device's availability; caller must run it off-loop."""
+    if not isinstance(config, dict) or not all(config.get(key) for key in ("client_id", "client_secret", "region")):
+        raise ValueError("tuya_cloud_credentials_not_configured")
+    quoted = urllib.parse.quote(str(device_id), safe="")
+    token_result = _tuya_request(config, "/v1.0/token?grant_type=1")
+    token_value = token_result.get("result")
+    token = token_value.get("access_token") if isinstance(token_value, dict) else None
+    if not isinstance(token, str) or not token:
+        raise RuntimeError("tuya_cloud_token_missing")
+    details_result = _tuya_request(config, f"/v2.0/cloud/thing/{quoted}", token)
+    details = details_result.get("result")
+    if not isinstance(details, dict):
+        raise RuntimeError("tuya_cloud_device_status_missing")
+    online = details.get("is_online", details.get("online"))
+    if not isinstance(online, bool):
+        raise RuntimeError("tuya_cloud_device_status_unknown")
+    return {"online": online, "checked_at": time.time(), "source": "TUYA_CLOUD"}
+
+
 def read_tuya(config: dict[str, Any], *, on_reading: Callable[[dict[str, Any]], None] | None = None,
               background_poll: bool = False) -> list[dict[str, Any]]:
     """Read Tuya device status over LAN only; never fall back to Tuya Cloud."""
@@ -3161,26 +3208,12 @@ def collect(config: dict[str, Any]) -> dict[str, Any]:
             result["antminer"] = {"host": host, "port": port,
                                    "connection_state": "tcp_reachable_api_failed" if reason.startswith("antminer_") else "tcp_unreachable",
                                    "reason": reason}
-    if config.get("tuya", {}).get("devices"):
-        try:
-            result["tuya"] = read_tuya(config["tuya"])
-            result["configuration"]["tuya"] = "configured"
-            for device in result["tuya"]:
-                if device.get("connection_state") == "failed":
-                    result["errors"].append({"provider": "tuya", "device_id": device["device_id"],
-                                             "reason": device["reason"]})
-        except Exception as exc: result["errors"].append({"provider": "tuya", "reason": str(exc)[:160]})
-    else:
-        result["configuration"]["tuya"] = "not_configured"
+    # Steady-state smart-device reads belong exclusively to the Gateway Device
+    # Engine. collect() must never create a competing Tuya poll.
+    result["configuration"]["tuya"] = "configured" if config.get("tuya", {}).get("devices") else "not_configured"
     shelly_config = config.get("shelly", {}) if isinstance(config.get("shelly"), dict) else {}
-    if shelly_config.get("devices"):
-        result["shelly"] = shelly_integration.read_devices(shelly_config)
-        result["configuration"]["shelly"] = "configured"
-        result["errors"].extend({"provider": "shelly", "device_id": item.get("device_id"),
-                                "reason": item.get("reason", "shelly_read_failed")}
-                               for item in result["shelly"] if item.get("connection_state") != "connected")
-    else:
-        result["configuration"]["shelly"] = "not_configured"
+    # Shelly steady-state reads are also owned exclusively by that engine.
+    result["configuration"]["shelly"] = "configured" if shelly_config.get("devices") else "not_configured"
     return result
 
 

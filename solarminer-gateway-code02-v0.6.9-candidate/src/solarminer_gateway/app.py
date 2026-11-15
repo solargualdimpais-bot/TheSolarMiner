@@ -29,7 +29,7 @@ import xml.etree.ElementTree as ET
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request as URLRequest, urlopen
 from urllib.error import HTTPError, URLError
@@ -64,10 +64,11 @@ from . import update_helper_client
 from . import updates as update_manager
 from . import error_reporting
 from . import user_automation
+from . import smart_device_engine
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.243"
+PACKAGE_VERSION = "0.6.244"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -98,6 +99,12 @@ _deye_ip_recovery_lock = threading.Lock()
 _deye_unreachable_since: dict[tuple[str, str, str, str], float] = {}
 _deye_last_ip_recovery_attempt: dict[tuple[str, str, str, str], float] = {}
 _tuya_last_diagnostic_log_at = 0.0
+SMART_DEVICE_ENGINE_STATE_KEY = "smart_device_engine_snapshot"
+SMART_DEVICE_ENGINE_CONCURRENCY = 8
+_smart_device_engine_tasks: set[asyncio.Task] = set()
+_smart_device_command_router = smart_device_engine.SmartDeviceCommandRouter()
+_smart_engine_urgent_polls: set[tuple[str, str]] = set()
+_smart_engine_urgent_polls_lock = threading.Lock()
 _dispatch_lock = threading.Lock()
 _user_automation_lock = threading.Lock()
 _dispatch_last_sent: dict[str, tuple[str, float]] = {}
@@ -437,6 +444,22 @@ def _inventory_mac(value: Any) -> str:
     return ":".join(compact[index:index + 2] for index in range(0, 12, 2))
 
 
+def _shelly_engine_key(host: str, mac: str = "") -> str:
+    """Return the configured device key so discovery and polling share a lane."""
+    normalized_mac = _inventory_mac(mac)
+    try:
+        with db() as conn:
+            row = conn.execute("""SELECT device_id FROM shelly_devices
+                WHERE (?<>'' AND mac=?) OR lower(host)=lower(?)
+                ORDER BY CASE WHEN (?<>'' AND mac=?) THEN 0 ELSE 1 END LIMIT 1""",
+                (normalized_mac, normalized_mac, str(host or ""), normalized_mac, normalized_mac)).fetchone()
+        if row and row[0]:
+            return str(row[0])
+    except (sqlite3.Error, OSError):
+        pass
+    return f"shelly:{normalized_mac}" if normalized_mac else f"shelly-host:{str(host or '')[:128]}"
+
+
 def _enrich_shelly_scan(report: dict[str, Any]) -> None:
     """Ask announced Shelly hosts for their authoritative full MAC identity."""
     for host in report.get("hosts", []):
@@ -447,7 +470,10 @@ def _enrich_shelly_scan(report: dict[str, Any]) -> None:
         if "shelly" not in evidence:
             continue
         try:
-            identity = hardware_integrations.shelly_integration.identify_and_read(str(host.get("ip") or ""))
+            host_ip = str(host.get("ip") or "")
+            engine_key = _shelly_engine_key(host_ip, str(host.get("mac") or ""))
+            identity = _smart_device_engine_command("shelly", engine_key,
+                lambda: hardware_integrations.shelly_integration.identify_and_read(host_ip))
             shelly_mac = _inventory_mac(identity.get("mac"))
             arp_mac = _inventory_mac(host.get("mac"))
             if shelly_mac and (not arp_mac or arp_mac == shelly_mac):
@@ -461,7 +487,8 @@ def _enrich_shelly_scan(report: dict[str, Any]) -> None:
                 host["discovery_methods"] = sorted(set(host.get("discovery_methods", [])) | {"shelly_device_info"})
                 if "bluetooth" in identity.get("capabilities", []):
                     try:
-                        bridge = hardware_integrations.shelly_integration.inspect_bluetooth_bridge(str(host.get("ip") or ""))
+                        bridge = _smart_device_engine_command("shelly", engine_key,
+                            lambda: hardware_integrations.shelly_integration.inspect_bluetooth_bridge(host_ip))
                         host["shelly_bluetooth_bridge"] = {
                             "candidate": bool(bridge.get("bridge_candidate")),
                             "bthome_discovery_api": bridge.get("bthome_discovery_api", "not_supported"),
@@ -1616,22 +1643,15 @@ def _run_automatic_dispatch() -> dict[str, Any]:
             outcome = {"state": plan.get("state", "BLOCKED"), "reason": plan.get("reason"), "actions": []}
             _persist_dispatch_outcome(conn, outcome)
             return outcome
-        try:
-            integration_config = hardware_integrations.load_config()
-            tuya_config = integration_config.get("tuya", {})
-            tuya_states = {}
-            if any(action.get("control_type") in {"tuya_smart", "tuya_breaker"} for action in plan.get("actions", [])):
-                tuya_readings = hardware_integrations.read_tuya(tuya_config)
-                _merge_tuya_lan_dps_discoveries(integration_config, tuya_readings, conn)
-                _persist_tuya_device_events(conn, tuya_readings)
-                energy_engine.persist_tuya_telemetry(conn, tuya_readings, tuya_config.get("devices", []), tuya_config.get("product_schemas", {}))
-                _update_tuya_device_records(integration_config, tuya_readings)
-                hardware_integrations.save_config(integration_config)
-                tuya_states = {item.get("device_id"): item for item in tuya_readings}
-        except (ValueError, RuntimeError, OSError, json.JSONDecodeError) as exc:
-            outcome = {"state": "BLOCKED_INTEGRATION_READ", "reason": type(exc).__name__, "actions": []}
-            _persist_dispatch_outcome(conn, outcome)
-            return outcome
+        integration_config = hardware_integrations.load_config()
+        tuya_config = integration_config.get("tuya", {})
+        # Automatic dispatch consumes the Device Engine's persisted sample. It
+        # must never start a competing Tuya poll of its own.
+        tuya_states = {}
+        if any(action.get("control_type") in {"tuya_smart", "tuya_breaker"} for action in plan.get("actions", [])):
+            for device in tuya_config.get("devices", []):
+                if isinstance(device, dict) and isinstance(device.get("device_id"), str):
+                    tuya_states[device["device_id"]] = _smart_engine_device_view("tuya", device["device_id"])
         results = []
         result_states: dict[str, str] = {}
         plan_actions = plan.get("actions", [])
@@ -1659,9 +1679,9 @@ def _run_automatic_dispatch() -> dict[str, Any]:
             if control in {"tuya_smart", "tuya_breaker"}:
                 device_id, code = load.get("tuya_device_id"), load.get("tuya_switch_code")
                 device_state = tuya_states.get(device_id, {})
-                values = device_state.get("status", []) if device_state.get("connection_state") == "local_responded" else []
+                values = device_state.get("status", []) if device_state.get("measurement_valid") else []
                 observed = next((item.get("value") for item in values if isinstance(item, dict) and item.get("code") == code), None)
-                if not isinstance(observed, bool):
+                if not device_state.get("measurement_valid") or not isinstance(observed, bool):
                     results.append({"load_id": load["id"], "state": "BLOCKED_STATE_UNKNOWN"})
                     result_states[load["id"]] = "BLOCKED_STATE_UNKNOWN"
                     continue
@@ -1677,11 +1697,17 @@ def _run_automatic_dispatch() -> dict[str, Any]:
                     result_states[load["id"]] = "BLOCKED_MINIMUM_DWELL"
                     continue
                 try:
-                    result = hardware_integrations.control_tuya_switch(tuya_config, device_id, desired == "ON", code=code)
+                    result = _smart_device_engine_command(
+                        "tuya", device_id,
+                        lambda: hardware_integrations.control_tuya_switch(
+                            tuya_config, device_id, desired == "ON", code=code))
                     _append_tuya_command_event(conn, device_id, code or "", desired == "ON",
                                                confirmed=bool(result.get("state_confirmed")), automatic=True)
                     outcome = "APPLIED" if result.get("state_confirmed") else "UNCONFIRMED"
-                    if result.get("state_confirmed"):
+                    # An accepted write is not a verified device state. Record
+                    # the dwell anchor to prevent a repeated command on every
+                    # dispatch tick while the Device Engine awaits its sample.
+                    if result.get("command_sent") or result.get("command_accepted"):
                         with _dispatch_lock:
                             _dispatch_last_sent[load["id"]] = (desired, time.monotonic())
                     results.append({"load_id": load["id"], "state": outcome, "target": desired})
@@ -1834,7 +1860,8 @@ def _execute_user_automation_action(action: dict[str, Any]) -> dict[str, Any]:
     """Execute only explicit target states through the existing local adapters."""
     if action["target_type"] == "tuya":
         config = hardware_integrations.load_config().get("tuya", {})
-        result = hardware_integrations.control_tuya_switch(config, action["device_id"], action["on"], code=action["code"])
+        result = _smart_device_engine_command("tuya", action["device_id"],
+            lambda: hardware_integrations.control_tuya_switch(config, action["device_id"], action["on"], code=action["code"]))
         return {"command_confirmed": bool(result.get("state_confirmed")),
                 "requested_on": action["on"], "observed_on": result.get("observed_state"),
                 "transport": "tuya_lan"}
@@ -1846,14 +1873,14 @@ def _execute_user_automation_action(action: dict[str, Any]) -> dict[str, Any]:
     credentials = shelly_credentials.open_credentials(DATA_DIR, device.get("auth_ciphertext"))
     host = hardware_integrations._private_ip(device.get("host"))
     if action["operation"] == "switch":
-        result = hardware_integrations.shelly_integration.control_switch(host, int(device.get("generation") or 0),
+        result = _smart_device_engine_command("shelly", action["device_id"], lambda: hardware_integrations.shelly_integration.control_switch(host, int(device.get("generation") or 0),
             action["channel"], action["on"], username=str(credentials.get("username") or ""),
-            password=str(credentials.get("password") or ""))
+            password=str(credentials.get("password") or "")))
         return {"command_confirmed": result.get("command_state") == "CONFIRMED",
                 "requested_on": action["on"], "observed_on": result.get("observed_on"), "transport": "shelly_lan"}
-    result = hardware_integrations.shelly_integration.control_light(host, int(device.get("generation") or 0),
+    result = _smart_device_engine_command("shelly", action["device_id"], lambda: hardware_integrations.shelly_integration.control_light(host, int(device.get("generation") or 0),
         action["component"], action["channel"], brightness=action["percent"],
-        username=str(credentials.get("username") or ""), password=str(credentials.get("password") or ""))
+        username=str(credentials.get("username") or ""), password=str(credentials.get("password") or "")))
     return {"command_confirmed": bool(result.get("command_confirmed")), "requested_percent": action["percent"],
             "transport": "shelly_lan"}
 
@@ -1865,14 +1892,8 @@ def _run_user_automations_once() -> dict[str, int]:
     evaluated = fired = 0
     try:
         with db() as conn:
-            telemetry_row = conn.execute("SELECT value FROM system_state WHERE key='energy_engine_tuya_telemetry'").fetchone()
-            try:
-                telemetry = json.loads(telemetry_row[0]) if telemetry_row else {}
-            except (TypeError, json.JSONDecodeError):
-                telemetry = {}
             rows = [dict(row) for row in conn.execute("SELECT * FROM user_automation_rules WHERE enabled=1 ORDER BY created_at,id")]
-        if not isinstance(telemetry, dict):
-            telemetry = {}
+        telemetry = _smart_engine_automation_telemetry()
         now = datetime.now().astimezone()
         for row in rows:
             evaluated += 1
@@ -2029,54 +2050,9 @@ async def _tesla_presence_loop() -> None:
 
 
 def _collect_tuya_device_events_once() -> int:
-    """Poll configured Tuya Wi-Fi devices and save observed transitions locally."""
-    global _tuya_last_diagnostic_log_at
-    started = time.perf_counter()
-    integration_config = hardware_integrations.load_config()
-    config = integration_config.get("tuya", {})
-    all_devices = [item for item in config.get("devices", []) if isinstance(item, dict)]
-    by_id = {item.get("device_id"): item for item in all_devices if isinstance(item.get("device_id"), str)}
-    devices = [item for item in all_devices if
-               (item.get("local_key") and (item.get("local_ip") or item.get("local_mac"))) or
-               (item.get("transport") == "tuya_gateway" and by_id.get(item.get("parent_device_id"), {}).get("local_key")
-                and (by_id.get(item.get("parent_device_id"), {}).get("local_ip")
-                     or by_id.get(item.get("parent_device_id"), {}).get("local_mac")))]
-    if not devices:
-        return 0
-    recorded = 0
-
-    def persist_completed_reading(reading: dict[str, Any]) -> None:
-        nonlocal recorded
-        # Persist each device independently as its LAN response arrives. A slow
-        # or retrying device must not hold back fresh telemetry from its peers.
-        with db() as conn:
-            recorded += _persist_tuya_device_events(conn, [reading])
-            energy_engine.persist_tuya_telemetry(conn, [reading], devices, config.get("product_schemas", {}))
-            conn.commit()
-
-    try:
-        readings = hardware_integrations.read_tuya(
-            {**config, "devices": devices}, on_reading=persist_completed_reading, background_poll=True)
-    except Exception as exc:
-        LOG.error("Periodic Tuya poll diagnostic outcome=error configured=%d duration_ms=%d error_type=%s",
-                  len(devices), round((time.perf_counter() - started) * 1000), type(exc).__name__)
-        raise
-    duration_ms = round((time.perf_counter() - started) * 1000)
-    successful = sum(1 for item in readings if item.get("connection_state") in {"local_responded", "local_responded_no_properties"})
-    failed = max(0, len(devices) - successful)
-    now = time.monotonic()
-    if failed or duration_ms >= 2000 or now - _tuya_last_diagnostic_log_at >= 60.0:
-        _tuya_last_diagnostic_log_at = now
-        message = "Periodic Tuya poll diagnostic outcome=%s configured=%d successful=%d failed=%d duration_ms=%d parallel_limit=%d"
-        values = ("partial" if failed else "success", len(devices), successful, failed, duration_ms, min(4, len(devices)))
-        if failed or duration_ms >= 2000:
-            LOG.warning(message, *values)
-        else:
-            LOG.info(message, *values)
-    discovered_dps = _merge_tuya_lan_dps_discoveries(integration_config, readings)
-    if discovered_dps or _update_tuya_device_records(integration_config, readings, record_status=False):
-        hardware_integrations.save_config(integration_config)
-    return recorded
+    """Compatibility shim: scheduled device reads are owned by the Device Engine."""
+    LOG.info("Legacy Tuya event poll skipped; gateway_smart_device_engine owns LAN reads")
+    return 0
 
 
 def _tuya_event_poll_interval_seconds() -> float:
@@ -2089,18 +2065,301 @@ def _tuya_event_poll_interval_seconds() -> float:
 
 
 async def _tuya_device_event_loop() -> None:
-    """Poll Tuya LAN devices sequentially, with a quiet interval after each pass."""
-    interval = _tuya_event_poll_interval_seconds()
+    """Retired loop retained for compatibility; it must not poll independently."""
     while True:
+        await asyncio.sleep(3600)
+
+
+def _smart_engine_snapshot() -> dict[str, Any]:
+    with db() as conn:
+        row = conn.execute("SELECT value FROM system_state WHERE key=?", (SMART_DEVICE_ENGINE_STATE_KEY,)).fetchone()
+    if not row:
+        return {"schema": 1, "devices": {}}
+    try:
+        value = json.loads(row["value"])
+    except (TypeError, json.JSONDecodeError):
+        return {"schema": 1, "devices": {}}
+    return value if isinstance(value, dict) and isinstance(value.get("devices"), dict) else {"schema": 1, "devices": {}}
+
+
+def _smart_device_engine_command(provider: str, device_id: str, operation: Callable[[], Any]) -> Any:
+    """Send Tuya/Shelly commands through the Gateway's dedicated command lane."""
+    result = _smart_device_command_router.execute(provider, device_id, operation)
+    with _smart_engine_urgent_polls_lock:
+        _smart_engine_urgent_polls.add((provider, device_id))
+    return result
+
+
+def _smart_engine_device_view(provider: str, device_id: str, *, now: float | None = None) -> dict[str, Any]:
+    """Return the stored device sample plus independent LAN and sample-validity flags."""
+    now = time.time() if now is None else now
+    raw = _smart_engine_snapshot().get("devices", {}).get(f"{provider}:{device_id}", {})
+    raw = dict(raw) if isinstance(raw, dict) else {}
+    try:
+        latency_ms = max(1.0, min(60_000.0, float(raw.get("latency_ms") or 500.0)))
+    except (TypeError, ValueError, OverflowError):
+        latency_ms = 500.0
+    try:
+        last_success = float(raw["last_success_at"]) if raw.get("last_success_at") is not None else None
+        age = max(0.0, now - last_success) if last_success is not None else None
+    except (TypeError, ValueError, OverflowError):
+        last_success, age = None, None
+    offline_after = 5.0 * latency_ms / 1000.0
+    lan_online = age is not None and age <= offline_after
+    cloud = raw.get("cloud_availability") if isinstance(raw.get("cloud_availability"), dict) else None
+    try:
+        cloud_age = now - float(cloud.get("checked_at")) if cloud and cloud.get("checked_at") is not None else None
+    except (TypeError, ValueError, OverflowError):
+        cloud_age = None
+    cloud_fresh = cloud_age is not None and 0 <= cloud_age <= 900
+    return {**raw, "provider": provider, "device_id": device_id,
+            "latency_ms": raw.get("latency_ms"), "age_seconds": age,
+            "offline_after_seconds": offline_after, "lan_online": lan_online,
+            "online": lan_online or (provider == "tuya" and cloud_fresh and cloud.get("online") is True),
+            "measurement_valid": lan_online,
+            "availability_source": ("TUYA_LAN" if provider == "tuya" else "SHELLY_LAN") if lan_online
+                else "TUYA_CLOUD" if provider == "tuya" and cloud_fresh else "unknown",
+            "cloud_availability": cloud}
+
+
+def _smart_engine_automation_telemetry() -> dict[str, dict[str, Any]]:
+    """Expose only fresh Device Engine Tuya samples to rule evaluation."""
+    snapshot = _smart_engine_snapshot().get("devices", {})
+    result: dict[str, dict[str, Any]] = {}
+    if not isinstance(snapshot, dict):
+        return result
+    now = time.time()
+    for key, raw in snapshot.items():
+        if not isinstance(key, str) or not key.startswith("tuya:") or not isinstance(raw, dict):
+            continue
+        device_id = key.split(":", 1)[1]
+        view = _smart_engine_device_view("tuya", device_id, now=now)
+        result[device_id] = {
+            "device_engine_managed": True,
+            "connection_state": "local_responded" if view.get("lan_online") else "offline",
+            "verified": bool(view.get("lan_online")),
+            "measurement_valid": bool(view.get("measurement_valid")),
+            "status": raw.get("status") if isinstance(raw.get("status"), list) else [],
+            "observed_at": raw.get("observed_at"),
+            "last_attempt_at": raw.get("last_attempt_at"),
+        }
+    return result
+
+
+def _store_smart_engine_reading(provider: str, reading: dict[str, Any], latency_seconds: float,
+                                online: bool, cloud_status: dict[str, Any] | None = None) -> None:
+    """Persist latest Gateway-owned snapshot; a failed poll never erases good measurements."""
+    device_id = str(reading.get("device_id") or "")
+    if not device_id:
+        return
+    key = f"{provider}:{device_id}"
+    stamp = time.time()
+    with db() as conn:
+        row = conn.execute("SELECT value FROM system_state WHERE key=?", (SMART_DEVICE_ENGINE_STATE_KEY,)).fetchone()
         try:
-            # Background reads use saved protocol/IP only. Protocol probing and
-            # MAC-based rediscovery remain explicit Owner actions.
-            await asyncio.to_thread(_collect_tuya_device_events_once)
+            snapshot = json.loads(row["value"]) if row else {"schema": 1, "devices": {}}
+        except (TypeError, json.JSONDecodeError):
+            snapshot = {"schema": 1, "devices": {}}
+        devices = snapshot.setdefault("devices", {})
+        previous = devices.get(key) if isinstance(devices.get(key), dict) else {}
+        successful = reading.get("connection_state") in {"local_responded", "local_responded_no_properties", "connected"}
+        current = dict(previous)
+        current.update({"provider": provider, "device_id": device_id,
+                        "name": str(reading.get("name") or previous.get("name") or device_id)[:120],
+                        "connection_state": ("online" if online else "offline"),
+                        "last_attempt_at": stamp, "last_attempt_latency_ms": round(latency_seconds * 1000, 1),
+                        "last_attempt_error": None if successful else str(reading.get("reason") or "no_lan_response")[:160],
+                        "cloud_availability": cloud_status if cloud_status is not None else previous.get("cloud_availability")})
+        if successful:
+            current.update({"last_success_at": stamp, "latency_ms": round(latency_seconds * 1000, 1),
+                            "status": reading.get("status", reading),
+                            "source": str(reading.get("source") or ("TUYA_LAN" if provider == "tuya" else "SHELLY_LAN")),
+                            "observed_at": reading.get("observed_at", stamp), "last_attempt_error": None})
+            if provider == "tuya":
+                try:
+                    config = hardware_integrations.load_config()
+                    _merge_tuya_lan_dps_discoveries(config, [reading], conn)
+                except (OSError, ValueError, TypeError, sqlite3.Error):
+                    LOG.warning("Smart device engine could not update Tuya DPS profile")
+                _persist_tuya_device_events(conn, [reading])
+                try:
+                    config = hardware_integrations.load_config().get("tuya", {})
+                    energy_engine.persist_tuya_telemetry(conn, [reading], config.get("devices", []), config.get("product_schemas", {}),
+                                                         measurement_validity_seconds=5.0 * latency_seconds)
+                except (OSError, ValueError, TypeError):
+                    LOG.warning("Smart device engine could not persist normalized Tuya telemetry")
+            elif reading.get("host"):
+                conn.execute("UPDATE shelly_devices SET host=?,last_seen_at=?,updated_at=? WHERE device_id=? AND enabled=1",
+                             (str(reading.get("host"))[:64], utcnow(), utcnow(), device_id))
+        if cloud_status is not None:
+            current["cloud_availability"] = cloud_status
+        devices[key] = current
+        conn.execute("INSERT INTO system_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                     (SMART_DEVICE_ENGINE_STATE_KEY, json.dumps(snapshot, separators=(",", ":"), ensure_ascii=False)))
+        conn.commit()
+
+
+def _smart_engine_configured_devices() -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    config = hardware_integrations.load_config()
+    tuya_config = config.get("tuya", {}) if isinstance(config.get("tuya"), dict) else {}
+    all_tuya = [item for item in tuya_config.get("devices", []) if isinstance(item, dict)]
+    by_id = {item.get("device_id"): item for item in all_tuya if isinstance(item.get("device_id"), str)}
+    tuya = [item for item in all_tuya if isinstance(item.get("device_id"), str) and
+            ((item.get("local_key") and (item.get("local_ip") or item.get("local_mac"))) or
+             (item.get("transport") == "tuya_gateway" and
+              by_id.get(item.get("parent_device_id"), {}).get("local_key") and
+              (by_id.get(item.get("parent_device_id"), {}).get("local_ip") or
+               by_id.get(item.get("parent_device_id"), {}).get("local_mac"))))]
+    with db() as conn:
+        shelly = [dict(row) for row in conn.execute("SELECT device_id,name,room,host,mac,model,generation,protocol,device_type,auth_ciphertext FROM shelly_devices WHERE enabled=1 ORDER BY device_id")]
+    # BLE sensors are read through their bridge, not as independently addressable LAN devices.
+    shelly = [item for item in shelly if item.get("host") and "blu" not in str(item.get("device_type") or "").casefold()
+              and str(item.get("device_type") or "").casefold() not in {"smart_gateway", "smart_blugw"}]
+    devices = {f"tuya:{item['device_id']}": {"provider": "tuya", "device_id": item["device_id"]} for item in tuya}
+    devices.update({f"shelly:{item['device_id']}": {"provider": "shelly", "device_id": item["device_id"]} for item in shelly})
+    # Older or partially migrated Gateway configurations may omit the Tuya
+    # section entirely. The device engine should still run Shelly polling and
+    # expose an empty Tuya inventory instead of crashing its lifespan task.
+    config["tuya"] = {**tuya_config, "devices": tuya}
+    return config, {**{f"tuya:{item['device_id']}": item for item in tuya},
+                    **{f"shelly:{item['device_id']}": item for item in shelly}}
+
+
+async def _smart_engine_run_reading(item: smart_device_engine.DeviceCycle, device: dict[str, Any],
+                                    config: dict[str, Any], scheduler: smart_device_engine.SmartDeviceScheduler,
+                                    semaphore: asyncio.Semaphore) -> None:
+    reading: dict[str, Any]
+    async with semaphore:
+        def read_one_device() -> tuple[dict[str, Any], float]:
+            # All LAN reads and writes for a device share one serialized lane.
+            # Start timing after acquiring that lane so command contention is
+            # not mistaken for the device's network response latency.
+            started = time.perf_counter()
+            try:
+                if item.provider == "tuya":
+                    value = hardware_integrations.read_tuya_device(config.get("tuya", {}), item.device_id)
+                else:
+                    shelly = dict(device)
+                    shelly.update(shelly_credentials.open_credentials(DATA_DIR, shelly.pop("auth_ciphertext", b"")))
+                    results = hardware_integrations.shelly_integration.read_devices({"devices": [shelly]})
+                    value = results[0] if results else {"device_id": item.device_id, "connection_state": "failed", "reason": "shelly_empty_read"}
+                return value, max(0.001, time.perf_counter() - started)
+            except ValueError as exc:
+                return ({"device_id": item.device_id, "name": device.get("name"),
+                         "connection_state": "failed", "reason": str(exc)[:120]},
+                        max(0.001, time.perf_counter() - started))
+
+        try:
+            reading, latency = await asyncio.to_thread(
+                _smart_device_command_router.execute, item.provider, item.device_id, read_one_device)
         except asyncio.CancelledError:
+            scheduler.complete(item, time.monotonic(), 0.001, False)
             raise
         except Exception as exc:
-            LOG.warning("Periodic Tuya LAN observation failed (%s)", type(exc).__name__)
-        await asyncio.sleep(interval)
+            reading = {"device_id": item.device_id, "name": device.get("name"),
+                       "connection_state": "failed", "reason": f"engine_read_error:{type(exc).__name__}"}
+            latency = 0.001
+    success = reading.get("connection_state") in {"local_responded", "local_responded_no_properties", "connected"}
+    completed_at = time.monotonic()
+    scheduler.complete(item, completed_at, latency, success)
+    is_online = item.is_online(completed_at)
+    try:
+        _store_smart_engine_reading(item.provider, reading, latency, is_online)
+    except (OSError, sqlite3.Error, ValueError, TypeError) as exc:
+        LOG.warning("Smart device engine snapshot persistence failed provider=%s reason=%s", item.provider, type(exc).__name__)
+
+
+async def _smart_engine_check_tuya_cloud(item: smart_device_engine.DeviceCycle, config: dict[str, Any],
+                                         scheduler: smart_device_engine.SmartDeviceScheduler) -> None:
+    try:
+        result = await asyncio.to_thread(hardware_integrations.tuya_cloud_device_availability,
+                                         config.get("tuya", {}), item.device_id)
+        online = result.get("online") if isinstance(result, dict) else None
+        _store_smart_engine_cloud_availability(item.device_id,
+            {**result, "status": "online" if online is True else "offline" if online is False else "unknown"})
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _store_smart_engine_cloud_availability(item.device_id,
+            {"online": None, "checked_at": time.time(), "source": "TUYA_CLOUD", "error": str(exc)[:160]})
+    finally:
+        scheduler.complete_cloud_check(item)
+
+
+def _store_smart_engine_cloud_availability(device_id: str, cloud_status: dict[str, Any]) -> None:
+    """Update cloud reachability without changing LAN attempt/sample timestamps."""
+    key = f"tuya:{device_id}"
+    with db() as conn:
+        row = conn.execute("SELECT value FROM system_state WHERE key=?", (SMART_DEVICE_ENGINE_STATE_KEY,)).fetchone()
+        try:
+            snapshot = json.loads(row["value"]) if row else {"schema": 1, "devices": {}}
+        except (TypeError, json.JSONDecodeError):
+            snapshot = {"schema": 1, "devices": {}}
+        devices = snapshot.setdefault("devices", {})
+        current = devices.get(key) if isinstance(devices.get(key), dict) else {}
+        current["provider"] = "tuya"
+        current["device_id"] = device_id
+        current["cloud_availability"] = cloud_status
+        devices[key] = current
+        conn.execute("INSERT INTO system_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                     (SMART_DEVICE_ENGINE_STATE_KEY, json.dumps(snapshot, separators=(",", ":"), ensure_ascii=False)))
+        conn.commit()
+
+
+async def _smart_device_engine_loop() -> None:
+    """Continuous Gateway-owned polling, scheduled independently per Tuya/Shelly device."""
+    scheduler = smart_device_engine.SmartDeviceScheduler()
+    semaphore = asyncio.Semaphore(SMART_DEVICE_ENGINE_CONCURRENCY)
+    restored: set[str] = set()
+    refresh_at = 0.0
+    config: dict[str, Any] = {}
+    configured: dict[str, dict[str, Any]] = {}
+    try:
+        while True:
+            try:
+                now = time.monotonic()
+                if now >= refresh_at:
+                    config, configured = _smart_engine_configured_devices()
+                    scheduler.reconcile([(item["provider"], item["device_id"]) for item in configured.values()], now)
+                    snapshot = await asyncio.to_thread(_smart_engine_snapshot)
+                    for key, device in configured.items():
+                        if key in restored:
+                            continue
+                        prior = snapshot.get("devices", {}).get(key, {})
+                        age = max(0.0, time.time() - float(prior["last_success_at"])) if isinstance(prior, dict) and prior.get("last_success_at") else None
+                        scheduler.restore(device["provider"], device["device_id"],
+                            latency_seconds=float(prior.get("latency_ms", 500)) / 1000 if isinstance(prior, dict) else 0.5,
+                            last_success_age_seconds=age, now=now)
+                        restored.add(key)
+                    refresh_at = now + 2.0
+                with _smart_engine_urgent_polls_lock:
+                    urgent = tuple(_smart_engine_urgent_polls)
+                    _smart_engine_urgent_polls.clear()
+                for provider, device_id in urgent:
+                    scheduler.request_now(provider, device_id, now)
+                for cycle in scheduler.due(now, SMART_DEVICE_ENGINE_CONCURRENCY):
+                    key = f"{cycle.provider}:{cycle.device_id}"
+                    task = asyncio.create_task(_smart_engine_run_reading(cycle, configured[key], config, scheduler, semaphore),
+                                               name=f"smart-device-read-{cycle.provider}")
+                    _smart_device_engine_tasks.add(task)
+                    task.add_done_callback(_smart_device_engine_tasks.discard)
+                for cycle in scheduler.devices.values():
+                    if scheduler.needs_cloud_check(cycle, now):
+                        task = asyncio.create_task(_smart_engine_check_tuya_cloud(cycle, config, scheduler),
+                                                   name="smart-device-tuya-cloud-presence")
+                        _smart_device_engine_tasks.add(task)
+                        task.add_done_callback(_smart_device_engine_tasks.discard)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                LOG.warning("Smart device engine cycle failed (%s)", type(exc).__name__)
+            await asyncio.sleep(0.1)
+    finally:
+        tasks = list(_smart_device_engine_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @asynccontextmanager
@@ -2115,7 +2374,7 @@ async def lifespan(_: FastAPI):
     dispatcher = asyncio.create_task(_energy_dispatch_loop(), name="solarminer-energy-dispatcher")
     user_automations = asyncio.create_task(_user_automation_loop(), name="solarminer-user-automations")
     tesla_presence = asyncio.create_task(_tesla_presence_loop(), name="solarminer-tesla-presence")
-    tuya_observer = asyncio.create_task(_tuya_device_event_loop(), name="solarminer-tuya-event-observer")
+    smart_device_observer = asyncio.create_task(_smart_device_engine_loop(), name="solarminer-smart-device-engine")
     history_retention = asyncio.create_task(_history_retention_loop(), name="solarminer-history-retention")
     try:
         yield
@@ -2124,7 +2383,7 @@ async def lifespan(_: FastAPI):
         dispatcher.cancel()
         user_automations.cancel()
         tesla_presence.cancel()
-        tuya_observer.cancel()
+        smart_device_observer.cancel()
         history_retention.cancel()
         try:
             await sampler
@@ -2143,7 +2402,7 @@ async def lifespan(_: FastAPI):
         except asyncio.CancelledError:
             pass
         try:
-            await tuya_observer
+            await smart_device_observer
         except asyncio.CancelledError:
             pass
         try:
@@ -2566,11 +2825,7 @@ def dry_run_user_automation(payload: dict[str, Any], session: dict[str, Any] = D
     _validate_user_automation_capability(rule)
     with db() as conn:
         _require_owner(session, conn)
-        row = conn.execute("SELECT value FROM system_state WHERE key='energy_engine_tuya_telemetry'").fetchone()
-    try:
-        telemetry = json.loads(row[0]) if row else {}
-    except (TypeError, json.JSONDecodeError):
-        telemetry = {}
+    telemetry = _smart_engine_automation_telemetry()
     matched, reason = user_automation.evaluate_trigger(rule["trigger"], telemetry if isinstance(telemetry, dict) else {}, datetime.now().astimezone())
     return {"matched": matched, "reason": reason, "command_sent": False}
 
@@ -2815,16 +3070,10 @@ def hardware_integrations_status(session: dict[str, Any] = Depends(require_permi
         if actor["role"] != "owner": raise HTTPException(403, "owner_required")
     try:
         result = hardware_integrations.public_config()
+        engine_snapshot = _smart_engine_snapshot()
+        engine_now = time.time()
+        result["smart_device_engine"] = engine_snapshot
         with db() as conn:
-            # A failed poll is not proof that the last successful sample vanished.
-            # Keep that sample usable for a short grace window while exposing the
-            # latest attempt reason separately; UI clients retain values through
-            # transient LAN timeouts instead of flickering offline immediately.
-            # A slow fleet pass (or several children sharing one Tuya hub) can
-            # exceed one 5 s poll interval. Keep the last sample available for
-            # display for 30 s; `fresh` still reflects the latest successful
-            # LAN attempt and the UI reports the sample age separately.
-            telemetry = energy_engine.read_tuya_telemetry(conn, max_age_seconds=30)
             feature_rows = conn.execute("SELECT canonical_key,display_name,canonical_type,units_json FROM tuya_canonical_features ORDER BY category,display_name COLLATE NOCASE").fetchall()
         normalized = []
         for feature in feature_rows:
@@ -2845,23 +3094,29 @@ def hardware_integrations_status(session: dict[str, Any] = Depends(require_permi
         for device in result.get("tuya", {}).get("devices", []):
             if not isinstance(device, dict):
                 continue
-            row = telemetry.get(device.get("device_id"), {})
-            if not row:
-                continue
-            device["current_status"] = row.get("status", [])
-            device["last_status_at"] = row.get("observed_at")
-            device["last_latency_ms"] = row.get("last_latency_ms")
-            device["last_attempt_latency_ms"] = row.get("last_attempt_latency_ms")
-            device["last_read_attempt_at"] = row.get("last_attempt_at")
-            device["last_read_attempt_age_seconds"] = row.get("last_attempt_age_seconds")
-            device["last_read_error"] = row.get("reason")
-            device["local_control_state"] = "ready" if row.get("fresh") else "unavailable"
-            device["local_verified"] = bool(device.get("local_verified") or row.get("verified"))
-            device["current_connection_state"] = "local_responded" if row.get("fresh") else "failed"
-            device["current_status_reason"] = None if row.get("fresh") else row.get("reason") or "tuya_last_read_not_recent"
-            device["last_read_attempt_state"] = row.get("connection_state", "failed")
-            device["last_read_attempt_at"] = row.get("last_attempt_at")
-            device["last_read_error"] = row.get("reason")
+            device_id = str(device.get("device_id") or "")
+            engine_row = engine_snapshot.get("devices", {}).get(f"tuya:{device_id}", {})
+            view = _smart_engine_device_view("tuya", device_id, now=engine_now)
+            age = view.get("age_seconds")
+            latency_ms = max(1.0, float(view.get("latency_ms") or 500.0))
+            engine_online = bool(view.get("lan_online"))
+            device["current_status"] = view.get("status", []) if isinstance(view.get("status"), list) else []
+            device["measurement_valid"] = bool(view.get("measurement_valid"))
+            device["last_status_at"] = engine_row.get("observed_at") if isinstance(engine_row, dict) else None
+            device["last_latency_ms"] = engine_row.get("latency_ms") if isinstance(engine_row, dict) else None
+            device["last_attempt_latency_ms"] = engine_row.get("last_attempt_latency_ms") if isinstance(engine_row, dict) else None
+            device["last_read_attempt_at"] = engine_row.get("last_attempt_at") if isinstance(engine_row, dict) else None
+            device["last_read_attempt_age_seconds"] = max(0.0, engine_now - float(engine_row.get("last_attempt_at") or engine_now)) if isinstance(engine_row, dict) else None
+            device["last_read_error"] = engine_row.get("last_attempt_error") if isinstance(engine_row, dict) else None
+            device["local_control_state"] = "ready" if engine_online else "unavailable"
+            device["local_verified"] = engine_online
+            device["current_connection_state"] = "local_responded" if engine_online else "offline"
+            device["current_status_reason"] = None if engine_online else (engine_row.get("last_attempt_error") if isinstance(engine_row, dict) else "no_device_engine_sample")
+            device["cloud_availability"] = view.get("cloud_availability")
+            device["device_engine"] = {"online": bool(view.get("online")), "measurement_valid": bool(view.get("measurement_valid")), "latency_ms": latency_ms,
+                "last_success_at": engine_row.get("last_success_at") if isinstance(engine_row, dict) else None, "age_seconds": age,
+                "offline_after_seconds": 5.0 * latency_ms / 1000.0, "source": "gateway_device_engine"}
+            device["last_read_attempt_state"] = engine_row.get("connection_state", "failed") if isinstance(engine_row, dict) else "waiting_for_device_engine"
         return result
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise HTTPException(500, "integration_config_unavailable") from exc
@@ -3485,9 +3740,61 @@ def hardware_integrations_read(session: dict[str, Any] = Depends(require_permiss
         if actor["role"] != "owner": raise HTTPException(403, "owner_required")
         try:
             integration_config = hardware_integrations.load_config()
-            result = hardware_integrations.collect(integration_config)
-            if _merge_tuya_lan_dps_discoveries(integration_config, result.get("tuya", []), conn):
-                hardware_integrations.save_config(integration_config)
+            # Tuya and Shelly are exclusively polled by the continuously running
+            # per-device engine. This request remains responsive and only reads
+            # its persisted snapshot; Deye/Antminer retain their own collectors.
+            collection_config = {**integration_config,
+                "tuya": {**(integration_config.get("tuya") or {}), "devices": []},
+                "shelly": {**(integration_config.get("shelly") or {}), "devices": []}}
+            result = hardware_integrations.collect(collection_config)
+            engine_now = time.time()
+            tuya_rows = []
+            for device in integration_config.get("tuya", {}).get("devices", []):
+                if not isinstance(device, dict) or not device.get("device_id"):
+                    continue
+                view = _smart_engine_device_view("tuya", str(device["device_id"]), now=engine_now)
+                age = view.get("age_seconds")
+                latency_ms = max(1.0, float(view.get("latency_ms") or 500.0))
+                lan_online = bool(view.get("lan_online"))
+                cloud = view.get("cloud_availability")
+                cloud_fresh = view.get("availability_source") == "TUYA_CLOUD"
+                current_status = view.get("status", [])
+                tuya_rows.append({**device, "manufacturer": "Tuya", "current_status": current_status,
+                    "measurement_valid": bool(view.get("measurement_valid")),
+                    "last_status_at": view.get("observed_at"), "last_latency_ms": view.get("latency_ms"),
+                    "last_read_attempt_at": view.get("last_attempt_at"),
+                    "last_read_error": view.get("last_attempt_error"),
+                    "current_connection_state": "local_responded" if lan_online else "offline" if cloud_fresh and cloud.get("online") is False else "unavailable",
+                    "local_control_state": "ready" if lan_online else "unavailable",
+                    "cloud_availability": cloud,
+                    "device_engine": {"online": view.get("online"), "lan_online": lan_online,
+                        "measurement_valid": bool(view.get("measurement_valid")),
+                        "availability_source": view.get("availability_source"),
+                        "latency_ms": view.get("latency_ms"), "last_success_at": view.get("last_success_at"),
+                        "age_seconds": age, "offline_after_seconds": view.get("offline_after_seconds")}})
+            shelly_rows = []
+            for device in conn.execute("SELECT device_id,name,room,host,mac,model,generation,protocol,firmware,device_type FROM shelly_devices WHERE enabled=1"):
+                device = dict(device)
+                view = _smart_engine_device_view("shelly", str(device["device_id"]), now=engine_now)
+                age = view.get("age_seconds")
+                lan_online = bool(view.get("lan_online"))
+                cached_status = view.get("status") if isinstance(view.get("status"), dict) else {}
+                shelly_rows.append({**cached_status, **device, "manufacturer": "Shelly",
+                    "connection_state": "connected" if lan_online else "failed",
+                    "measurement_valid": bool(view.get("measurement_valid")),
+                    "reason": None if lan_online else view.get("last_attempt_error") or "device_engine_waiting_for_lan",
+                    "observed_at": view.get("observed_at"), "latency_ms": view.get("latency_ms"),
+                    "age_seconds": age, "device_engine": {"online": view.get("online"),
+                    "lan_online": lan_online, "measurement_valid": bool(view.get("measurement_valid")),
+                    "latency_ms": view.get("latency_ms"), "last_success_at": view.get("last_success_at"),
+                    "age_seconds": age, "offline_after_seconds": view.get("offline_after_seconds")}})
+            result["tuya"] = tuya_rows
+            result["shelly"] = shelly_rows
+            result["configuration"]["tuya"] = "configured" if tuya_rows else "not_configured"
+            result["configuration"]["shelly"] = "configured" if shelly_rows else "not_configured"
+            result["device_engine"] = {"name": "gateway_smart_device_engine", "continuous": True,
+                "providers": ["tuya", "shelly"], "device_count": len(tuya_rows) + len(shelly_rows),
+                "device_io_started_by_request": False}
             conn.execute("BEGIN")
             result["energy_readings_persisted"] = _persist_deye_telemetry(conn, result.get("deye"))
             result["antminer_energy_readings_persisted"] = _persist_antminer_telemetry(conn, result.get("antminer"))
@@ -3510,6 +3817,28 @@ def hardware_integrations_read(session: dict[str, Any] = Depends(require_permiss
             conn.rollback()
             LOG.error("Hardware integration read failed (%s)", type(exc).__name__)
             raise HTTPException(503, "integration_read_unavailable") from exc
+
+
+@app.get("/api/v1/integrations/smart-devices/snapshot")
+def smart_device_engine_snapshot(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
+    with db() as conn:
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+    snapshot = _smart_engine_snapshot()
+    now = time.time()
+    devices = []
+    for key, raw in snapshot.get("devices", {}).items():
+        if not isinstance(raw, dict):
+            continue
+        provider, separator, device_id = key.partition(":")
+        if not separator:
+            continue
+        item = _smart_engine_device_view(provider, device_id, now=now)
+        item["engine_key"] = key
+        devices.append(item)
+    return {"engine": "gateway_smart_device_engine", "managed_providers": ["tuya", "shelly"],
+            "devices": devices, "device_count": len(devices), "observed_at": now}
 
 
 def _persist_tuya_device_events(conn: sqlite3.Connection, readings: list[dict[str, Any]]) -> int:
@@ -3639,151 +3968,48 @@ def tuya_device_events(device_id: str, limit: int = 100,
 @app.post("/api/v1/integrations/tuya/lan-diagnostics")
 def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
                          session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
-    """Measure read-only Tuya LAN response times for all devices or one selected device."""
+    """Report the Device Engine's stored diagnostics without initiating device I/O."""
     payload = payload or {}
     if set(payload) - {"rounds", "device_id"}:
         raise HTTPException(422, "tuya_diagnostic_payload_invalid")
     rounds = payload.get("rounds", 3)
     if isinstance(rounds, bool) or not isinstance(rounds, int) or not 1 <= rounds <= 5:
         raise HTTPException(422, "tuya_diagnostic_rounds_must_be_1_to_5")
-    selected_device_id = payload.get("device_id")
-    if selected_device_id is not None and (not isinstance(selected_device_id, str)
-                                           or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", selected_device_id)):
+    selected = payload.get("device_id")
+    if selected is not None and (not isinstance(selected, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", selected)):
         raise HTTPException(422, "tuya_diagnostic_device_id_invalid")
     with db() as conn:
         actor = _revalidate_actor(conn, session, "manage_gateway")
         if actor["role"] != "owner":
             raise HTTPException(403, "owner_required")
-        full_config = hardware_integrations.load_config()
-        config = full_config.get("tuya", {}) if isinstance(full_config.get("tuya"), dict) else {}
-        devices = [item for item in config.get("devices", [])
-                   if isinstance(item, dict) and isinstance(item.get("device_id"), str)]
-        if selected_device_id is not None:
-            devices = [item for item in devices if item.get("device_id") == selected_device_id]
+        config = hardware_integrations.load_config().get("tuya", {})
+        devices = [item for item in config.get("devices", []) if isinstance(item, dict)
+                   and isinstance(item.get("device_id"), str)]
+        if selected is not None:
+            devices = [item for item in devices if item.get("device_id") == selected]
             if not devices:
                 raise HTTPException(404, "tuya_device_not_configured")
-        if not devices:
-            return {"rounds": rounds, "configured_count": 0, "lan_testable_count": 0,
-                    "elapsed_ms": 0, "devices": [], "control_commands_sent": False}
-        samples: dict[str, list[dict[str, Any]]] = {item["device_id"]: [] for item in devices}
-        started = time.perf_counter()
-        sweep_times: list[float] = []
-        for _ in range(rounds):
-            sweep_started = time.perf_counter()
-            configured_lan = []
-            testable_ids: set[str] = set()
-            all_devices = config.get("devices", []) if isinstance(config.get("devices"), list) else []
-            by_id = {entry.get("device_id"): entry for entry in all_devices
-                     if isinstance(entry, dict) and isinstance(entry.get("device_id"), str)}
-            for item in devices:
-                if item.get("transport") == "tuya_gateway":
-                    parent = by_id.get(item.get("parent_device_id"))
-                    if parent and parent.get("local_key") and (parent.get("local_ip") or parent.get("local_mac")):
-                        if parent not in configured_lan:
-                            configured_lan.append(parent)
-                        configured_lan.append(item)
-                        testable_ids.add(item["device_id"])
-                    continue
-                host = item.get("local_ip")
-                mac = hardware_integrations._tuya_normalize_mac(item.get("local_mac"))
-                if not item.get("local_key") or (not host and not mac):
-                    continue
-                if host:
-                    try:
-                        hardware_integrations._private_ip(host)
-                    except ValueError:
-                        if not mac:
-                            continue
-                configured_lan.append(item)
-                testable_ids.add(item["device_id"])
-            readings = hardware_integrations.read_tuya({**config, "devices": configured_lan}) if configured_lan else []
-            sweep_times.append(round((time.perf_counter() - sweep_started) * 1000, 1))
-            by_id = {row.get("device_id"): row for row in readings}
-            for item in devices:
-                device_id = item["device_id"]
-                row = by_id.get(device_id)
-                if row is None:
-                    host = item.get("local_ip")
-                    mac = hardware_integrations._tuya_normalize_mac(item.get("local_mac"))
-                    if item.get("transport") == "tuya_gateway" and not by_id.get(item.get("parent_device_id"), {}).get("local_key"):
-                        reason = "tuya_local_key_missing"
-                    elif item.get("transport") == "tuya_gateway" and not by_id.get(item.get("parent_device_id"), {}).get("local_ip"):
-                        reason = "private_lan_target_required"
-                    elif not item.get("local_key") and item.get("transport") != "tuya_gateway":
-                        reason = "tuya_local_key_missing"
-                    elif not host:
-                        reason = "tuya_local_ip_unresolved_from_mac" if mac else "private_lan_target_required"
-                    else:
-                        try:
-                            hardware_integrations._private_ip(host)
-                            reason = "tuya_lan_read_unavailable"
-                        except ValueError as exc:
-                            reason = str(exc)
-                    samples[device_id].append({"ok": False, "latency_ms": None,
-                                               "reason": reason, "status": []})
-                else:
-                    ok = row.get("connection_state") == "local_responded"
-                    samples[device_id].append({"ok": ok,
-                                               # Only successful LAN replies are response-time samples.
-                                               # Setup failures are not network latency.
-                                               "latency_ms": row.get("latency_ms") if ok else None,
-                                               "reason": row.get("reason"),
-                                               "status": row.get("status", []) if ok else [],
-                                               "local_protocol": row.get("local_protocol") if ok else None,
-                                               "ip_refreshed_by_mac": bool(row.get("ip_refreshed_by_mac")),
-                                               "ip_cleared_missing_mac": bool(row.get("ip_cleared_missing_mac"))})
-        elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
-        verified_ids = {device_id for device_id, rows in samples.items()
-                        if any(row.get("ok") and row.get("status") for row in rows)}
-        latest_lan_readings = [{"device_id": device_id, "connection_state": "local_responded",
-                                "status": next((row["status"] for row in reversed(rows)
-                                                if row.get("ok") and row.get("status")), []),
-                                "observed_at": time.time()}
-                               for device_id, rows in samples.items() if device_id in verified_ids]
-        discovered_dps = _merge_tuya_lan_dps_discoveries(full_config, latest_lan_readings, conn)
-        if verified_ids or discovered_dps:
-            configured_devices = config.get("devices", []) if isinstance(config.get("devices"), list) else []
-            for item in configured_devices:
-                if not isinstance(item, dict) or item.get("device_id") not in verified_ids:
-                    continue
-                item["local_verified"] = True
-                item["local_control_state"] = "ready"
-                latest_protocol = next((row.get("local_protocol") for row in reversed(samples[item["device_id"]])
-                                        if row.get("ok") and row.get("local_protocol")), None)
-                if latest_protocol:
-                    item["local_protocol"] = latest_protocol
-            full_config["tuya"] = config
-            hardware_integrations.save_config(full_config)
-            _sync_gateway_device_inventory(conn, full_config)
-            conn.commit()
         result = []
-        for item in devices:
-            rows = samples[item["device_id"]]
-            times = [row["latency_ms"] for row in rows if isinstance(row.get("latency_ms"), (int, float))]
-            schema = [entry for entry in item.get("status_spec", []) if isinstance(entry, dict)]
-            power_telemetry = any(re.search(r"power|watt|cur_power|active_power", str(entry.get("code", "")) + " " + str(entry.get("name", "")), re.I)
-                                  for entry in schema)
-            parent = by_id.get(item.get("parent_device_id"), {})
-            result.append({"device_id": item["device_id"], "name": str(item.get("name") or "Tuya device")[:120],
-                           "local_ip": item.get("local_ip") or parent.get("local_ip", ""),
-                           "local_key_configured": bool(item.get("local_key") or by_id.get(item.get("parent_device_id"), {}).get("local_key")),
-                           "success_count": sum(1 for row in rows if row["ok"]), "rounds": rounds,
-                           "failure_count": sum(1 for row in rows if not row["ok"]),
-                           "average_latency_ms": round(sum(times) / len(times), 1) if times else None,
-                           "worst_latency_ms": round(max(times), 1) if times else None,
-                           "connection_state": "local_responded" if times else "failed",
-                           "status": next((row["status"] for row in reversed(rows) if row["ok"]), []),
-                           "local_protocol": next((row["local_protocol"] for row in reversed(rows) if row["ok"]), None),
-                           "ip_refreshed_by_mac": any(row.get("ip_refreshed_by_mac") for row in rows),
-                           "ip_cleared_missing_mac": any(row.get("ip_cleared_missing_mac") for row in rows),
-                           "power_telemetry_configured": power_telemetry,
-                           "reason": next((row["reason"] for row in rows if row.get("reason")),
-                                          "private_lan_target_required" if not item.get("local_ip") else None)})
+        for device in devices:
+            view = _smart_engine_device_view("tuya", device["device_id"])
+            successful = bool(view.get("last_success_at"))
+            result.append({"device_id": device["device_id"], "name": str(device.get("name") or device["device_id"])[:120],
+                "local_ip": device.get("local_ip", ""), "local_key_configured": bool(device.get("local_key")),
+                "success_count": int(successful), "rounds": rounds, "failure_count": int(not view.get("lan_online")),
+                "average_latency_ms": view.get("latency_ms") if successful else None,
+                "worst_latency_ms": view.get("latency_ms") if successful else None,
+                "connection_state": "local_responded" if view.get("lan_online") else "offline",
+                "status": view.get("status", []), "measurement_valid": bool(view.get("measurement_valid")),
+                "last_success_at": view.get("last_success_at"), "age_seconds": view.get("age_seconds"),
+                "local_protocol": device.get("local_protocol"), "reason": view.get("last_attempt_error"),
+                "power_telemetry_configured": any(re.search(r"power|watt|cur_power|active_power",
+                    str(entry.get("code", "")) + " " + str(entry.get("name", "")), re.I)
+                    for entry in device.get("status_spec", []) if isinstance(entry, dict))})
         return {"rounds": rounds, "configured_count": len(devices),
-                "lan_testable_count": len(testable_ids),
-                "confirmed_device_count": len(verified_ids),
-                "elapsed_ms": elapsed_ms, "sweep_times_ms": sweep_times,
-                "devices": result, "control_commands_sent": False}
+                "lan_testable_count": sum(1 for item in devices if item.get("local_key") and item.get("local_ip")),
+                "confirmed_device_count": sum(1 for item in result if item["measurement_valid"]),
+                "elapsed_ms": 0, "devices": result, "control_commands_sent": False,
+                "device_io_started": False, "source": "gateway_smart_device_engine_snapshot"}
 
 
 @app.post("/api/v1/integrations/tuya/lan-reachability")
@@ -4725,7 +4951,10 @@ def register_shelly_device(payload: dict[str, Any],
         if actor["role"] != "owner":
             raise HTTPException(403, "owner_required")
     try:
-        reading = hardware_integrations.shelly_integration.identify_and_read(host, username=username, password=password)
+        engine_key = _shelly_engine_key(host, expected_mac)
+        reading = _smart_device_engine_command("shelly", engine_key,
+            lambda: hardware_integrations.shelly_integration.identify_and_read(
+                host, username=username, password=password))
     except (RuntimeError, OSError) as exc:
         raise HTTPException(502, "shelly_identification_failed") from exc
     mac = _inventory_mac(reading.get("mac"))
@@ -4809,126 +5038,70 @@ def rename_shelly_device(payload: dict[str, Any], session: dict[str, Any] = Depe
 
 @app.post("/api/v1/integrations/shelly/read")
 def read_shelly_devices(session: dict[str, Any] = Depends(require_permission("manage_gateway"))) -> dict[str, Any]:
-    """Read registered Shelly devices over the local network; failures are isolated per device."""
+    """Return Gateway-engine snapshots; this API never initiates device I/O."""
     with db() as conn:
         actor = _revalidate_actor(conn, session, "manage_gateway")
         if actor["role"] != "owner":
             raise HTTPException(403, "owner_required")
         shelly_rows = [dict(row) for row in conn.execute(
-            "SELECT device_id,name,room,host,mac,model,generation,protocol,firmware,auth_ciphertext FROM shelly_devices WHERE enabled=1")]
-    shelly_devices, credential_failures = [], []
-    for item in shelly_rows:
-        try:
-            item.update(shelly_credentials.open_credentials(DATA_DIR, item.pop("auth_ciphertext", b"")))
-            shelly_devices.append(item)
-        except ValueError:
-            credential_failures.append({"device_id": item.get("device_id"), "name": item.get("name"),
-                "host": item.get("host"), "manufacturer": "Shelly", "connection_state": "failed",
-                "reason": "shelly_credentials_unavailable", "command_sent": False})
-    # Device I/O is deliberately outside SQLite transactions: a sleeping device
-    # must not hold up unrelated inventory writes.
-    readings = credential_failures + hardware_integrations.shelly_integration.read_devices({"devices": shelly_devices})
-    shelly_room_by_id = {item["device_id"]: item.get("room", "") for item in shelly_rows}
-    for reading in readings:
-        if reading.get("device_id") in shelly_room_by_id:
-            reading["room"] = shelly_room_by_id[reading["device_id"]]
-    with db() as conn:
+            "SELECT device_id,name,room,host,mac,model,generation,protocol,firmware,device_type FROM shelly_devices WHERE enabled=1 ORDER BY name COLLATE NOCASE")]
         blu_rows = [dict(row) for row in conn.execute(
-            "SELECT mac,name,model,device_type,bridge_mac,bridge_host,last_rssi,values_json,last_seen_at FROM shelly_blu_devices WHERE enabled=1")]
-        blu_bridges = [dict(row) for row in conn.execute("""SELECT mac,name,host,model,device_type,auth_ciphertext FROM shelly_devices
-            WHERE enabled=1 AND (device_type IN ('smart_blugw','smart_gateway') OR model LIKE '%BLU Gateway%'
-                OR model LIKE '%BLU GW%' OR model LIKE '%BLUGW%' OR model LIKE '%GWF-KZ01%' OR model LIKE '%SNGW-BT01%'
-                OR upper(model) LIKE '%SN-GW-BT01%' OR upper(model) LIKE '%SN GW BT01%')""")]
-    if blu_rows and blu_bridges:
-        try:
-            required_bridge_macs = {_inventory_mac(item.get("bridge_mac")) for item in blu_rows
-                                    if _inventory_mac(item.get("bridge_mac"))}
-            with db() as conn:
-                observed_blu, _ = _read_shelly_blu_bridges_cached(conn, required_bridge_macs)
-            observed_by_mac = {_inventory_mac(item.get("mac")): item for item in observed_blu if _inventory_mac(item.get("mac"))}
-            for item in blu_rows:
-                mac = _inventory_mac(item.get("mac"))
-                found = observed_by_mac.get(mac)
-                if found:
-                    values = found.get("values") if isinstance(found.get("values"), list) else []
-                    item.update({"last_rssi": found.get("rssi"), "values_json": json.dumps(values, separators=(",", ":")),
-                                 "last_seen_at": utcnow(), "bridge_host": found.get("bridge_host") or item.get("bridge_host")})
-                    with db() as conn:
-                        conn.execute("UPDATE shelly_blu_devices SET last_rssi=?,values_json=?,last_seen_at=?,bridge_host=?,updated_at=? WHERE mac=?",
-                            (item["last_rssi"], item["values_json"], item["last_seen_at"], item["bridge_host"], item["last_seen_at"], mac))
-                    values_display = [{"name": str(value.get("name") or "Sensor")[:64], "value": value.get("val"),
-                                       "unit": str(value.get("unit") or "")[:16]} for value in values if isinstance(value, dict)]
-                    readings.append({"device_id": f"shelly-blu:{mac}", "name": item["name"], "model": item["model"],
-                        "mac": mac, "host": item["bridge_host"], "manufacturer": "Shelly", "protocol": "shelly_blu_bthome",
-                        "connection_state": "connected", "components": [{"component": "bthome", "id": 0, "status": {}}],
-                        "capabilities": sorted({str(value.get("name")) for value in values if isinstance(value, dict) and value.get("name")} ),
-                        "bthome_values": values_display, "rssi": item["last_rssi"], "observed_at": time.time(),
-                        "bridge_mac": item["bridge_mac"], "command_sent": False})
-                else:
-                    try:
-                        old_values = json.loads(item.get("values_json") or "[]")
-                    except (TypeError, ValueError):
-                        old_values = []
-                    readings.append({"device_id": f"shelly-blu:{mac}", "name": item["name"], "model": item["model"],
-                        "mac": mac, "host": item["bridge_host"], "manufacturer": "Shelly", "protocol": "shelly_blu_bthome",
-                        "connection_state": "failed", "reason": "blu_advertisement_not_seen", "components": [],
-                        "capabilities": [], "bthome_values": old_values, "rssi": item.get("last_rssi"),
-                        "observed_at": time.time(), "bridge_mac": item["bridge_mac"], "command_sent": False})
-        except Exception as exc:
-            LOG.info("Shelly BLU reading unavailable (%s)", type(exc).__name__)
-    elif blu_rows:
-        for item in blu_rows:
-            mac = _inventory_mac(item.get("mac"))
-            readings.append({"device_id": f"shelly-blu:{mac}", "name": item["name"], "model": item["model"],
-                "mac": mac, "host": item["bridge_host"], "manufacturer": "Shelly", "protocol": "shelly_blu_bthome",
-                "connection_state": "failed", "reason": "bluetooth_bridge_unavailable", "components": [],
-                "capabilities": [], "bthome_values": [], "observed_at": time.time(),
-                "bridge_mac": item["bridge_mac"], "command_sent": False})
-    failed_ids = {item.get("device_id") for item in readings if item.get("connection_state") != "connected"
-                  and not str(item.get("device_id") or "").startswith("shelly-blu:")}
-    if failed_ids:
-        try:
-            report = network_scanner.scan_attached_networks()
-            _enrich_shelly_scan(report)
-            by_id = {item.get("device_id"): item for item in shelly_devices}
-            for index, reading in enumerate(readings):
-                if reading.get("device_id") not in failed_ids:
-                    continue
-                saved = by_id.get(reading.get("device_id"), {})
-                mac = _inventory_mac(saved.get("mac"))
-                candidate_ip = _unique_lan_ip_for_mac(report, mac)
-                if not candidate_ip:
-                    continue
-                retry_device = {**saved, "host": candidate_ip}
-                retry = hardware_integrations.shelly_integration.read_devices({"devices": [retry_device]})
-                if retry and retry[0].get("connection_state") == "connected" and _inventory_mac(retry[0].get("mac")) == mac:
-                    readings[index] = retry[0]
-        except Exception as exc:
-            # The original local read result remains authoritative for this
-            # cycle; a failed recovery scan must not erase a saved address.
-            LOG.info("Shelly MAC-based IP recovery unavailable (%s)", type(exc).__name__)
-    now = utcnow()
-    connected_by_mac = {_inventory_mac(item.get("mac")): item for item in readings
-                        if item.get("connection_state") == "connected" and _inventory_mac(item.get("mac"))}
-    with db() as conn:
-        actor = _revalidate_actor(conn, session, "manage_gateway")
-        if actor["role"] != "owner":
-            raise HTTPException(403, "owner_required")
+            "SELECT mac,name,model,device_type,bridge_mac,bridge_host,last_rssi,values_json,last_seen_at FROM shelly_blu_devices WHERE enabled=1 ORDER BY name COLLATE NOCASE")]
         _sync_gateway_device_inventory(conn, hardware_integrations.load_config())
-        for mac, reading in connected_by_mac.items():
-            conn.execute("UPDATE shelly_devices SET host=?,last_seen_at=?,updated_at=? WHERE mac=? AND enabled=1",
-                (str(reading.get("host") or "")[:64], now, now, mac))
-            conn.execute("""UPDATE gateway_device_inventory SET last_ip=?,last_seen_at=?,updated_at=?
-                WHERE mac=? AND source_provider='shelly'""",
-                (str(reading.get("host") or "")[:64], now, now, mac))
-        audit(conn, session["user_id"], "smart_device.shelly.read", "shelly_devices",
-              "partial" if any(item.get("connection_state") != "connected" for item in readings) else "success",
-              {"device_count": len(readings), "connected_count": sum(item.get("connection_state") == "connected" for item in readings),
-               "cloud_used": False, "commands_sent": False})
+        audit(conn, session["user_id"], "smart_device.shelly.read", "shelly_devices", "success",
+              {"device_count": len(shelly_rows) + len(blu_rows), "source": "gateway_device_engine",
+               "device_io_started": False, "commands_sent": False})
         conn.commit()
-        return {"devices": readings, "device_count": len(readings),
-                "connected_count": sum(item.get("connection_state") == "connected" for item in readings),
-                "observed_at": now, "source": "local_lan", "cloud_used": False, "commands_sent": False}
+
+    snapshot = _smart_engine_snapshot().get("devices", {})
+    now = time.time()
+    readings: list[dict[str, Any]] = []
+    for device in shelly_rows:
+        engine = snapshot.get(f"shelly:{device['device_id']}", {})
+        if not isinstance(engine, dict):
+            engine = {}
+        status = engine.get("status")
+        status = status if isinstance(status, dict) else {}
+        last_success = engine.get("last_success_at")
+        try:
+            age = max(0.0, now - float(last_success)) if last_success is not None else None
+            latency_ms = max(1.0, float(engine.get("latency_ms") or 500.0))
+        except (TypeError, ValueError):
+            age, latency_ms = None, 500.0
+        online = age is not None and age <= 5.0 * latency_ms / 1000.0
+        reading = {**status, **device,
+                   "manufacturer": "Shelly", "device_id": device["device_id"],
+                   "connection_state": "connected" if online else ("pending" if age is None else "failed"),
+                   "reason": None if online else (engine.get("last_attempt_error") or "device_engine_waiting_for_lan"),
+                   "observed_at": engine.get("observed_at", last_success),
+                   "latency_ms": engine.get("latency_ms"), "age_seconds": age,
+                   "source": engine.get("source", "SHELLY_LAN"), "device_engine": True,
+                   "command_sent": False}
+        readings.append(reading)
+
+    # Shelly BLU sensors are passive Bluetooth advertisements, not independent
+    # LAN endpoints. Serve their last Gateway-persisted observations without
+    # scanning bridges as a side effect of opening this API.
+    for item in blu_rows:
+        try:
+            values = json.loads(item.get("values_json") or "[]")
+            if not isinstance(values, list):
+                values = []
+        except (TypeError, ValueError):
+            values = []
+        readings.append({"device_id": f"shelly-blu:{_inventory_mac(item.get('mac'))}",
+                         "name": item.get("name"), "model": item.get("model"),
+                         "mac": _inventory_mac(item.get("mac")), "host": item.get("bridge_host"),
+                         "manufacturer": "Shelly", "protocol": "shelly_blu_bthome",
+                         "connection_state": "connected" if item.get("last_seen_at") else "pending",
+                         "bthome_values": values, "rssi": item.get("last_rssi"),
+                         "bridge_mac": item.get("bridge_mac"), "observed_at": item.get("last_seen_at"),
+                         "source": "gateway_cached_bluetooth", "device_engine": True,
+                         "command_sent": False})
+    connected = sum(item.get("connection_state") == "connected" for item in readings)
+    return {"devices": readings, "device_count": len(readings), "connected_count": connected,
+            "observed_at": now, "source": "gateway_device_engine", "cloud_used": False,
+            "device_io_started": False, "commands_sent": False}
 
 
 def _vintage_device_credentials(device_id: str, session: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
@@ -5062,9 +5235,9 @@ def command_shelly_switch(device_id: str, payload: dict[str, Any],
                      (command_id, device_id, channel, int(payload["on"]), "PENDING", occurred_at))
         conn.commit()
         try:
-            result = hardware_integrations.shelly_integration.control_switch(
+            result = _smart_device_engine_command("shelly", device_id, lambda: hardware_integrations.shelly_integration.control_switch(
                 host, int(device.get("generation") or 0), channel, payload["on"],
-                username=str(device.get("username") or ""), password=str(device.get("password") or ""))
+                username=str(device.get("username") or ""), password=str(device.get("password") or "")))
             state = str(result.get("command_state") or "UNKNOWN")
             observed = result.get("observed_on")
             completed_at = utcnow()
@@ -5080,8 +5253,7 @@ def command_shelly_switch(device_id: str, payload: dict[str, Any],
                     "command_confirmed": state == "CONFIRMED", "requested_on": payload["on"],
                     "observed_on": observed if isinstance(observed, bool) else None,
                     "device_command_latency_ms": result.get("device_command_latency_ms"),
-                    "readback_latency_ms": result.get("readback_latency_ms"),
-                    "observed_at": result.get("reading", {}).get("observed_at")}
+                    "observed_at": result.get("observed_at")}
         except (RuntimeError, OSError, ValueError) as exc:
             conn.execute("UPDATE shelly_command_history SET command_state='FAILED',completed_at=? WHERE command_id=?",
                          (utcnow(), command_id))
@@ -5094,7 +5266,7 @@ def command_shelly_switch(device_id: str, payload: dict[str, Any],
 @app.post("/api/v1/integrations/shelly/{device_id}/light")
 def command_shelly_light(device_id: str, payload: dict[str, Any],
                           session: dict[str, Any] = Depends(require_permission("operate"))) -> dict[str, Any]:
-    """Set a supported Shelly light property over LAN, then verify with a fresh read."""
+    """Set a Shelly light property; the device engine confirms it on its next sample."""
     allowed = {"component", "channel", "on", "brightness", "rgb", "white", "color_temperature"}
     if not isinstance(payload, dict) or set(payload) - allowed or not payload.get("component"):
         raise HTTPException(422, "shelly_light_command_invalid")
@@ -5117,9 +5289,9 @@ def command_shelly_light(device_id: str, payload: dict[str, Any],
     try:
         credentials = shelly_credentials.open_credentials(DATA_DIR, device.get("auth_ciphertext"))
         host = hardware_integrations._private_ip(device.get("host"))
-        result = hardware_integrations.shelly_integration.control_light(
+        result = _smart_device_engine_command("shelly", device_id, lambda: hardware_integrations.shelly_integration.control_light(
             host, int(device.get("generation") or 0), str(component), channel,
-            username=str(credentials.get("username") or ""), password=str(credentials.get("password") or ""), **values)
+            username=str(credentials.get("username") or ""), password=str(credentials.get("password") or ""), **values))
     except (RuntimeError, OSError, ValueError) as exc:
         with db() as conn:
             actor = _revalidate_actor(conn, session, "operate")
@@ -5139,8 +5311,7 @@ def command_shelly_light(device_id: str, payload: dict[str, Any],
             "command_confirmed": result.get("command_confirmed", False),
             "command_state": result.get("command_state", "UNKNOWN"),
             "device_command_latency_ms": result.get("device_command_latency_ms"),
-            "readback_latency_ms": result.get("readback_latency_ms"),
-            "observed_at": result.get("reading", {}).get("observed_at")}
+            "observed_at": None}
 
 
 @app.post("/api/v1/network/scan")
@@ -5725,19 +5896,12 @@ def hardware_provider_read(provider: str, payload: dict[str, Any] | None = None,
                 if device_id is not None:
                     if not isinstance(device_id, str) or not any(d.get("device_id") == device_id for d in item["devices"]):
                         raise HTTPException(404, "tuya_device_not_configured")
-                    selected = next(d for d in item["devices"] if d.get("device_id") == device_id)
-                    selected_devices = [selected]
-                    if selected.get("transport") == "tuya_gateway":
-                        parent = next((d for d in item["devices"] if d.get("device_id") == selected.get("parent_device_id")), None)
-                        if parent is not None:
-                            selected_devices.insert(0, parent)
-                    tuya_config = {**item, "devices": selected_devices}
-                result = {"tuya": hardware_integrations.read_tuya(tuya_config)}
-                _merge_tuya_lan_dps_discoveries(config, result["tuya"], conn)
-                _persist_tuya_device_events(conn, result["tuya"])
-                energy_engine.persist_tuya_telemetry(conn, result["tuya"], item.get("devices", []), item.get("product_schemas", {}))
-                _update_tuya_device_records(config, result["tuya"])
-                hardware_integrations.save_config(config)
+                    selected_devices = [next(d for d in item["devices"] if d.get("device_id") == device_id)]
+                else:
+                    selected_devices = [d for d in item["devices"] if isinstance(d, dict)]
+                result = {"tuya": [{**device, **_smart_engine_device_view("tuya", str(device["device_id"]))}
+                                    for device in selected_devices if isinstance(device.get("device_id"), str)],
+                          "device_io_started": False, "source": "gateway_smart_device_engine_snapshot"}
             result["provider"] = provider
             result["collected_at"] = datetime.now(timezone.utc).isoformat()
             audit(conn, session["user_id"], f"hardware.{provider}.read", "gateway", "success", {
@@ -5884,7 +6048,8 @@ def tuya_switch_control(payload: dict[str, Any], session: dict[str, Any] = Depen
             raise HTTPException(422, "tuya_switch_payload_invalid")
         try:
             config = hardware_integrations.load_config().get("tuya", {})
-            result = hardware_integrations.control_tuya_switch(config, device_id, requested_on, code=code)
+            result = _smart_device_engine_command("tuya", device_id,
+                lambda: hardware_integrations.control_tuya_switch(config, device_id, requested_on, code=code))
             _activate_energy_manual_override(conn, session["user_id"], f"tuya:{device_id}")
             _append_tuya_command_event(conn, device_id, code or result.get("switch_code", ""), requested_on,
                                        confirmed=bool(result.get("state_confirmed")))
@@ -5919,7 +6084,8 @@ def tuya_level_control(payload: dict[str, Any], session: dict[str, Any] = Depend
             raise HTTPException(422, "tuya_level_payload_invalid")
         try:
             config = hardware_integrations.load_config().get("tuya", {})
-            result = hardware_integrations.control_tuya_level(config, device_id, percent)
+            result = _smart_device_engine_command("tuya", device_id,
+                lambda: hardware_integrations.control_tuya_level(config, device_id, percent))
             _activate_energy_manual_override(conn, session["user_id"], f"tuya-level:{device_id}")
             audit(conn, session["user_id"], "hardware.tuya.level", device_id, "accepted", {
                 "requested_percent": percent, "control_command_sent": True, "state_confirmed": False,
@@ -5952,7 +6118,8 @@ def tuya_setting_control(payload: dict[str, Any], session: dict[str, Any] = Depe
             raise HTTPException(422, "tuya_setting_payload_invalid")
         try:
             config = hardware_integrations.load_config().get("tuya", {})
-            result = hardware_integrations.control_tuya_setting(config, device_id, code, value)
+            result = _smart_device_engine_command("tuya", device_id,
+                lambda: hardware_integrations.control_tuya_setting(config, device_id, code, value))
             audit(conn, session["user_id"], "hardware.tuya.setting", device_id,
                   "success" if result.get("state_confirmed") else "unconfirmed",
                   {"setting_code": code, "state_confirmed": bool(result.get("state_confirmed")), "control_command_sent": True})
@@ -6027,9 +6194,9 @@ def tuya_product_dps_description(payload: dict[str, Any], session: dict[str, Any
         # SQLite. The config file can lag behind it, so include only a fresh,
         # successful observation for this exact device when validating an
         # Owner's Product ID scoped mapping.
-        telemetry = energy_engine.read_tuya_telemetry(conn, max_age_seconds=10).get(device_id, {})
-        observed_status = (telemetry.get("status", [])
-                           if telemetry.get("fresh") and telemetry.get("connection_state") == "local_responded"
+        engine_view = _smart_engine_device_view("tuya", device_id)
+        observed_status = (engine_view.get("status", [])
+                           if engine_view.get("measurement_valid") and engine_view.get("lan_online")
                            else [])
         for rows in (observed_status, device.get("current_status"), device.get("functions"), device.get("status_spec")):
             for row in rows if isinstance(rows, list) else []:

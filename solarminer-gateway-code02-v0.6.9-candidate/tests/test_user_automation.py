@@ -28,11 +28,15 @@ def valid_rule(**overrides):
     return payload
 
 
-def fresh_telemetry(value=True, *, code="switch", observed_at=None, verified=True, connection_state="local_responded"):
+def fresh_telemetry(value=True, *, code="switch", observed_at=None, verified=True,
+                    connection_state="local_responded", measurement_valid=True,
+                    device_engine_managed=True):
     return {
         "device-1": {
             "connection_state": connection_state,
             "verified": verified,
+            "measurement_valid": measurement_valid,
+            "device_engine_managed": device_engine_managed,
             "observed_at": observed_at or datetime.now(timezone.utc).isoformat(),
             "status": [{"code": code, "value": value}],
         }
@@ -88,10 +92,12 @@ def test_evaluate_trigger_accepts_only_recent_verified_lan_state():
     assert user_automation.evaluate_trigger(trigger, fresh_telemetry(connection_state="failed"), datetime.now().astimezone())[0] is False
 
 
-def test_evaluate_trigger_rejects_stale_missing_and_mismatched_values():
+def test_evaluate_trigger_uses_device_engine_validity_instead_of_fixed_age_limit():
     trigger = user_automation.validate_rule(valid_rule())["trigger"]
-    old = datetime.fromtimestamp(datetime.now(timezone.utc).timestamp() - 120, timezone.utc).isoformat()
-    assert user_automation.evaluate_trigger(trigger, fresh_telemetry(observed_at=old), datetime.now().astimezone()) == (False, "Leitura Tuya desatualizada")
+    old_but_engine_valid = datetime.fromtimestamp(datetime.now(timezone.utc).timestamp() - 120, timezone.utc).isoformat()
+    assert user_automation.evaluate_trigger(trigger, fresh_telemetry(observed_at=old_but_engine_valid), datetime.now().astimezone()) == (True, "Condição verdadeira")
+    assert user_automation.evaluate_trigger(trigger, fresh_telemetry(measurement_valid=False), datetime.now().astimezone()) == (False, "Equipamento Tuya sem leitura LAN confirmada")
+    assert user_automation.evaluate_trigger(trigger, fresh_telemetry(device_engine_managed=False), datetime.now().astimezone()) == (False, "Equipamento Tuya sem leitura LAN confirmada")
     assert user_automation.evaluate_trigger(trigger, {}, datetime.now().astimezone()) == (False, "Equipamento Tuya sem leitura LAN confirmada")
     assert user_automation.evaluate_trigger(trigger, fresh_telemetry(False), datetime.now().astimezone()) == (False, "Condição falsa")
 
