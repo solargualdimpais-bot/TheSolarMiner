@@ -52,7 +52,7 @@ test("property image comes from the Gateway and is only changed by the Owner",as
   const app=await readFile(new URL("../app.js",import.meta.url),"utf8");
   assert.match(app,/function readAndCompressImage/);
   assert.match(app,/saveGatewaySiteProfile\(payload\)/);
-  assert.match(app,/state\.siteProfile\?\.photo_data_url \|\| ""/);
+  assert.match(app,/displayProfile\.photo_data_url \|\| cachedProfile\.photo_data_url \|\| ""/);
   assert.match(app,/Só o Owner pode alterar os dados partilhados da propriedade/);
   assert.doesNotMatch(app,/function readStoredPhoto/);
   assert.match(app,/canvas\.toBlob\(done,'image\/jpeg',quality\)/);

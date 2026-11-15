@@ -60,7 +60,7 @@ test('DEMO mode and simulated fixtures are explicit', () => {
 test('property image is empty until the Owner uploads it to the Gateway', () => {
   const app = read('app.js');
   assert.ok(app.includes('saveGatewaySiteProfile(payload)'));
-  assert.ok(app.includes('const photo = state.siteProfile?.photo_data_url || ""'));
+  assert.ok(app.includes('const photo = displayProfile.photo_data_url || cachedProfile.photo_data_url || ""'));
   assert.ok(app.includes('id="hero-photo-settings"'));
   assert.ok(app.includes('sessionInfo().user?.role===\'owner\''));
   assert.ok(!app.includes('function readStoredPhoto'));
@@ -158,7 +158,7 @@ test('Owner photo editor supports HEIC conversion, framing and weather icons', (
   assert.match(app,/heic2any-0\.0\.4\.min\.js/);
   assert.match(app,/makeBrowserReadablePhoto/);
   assert.match(app,/id="photo-vignette" type="range" min="0" max="100" step="1"/);
-  assert.match(app,/--property-vignette:\$\{Number\(state\.siteProfile\?\.photo_vignette/);
+  assert.match(app,/--property-vignette:\$\{Number\(displayProfile\.photo_vignette\?\?cachedProfile\.photo_vignette/);
   assert.match(css,/rgba\(0,0,0,var\(--house-photo-vignette/);
   assert.match(read('service-worker.js'),/assets\/heic2any-0\.0\.4\.min\.js/);
   assert.match(html,/context-editor-preview-vignette/);

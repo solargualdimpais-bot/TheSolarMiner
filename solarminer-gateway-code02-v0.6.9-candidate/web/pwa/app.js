@@ -6,6 +6,7 @@ const PWA_INVITE_LANDING_URL = "https://solargualdimpais-bot.github.io/TheSolarM
 import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classifyEndpoint, inferHostedGatewayEndpoint, buildInviteLandingUrl, readInviteLandingHash, PRESENCE_API_STATUS, storeGatewayProbeDiagnostics, takeGatewayProbeDiagnostics, acknowledgeGatewayProbeDiagnostics } from "./gateway-connection.js";
 import { isHeicPhoto } from "./photo-format.js";
 import { addFavoriteId, normalizeFavoriteIds, reorderFavoriteIds } from "./favorite-list.js";
+import { homeCacheKey, readHomeDisplayCache, writeHomeDisplayCache } from "./home-startup-cache.js";
 import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, redeemGatewayInvite, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, readGatewayEnergyEngineConfig, readGatewayUserAutomations, createGatewayUserAutomation, updateGatewayUserAutomation, deleteGatewayUserAutomation, dryRunGatewayUserAutomation, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayDiagnosticsUpload, saveGatewayDiagnosticsUploadToken, disableGatewayDiagnosticsUpload, sendGatewayDiagnosticsReport, setGatewayWatchdogEnabled, reportGatewayClientDiagnostics, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, syncGatewayTuyaSubdevices, previewGatewayTuyaProductImport, applyGatewayTuyaProductImport, saveGatewayTuyaProductMetadata, controlGatewayAntminer, testGatewayAntminerControl, readGatewayAntminerManagement, writeGatewayAntminerManagement, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, controlGatewayTuyaSetting, saveGatewayTuyaProductDpsDescription, saveGatewayTuyaPidDpsMap, readGatewayDeviceCards, saveGatewayDeviceCard, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, testGatewayTuyaLanReachability, discoverGatewayTuyaLanDevices, scanGatewayLocalNetwork, readGatewayDeviceInventory, readGatewaySmartProductCatalog, readGatewayShellyProductProfiles, readGatewayShellyDevices, discoverGatewayShellyDevices, registerGatewayShellyDevice, renameGatewayShellyDevice, readGatewayShellySettings, saveGatewayShellySettings, registerGatewayShellyBluDevice, discoverGatewayShellyBluDevices, controlGatewayShellySwitch, controlGatewayShellyLight, applyGatewayLocalNetworkMatches, saveGatewayLocalNetworkDevice, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, startGatewayTeslaOAuth, completeGatewayTeslaOAuth, saveGatewayTeslaRelay, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging, readGatewayTeslaLocalPresence } from "./gateway-auth.js";
 
 let automationEditingId = "";
@@ -13,7 +14,7 @@ let energyEngineActiveTab="summary";
 let surplusActiveTab="status";
 let antminerActiveSubmenu="state";
 let antminerActiveEquipmentId="";
-const state = { page: "inicio", devicesTab: "confirmed", deviceCards: [], deviceCardsLoaded: false, mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], energyEngine: null, siteProfile: null, tuyaDevices: [], shellyDevices: [], shellyDiscovered: [], shellyReadings: [], shellyProductProfiles: [], shellyProfilesLoaded: false, shellyRefreshing: false, gatewayDeviceInventory: [], smartProductCatalog: [], tuyaReadings: [], tuyaInventorySignature: "", lastUpdated: null, lastMeasurementAt: null, refreshing: false, tuyaInventoryRefreshing: false, pendingLiveRender: false, energyConfigStatus: "", demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [], engineHistoryChart: { open: false, dateKey: "", loading: false, error: null } };
+const state = { page: "inicio", devicesTab: "confirmed", deviceCards: [], deviceCardsLoaded: false, mode: "DISCONNECTED", dataStatus: "UNAVAILABLE", dataError: null, equipment: [], energyEngine: null, siteProfile: null, startupHomeCache: null, tuyaDevices: [], shellyDevices: [], shellyDiscovered: [], shellyReadings: [], shellyProductProfiles: [], shellyProfilesLoaded: false, shellyRefreshing: false, gatewayDeviceInventory: [], smartProductCatalog: [], tuyaReadings: [], tuyaInventorySignature: "", lastUpdated: null, lastMeasurementAt: null, refreshing: false, tuyaInventoryRefreshing: false, pendingLiveRender: false, energyConfigStatus: "", demoControls: createDemoControlState(), sky: "pouco nublado", favoriteDevices: [], engineHistoryChart: { open: false, dateKey: "", loading: false, error: null } };
 state.userAutomations = { loading: false, error: "", rules: [], history: [], capabilities: { triggers: [], targets: [] } };
 let userAutomationEditingId = "";
 let userAutomationLoadPromise = null;
@@ -43,6 +44,8 @@ const shellyBrightnessTimers=new Map();
 let operationDialogResolve=null;
 let gatewayUpdateNotice=null;
 let gatewayAutoUpdateSuppressed=false;
+let homeDisplayCacheKey="";
+let homeDisplayCacheTimer=0;
 let gatewayUpdateCheckInProgress=false;
 let gatewayOwnerAutoCheckStarted=false;
 const $ = (selector) => document.querySelector(selector);
@@ -217,7 +220,7 @@ $('#context-editor-form').addEventListener('submit',async e=>{
         savedProfile=await saveGatewaySitePhoto({kind:'house',floorId:'',roomId:'',photoDataUrl:editorPhoto||null});
         if((savedProfile.photo_data_url||null)!==(editorPhoto||null))throw new Error('site_photo_not_confirmed');
       }
-      state.siteProfile=savedProfile;state.propertyName=state.siteProfile.name;
+      state.siteProfile=savedProfile;state.propertyName=state.siteProfile.name;queueHomeDisplayCacheWrite();
       workspace.house.name=state.siteProfile.name;
       $('#context-editor').close();render();
       const n=$('#notice');n.hidden=false;n.textContent='Nome e fotografia guardados no Gateway e partilhados com as outras PWA.';setTimeout(()=>n.hidden=true,5000);
@@ -419,6 +422,8 @@ async function refreshGatewayReadings() {
     const measurementTimes = state.equipment.flatMap(item => item.readings || []).map(reading => Date.parse(reading.observed_at || "")).filter(Number.isFinite);
     state.lastMeasurementAt = measurementTimes.length ? new Date(Math.max(...measurementTimes)).toISOString() : null;
     renderAfterLiveRefresh();
+    queueHomeDisplayCacheWrite();
+    if(sessionInfo().user?.role==="owner")void refreshShellyInventoryStatus({quiet:true});
     return true;
   } catch (error) {
     state.mode = "LIVE";
@@ -478,6 +483,7 @@ async function refreshShellyInventoryStatus({ quiet = false } = {}) {
         }
       }
     }
+    queueHomeDisplayCacheWrite();
     if(!quiet){const status=$("#shelly-register-status");if(status)status.textContent="Leitura concluída pela LAN; os cartões foram atualizados sem redesenhar a página.";}
     return true;
   } catch (error) {
@@ -627,7 +633,8 @@ function updateOpenTuyaDeviceDialog(deviceId){
 }
 function resetToDemoAfterLogout() {
   state.mode = "DISCONNECTED"; state.dataStatus = "UNAVAILABLE"; state.dataError = null; state.energyEngine = null;
-  state.equipment = []; state.tuyaDevices=[];state.tuyaReadings=[];lastTuyaReadAt=0;state.lastUpdated = null; state.lastMeasurementAt = null; render();
+  state.equipment = []; state.tuyaDevices=[];state.tuyaReadings=[];lastTuyaReadAt=0;state.lastUpdated = null; state.lastMeasurementAt = null;
+  state.startupHomeCache=null; homeDisplayCacheKey=""; clearTimeout(homeDisplayCacheTimer); render();
 }
 function localDayKey(date=new Date()) { return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`; }
 function localDayBounds(dayKey) {
@@ -1028,7 +1035,12 @@ async function sendTuyaSwitchCommand(device,code,desired){
 }
 function favoriteDeviceCards() {
   const canUsePwa=sessionInfo().authenticated,canControl=canUsePwa&&sessionInfo().user?.role==="owner";
-  if(state.mode!=="LIVE")return `<div class="favorite-device-grid"><p class="field-note">Os dispositivos favoritos aparecem aqui quando o Gateway está ligado.</p></div>`;
+  if(state.mode!=="LIVE"){
+    const cache=state.startupHomeCache,ids=canUsePwa?normalizeFavoriteIds(workspace.prefs.favoriteDeviceIds||[]):[],cachedById=new Map((cache?.devices||[]).map(device=>[String(device.id),device]));
+    const rows=ids.map(id=>cachedById.get(String(id))).filter(Boolean);
+    if(rows.length)return `<div class="favorite-device-grid">${rows.map(device=>`<article class="favorite-device favorite-device-cache" aria-label="${esc(device.name)} · cópia guardada"><span class="favorite-device-icon" aria-hidden="true">${device.kind==="shelly"?"S":device.kind==="tuya"?"T":"⌂"}</span><div class="favorite-device-info"><strong class="favorite-device-name">${esc(device.name)}</strong><span>${esc([device.room,device.floor].filter(Boolean).join(" · ")||"Dispositivo favorito")}</span><small>Guardado · a atualizar</small></div></article>`).join("")}</div>`;
+    return `<div class="favorite-device-grid"><p class="field-note">${canUsePwa?"A carregar os favoritos guardados…":"Os dispositivos favoritos aparecem aqui quando iniciares sessão e o Gateway estiver ligado."}</p></div>`;
+  }
   const tuya=(state.tuyaDevices||[]).map(raw=>{const device=tuyaDeviceWithPidMap(raw);return {id:device.device_id,name:device.name,kind:"tuya",device};});
   const registered=(state.equipment||[]).map(device=>({id:device.id,name:device.name,kind:"equipment",device}));
   const shelly=(state.shellyDevices||[]).filter(device=>!String(device.device_id||"").startsWith("shelly-blu:")).map(device=>({id:device.device_id,name:device.name||device.model||"Shelly",kind:"shelly",device}));
@@ -1435,6 +1447,35 @@ function applyLiveFontScale(){
     if(Number.isFinite(base))el.style.fontSize=`${Math.max(9,base*scale)}px`;
   }
 }
+function cachedHomeDevice(raw,kind,id){
+  const deviceId=String(id||raw?.device_id||raw?.id||"").trim();
+  if(!deviceId)return null;
+  return {id:deviceId,kind,name:String(raw?.name||raw?.friendly_name||raw?.model||kind),model:String(raw?.model||raw?.product_name||""),room:String(raw?.room||raw?.location||raw?.area||""),floor:String(raw?.floor||""),device_kind:String(raw?.device_kind||raw?.device_kind_override||raw?.device_type||raw?.category||"")};
+}
+function homeDisplaySnapshot(){
+  const previous=state.startupHomeCache||{},profile=state.siteProfile||{};
+  const site={name:String(profile.name||previous.site?.name||workspace.house.name||"Solar Energy"),photo_data_url:typeof profile.photo_data_url==="string"?profile.photo_data_url:(previous.site?.photo_data_url||""),photo_opacity:profile.photo_opacity??previous.site?.photo_opacity??0.38,photo_position_x:profile.photo_position_x??previous.site?.photo_position_x??50,photo_position_y:profile.photo_position_y??previous.site?.photo_position_y??50,photo_zoom:profile.photo_zoom??previous.site?.photo_zoom??1,photo_vignette:profile.photo_vignette??previous.site?.photo_vignette??0.35};
+  const devices=[...(state.equipment||[]).map(device=>cachedHomeDevice(device,"equipment",device.id)),...(state.tuyaDevices||[]).map(device=>cachedHomeDevice(device,"tuya",device.device_id)),...(state.shellyDevices||[]).filter(device=>!String(device.device_id||"").startsWith("shelly-blu:")).map(device=>cachedHomeDevice(device,"shelly",device.device_id))].filter(Boolean);
+  const unique=[...new Map(devices.map(device=>[device.id,device])).values()].slice(0,600);
+  return {site,devices:unique};
+}
+function queueHomeDisplayCacheWrite(){
+  const key=homeDisplayCacheKey||homeCacheKey(sessionInfo());
+  if(!key)return;
+  homeDisplayCacheKey=key;
+  clearTimeout(homeDisplayCacheTimer);
+  homeDisplayCacheTimer=setTimeout(()=>{const snapshot=homeDisplaySnapshot();void writeHomeDisplayCache(key,snapshot).then(saved=>{if(saved&&homeDisplayCacheKey===key)state.startupHomeCache={...snapshot,savedAt:Date.now()};});},250);
+}
+async function hydrateHomeDisplayCache(){
+  const key=homeCacheKey(sessionInfo());
+  if(!key)return;
+  if(homeDisplayCacheKey&&homeDisplayCacheKey!==key)state.startupHomeCache=null;
+  homeDisplayCacheKey=key;
+  const snapshot=await readHomeDisplayCache(key);
+  if(!snapshot||homeCacheKey(sessionInfo())!==key)return;
+  state.startupHomeCache=snapshot;
+  if(state.mode!=="LIVE"&&state.page==="inicio")render();
+}
 function toggleFavoriteDevice(id){
   for(const floor of workspace.house.floors)for(const room of floor.rooms){
     const device=room.devices.find(d=>d.id===id);if(!device)continue;
@@ -1466,12 +1507,14 @@ function renderOverview() {
   ${state.mode === "SIMULATED" ? `<section class="panel demo-shortcuts"><div><p class="eyebrow">EXPERIMENTE</p><h2>Configure cenários sem risco</h2><p>Entre em qualquer área para experimentar os controlos locais. Os valores não são enviados para o Gateway.</p></div><button class="button secondary" data-page="ev">Experimentar controlos <span>↗</span></button></section>` : ""}`;
 }
 function renderHomePhotoHero(menuTitle = "Home") {
-  const photo = state.siteProfile?.photo_data_url || "";
+  const displayProfile=state.siteProfile||{},cachedProfile=state.startupHomeCache?.site||{};
+  const photo = displayProfile.photo_data_url || cachedProfile.photo_data_url || "";
   const photoStyle = photo ? "has-property-photo" : "photo-placeholder";
   const owner = sessionInfo().authenticated && sessionInfo().user?.role === "owner";
-  const opacity=Math.max(0,Math.min(1,Number(state.siteProfile?.photo_opacity??0.38)));
-  const imageStyle = photo ? ` style="--property-photo-opacity:${opacity};--property-position-x:${Number(state.siteProfile?.photo_position_x??50)}%;--property-position-y:${Number(state.siteProfile?.photo_position_y??50)}%;--property-zoom:${Number(state.siteProfile?.photo_zoom??1)};--property-vignette:${Number(state.siteProfile?.photo_vignette??.35)}"` : "";
-  return `<section class="property-hero ${photoStyle} live-property-hero shared-property-hero" id="property-hero" aria-label="${esc(menuTitle)} · ${esc(state.propertyName || workspace.house.name || "Solar Energy")}"${imageStyle}>${photo?`<img class="property-hero-image" src="${esc(photo)}" alt="" aria-hidden="true">`:""}<div class="hero-shade"></div><div class="hero-content"><div><p class="shared-property-name">${esc(menuTitle)}</p><h1 class="home-property-name">${esc(state.propertyName || workspace.house.name || "Solar Energy")}</h1></div></div>${owner?`<button class="home-edit-trigger" id="hero-photo-settings" type="button" aria-label="Editar nome, localização e fotografia da propriedade" title="Editar propriedade">✎</button>`:""}</section>`;
+  const opacity=Math.max(0,Math.min(1,Number(displayProfile.photo_opacity??cachedProfile.photo_opacity??0.38)));
+  const imageStyle = photo ? ` style="--property-photo-opacity:${opacity};--property-position-x:${Number(displayProfile.photo_position_x??cachedProfile.photo_position_x??50)}%;--property-position-y:${Number(displayProfile.photo_position_y??cachedProfile.photo_position_y??50)}%;--property-zoom:${Number(displayProfile.photo_zoom??cachedProfile.photo_zoom??1)};--property-vignette:${Number(displayProfile.photo_vignette??cachedProfile.photo_vignette??.35)}"` : "";
+  const propertyName=state.siteProfile?.name||state.startupHomeCache?.site?.name||state.propertyName||workspace.house.name||"Solar Energy";
+  return `<section class="property-hero ${photoStyle} live-property-hero shared-property-hero" id="property-hero" aria-label="${esc(menuTitle)} · ${esc(propertyName)}"${imageStyle}>${photo?`<img class="property-hero-image" src="${esc(photo)}" alt="" aria-hidden="true">`:""}<div class="hero-shade"></div><div class="hero-content"><div><p class="shared-property-name">${esc(menuTitle)}</p><h1 class="home-property-name">${esc(propertyName)}</h1></div></div>${owner?`<button class="home-edit-trigger" id="hero-photo-settings" type="button" aria-label="Editar nome, localização e fotografia da propriedade" title="Editar propriedade">✎</button>`:""}</section>`;
 }
 function weatherConditionLabel(code) {
   const labels = {0:"Céu limpo",1:"Maioritariamente limpo",2:"Parcialmente nublado",3:"Encoberto",45:"Nevoeiro",48:"Nevoeiro com geada",51:"Chuvisco ligeiro",53:"Chuvisco moderado",55:"Chuvisco intenso",56:"Chuvisco gelado ligeiro",57:"Chuvisco gelado intenso",61:"Chuva ligeira",63:"Chuva moderada",65:"Chuva intensa",66:"Chuva gelada ligeira",67:"Chuva gelada intensa",71:"Neve ligeira",73:"Neve moderada",75:"Neve intensa",77:"Grãos de neve",80:"Aguaceiros ligeiros",81:"Aguaceiros moderados",82:"Aguaceiros violentos",85:"Queda de neve ligeira",86:"Queda de neve intensa",95:"Trovoada",96:"Trovoada com granizo ligeiro",99:"Trovoada com granizo intenso"};
@@ -3543,6 +3586,7 @@ let ownerRecoveryFingerprint = "";
 function markGatewayAuthenticated() {
   const info = sessionInfo();
   if (!info.authenticated) return;
+  void hydrateHomeDisplayCache();
   gatewayManager.setState({ state: "GATEWAY AUTENTICADO", reachable: true, identityValidated: true,
     simulated: false, gatewayProduct: "SolarMiner Gateway", reportedVersion: "API autenticada",
     endpointKind: "CANDIDATE_UNCLASSIFIED", lastCommunicationAt: new Date().toISOString() });
@@ -5024,7 +5068,7 @@ updateGatewayStatus(gatewayManager.state);
 if ("serviceWorker" in navigator && location.protocol !== "file:") navigator.serviceWorker.register("./service-worker.js").catch(()=>{});
 render();
 hydrateWorkspacePhotos();
-if (sessionInfo().authenticated) refreshGatewayReadings();
+if (sessionInfo().authenticated) { void hydrateHomeDisplayCache(); void refreshGatewayReadings(); }
 setInterval(() => {
   const lastRefresh=Date.parse(state.lastUpdated||"");
   if (document.visibilityState === "visible" && !["mineradoras","gestao-excedentes"].includes(state.page) && sessionInfo().authenticated && !state.refreshing && (!Number.isFinite(lastRefresh) || Date.now()-lastRefresh>=10_000)) {

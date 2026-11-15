@@ -35,6 +35,7 @@ jobs:
         working-directory: solarminer-gateway-code02-v0.6.9-candidate/web/pwa
         run: |
           node --check app.js
+          node --check home-startup-cache.js
           node --check gateway-auth.js
           node --check gateway-connection.js
           node --check service-worker.js
