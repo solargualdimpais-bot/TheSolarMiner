@@ -115,7 +115,7 @@ test("status-device selector filters favorites, configured divisions, then all d
   assert.doesNotMatch(app, /<span>Tuya<\/span>/);
 });
 
-test("static cache is versioned for the automation menu release", () => {
+test("static cache is versioned for the current Owner admin release", () => {
   assert.match(worker, /the-solar-miner-static-v0\.5\.183-owner-admin-terminal/);
 });
 
