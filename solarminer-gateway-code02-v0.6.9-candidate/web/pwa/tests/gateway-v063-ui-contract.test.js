@@ -122,7 +122,7 @@ test("Tesla Fleet save is handled by the static Owner panel, reports outcomes, a
 });
 
 test("Favorite commands use the cached state and never trigger a LAN read", () => {
-  assert.match(app, /const live=state\.tuyaReadings\.find\(item=>item\.device_id===deviceId\),current=device\?tuyaSwitchState\(device,live,code\):undefined/);
+  assert.match(app, /async function toggleTuyaSwitchFromUi\(deviceId,code,button\)[\s\S]*?const reading=state\.tuyaReadings\.find\(item=>item\.device_id===deviceId\),current=device\?tuyaSwitchState\(device,reading,code\):undefined/);
   assert.match(app, /sendTuyaSwitchCommand\(device,code,!current\)/);
   assert.doesNotMatch(app, /beforeProbe=await testTuyaLanDevice/);
   assert.match(app, /openFavoriteDeviceDetails\(favoriteCard\.dataset\.favoriteDevice,favoriteCard\.dataset\.deviceKind\)/);
@@ -138,7 +138,7 @@ test("Favorite commands use the cached state and never trigger a LAN read", () =
   assert.match(app, /tuya-device-list[\s\S]*?addEventListener\("keydown"/);
 });
 
-test("Devices inventory uses the latest Gateway reading instead of stale LAN probes and places power before voltage", () => {
+test("Devices inventory mirrors Home cards and does not expose stale per-card reading metrics", () => {
   assert.match(app, /async function refreshTuyaInventoryStatus\(\)/);
   assert.match(app, /setInterval\(\(\) => \{ if\(document\.visibilityState==="visible"\)void refreshTuyaInventoryStatus\(\); \},5_000\)/);
   assert.match(app, /setInterval\(\(\) => \{ if\(state\.page==="devices"&&document\.visibilityState==="visible"\)void refreshShellyInventoryStatus\(\{quiet:true\}\); \},15_000\)/);
@@ -150,8 +150,8 @@ test("Devices inventory uses the latest Gateway reading instead of stale LAN pro
   assert.match(app, /const changed=changedSet\.size>0/);
   assert.match(app, /function tuyaDeviceState\(device,reading\)\{[\s\S]*?if\(typeof value==="boolean"\)return reading\?\.connection_state==="local_responded"\?\(value\?"Ligado":"Desligado"\):`Último estado: \$\{value\?"Ligado":"Desligado"\}`;[\s\S]*?if\(reading\?\.connection_state==="failed"\)/);
   assert.match(app, /current_connection_state===\"local_responded\"&&device\.local_control_state===\"ready\"/);
-  assert.match(app, /metrics\.find\(metric=>metric\.label===\"Potência\"\),voltage=metrics\.find\(metric=>metric\.label===\"Tensão\"\)/);
-  assert.match(app, /class="inventory-device-metrics"><span>/);
+  assert.match(app, /class="favorite-device" data-favorite-device=.*?data-device-kind="tuya"/);
+  assert.doesNotMatch(app, /class="inventory-device-metrics"/);
   assert.match(app, /sampleAge>120_000\)return \[\]/);
   assert.match(app, /stale\?" · última leitura":""/);
 });
@@ -179,7 +179,9 @@ test("Devices navigation is immediate and background inventory refreshes patch o
   assert.match(app, /for\(const dialog of document\.querySelectorAll\('dialog\[open\]\[data-tuya-device-id\]'\)\)updateOpenTuyaDeviceDialog\(dialog\.dataset\.tuyaDeviceId\)/);
   assert.match(app, /current\.className=updated\.className/);
   assert.doesNotMatch(app, /current\.replaceWith\(updated\)/);
-  assert.match(app, /favoriteControlPending\.delete\(deviceId\);document\.querySelectorAll\(`\[data-favorite-toggle=/);
+  assert.match(app, /async function toggleTuyaSwitchFromUi\(deviceId,code,button\)/);
+  assert.match(app, /dialog\.querySelectorAll\("\[data-favorite-toggle\]"\)\.forEach\(button=>button\.addEventListener\("click"/);
+  assert.match(app, /try\{await toggleTuyaSwitchFromUi\(deviceId,code,toggle\);\}/);
   assert.doesNotMatch(app, /state\.page==="energia"\s*\|\|\s*!Number\.isFinite\(lastRefresh\)/);
   assert.match(app, /const readingByDevice=new Map\(readings\.map\(reading=>\[reading\.device_id,reading\]\)\)/);
   assert.match(app, /catch \(error\) \{\s*console\.error\(`Could not render SolarMiner page: \$\{state\.page\}`/);
@@ -268,7 +270,7 @@ test("Tuya LAN reachability stays distinct from DPS reads and unknown switches r
 
 test("Tuya cards mirror the Home layout and expose schema-driven quick controls", () => {
   assert.match(app, /data-favorite-expand=/);
-  assert.match(app, /data-inventory-expand=/);
+  assert.doesNotMatch(app, /data-inventory-expand=/);
   assert.match(app, /function openTuyaQuickControls\(device\)/);
   assert.match(app, /function tuyaSwitchCodes\(device\)/);
   assert.match(app, /data-tuya-setting=/);
@@ -292,7 +294,7 @@ test("Tuya state uses the product DPS catalog and breaker menu tolerates optiona
   assert.match(app, /function tuyaSpecDpsId\(device,spec\)[\s\S]*?device\?\.product_profile\?\.dps/);
   assert.match(app, /status\.find\(item=>Number\(item\?\.dps_id\?\?item\?\.dp_id\)===dpId/);
   assert.ok(app.includes("const quickEditable=breaker?[...(breakerCountdown?[breakerCountdown]:[]),...breakerLocks]"));
-  assert.match(app, /data-inventory-expand/);
+  assert.match(app, /const quickEditable=breaker/);
 });
 
 test("Tuya engine readings update open device popups without a page refresh", () => {
@@ -332,7 +334,8 @@ test("Devices inventory tolerates missing optional Tuya arrays", () => {
 });
 
 test("Devices uses Home card styling and tolerates temporary Tuya sample gaps", () => {
-  assert.match(app, /class="home-favorites"><div class="favorite-device-grid inventory-device-grid"/);
+  assert.match(app, /class="home-favorites"><div class="favorite-device-grid">/);
+  assert.doesNotMatch(app, /class="favorite-device-grid inventory-device-grid"/);
   assert.match(app, /equipmentIconSvg\(device,"tuya"\)/);
   assert.match(app, /sampleAge>120_000\)return \[\]/);
   assert.match(app, /stale\?" · última leitura":""/);

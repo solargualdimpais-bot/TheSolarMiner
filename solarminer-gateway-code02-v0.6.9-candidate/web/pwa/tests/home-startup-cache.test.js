@@ -26,7 +26,7 @@ test("cached Home favorites are display-only and controls stay tied to live Gate
   assert.match(snapshot, /state\.shellyDevices/);
   assert.doesNotMatch(snapshot, /readings|bearer|token|password|authorization/i);
   assert.match(app, /if\(state\.mode!==\"LIVE\"\)[\s\S]*favorite-device-cache/);
-  assert.match(app, /Guardado · a atualizar/);
+  assert.doesNotMatch(app, /Guardado · a atualizar/);
   assert.match(app, /data-favorite-toggle/);
   assert.match(app, /data-shelly-switch/);
   assert.match(app, /void hydrateHomeDisplayCache\(\)/);
@@ -34,6 +34,6 @@ test("cached Home favorites are display-only and controls stay tied to live Gate
 
 test("the service worker versions and precaches the new Home cache module", () => {
   const sw = read("service-worker.js");
-  assert.match(sw, /the-solar-miner-static-v0\.5\.180-home-startup-cache/);
+  assert.match(sw, /the-solar-miner-static-v0\.5\.181-unified-smart-cards/);
   assert.match(sw, /\.\/home-startup-cache\.js/);
 });

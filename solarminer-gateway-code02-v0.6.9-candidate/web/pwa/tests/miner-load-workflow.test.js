@@ -69,6 +69,7 @@ test("Tuya toggle keeps Home and Devices in place through command confirmation",
   assert.match(app, /const recentTuyaSwitchCommands=new Map\(\)/);
   assert.match(app, /recentTuyaSwitchCommands\.set\(device\.device_id,requestedAt\+5_000\)/);
   assert.match(app, /for\(const deviceId of deviceIds\)\{updateVisibleTuyaCard\(deviceId\);updateOpenTuyaDeviceDialog\(deviceId\);\}/);
-  assert.match(app, /finally\{favoriteControlPending\.delete\(deviceId\);document\.querySelectorAll\(`\[data-favorite-toggle=/);
-  assert.doesNotMatch(app, /finally\{favoriteControlPending\.delete\(deviceId\);updateVisibleTuyaCard\(deviceId\);\}/);
+  assert.match(app, /async function toggleTuyaSwitchFromUi\(deviceId,code,button\)/);
+  assert.match(app, /favoriteControlPending\.delete\(deviceId\);\s*updateVisibleTuyaCard\(deviceId\);\s*if\(button\?\.isConnected\)button\.disabled=false/);
+  assert.match(app, /try\{await toggleTuyaSwitchFromUi\(deviceId,code,toggle\);\}/);
 });
