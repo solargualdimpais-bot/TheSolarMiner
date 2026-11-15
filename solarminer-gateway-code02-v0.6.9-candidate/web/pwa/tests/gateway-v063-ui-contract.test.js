@@ -11,10 +11,10 @@ const gatewayBuild = readFileSync(new URL("../../../packaging/build-deb.sh", imp
 const workflow = readFileSync(new URL("../../../../.github/workflows/gateway-release.yml", import.meta.url), "utf8");
 
 test("Tuya LAN report exposes the saved target and key presence without the key", () => {
-  assert.match(gatewayApp, /"local_ip": item\.get\("local_ip"\) or parent\.get\("local_ip", ""\)/);
-  assert.match(gatewayApp, /"local_key_configured": bool\(item\.get\("local_key"\) or by_id\.get\(item\.get\("parent_device_id"\), \{\}\)\.get\("local_key"\)\)/);
-  assert.match(gatewayApp, /"ip_refreshed_by_mac": any\(row\.get\("ip_refreshed_by_mac"\) for row in rows\)/);
-  assert.match(gatewayApp, /"ip_cleared_missing_mac": any\(row\.get\("ip_cleared_missing_mac"\) for row in rows\)/);
+  assert.match(gatewayApp, /"local_ip": device\.get\("local_ip", ""\)/);
+  assert.match(gatewayApp, /"local_key_configured": bool\(device\.get\("local_key"\)\)/);
+  assert.match(gatewayApp, /"device_io_started": False, "source": "gateway_smart_device_engine_snapshot"/);
+  assert.doesNotMatch(gatewayApp, /"local_key": device\.get\("local_key"\)/);
   assert.match(app, /IP guardado/);
   assert.match(app, /Atualizado pelo MAC/);
   assert.match(app, /Removido: MAC ausente/);
@@ -340,9 +340,11 @@ test("Devices uses Home card styling and tolerates temporary Tuya sample gaps", 
   assert.match(app, /sampleAge>120_000\)return \[\]/);
   assert.match(app, /stale\?" · última leitura":""/);
   assert.match(app, /data-favorite-toggle="\$\{esc\(device\.device_id\)\}"/);
-  assert.match(gatewayApp, /read_tuya_telemetry\(conn, max_age_seconds=30\)/);
+  assert.match(gatewayApp, /_smart_engine_device_view\("tuya", device_id, now=engine_now\)/);
+  assert.match(gatewayApp, /"source": "gateway_device_engine"/);
+  assert.doesNotMatch(gatewayApp, /read_tuya_telemetry\(conn, max_age_seconds=30\)/);
   assert.match(gatewayApp, /last_latency_ms/);
-  assert.match(gatewayApp, /current_connection_state"\] = "local_responded" if row\.get\("fresh"\) else "failed"/);
+  assert.match(gatewayApp, /current_connection_state"\] = "local_responded" if engine_online else "offline"/);
   assert.match(gatewayApp, /last_read_attempt_state/);
 });
 
@@ -373,6 +375,6 @@ test("USB release rollback verification includes prior Gateway releases", () => 
   assert.equal(rollbackLoops.length, 2);
   for (const loop of rollbackLoops) {
     assert.match(loop, /0\.6\.112 0\.6\.113 0\.6\.114 0\.6\.115 0\.6\.116 0\.6\.117 0\.6\.118 0\.6\.119 0\.6\.120 0\.6\.121 0\.6\.122 0\.6\.123 0\.6\.124 0\.6\.125 0\.6\.126 0\.6\.127 0\.6\.128 0\.6\.129 0\.6\.130 0\.6\.131 0\.6\.132 0\.6\.133 0\.6\.134 0\.6\.135/);
-    assert.match(loop, /0\.6\.139 0\.6\.140 0\.6\.141 0\.6\.142 0\.6\.143 0\.6\.145 0\.6\.146 0\.6\.147 0\.6\.148 0\.6\.149 0\.6\.150 0\.6\.151 0\.6\.152 0\.6\.153 0\.6\.154 0\.6\.155 0\.6\.156 0\.6\.157 0\.6\.158 0\.6\.159 0\.6\.160 0\.6\.161 0\.6\.162 0\.6\.163 0\.6\.164 0\.6\.165 0\.6\.166 0\.6\.169 0\.6\.171 0\.6\.172 0\.6\.173 0\.6\.174 0\.6\.175 0\.6\.176 0\.6\.177 0\.6\.188 0\.6\.189 0\.6\.190 0\.6\.191 0\.6\.192 0\.6\.193 0\.6\.194 0\.6\.195 0\.6\.196 0\.6\.197 0\.6\.216 0\.6\.232 0\.6\.235 0\.6\.236 0\.6\.237 0\.6\.238 0\.6\.239 0\.6\.240 0\.6\.241 0\.6\.242; do/);
+    assert.match(loop, /0\.6\.139 0\.6\.140 0\.6\.141 0\.6\.142 0\.6\.143 0\.6\.145 0\.6\.146 0\.6\.147 0\.6\.148 0\.6\.149 0\.6\.150 0\.6\.151 0\.6\.152 0\.6\.153 0\.6\.154 0\.6\.155 0\.6\.156 0\.6\.157 0\.6\.158 0\.6\.159 0\.6\.160 0\.6\.161 0\.6\.162 0\.6\.163 0\.6\.164 0\.6\.165 0\.6\.166 0\.6\.169 0\.6\.171 0\.6\.172 0\.6\.173 0\.6\.174 0\.6\.175 0\.6\.176 0\.6\.177 0\.6\.188 0\.6\.189 0\.6\.190 0\.6\.191 0\.6\.192 0\.6\.193 0\.6\.194 0\.6\.195 0\.6\.196 0\.6\.197 0\.6\.216 0\.6\.232 0\.6\.235 0\.6\.236 0\.6\.237 0\.6\.238 0\.6\.239 0\.6\.240 0\.6\.241 0\.6\.242 0\.6\.243; do/);
   }
 });

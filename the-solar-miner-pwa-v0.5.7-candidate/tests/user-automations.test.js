@@ -29,7 +29,11 @@ test("automation API supports edits, deletion, dry-run, and owner authorization"
 });
 
 test("local engine rejects stale Tuya inputs and dispatches explicit, bounded actions", () => {
-  assert.match(engine, /MAX_STALENESS_SECONDS = 60/);
+  assert.match(engine, /item\.get\("connection_state"\) != "local_responded"/);
+  assert.match(engine, /item\.get\("device_engine_managed"\) is not True/);
+  assert.match(engine, /item\.get\("measurement_valid"\) is not True/);
+  assert.match(engine, /five-latency deadline/);
+  assert.match(backend, /"measurement_validity_policy": "five_times_device_latency"/);
   assert.match(engine, /MAX_RULES = 100/);
   assert.match(engine, /not 1 <= len\(actions\) <= 8/);
   assert.match(backend, /_user_automation_loop\(\)/);
@@ -112,7 +116,7 @@ test("status-device selector filters favorites, configured divisions, then all d
 });
 
 test("static cache is versioned for the automation menu release", () => {
-  assert.match(worker, /the-solar-miner-static-v0\.5\.181-unified-smart-cards/);
+  assert.match(worker, /the-solar-miner-static-v0\.5\.182-device-engine/);
 });
 
 test("Agenda trigger opens navigable time, sunrise, sunset, location, and repeat previews", () => {

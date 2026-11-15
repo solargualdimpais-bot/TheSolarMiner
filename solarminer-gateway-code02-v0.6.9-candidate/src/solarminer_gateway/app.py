@@ -2782,7 +2782,7 @@ def read_user_automations(session: dict[str, Any] = Depends(require_permission("
         events = user_automation.history(conn, 50)
     return {"rules": rules, "history": events, "capabilities": _user_automation_capabilities(),
             "engine": {"state": "running", "evaluation_interval_seconds": 5, "local_only": True,
-                       "stale_reading_limit_seconds": user_automation.MAX_STALENESS_SECONDS}}
+                       "measurement_validity_policy": "five_times_device_latency"}}
 
 
 @app.post("/api/v1/automations")
