@@ -68,7 +68,7 @@ from . import smart_device_engine
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.244"
+PACKAGE_VERSION = "0.6.245"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
@@ -8014,6 +8014,92 @@ def gateway_terminal_diagnostics(session: dict[str, Any] = Depends(require_permi
     }
 
 
+async def _proxy_admin_terminal(websocket: WebSocket, session: dict[str, Any], raw_token: str) -> None:
+    """Proxy an Owner-authenticated WebSocket to the separately isolated root PTY broker."""
+    try:
+        reader, writer = await asyncio.wait_for(asyncio.open_unix_connection("/run/solarminer/admin-terminal.sock"), timeout=5)
+        writer.write(json.dumps({"type": "authenticate", "token": raw_token}, separators=(",", ":")).encode() + b"\n")
+        await writer.drain()
+        first = await asyncio.wait_for(reader.readline(), timeout=10)
+        if not first or len(first) > 16_384:
+            await websocket.send_json({"type": "error", "data": "O broker administrativo não respondeu de forma válida."})
+            await websocket.close(code=1011)
+            return
+        ready = json.loads(first.decode("utf-8"))
+        if not isinstance(ready, dict) or ready.get("type") != "ready":
+            await websocket.send_json(ready if isinstance(ready, dict) else {"type": "error", "data": "Autorização administrativa recusada."})
+            await websocket.close(code=4403)
+            return
+        with db() as conn:
+            actor = _revalidate_actor(conn, session, "manage_gateway")
+            if actor["role"] != "owner":
+                await websocket.close(code=4403)
+                return
+        await websocket.send_json(ready)
+
+        async def from_browser() -> None:
+            while True:
+                message = await websocket.receive_json()
+                if not isinstance(message, dict):
+                    continue
+                frame = json.dumps(message, separators=(",", ":")).encode("utf-8")
+                if len(frame) > 16_384:
+                    await websocket.send_json({"type": "error", "data": "Entrada demasiado longa."})
+                    continue
+                writer.write(frame + b"\n")
+                await writer.drain()
+                if message.get("type") == "close":
+                    return
+
+        async def to_browser() -> None:
+            while True:
+                frame = await reader.readline()
+                if not frame:
+                    return
+                if len(frame) > 16_384:
+                    await websocket.send_json({"type": "error", "data": "Resposta do terminal demasiado longa."})
+                    return
+                message = json.loads(frame.decode("utf-8"))
+                if isinstance(message, dict):
+                    await websocket.send_json(message)
+                    if message.get("type") in {"error", "exit"}:
+                        return
+
+        browser_task = asyncio.create_task(from_browser())
+        broker_task = asyncio.create_task(to_browser())
+        try:
+            while True:
+                done, _ = await asyncio.wait({browser_task, broker_task}, timeout=15,
+                                             return_when=asyncio.FIRST_COMPLETED)
+                if done:
+                    break
+                try:
+                    with db() as conn:
+                        actor = _revalidate_actor(conn, session, "manage_gateway")
+                        if actor["role"] != "owner":
+                            break
+                except HTTPException:
+                    break
+            for task in (browser_task, broker_task):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(browser_task, broker_task, return_exceptions=True)
+        finally:
+            writer.write(b'{"type":"close"}\n')
+            try:
+                await writer.drain()
+            except (ConnectionError, OSError):
+                pass
+            writer.close()
+            await writer.wait_closed()
+    except (OSError, asyncio.TimeoutError, json.JSONDecodeError, WebSocketDisconnect):
+        try:
+            await websocket.send_json({"type": "error", "data": "O broker administrativo não está disponível; a shell limitada continua separada."})
+            await websocket.close(code=1011)
+        except (RuntimeError, WebSocketDisconnect):
+            pass
+
+
 @app.websocket("/api/v1/system/terminal/ws")
 async def gateway_terminal(websocket: WebSocket) -> None:
     """Interactive bash PTY, restricted to a freshly authenticated Owner session."""
@@ -8027,8 +8113,12 @@ async def gateway_terminal(websocket: WebSocket) -> None:
     try:
         auth_message = await websocket.receive_json()
         raw_token = auth_message.get("token") if isinstance(auth_message, dict) and auth_message.get("type") == "authenticate" else None
+        terminal_mode = auth_message.get("mode", "user") if isinstance(auth_message, dict) else "user"
         if not isinstance(raw_token, str) or not raw_token or len(raw_token) > 512:
             await websocket.close(code=4401)
+            return
+        if terminal_mode not in {"user", "admin"}:
+            await websocket.close(code=4403)
             return
         token_digest = token_hash(raw_token)
     except (WebSocketDisconnect, ValueError, TypeError):
@@ -8049,6 +8139,10 @@ async def gateway_terminal(websocket: WebSocket) -> None:
                 return
     except HTTPException:
         await websocket.close(code=4401)
+        return
+
+    if terminal_mode == "admin":
+        await _proxy_admin_terminal(websocket, session, raw_token)
         return
 
     try:

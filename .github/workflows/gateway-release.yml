@@ -68,6 +68,7 @@ jobs:
         run: |
           set -euxo pipefail
           bash -n tools/tesla_oauth_relay/install-ubuntu.sh tools/tesla_oauth_relay/bootstrap-ubuntu.sh
+          python3 -m py_compile src/solarminer_gateway/admin_terminal_broker.py
           sh -n packaging/install-from-usb.sh
           python3 -m py_compile packaging/reset-data-volume.py
           ! grep -Eq 'PACKAGE_NAME=solarminer-gateway_[0-9]|version = "[0-9]' packaging/install-from-usb.sh
@@ -95,6 +96,8 @@ jobs:
           install -m 0644 packaging/solarminer-error-report.timer "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-error-report.timer"
           install -m 0644 packaging/solarminer-update-broker@.service "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-update-broker@.service"
           install -m 0644 packaging/solarminer-update-broker.socket "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-update-broker.socket"
+          install -m 0644 packaging/solarminer-admin-terminal.socket "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-admin-terminal.socket"
+          install -m 0644 packaging/solarminer-admin-terminal@.service "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-admin-terminal@.service"
           install -m 0644 packaging/solarminer-tailscale-cert.service "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-tailscale-cert.service"
           install -m 0755 packaging/solarminer-recovery "$VERIFY_ROOT/usr/bin/solarminer-recovery"
           install -m 0755 packaging/solarminer-data-volume-check "$VERIFY_ROOT/usr/bin/solarminer-data-volume-check"
@@ -111,7 +114,7 @@ jobs:
           printf '[Unit]\nDescription=Verification placeholder Gateway service\n[Service]\nExecStart=/usr/bin/true\n' > "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-gateway.service"
           install -m 0644 packaging/solarminer-gateway-watchdog.service "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-gateway-watchdog.service"
           install -m 0644 packaging/solarminer-gateway-watchdog.timer "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-gateway-watchdog.timer"
-          systemd-analyze --root="$VERIFY_ROOT" verify solarminer-recovery.service solarminer-error-report.service solarminer-error-report.timer solarminer-gateway-watchdog.service solarminer-gateway-watchdog.timer solarminer-update-broker.socket solarminer-update-broker@.service solarminer-tailscale-cert.service
+          systemd-analyze --root="$VERIFY_ROOT" verify solarminer-recovery.service solarminer-error-report.service solarminer-error-report.timer solarminer-gateway-watchdog.service solarminer-gateway-watchdog.timer solarminer-update-broker.socket solarminer-update-broker@.service solarminer-admin-terminal.socket solarminer-admin-terminal@.service solarminer-tailscale-cert.service
 
       - name: Run Gateway tests
         working-directory: solarminer-gateway-code02-v0.6.9-candidate

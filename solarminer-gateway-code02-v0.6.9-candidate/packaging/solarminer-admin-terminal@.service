@@ -1,0 +1,20 @@
+[Unit]
+Description=SolarMiner Owner-authenticated administrative terminal session
+After=local-fs.target solarminer-recovery.service
+Requires=solarminer-recovery.service
+RequiresMountsFor=/var/lib/solarminer
+
+[Service]
+Type=exec
+User=root
+Group=root
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+Environment=SOLARMINER_DB_PATH=/var/lib/solarminer/gateway.db
+Environment=PYTHONPATH=/opt/solarminer/current/usr/lib/solarminer-gateway
+ExecStart=/usr/bin/python3 -m solarminer_gateway.admin_terminal_broker
+TimeoutStartSec=infinity
+RuntimeMaxSec=2h
+UMask=0077
+PrivateTmp=true

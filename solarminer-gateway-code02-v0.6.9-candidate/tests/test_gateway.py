@@ -440,6 +440,38 @@ def test_owner_terminal_executes_and_streams_real_gateway_shell(client, tmp_path
         socket.send_json({"type": "close"})
 
 
+def test_owner_admin_terminal_routes_only_after_owner_authentication(client, monkeypatch):
+    owner, private, _ = create_owner(client)
+    token = login(client, owner, private).json()["access_token"]
+    routed = []
+
+    async def proxy(websocket, session, raw_token):
+        routed.append((session["role"], raw_token))
+        await websocket.send_json({"type": "ready", "data": "admin broker test"})
+        await websocket.close()
+
+    monkeypatch.setattr(gateway, "_proxy_admin_terminal", proxy)
+    with client.websocket_connect(
+        "/api/v1/system/terminal/ws",
+        headers={"origin": "https://solargualdimpais-bot.github.io"},
+    ) as socket:
+        socket.send_json({"type": "authenticate", "token": token, "mode": "admin"})
+        assert socket.receive_json()["type"] == "ready"
+    assert routed == [("owner", token)]
+
+
+def test_owner_admin_terminal_rejects_unknown_mode(client):
+    owner, private, _ = create_owner(client)
+    token = login(client, owner, private).json()["access_token"]
+    with client.websocket_connect(
+        "/api/v1/system/terminal/ws",
+        headers={"origin": "https://solargualdimpais-bot.github.io"},
+    ) as socket:
+        socket.send_json({"type": "authenticate", "token": token, "mode": "unrestricted"})
+        with pytest.raises(Exception):
+            socket.receive_json()
+
+
 def password_device_payload(private, public, username, password, nonce_value="new-device-password-login-01"):
     ts = int(time.time())
     public_der = serialization.load_pem_public_key(public.encode()).public_bytes(

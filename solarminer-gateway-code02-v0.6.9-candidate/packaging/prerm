@@ -11,6 +11,8 @@ case "${1:-}" in
       systemctl disable solarminer-gateway-watchdog.timer || true
       systemctl stop solarminer-update-broker.socket || true
       systemctl disable solarminer-update-broker.socket || true
+      systemctl stop solarminer-admin-terminal.socket || true
+      systemctl disable solarminer-admin-terminal.socket || true
       systemctl stop solarminer-public-tls-renew.timer || true
       systemctl disable solarminer-public-tls-renew.timer || true
     fi

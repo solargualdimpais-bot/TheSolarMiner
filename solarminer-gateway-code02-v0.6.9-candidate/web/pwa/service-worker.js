@@ -1,4 +1,4 @@
-const CACHE_NAME = "the-solar-miner-static-v0.5.182-device-engine";
+const CACHE_NAME = "the-solar-miner-static-v0.5.183-owner-admin-terminal";
 const STATIC_ASSETS = [
   "./", "./index.html", "./styles.css", "./app.js", "./home-startup-cache.js", "./gateway-connection.js", "./qrcode-generator.js",
   "./gateway-auth.js", "./favorite-list.js", "./app-core.js", "./workspace-ui.js", "./demo-mode.js", "./photo-format.js",

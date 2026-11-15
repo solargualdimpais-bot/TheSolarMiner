@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.182: cartões Tuya e Shelly unificados com os favoritos da Home.",
+  "description": "The Solar Miner PWA v0.5.183: terminal Owner administrativo para gestão do Gateway.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",

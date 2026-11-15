@@ -1,0 +1,15 @@
+[Unit]
+Description=SolarMiner Owner administrative terminal broker socket
+
+[Socket]
+ListenStream=/run/solarminer/admin-terminal.sock
+SocketUser=solarminer
+SocketGroup=solarminer
+SocketMode=0600
+DirectoryMode=0755
+Accept=yes
+RemoveOnStop=true
+MaxConnections=2
+
+[Install]
+WantedBy=sockets.target

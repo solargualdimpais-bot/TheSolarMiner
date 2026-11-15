@@ -3511,13 +3511,13 @@ async function connectGatewayTerminal() {
   status.textContent = "A abrir sessão segura no Gateway…";
   $("#gateway-terminal-output").textContent = "";
   try {
-    const socket = await openGatewayTerminalSocket();
+    const socket = await openGatewayTerminalSocket("admin");
     gatewayTerminalSocket = socket;
     // openGatewayTerminalSocket resolves only after receiving the Gateway's
     // authenticated "ready" message. The WebSocket's "open" event has already
     // fired by then, so enable the input here instead of waiting for that event.
     setGatewayTerminalConnected(true);
-    status.textContent = "Terminal ligado ao Gateway.";
+    status.textContent = "Terminal administrativo ligado como root.";
     socket.addEventListener("open", () => {
       setGatewayTerminalConnected(true);
       status.textContent = "A ligar ao terminal do Gateway…";

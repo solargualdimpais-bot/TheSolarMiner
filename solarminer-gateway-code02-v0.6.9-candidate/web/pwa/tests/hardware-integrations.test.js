@@ -308,7 +308,7 @@ test("Gateway terminal waits for server authentication and explains WebSocket fa
 
 test("Gateway terminal enables its input after authenticated readiness", () => {
   const app = read("../app.js");
-  assert.match(app, /const socket = await openGatewayTerminalSocket\(\);\s*gatewayTerminalSocket = socket;[\s\S]{0,360}setGatewayTerminalConnected\(true\);\s*status\.textContent = "Terminal ligado ao Gateway\."/);
+  assert.match(app, /const socket = await openGatewayTerminalSocket\("admin"\);\s*gatewayTerminalSocket = socket;[\s\S]{0,360}setGatewayTerminalConnected\(true\);\s*status\.textContent = "Terminal administrativo ligado como root\."/);
 });
 
 test("Owner DPS editor sends normalized characteristic, unit, and divisor to the Product ID map", () => {

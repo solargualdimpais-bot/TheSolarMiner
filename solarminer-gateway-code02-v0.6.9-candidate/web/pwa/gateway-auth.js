@@ -307,8 +307,9 @@ export async function disableGatewayDiagnosticsUpload() {
 export async function readGatewayTerminalDiagnostics() {
   return gatewayApi("/api/v1/system/terminal/diagnostics");
 }
-export async function openGatewayTerminalSocket() {
+export async function openGatewayTerminalSocket(mode = "user") {
   if (!currentGateway || !bearerToken || currentUser?.role !== "owner") throw new Error("Inicia sessão como Owner para abrir o terminal.");
+  if (!["user", "admin"].includes(mode)) throw new Error("Modo de terminal inválido.");
   // The saved Tailscale HTTPS endpoint is an explicit route choice for the
   // terminal too; otherwise an Owner session authenticated on another Gateway
   // origin keeps opening its WebSocket against that old origin.
@@ -342,7 +343,7 @@ export async function openGatewayTerminalSocket() {
       socket.close();
     };
     const onOpen = () => {
-      try { socket.send(JSON.stringify({ type: "authenticate", token: bearerToken })); }
+      try { socket.send(JSON.stringify({ type: "authenticate", token: bearerToken, mode })); }
       catch { fail("A ligação abriu, mas não foi possível enviar a autenticação ao Gateway.", "send_failed"); }
     };
     const onMessage = event => {

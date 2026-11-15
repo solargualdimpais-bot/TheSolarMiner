@@ -83,8 +83,8 @@
           </section>
           <section class="panel gateway-auth-panel gateway-terminal-panel" id="gateway-terminal-management">
             <div class="panel-header"><div><p class="eyebrow">OPERAÇÃO DO GATEWAY</p><h3>Terminal do Gateway</h3></div><span class="source-tag">OWNER · LIVE</span></div>
-            <p class="field-note">Sem novo login: usa a sessão Owner ativa para executar comandos no Gateway e receber a saída em tempo real. A sessão corre com as permissões do serviço solarminer; comandos que exigem root não ficam disponíveis.</p>
-            <div class="dialog-actions"><button id="gateway-terminal-connect" class="button secondary" type="button">Ligar terminal</button><button id="gateway-terminal-disconnect" class="button secondary" type="button" disabled>Desligar</button><span id="gateway-terminal-status" class="connection-result" role="status" aria-live="polite">Só disponível numa sessão Owner autenticada.</span></div>
+            <p class="field-note">Terminal administrativo root para o Owner autenticado. A sessão é auditada, termina quando a autorização expira e fecha após 30 minutos sem atividade. Usa-o apenas para administração do Gateway.</p>
+            <div class="dialog-actions"><button id="gateway-terminal-connect" class="button secondary" type="button">Ligar terminal administrativo</button><button id="gateway-terminal-disconnect" class="button secondary" type="button" disabled>Desligar</button><span id="gateway-terminal-status" class="connection-result" role="status" aria-live="polite">Só disponível numa sessão Owner autenticada.</span></div>
             <pre id="gateway-terminal-output" class="gateway-terminal-output" aria-label="Terminal em tempo real" aria-live="polite">Terminal desligado.</pre>
             <form id="gateway-terminal-form" class="gateway-terminal-input-row"><label for="gateway-terminal-command">Comando</label><input id="gateway-terminal-command" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Escreve um comando e prime Enter" disabled><button id="gateway-terminal-send" class="button primary" type="submit" disabled>Enviar</button></form>
           </section>
@@ -164,7 +164,7 @@
       </dialog>
       </section>
 
-      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.5.182</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
+      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.5.183</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
     </main>
   </div>
 
