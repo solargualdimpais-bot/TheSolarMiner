@@ -2122,6 +2122,17 @@ def _smart_engine_device_view(provider: str, device_id: str, *, now: float | Non
             "cloud_availability": cloud}
 
 
+def _is_private_lan_target(value: Any) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        address = ipaddress.ip_address(value.strip())
+    except ValueError:
+        return False
+    return bool(address.is_private and not (address.is_loopback or address.is_multicast
+                                             or address.is_unspecified or address.is_link_local))
+
+
 def _smart_engine_automation_telemetry() -> dict[str, dict[str, Any]]:
     """Expose only fresh Device Engine Tuya samples to rule evaluation."""
     snapshot = _smart_engine_snapshot().get("devices", {})
@@ -2167,6 +2178,7 @@ def _store_smart_engine_reading(provider: str, reading: dict[str, Any], latency_
         current.update({"provider": provider, "device_id": device_id,
                         "name": str(reading.get("name") or previous.get("name") or device_id)[:120],
                         "connection_state": ("online" if online else "offline"),
+                        "last_attempt_state": "success" if successful else "failed",
                         "last_attempt_at": stamp, "last_attempt_latency_ms": round(latency_seconds * 1000, 1),
                         "last_attempt_error": None if successful else str(reading.get("reason") or "no_lan_response")[:160],
                         "cloud_availability": cloud_status if cloud_status is not None else previous.get("cloud_availability")})
@@ -3759,11 +3771,16 @@ def hardware_integrations_read(session: dict[str, Any] = Depends(require_permiss
                 cloud = view.get("cloud_availability")
                 cloud_fresh = view.get("availability_source") == "TUYA_CLOUD"
                 current_status = view.get("status", [])
+                configured_host = device.get("local_ip") or device.get("ip")
+                private_host = _is_private_lan_target(configured_host)
                 tuya_rows.append({**device, "manufacturer": "Tuya", "current_status": current_status,
                     "measurement_valid": bool(view.get("measurement_valid")),
                     "last_status_at": view.get("observed_at"), "last_latency_ms": view.get("latency_ms"),
                     "last_read_attempt_at": view.get("last_attempt_at"),
                     "last_read_error": view.get("last_attempt_error"),
+                    "last_read_attempt_state": view.get("last_attempt_state") or ("success" if lan_online else "failed"),
+                    "current_status_reason": None if lan_online else (view.get("last_attempt_error") or
+                        ("private_lan_target_required" if not private_host else "no_lan_response")),
                     "current_connection_state": "local_responded" if lan_online else "offline" if cloud_fresh and cloud.get("online") is False else "unavailable",
                     "local_control_state": "ready" if lan_online else "unavailable",
                     "cloud_availability": cloud,
@@ -4001,7 +4018,8 @@ def tuya_lan_diagnostics(payload: dict[str, Any] | None = None,
                 "connection_state": "local_responded" if view.get("lan_online") else "offline",
                 "status": view.get("status", []), "measurement_valid": bool(view.get("measurement_valid")),
                 "last_success_at": view.get("last_success_at"), "age_seconds": view.get("age_seconds"),
-                "local_protocol": device.get("local_protocol"), "reason": view.get("last_attempt_error"),
+                "local_protocol": device.get("local_protocol"), "reason": view.get("last_attempt_error") or
+                    ("private_lan_target_required" if not _is_private_lan_target(device.get("local_ip")) else None),
                 "power_telemetry_configured": any(re.search(r"power|watt|cur_power|active_power",
                     str(entry.get("code", "")) + " " + str(entry.get("name", "")), re.I)
                     for entry in device.get("status_spec", []) if isinstance(entry, dict))})

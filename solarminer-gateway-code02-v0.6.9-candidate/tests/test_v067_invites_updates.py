@@ -560,10 +560,10 @@ def test_owner_can_map_a_dps_from_a_fresh_lan_read_even_when_product_schema_omit
               "status_spec": [], "current_status": []}], "product_schemas": {}}}
     monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: config)
     monkeypatch.setattr(gateway.hardware_integrations, "save_config", lambda value: value)
-    monkeypatch.setattr(gateway.energy_engine, "read_tuya_telemetry", lambda conn, *, max_age_seconds: {
-        "breaker-1": {"fresh": True, "connection_state": "local_responded",
-                      "status": [{"code": "dps_17", "dps_id": 17, "value": 2301},
-                                 {"code": "dps_19", "dps_id": 19, "value": 1465}]}
+    monkeypatch.setattr(gateway, "_smart_engine_device_view", lambda provider, device_id: {
+        "measurement_valid": True, "lan_online": True,
+        "status": [{"code": "dps_17", "dps_id": 17, "value": 2301},
+                   {"code": "dps_19", "dps_id": 19, "value": 1465}],
     })
 
     mapped = client.post("/api/v1/integrations/tuya/product-dps-description", headers=headers, json={
@@ -1088,10 +1088,13 @@ def test_hardware_status_keeps_recent_valid_tuya_sample_after_failed_attempt(cli
     monkeypatch.setattr(gateway.hardware_integrations, "public_config", lambda: {"tuya": {"devices": [
         {"device_id": "dimmer", "name": "Dimmer", "local_ip": "192.168.1.20",
          "current_status": [], "local_control_state": "unavailable"}]}})
-    monkeypatch.setattr(gateway.energy_engine, "read_tuya_telemetry", lambda conn, max_age_seconds: {
-        "dimmer": {"verified": True, "fresh": True, "connection_state": "failed",
-                   "observed_at": "2026-11-05T12:00:00+00:00", "last_attempt_at": "2026-11-05T12:00:01+00:00",
-                   "reason": "temporary_lan_timeout", "status": [{"code": "cur_power", "dps_id": 19, "value": 425}]}})
+    now = gateway.time.time()
+    monkeypatch.setattr(gateway, "_smart_engine_snapshot", lambda: {"schema": 1, "devices": {
+        "tuya:dimmer": {"provider": "tuya", "device_id": "dimmer", "last_success_at": now - 1,
+            "latency_ms": 1000, "observed_at": "2026-11-05T12:00:00+00:00",
+            "last_attempt_at": "2026-11-05T12:00:01+00:00", "last_attempt_state": "failed",
+            "last_attempt_error": "temporary_lan_timeout",
+            "status": [{"code": "cur_power", "dps_id": 19, "value": 425}]}}})
 
     response = client.get("/api/v1/integrations/hardware", headers=headers)
 
