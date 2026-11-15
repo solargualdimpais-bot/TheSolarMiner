@@ -2122,6 +2122,21 @@ def _smart_engine_device_view(provider: str, device_id: str, *, now: float | Non
             "cloud_availability": cloud}
 
 
+def _smart_engine_timestamp_epoch(value: Any) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return None
 def _is_private_lan_target(value: Any) -> bool:
     if not isinstance(value, str) or not value.strip():
         return False
@@ -3118,7 +3133,8 @@ def hardware_integrations_status(session: dict[str, Any] = Depends(require_permi
             device["last_latency_ms"] = engine_row.get("latency_ms") if isinstance(engine_row, dict) else None
             device["last_attempt_latency_ms"] = engine_row.get("last_attempt_latency_ms") if isinstance(engine_row, dict) else None
             device["last_read_attempt_at"] = engine_row.get("last_attempt_at") if isinstance(engine_row, dict) else None
-            device["last_read_attempt_age_seconds"] = max(0.0, engine_now - float(engine_row.get("last_attempt_at") or engine_now)) if isinstance(engine_row, dict) else None
+            attempt_epoch = _smart_engine_timestamp_epoch(engine_row.get("last_attempt_at")) if isinstance(engine_row, dict) else None
+            device["last_read_attempt_age_seconds"] = max(0.0, engine_now - attempt_epoch) if attempt_epoch is not None else None
             device["last_read_error"] = engine_row.get("last_attempt_error") if isinstance(engine_row, dict) else None
             device["local_control_state"] = "ready" if engine_online else "unavailable"
             device["local_verified"] = engine_online
@@ -3128,7 +3144,7 @@ def hardware_integrations_status(session: dict[str, Any] = Depends(require_permi
             device["device_engine"] = {"online": bool(view.get("online")), "measurement_valid": bool(view.get("measurement_valid")), "latency_ms": latency_ms,
                 "last_success_at": engine_row.get("last_success_at") if isinstance(engine_row, dict) else None, "age_seconds": age,
                 "offline_after_seconds": 5.0 * latency_ms / 1000.0, "source": "gateway_device_engine"}
-            device["last_read_attempt_state"] = engine_row.get("connection_state", "failed") if isinstance(engine_row, dict) else "waiting_for_device_engine"
+            device["last_read_attempt_state"] = (engine_row.get("last_attempt_state") or ("success" if engine_online else "failed")) if isinstance(engine_row, dict) else "waiting_for_device_engine"
         return result
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise HTTPException(500, "integration_config_unavailable") from exc
