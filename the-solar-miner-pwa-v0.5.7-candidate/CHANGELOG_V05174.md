@@ -1,4 +1,4 @@
-# Owner PWA 0.5.174
+# Owner PWA 0.5.175
 
 - Display the latest successful Tuya LAN response latency and the age of its verified reading.
 - Keep the last known DPS values visible during brief read gaps and label them as the last reading.

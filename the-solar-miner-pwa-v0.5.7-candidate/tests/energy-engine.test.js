@@ -15,8 +15,8 @@ test("Owner PWA uses Gateway readings and keeps equipment associations available
   assert.match(auth, /params\.set\("history_until", historyUntil\)/);
   assert.match(auth, /\/api\/v1\/energy\/engine\/config/);
   assert.match(app, /SOC da bateria/);
-  assert.match(app, /reportedSocOnly\?`Reportado pelo inversor/);
-  assert.match(app, /não usado nos cálculos de energia/);
+  assert.match(app, /reportedSocOnly\?`Lido diretamente do Deye/);
+  assert.match(app, /leitura direta e recente do SOC do Deye/);
   assert.match(app, /Energia acima do SOC mínimo/);
   assert.match(app, /Autonomia até ao corte · sem solar/);
   assert.match(app, /perfil \$\{esc\(autonomy\.history_days_used\?\?0\)\} dias \+ consumo atual/);
@@ -39,7 +39,7 @@ test("Owner PWA uses Gateway readings and keeps equipment associations available
   assert.match(app, /bank\.active!==false/);
   assert.match(app, /Potência FV estimada \+1 h/);
   assert.match(app, /Consumo estimado \+1 h/);
-  assert.match(app, /SOC estimado \+1 h/);
+  assert.match(app, /SOC futuro/);
   assert.match(app, /LIVE_UNVERIFIED/);
   assert.match(app, /Disjuntor de alimentação e medição/);
   assert.match(app, /data-miner-breaker-save/);

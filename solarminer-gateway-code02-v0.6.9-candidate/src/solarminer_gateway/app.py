@@ -70,7 +70,7 @@ from . import smart_device_engine
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.248"
+PACKAGE_VERSION = "0.6.249"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 INTELLIGENCE_LOCAL_TOKEN_PATH = Path(os.environ.get("SOLARMINER_INTELLIGENCE_CLIENT_TOKEN_FILE", "/etc/solarminer/intelligence-client.token"))
@@ -3924,7 +3924,7 @@ def _run_deye_cloud_history_import(job_id: str, owner_id: str, station_id: str) 
             mapped = {"generationPower": (inverter_equipment_id, "pv_total_power", "W"),
                       "consumptionPower": (inverter_equipment_id, "load_total_power", "W"),
                       "gridPower": (inverter_equipment_id, "grid_power", "W"),
-                      "batterySOC": (battery_equipment_id, "battery_soc_percent", "%"),
+                      "batterySOC": (battery_equipment_id, "battery_soc", "%"),
                       "batteryVoltage": (battery_equipment_id, "battery_voltage", "V"),
                       "chargePower": (battery_equipment_id, "battery_charge_power", "W"),
                       "dischargePower": (battery_equipment_id, "battery_discharge_power", "W")}
@@ -8771,7 +8771,8 @@ async def _proxy_admin_terminal(websocket: WebSocket, session: dict[str, Any], r
                 pass
             writer.close()
             await writer.wait_closed()
-    except (OSError, asyncio.TimeoutError, json.JSONDecodeError, WebSocketDisconnect):
+    except (OSError, asyncio.TimeoutError, json.JSONDecodeError, WebSocketDisconnect) as exc:
+        LOG.warning("Admin terminal broker proxy failed (%s)", type(exc).__name__)
         try:
             await websocket.send_json({"type": "error", "data": "O broker administrativo não está disponível; a shell limitada continua separada."})
             await websocket.close(code=1011)

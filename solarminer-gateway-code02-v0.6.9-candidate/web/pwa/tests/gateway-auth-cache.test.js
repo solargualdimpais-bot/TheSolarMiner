@@ -71,7 +71,7 @@ test("terminal WebSocket honors the confirmed Tailscale HTTPS route", () => {
 });
 
 test("service worker only caches allowlisted static resources and versions cache explicitly", () => {
-  assert.match(sw, /the-solar-miner-static-v0\.5\.183-owner-admin-terminal/);
+  assert.match(sw, /the-solar-miner-static-v0\.5\.184-owner-admin-terminal/);
   assert.match(sw, /\.\/home-startup-cache\.js/);
   assert.match(sw, /\.\/favorite-list\.js/);
   assert.match(sw, /url\.pathname\.includes\("\/api\/v1\/"\)/);

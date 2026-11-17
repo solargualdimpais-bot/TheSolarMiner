@@ -2,6 +2,7 @@
 Description=SolarMiner Intelligence resident OpenClaude agent
 After=network-online.target tailscaled.service solarminer-gateway.service ollama.service
 Wants=network-online.target ollama.service
+ConditionPathExists=/etc/solarminer/intelligence-agent.env
 
 [Service]
 Type=simple

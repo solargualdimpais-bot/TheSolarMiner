@@ -11,3 +11,9 @@ def test_postinst_creates_intelligence_group_before_using_it():
     assert create_user in postinst
     assert postinst.index(create_group) < postinst.index(use_group)
     assert postinst.index(create_user) < postinst.index(use_group)
+
+
+def test_intelligence_service_waits_for_bootstrap_credentials():
+    service = (Path(__file__).parents[1] / "packaging" / "solarminer-intelligence.service").read_text(encoding="utf-8")
+    assert "ConditionPathExists=/etc/solarminer/intelligence-agent.env" in service
+    assert "EnvironmentFile=/etc/solarminer/intelligence-agent.env" in service
