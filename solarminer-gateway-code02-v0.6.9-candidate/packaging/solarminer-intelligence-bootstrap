@@ -16,6 +16,7 @@ command -v tailscale >/dev/null 2>&1 || fail "Tailscale não está instalado"
 command -v curl >/dev/null 2>&1 || fail "curl não está instalado"
 command -v python3 >/dev/null 2>&1 || fail "Python 3 não está instalado"
 command -v tar >/dev/null 2>&1 || fail "tar não está instalado"
+command -v sha256sum >/dev/null 2>&1 || fail "sha256sum não está instalado"
 
 TAILSCALE_JSON=$(tailscale status --json 2>/dev/null) || fail "Tailscale ainda não está autorizado"
 TAILSCALE_DNS=$(printf '%s' "$TAILSCALE_JSON" | python3 -c '
@@ -53,6 +54,9 @@ log "Canal TLS local do Gateway validado para a ligação MCP."
 NODE_VERSION=24.22.1
 NODE_SHA256=6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6
 OPENCLAUDE_VERSION=0.36.0
+OLLAMA_VERSION=0.40.16
+OLLAMA_INSTALLER_SHA256=25f64b810b947145095956533e1bdf56eacea2673c55a7e586be4515fc882c9f
+OLLAMA_MODEL=qwen3.5:9b-q4_K_M
 ARCHIVE="node-v${NODE_VERSION}-linux-x64.tar.xz"
 BASE=/opt/solarminer/intelligence
 NODE_DIR="$BASE/node-v$NODE_VERSION"
@@ -60,6 +64,57 @@ APP_DIR="$BASE/app"
 mkdir -p "$BASE"
 TMP=$(mktemp -d "$BASE/.bootstrap.XXXXXX")
 trap 'rm -rf "$TMP" "$HEALTH"; [ -z "$LOCAL_HEALTH" ] || rm -f "$LOCAL_HEALTH"' EXIT HUP INT TERM
+
+# Ollama is installed only after the Tailscale identity, public TLS endpoint,
+# and local Gateway TLS endpoint have all passed above. The installer itself
+# is pinned and hash-checked; inference and model pulls remain loopback-only.
+if ! command -v zstd >/dev/null 2>&1; then
+  log "A instalar zstd a partir dos repositórios Debian verificados para o pacote oficial Ollama."
+  apt-get update >>"$LOG" 2>&1 || fail "apt-get update para zstd falhou"
+  DEBIAN_FRONTEND=noninteractive apt-get install -y zstd >>"$LOG" 2>&1 || fail "instalação de zstd falhou"
+fi
+if ! command -v ollama >/dev/null 2>&1 || ! ollama --version 2>&1 | grep -Fq "$OLLAMA_VERSION"; then
+  log "A instalar Ollama $OLLAMA_VERSION pelo instalador oficial verificado."
+  curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
+    "https://github.com/ollama/ollama/releases/download/v$OLLAMA_VERSION/install.sh" \
+    -o "$TMP/ollama-install.sh" || fail "download do instalador oficial Ollama falhou"
+  printf '%s  %s\n' "$OLLAMA_INSTALLER_SHA256" "$TMP/ollama-install.sh" | sha256sum --check --status || fail "hash do instalador Ollama não corresponde"
+  OLLAMA_VERSION="$OLLAMA_VERSION" /bin/sh "$TMP/ollama-install.sh" >>"$LOG" 2>&1 || fail "instalação oficial Ollama falhou"
+fi
+install -d -o root -g root -m 0755 /etc/systemd/system/ollama.service.d
+cat > /etc/systemd/system/ollama.service.d/solarminer.conf <<'EOF'
+[Service]
+Environment=OLLAMA_HOST=127.0.0.1:11434
+Environment=OLLAMA_NO_CLOUD=1
+Environment=OLLAMA_NUM_PARALLEL=1
+Environment=OLLAMA_MAX_LOADED_MODELS=1
+Environment=OLLAMA_KEEP_ALIVE=5m
+Environment=OLLAMA_CONTEXT_LENGTH=8192
+EOF
+chmod 0644 /etc/systemd/system/ollama.service.d/solarminer.conf
+systemctl daemon-reload
+systemctl enable --now ollama.service || fail "serviço Ollama não iniciou"
+OLLAMA_READY=0
+for attempt in $(seq 1 60); do
+  if curl --fail --silent --max-time 2 http://127.0.0.1:11434/api/version -o "$TMP/ollama-version.json"; then OLLAMA_READY=1; break; fi
+  sleep 1
+done
+[ "$OLLAMA_READY" -eq 1 ] || fail "API local do Ollama não ficou disponível em 127.0.0.1"
+if ! ollama list 2>>"$LOG" | awk -v model="$OLLAMA_MODEL" 'NR > 1 && $1 == model { found=1 } END { exit !found }'; then
+  log "A descarregar o modelo local $OLLAMA_MODEL; esta transferência pode demorar e ocupar vários gigabytes."
+  ollama pull "$OLLAMA_MODEL" >>"$LOG" 2>&1 || fail "download do modelo local Ollama falhou"
+fi
+curl --fail --silent --show-error --max-time 600 http://127.0.0.1:11434/api/generate \
+  -H 'Content-Type: application/json' \
+  --data-binary "{\"model\":\"$OLLAMA_MODEL\",\"prompt\":\"Responde apenas com OK.\",\"stream\":false,\"options\":{\"num_ctx\":8192,\"num_predict\":16}}" \
+  -o "$TMP/ollama-smoke.json" || fail "teste local de inferência Ollama falhou"
+python3 - "$TMP/ollama-smoke.json" <<'PY' || fail "modelo Ollama não passou no teste local de resposta"
+import json,sys
+with open(sys.argv[1],encoding="utf-8") as stream: result=json.load(stream)
+raise SystemExit(0 if isinstance(result.get("response"),str) and "ok" in result["response"].lower() else 1)
+PY
+log "Ollama $OLLAMA_VERSION e modelo $OLLAMA_MODEL instalados; inferência local smoke test passou."
+
 if [ ! -x "$NODE_DIR/bin/node" ]; then
   log "A descarregar Node.js $NODE_VERSION do domínio oficial nodejs.org."
   curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
@@ -180,9 +235,9 @@ fi
 if [ ! -d "$SOURCE_CANDIDATE" ]; then
   log "AVISO: candidato Gateway não existe no checkout; edição de código ficará indisponível."
 fi
-printf 'node=%s\nopenclaude=%s\n' "$NODE_VERSION" "$OPENCLAUDE_VERSION" > "$TMP/runtime-installed"
+printf 'node=%s\nopenclaude=%s\nollama=%s\nmodel=%s\n' "$NODE_VERSION" "$OPENCLAUDE_VERSION" "$OLLAMA_VERSION" "$OLLAMA_MODEL" > "$TMP/runtime-installed"
 systemctl enable --now solarminer-intelligence.service || fail "Node/OpenClaude foram instalados, mas o serviço residente não iniciou"
 systemctl is-active --quiet solarminer-intelligence.service || fail "serviço OpenClaude não ficou ativo"
 install -o root -g root -m 0644 "$TMP/runtime-installed" "$STATE"
 systemctl disable --now solarminer-intelligence-bootstrap.timer >/dev/null 2>&1 || true
-log "Node.js $NODE_VERSION e OpenClaude $OPENCLAUDE_VERSION instalados e serviço residente confirmado ativo."
+log "Node.js $NODE_VERSION, OpenClaude $OPENCLAUDE_VERSION, Ollama $OLLAMA_VERSION e $OLLAMA_MODEL instalados; serviço residente confirmado ativo."

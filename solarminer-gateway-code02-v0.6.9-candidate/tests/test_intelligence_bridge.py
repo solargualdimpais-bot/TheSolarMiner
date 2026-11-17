@@ -376,6 +376,38 @@ def test_intelligence_provider_configuration_is_owner_only_and_never_returns_or_
     assert secret not in audit_rows[0][0]
 
 
+def test_intelligence_provider_status_reports_local_runtime_model_and_optional_cloud_state(client, monkeypatch):
+    owner = _owner(client)
+    monkeypatch.setattr(gateway.update_helper_client, "request", lambda action, **kwargs:
+                        {"status": "ok", "configured": False})
+
+    class FakeConnection:
+        def __init__(self, host, port, timeout):
+            assert (host, port) == ("127.0.0.1", 8765)
+            assert timeout == 3
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def request(self, method, path, *, headers):
+            assert method == "GET" and path == "/health"
+        def getresponse(self):
+            health = {"configured": True, "ollama": {
+                "runtime": "available", "model": "qwen3.5:9b-q4_K_M",
+                "installed": True, "loaded": False, "working": False,
+            }}
+            return SimpleNamespace(status=200, read=lambda _limit: json.dumps(health).encode())
+
+    monkeypatch.setattr(gateway.http.client, "HTTPConnection", FakeConnection)
+    response = client.get("/api/v1/intelligence/provider", headers=owner)
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "default_provider": "ollama", "agent": "available",
+        "ollama": {"runtime": "available", "installed": True, "loaded": False,
+                   "working": False, "model": "qwen3.5:9b-q4_K_M"},
+        "openai": {"state": "not_configured", "configured": False,
+                   "error_type": None, "credential_display": "never_returned"},
+    }
+
+
 def test_intelligence_ask_forwards_only_authenticated_local_request_and_audits_metadata(client, monkeypatch):
     owner = _owner(client)
     monkeypatch.setattr(gateway, "_read_intelligence_local_token",
@@ -398,15 +430,23 @@ def test_intelligence_ask_forwards_only_authenticated_local_request_and_audits_m
 
     assert response.status_code == 200, response.text
     assert response.json()["answer"] == "Leitura local concluida."
+    assert response.json()["provider"] == "ollama"
     assert observed["host"] == "127.0.0.1" and observed["port"] == 8765
     assert observed["method"] == "POST" and observed["path"] == "/v1/analyze"
     assert observed["headers"]["Authorization"] == "Bearer local-client-token-123456789012345678901234567890"
-    assert observed["body"] == {"prompt": prompt}
+    assert observed["body"] == {"prompt": prompt, "provider": "ollama"}
     with gateway.db() as conn:
         details = conn.execute("SELECT details_json FROM audit WHERE action='intelligence.ask' AND outcome='success'").fetchone()[0]
         count = conn.execute("SELECT request_count FROM intelligence_request_limits ORDER BY window_start DESC LIMIT 1").fetchone()[0]
     assert prompt not in details and "local-client-token" not in details
+    assert json.loads(details)["provider"] == "ollama"
     assert count == 1
+
+    cloud = client.post("/api/v1/intelligence/ask", headers=owner,
+                        json={"prompt": "Usa OpenAI apenas nesta pergunta.", "provider": "openai"})
+    assert cloud.status_code == 200, cloud.text
+    assert cloud.json()["provider"] == "openai"
+    assert observed["body"]["provider"] == "openai"
 
 
 def test_intelligence_ask_enforces_persistent_hourly_cost_limit(client):

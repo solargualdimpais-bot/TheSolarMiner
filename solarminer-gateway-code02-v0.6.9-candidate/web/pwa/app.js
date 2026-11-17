@@ -3454,11 +3454,22 @@ $("#gateway-console-refresh")?.addEventListener("click", refreshGatewayConsole);
 async function refreshGatewayIntelligenceProvider() {
   const status = $("#gateway-intelligence-provider-status"), revoke = $("#gateway-intelligence-provider-revoke");
   if (!status || !sessionInfo().authenticated || sessionInfo().user?.role !== "owner") return;
-  status.textContent = "A verificar a configuração protegida da OpenAI…";
+  status.textContent = "Ollama local é o fornecedor predefinido. A verificar se a OpenAI opcional está configurada…";
   try {
     const state = await readGatewayIntelligenceProvider();
-    status.textContent = state.configured ? "OpenAI configurada no Gateway. A credencial não é devolvida à PWA." : "OpenAI ainda não configurada. O agente mantém-se sem análises até guardares a credencial e o modelo.";
-    if (revoke) revoke.disabled = !state.configured;
+    const local = state.ollama || {}, model = local.model || "modelo local";
+    const agentState = state.agent === "available" ? "OpenClaude disponível"
+      : state.agent === "starting_or_not_ready" ? "OpenClaude ativo, mas ainda não pronto"
+      : "OpenClaude indisponível";
+    const runtime = local.runtime === "available" ? "Ollama disponível" : "Ollama indisponível";
+    const modelState = local.installed ? "modelo instalado" : "modelo ainda não instalado";
+    const loadState = local.loaded ? "modelo carregado" : "modelo não está carregado neste momento";
+    const workState = local.working ? "análise em curso" : "sem análise em curso";
+    const cloudState = state.openai?.configured
+      ? "OpenAI configurada, usada só quando escolhida explicitamente"
+      : state.openai?.state === "status_unavailable" ? "estado da OpenAI indisponível" : "OpenAI opcional não configurada";
+    status.textContent = `${agentState} · padrão local · ${runtime} · ${model} · ${modelState} · ${loadState} · ${workState} · ${cloudState}.`;
+    if (revoke) revoke.disabled = !state.openai?.configured;
   } catch (error) {
     status.textContent = `Não foi possível consultar a configuração: ${error.message}`;
   }
@@ -3476,6 +3487,12 @@ async function refreshGatewayIntelligenceReviews() {
   } catch (error) { output.textContent = `Não foi possível ler as revisões: ${error.message}`; }
 }
 $("#gateway-intelligence-reviews-refresh")?.addEventListener("click", refreshGatewayIntelligenceReviews);
+$("#gateway-intelligence-ask-provider")?.addEventListener("change", event => {
+  const button = $("#gateway-intelligence-ask");
+  if (button) button.textContent = event.currentTarget.value === "openai"
+    ? "Analisar esta pergunta com OpenAI"
+    : "Analisar com Ollama local";
+});
 $("#gateway-intelligence-provider-form")?.addEventListener("submit", async event => {
   event.preventDefault();
   const form = event.currentTarget, status = $("#gateway-intelligence-provider-status");
@@ -3488,7 +3505,7 @@ $("#gateway-intelligence-provider-form")?.addEventListener("submit", async event
   try {
     await saveGatewayIntelligenceProvider(key.value, model.value.trim());
     key.value = "";
-    if (status) status.textContent = "Credencial e modelo guardados no Gateway. A chave não foi devolvida nem incluída na auditoria.";
+    if (status) status.textContent = "Credencial e modelo OpenAI guardados no Gateway. A chave não foi devolvida nem incluída na auditoria; OpenAI continua opcional.";
     await refreshGatewayIntelligenceProvider();
   } catch (error) {
     if (status) status.textContent = `Não foi possível guardar: ${error.message}`;
@@ -3510,14 +3527,18 @@ $("#gateway-intelligence-provider-revoke")?.addEventListener("click", async even
 $("#gateway-intelligence-ask-form")?.addEventListener("submit", async event => {
   event.preventDefault();
   const form = event.currentTarget, question = $("#gateway-intelligence-question"), answer = $("#gateway-intelligence-answer");
-  const button = $("#gateway-intelligence-ask");
+  const button = $("#gateway-intelligence-ask"), provider = $("#gateway-intelligence-ask-provider")?.value || "ollama";
   if (!sessionInfo().authenticated || sessionInfo().user?.role !== "owner") { if (answer) answer.textContent = "Só o Owner autenticado pode consultar o Intelligence."; return; }
   if (!question?.value.trim() || !answer) return;
+  if (provider === "openai" && !confirm("Esta pergunta e o contexto necessário serão enviados à OpenAI e podem gerar custos. Continuar?")) return;
   if (button) button.disabled = true;
-  answer.textContent = "A consultar os dados e diagnósticos disponíveis no Gateway…";
+  answer.textContent = provider === "ollama"
+    ? "A consultar e analisar localmente os dados e diagnósticos do Gateway com Ollama…"
+    : "A consultar os dados do Gateway e a analisar esta pergunta com a OpenAI…";
   try {
-    const result = await askGatewayIntelligence(question.value.trim());
+    const result = await askGatewayIntelligence(question.value.trim(), provider);
     answer.textContent = result.answer || "O agente não devolveu texto.";
+    await refreshGatewayIntelligenceProvider();
   } catch (error) {
     answer.textContent = `A análise não foi concluída: ${error.message}`;
   } finally { if (button) button.disabled = false; }

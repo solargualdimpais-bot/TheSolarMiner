@@ -149,9 +149,67 @@ async function readBody(request) {
   return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
 }
 
-async function runAnalysis(prompt, { development = false } = {}) {
-  if (!process.env.OPENAI_API_KEY) throw new Error('openai_credential_not_configured');
-  if (!process.env.OPENAI_MODEL) throw new Error('openai_model_not_configured');
+function inferenceConfig(provider) {
+  if (provider === 'ollama') {
+    const model = process.env.SOLARMINER_OLLAMA_MODEL || 'qwen3.5:9b-q4_K_M';
+    return {
+      model,
+      env: {
+        CLAUDE_CODE_USE_OPENAI: '1',
+        OPENAI_BASE_URL: process.env.SOLARMINER_OLLAMA_BASE_URL || 'http://127.0.0.1:11434/v1',
+        // Ollama's OpenAI-compatible endpoint ignores the key; keep a fixed
+        // local sentinel rather than forwarding any cloud credential.
+        OPENAI_API_KEY: 'ollama-local',
+        OPENAI_MODEL: model,
+      },
+    };
+  }
+  if (provider === 'openai') {
+    if (!process.env.OPENAI_API_KEY) throw new Error('openai_credential_not_configured');
+    if (!process.env.OPENAI_MODEL) throw new Error('openai_model_not_configured');
+    return {
+      model: process.env.OPENAI_MODEL,
+      env: {
+        CLAUDE_CODE_USE_OPENAI: '1',
+        OPENAI_BASE_URL: 'https://api.openai.com/v1',
+        OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+        OPENAI_MODEL: process.env.OPENAI_MODEL,
+      },
+    };
+  }
+  throw new Error('provider_invalid');
+}
+
+async function localModelStatus() {
+  const model = process.env.SOLARMINER_OLLAMA_MODEL || 'qwen3.5:9b-q4_K_M';
+  const baseUrl = (process.env.SOLARMINER_OLLAMA_BASE_URL || 'http://127.0.0.1:11434/v1').replace(/\/v1\/?$/, '');
+  try {
+    const [tagsResponse, psResponse] = await Promise.all([
+      fetch(`${baseUrl}/api/tags`, { signal: AbortSignal.timeout(2000) }),
+      fetch(`${baseUrl}/api/ps`, { signal: AbortSignal.timeout(2000) }),
+    ]);
+    if (!tagsResponse.ok) throw new Error('ollama_runtime_unavailable');
+    const tags = await tagsResponse.json();
+    const ps = psResponse.ok ? await psResponse.json() : {};
+    const matches = item => item?.name === model || item?.model === model;
+    return {
+      runtime: 'available', model,
+      installed: Array.isArray(tags.models) && tags.models.some(matches),
+      loaded: Array.isArray(ps.models) && ps.models.some(matches),
+      working: active,
+    };
+  } catch {
+    return { runtime: 'unavailable', model, installed: false, loaded: false, working: active };
+  }
+}
+
+async function runAnalysis(prompt, { development = false, provider = 'ollama' } = {}) {
+  const inference = inferenceConfig(provider);
+  if (provider === 'ollama') {
+    const local = await localModelStatus();
+    if (local.runtime !== 'available') throw new Error('ollama_runtime_unavailable');
+    if (!local.installed) throw new Error('ollama_model_not_installed');
+  }
   if (!process.env.SOLARMINER_INTELLIGENCE_TOKEN) throw new Error('solarminer_service_credential_not_configured');
   if (development) {
     const workspace = await stat(developmentWorkspace).catch(() => null);
@@ -174,7 +232,8 @@ async function runAnalysis(prompt, { development = false } = {}) {
         cwd: development ? developmentWorkspace : cwd,
         sessionId: development ? await persistentSessionId(true) : process.env.SOLARMINER_INTELLIGENCE_SESSION_ID || await persistentSessionId(),
         permissionMode: 'default',
-        model: process.env.OPENAI_MODEL || undefined,
+        model: inference.model,
+        env: inference.env,
         abortController,
         systemPrompt: development
           ? 'You are SolarMiner Intelligence in an isolated source-development session. Use the read-only SolarMiner MCP tools to verify the reported problem, then make a focused code change in this checkout only when evidence supports it. Add new regression tests when useful, but do not edit existing test files, release workflows, Git metadata, signing material, or claim tests were run. After a source change, invoke solarminer_validate_intelligence_workspace with gateway-python for Gateway Python changes, intelligence for MCP/agent changes, or both when appropriate, and report the exact results. You have no shell or publication tools. Do not access or modify the live installation, database, settings, services, or devices. Report evidence, exact changed files, and validation still required. Essential energy and protection behavior must remain local and independent of the cloud model.'
@@ -228,7 +287,7 @@ async function runAnalysis(prompt, { development = false } = {}) {
     }
     const answer = text.join('\n').trim().slice(0, 16000);
     if (!answer) throw new Error('analysis_returned_no_text');
-    return { status: 'ok', answer };
+    return { status: 'ok', answer, provider };
   } finally {
     clearTimeout(timeout);
     active = false;
@@ -269,9 +328,12 @@ function scheduleDailyReview() {
 
 const server = http.createServer(async (request, response) => {
   if (request.method === 'GET' && request.url === '/health') {
+    const local = await localModelStatus();
     return send(response, 200, {
-      status: 'ok', agent: 'OpenClaude', provider: 'OpenAI',
-      configured: Boolean(process.env.OPENAI_API_KEY && process.env.OPENAI_MODEL && process.env.SOLARMINER_INTELLIGENCE_TOKEN),
+      status: 'ok', agent: 'OpenClaude', default_provider: 'ollama',
+      ollama: local,
+      openai_configured: Boolean(process.env.OPENAI_API_KEY && process.env.OPENAI_MODEL),
+      configured: Boolean(process.env.SOLARMINER_INTELLIGENCE_TOKEN && local.runtime === 'available' && local.installed),
       busy: active,
     });
   }
@@ -291,16 +353,19 @@ const server = http.createServer(async (request, response) => {
     const body = await readBody(request);
     const prompt = body?.prompt;
     if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 8000) return send(response, 422, { error: 'prompt_must_be_1_to_8000_characters' });
-    return send(response, 200, await runAnalysis(prompt.trim(), { development }));
+    const provider = development ? 'ollama' : (body?.provider === undefined ? 'ollama' : body.provider);
+    return send(response, 200, await runAnalysis(prompt.trim(), { development, provider }));
   } catch (error) {
     const known = new Set([
-      'openai_credential_not_configured', 'openai_model_not_configured', 'solarminer_service_credential_not_configured',
+      'openai_credential_not_configured', 'openai_model_not_configured', 'solarminer_service_credential_not_configured', 'provider_invalid',
+      'ollama_runtime_unavailable', 'ollama_model_not_installed',
       'analysis_busy', 'analysis_hourly_limit_reached', 'request_too_large',
       'analysis_returned_no_text', 'resident_session_id_invalid', 'development_workspace_unavailable',
     ]);
     const raw = String(error?.message || 'analysis_failed');
     const message = known.has(raw) ? raw : 'provider_or_agent_request_failed';
     const status = message === 'openai_credential_not_configured' || message === 'openai_model_not_configured' ||
+      message === 'ollama_runtime_unavailable' || message === 'ollama_model_not_installed' ||
       message === 'solarminer_service_credential_not_configured' ? 503
       : message === 'analysis_busy' || message === 'analysis_hourly_limit_reached' ? 429
       : message === 'request_too_large' ? 413 : 502;

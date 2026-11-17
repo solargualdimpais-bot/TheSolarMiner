@@ -28,10 +28,16 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from . import app as gateway
+from .database_backup import _sync_directory, _sync_file
 
 RECOVERY_DOMAIN = b"SolarMiner Gateway owner recovery key v1\x00"
 DEVICE_PROOF_PREFIX = "SOLARMINER-GATEWAY-DEVICE-PROOF-V1"
 MIN_PASSWORD_LENGTH = 12
+
+
+def _is_root() -> bool:
+    """Return whether this process has POSIX root privileges, if supported."""
+    return hasattr(os, "geteuid") and os.geteuid() == 0
 
 
 class RecoveryError(ValueError):
@@ -328,7 +334,7 @@ def _restore_db_sidecar_ownership() -> None:
         st = path.stat()
     except OSError:
         return
-    if os.geteuid() != 0:
+    if not _is_root():
         return
     for candidate in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm")):
         try:
@@ -350,7 +356,7 @@ def create_consistent_backup() -> Path:
     backup_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     run_dir = backup_root / f"emergency-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{uuid.uuid4().hex[:8]}"
     run_dir.mkdir(mode=0o700)
-    if os.geteuid() == 0:
+    if _is_root():
         os.chown(run_dir, 0, 0)
     os.chmod(run_dir, 0o700)
     backup_path = run_dir / "gateway-pre-emergency.db"
@@ -370,15 +376,10 @@ def create_consistent_backup() -> Path:
         target.close()
         source.close()
     os.chmod(backup_path, 0o600)
-    if os.geteuid() == 0:
+    if _is_root():
         os.chown(backup_path, 0, 0)
-    with backup_path.open("rb") as f:
-        os.fsync(f.fileno())
-    dir_fd = os.open(run_dir, os.O_RDONLY)
-    try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
+    _sync_file(backup_path)
+    _sync_directory(run_dir)
     return backup_path
 
 

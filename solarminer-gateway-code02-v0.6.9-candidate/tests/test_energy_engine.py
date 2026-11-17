@@ -1142,6 +1142,10 @@ def test_background_sampler_persists_snapshot_without_pwa_request(tmp_path, monk
     from solarminer_gateway import app as gateway
 
     monkeypatch.setattr(gateway, "DB_PATH", tmp_path / "gateway.db")
+    # The production startup initializes this schema before starting the
+    # background sampler; this isolated test must do the same explicitly.
+    with gateway.db() as conn:
+        energy_registry.ensure_schema(conn)
     monkeypatch.setattr(gateway.hardware_integrations, "load_config", lambda: {"deye": {"host": "192.168.8.10", "port": 502, "unit_id": 1, "enabled": True}})
     monkeypatch.setattr(gateway.hardware_integrations, "read_deye", lambda _config: {
         "host": "192.168.8.10", "unit_id": 1, "connection_state": "mapped_registers_response",

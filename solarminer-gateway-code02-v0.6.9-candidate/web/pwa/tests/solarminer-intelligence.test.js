@@ -13,8 +13,11 @@ test('Owner has an Intelligence panel with protected provider setup and read-onl
   assert.match(html, /gateway-intelligence-api-key/);
   assert.match(html, /gateway-intelligence-model/);
   assert.match(html, /gateway-intelligence-question/);
+  assert.match(html, /gateway-intelligence-ask-provider/);
+  assert.match(html, /Por defeito, perguntas e relatórios usam o Ollama local/i);
+  assert.match(html, /OpenAI só é usada quando o Owner a escolhe/i);
   assert.match(html, /previsões e histórico do Energy Engine/i);
-  assert.match(html, /Gera uma revisão diária com propostas baseadas em evidência/i);
+  assert.match(html, /Aguardando a primeira revisão diária/i);
   assert.match(html, /gateway-intelligence-reviews-refresh/);
   assert.match(html, /não envia comandos físicos/i);
 });
@@ -27,8 +30,15 @@ test('PWA uses authenticated Gateway endpoints for provider setup, revocation an
   assert.match(auth, /askGatewayIntelligence/);
   assert.match(auth, /readGatewayIntelligenceReviews/);
   assert.match(app, /refreshGatewayIntelligenceProvider/);
+  assert.match(app, /OpenClaude ativo, mas ainda não pronto/);
+  assert.match(app, /OpenClaude indisponível/);
   assert.match(app, /refreshGatewayIntelligenceReviews/);
   assert.match(app, /key\.value = ""/);
   assert.match(app, /answer\.textContent = result\.answer/);
+  assert.match(app, /confirm\("Esta pergunta e o contexto necessário serão enviados à OpenAI/);
+  assert.match(app, /local\.loaded/);
+  assert.match(app, /local\.working/);
+  assert.match(app, /local\.runtime === "available"/);
+  assert.match(app, /modelo ainda não instalado/);
   assert.doesNotMatch(app, /innerHTML\s*=\s*result\.answer/);
 });

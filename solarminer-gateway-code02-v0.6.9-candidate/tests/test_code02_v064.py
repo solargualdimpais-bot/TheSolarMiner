@@ -7,6 +7,8 @@ from fastapi.testclient import TestClient
 from solarminer_gateway import app as gateway
 from solarminer_gateway import worker_ipc
 from solarminer_gateway.update_transaction import AtomicReleaseStore
+
+LINUX_ONLY = pytest.mark.skipif(os.name == "nt", reason="Requires Linux release-pointer symlink semantics")
 from test_code02_v063 import signed_zip
 
 
@@ -31,6 +33,7 @@ def test_worker_tcp_probe_denies_public_loopback_and_invalid_ports():
         execute({"protocol_version":worker_ipc.PROTOCOL_VERSION,"request_id":"r3","operation":"tcp_probe","arguments":{"host":"192.168.1.10","port":70000,"timeout":1.0}})
 
 
+@LINUX_ONLY
 def test_update_recovery_rolls_back_pointer_after_simulated_process_restart(tmp_path):
     store=AtomicReleaseStore(tmp_path/'store')
     first,m1=signed_zip(tmp_path,version='1.0.0')

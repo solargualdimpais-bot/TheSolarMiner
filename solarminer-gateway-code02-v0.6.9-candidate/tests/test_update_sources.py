@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,13 +11,16 @@ import pytest
 from solarminer_gateway import updates
 
 
-def _trusted_test_stat(path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def _trusted_test_stat(path: Path, monkeypatch: pytest.MonkeyPatch, *, mode: int = 0o644) -> None:
     real_lstat = Path.lstat
 
     def lstat(self: Path):
         result = real_lstat(self)
         if self == path:
-            return SimpleNamespace(st_mode=result.st_mode, st_uid=0, st_size=result.st_size)
+            # The production config is a POSIX root-owned regular file. Windows
+            # does not preserve Unix owner/group mode bits, so model those
+            # attributes explicitly while retaining the real file size.
+            return SimpleNamespace(st_mode=stat.S_IFREG | mode, st_uid=0, st_size=result.st_size)
         return result
 
     monkeypatch.setattr(Path, "lstat", lstat)
@@ -110,7 +114,7 @@ def test_load_update_source_rejects_group_or_world_writable_config(tmp_path: Pat
     config = tmp_path / "sources.json"
     _write_allowlist(config)
     config.chmod(0o666)
-    _trusted_test_stat(config, monkeypatch)
+    _trusted_test_stat(config, monkeypatch, mode=0o666)
 
     with pytest.raises(updates.UpdateValidationError, match="configuration_unsafe"):
         updates.load_update_source("https://github.com/solarminer/releases", config)

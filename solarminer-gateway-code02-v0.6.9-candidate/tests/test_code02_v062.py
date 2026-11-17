@@ -6,6 +6,8 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from solarminer_gateway import energy_registry as energy, worker_ipc as ipc, signed_activation as activation
 
+LINUX_ONLY = pytest.mark.skipif(os.name == "nt", reason="Requires Linux Unix-socket peer credentials")
+
 
 def dbmem():
     c=sqlite3.connect(":memory:"); c.row_factory=sqlite3.Row; c.execute("PRAGMA foreign_keys=ON"); energy.ensure_schema(c); activation.ensure_schema(c); return c
@@ -41,6 +43,7 @@ def test_worker_ipc_frames_json_and_rejects_unterminated_frame():
     finally:left.close();right.close()
 
 
+@LINUX_ONLY
 def test_worker_ipc_peer_uid_is_verified():
     left,right=socket.socketpair()
     try:
@@ -49,6 +52,7 @@ def test_worker_ipc_peer_uid_is_verified():
     finally:left.close();right.close()
 
 
+@LINUX_ONLY
 def test_worker_process_serves_health_over_unix_socket_and_exits_cleanly(tmp_path):
     sock=tmp_path/"worker.sock"
     env={**os.environ,"PYTHONPATH":str(Path(ipc.__file__).resolve().parents[1]),"SOLARMINER_CONNECTOR_ID":"test-worker"}

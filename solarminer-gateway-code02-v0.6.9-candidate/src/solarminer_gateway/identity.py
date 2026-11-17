@@ -33,7 +33,7 @@ def provision_identity(private_path: Path, public_path: Path) -> str:
         temporary = Path(name)
         try:
             with os.fdopen(fd, "wb") as stream:
-                os.fchmod(stream.fileno(), 0o644)
+                os.chmod(temporary, 0o644)
                 stream.write(public_bytes)
                 stream.flush()
                 os.fsync(stream.fileno())

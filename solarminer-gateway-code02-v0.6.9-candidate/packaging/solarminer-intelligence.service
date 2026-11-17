@@ -1,7 +1,7 @@
 [Unit]
 Description=SolarMiner Intelligence resident OpenClaude agent
-After=network-online.target tailscaled.service solarminer-gateway.service
-Wants=network-online.target
+After=network-online.target tailscaled.service solarminer-gateway.service ollama.service
+Wants=network-online.target ollama.service
 
 [Service]
 Type=simple
@@ -11,8 +11,8 @@ EnvironmentFile=/etc/solarminer/intelligence-agent.env
 EnvironmentFile=-/etc/solarminer/intelligence-openai.env
 Environment=HOME=/var/lib/solarminer-intelligence/home
 Environment=OPENCLAUDE_CONFIG_DIR=/var/lib/solarminer-intelligence/home/.openclaude
-Environment=CLAUDE_CODE_USE_OPENAI=1
-Environment=OPENAI_BASE_URL=https://api.openai.com/v1
+Environment=SOLARMINER_OLLAMA_BASE_URL=http://127.0.0.1:11434/v1
+Environment=SOLARMINER_OLLAMA_MODEL=qwen3.5:9b-q4_K_M
 Environment=SOLARMINER_INTELLIGENCE_URL=https://localhost:8443/api/v1/intelligence
 Environment=SOLARMINER_GATEWAY_CA=/usr/share/solarminer/intelligence-agent/gateway-ca.crt
 Environment=NODE_EXTRA_CA_CERTS=/usr/share/solarminer/intelligence-agent/gateway-ca.crt

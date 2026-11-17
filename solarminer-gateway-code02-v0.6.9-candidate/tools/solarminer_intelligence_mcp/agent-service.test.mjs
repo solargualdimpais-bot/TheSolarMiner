@@ -17,6 +17,7 @@ export async function* query({ prompt, options }) {
   const denied = await options.canUseTool('Bash', {}, {});
   await appendFile(process.env.MOCK_REPORT, JSON.stringify({
     prompt, sessionId: options.sessionId, permissionMode: options.permissionMode, model: options.model,
+    inferenceEnv: options.env,
     allowed, denied, mcpCommand: options.mcpServers.solarminer.command,
     mcpArgs: options.mcpServers.solarminer.args,
     mcpEnv: options.mcpServers.solarminer.env,
@@ -33,6 +34,19 @@ async function unusedPort() {
   const { port } = probe.address();
   await new Promise(resolve => probe.close(resolve));
   return port;
+}
+
+async function startMockOllama(t, { installed = true } = {}) {
+  const model = 'qwen3.5:9b-q4_K_M';
+  const server = http.createServer((request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify(request.url === '/api/ps' ? { models: [] } :
+      { models: installed ? [{ name: model, model }] : [] }));
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  return `http://127.0.0.1:${server.address().port}/v1`;
 }
 
 async function waitForHealth(port, child) {
@@ -55,6 +69,7 @@ test('resident agent authenticates requests, persists sessions and only allows t
   const mockPath = path.join(temp, 'mock-sdk.mjs');
   const reportPath = path.join(temp, 'agent-report.jsonl');
   const statePath = path.join(temp, 'state');
+  const ollamaBase = await startMockOllama(t);
   const auditRequests = [];
   const auditServer = http.createServer(async (request, response) => {
     const chunks = [];
@@ -77,6 +92,7 @@ test('resident agent authenticates requests, persists sessions and only allows t
       SOLARMINER_INTELLIGENCE_TOKEN: 'gateway-service-test-token-12345678901234567890',
       SOLARMINER_INTELLIGENCE_URL: `http://127.0.0.1:${auditPort}/api/v1/intelligence`,
       SOLARMINER_GATEWAY_CA: '/test/gateway-ca.crt',
+      SOLARMINER_OLLAMA_BASE_URL: ollamaBase,
       MOCK_REPORT: reportPath,
       OPENAI_API_KEY: 'sk-test-only-not-a-real-credential-123456789',
       OPENAI_MODEL: 'reasoning-model-test',
@@ -95,6 +111,8 @@ test('resident agent authenticates requests, persists sessions and only allows t
   const health = await waitForHealth(port, child);
   assert.equal(health.agent, 'OpenClaude');
   assert.equal(health.configured, true);
+  assert.equal(health.default_provider, 'ollama');
+  assert.equal(health.ollama.installed, true);
   assert.equal(JSON.stringify(health).includes('sk-test'), false);
 
   const unauthorized = await fetch(`http://127.0.0.1:${port}/v1/analyze`, {
@@ -115,13 +133,25 @@ test('resident agent authenticates requests, persists sessions and only allows t
     const result = await response.text();
     assert.equal(response.status, 200, result);
     assert.equal(JSON.parse(result).answer, 'Análise baseada na ponte SolarMiner.');
+    assert.equal(JSON.parse(result).provider, 'ollama');
   }
+  const explicitCloud = await fetch(`http://127.0.0.1:${port}/v1/analyze`, {
+    method: 'POST', headers, body: JSON.stringify({ prompt: 'Usa OpenAI apenas neste pedido.', provider: 'openai' }),
+  });
+  const explicitCloudBody = await explicitCloud.text();
+  assert.equal(explicitCloud.status, 200, explicitCloudBody);
+  assert.equal(JSON.parse(explicitCloudBody).provider, 'openai');
 
   const reports = (await readFile(reportPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
-  assert.equal(reports.length, 2);
+  assert.equal(reports.length, 3);
   assert.equal(reports[0].sessionId, reports[1].sessionId);
   assert.equal(reports[0].permissionMode, 'default');
-  assert.equal(reports[0].model, 'reasoning-model-test');
+  assert.equal(reports[0].model, 'qwen3.5:9b-q4_K_M');
+  assert.equal(reports[0].inferenceEnv.OPENAI_BASE_URL, ollamaBase);
+  assert.equal(reports[0].inferenceEnv.OPENAI_API_KEY, 'ollama-local');
+  assert.equal(reports[2].model, 'reasoning-model-test');
+  assert.equal(reports[2].inferenceEnv.OPENAI_BASE_URL, 'https://api.openai.com/v1');
+  assert.equal(reports[2].inferenceEnv.OPENAI_API_KEY, 'sk-test-only-not-a-real-credential-123456789');
   assert.deepEqual(reports[0].allowed, { behavior: 'allow' });
   assert.equal(reports[0].denied.behavior, 'deny');
   assert.equal(reports[0].mcpCommand, '/usr/bin/env');
@@ -129,7 +159,7 @@ test('resident agent authenticates requests, persists sessions and only allows t
   assert.deepEqual(reports[0].mcpEnv, {});
   assert.equal(reports[0].mainKey, true);
   assert.equal(stderr.includes('sk-test'), false);
-  assert.equal(auditRequests.length, 2);
+  assert.equal(auditRequests.length, 3);
   assert.equal(auditRequests[0].method, 'POST');
   assert.equal(auditRequests[0].url, '/api/v1/intelligence/agent-events');
   assert.equal(auditRequests[0].authorization, 'Bearer gateway-service-test-token-12345678901234567890');
@@ -139,10 +169,11 @@ test('resident agent authenticates requests, persists sessions and only allows t
   assert.equal(reports[0].mcpArgs.join(' ').includes('gateway-service-test-token'), false);
 });
 
-test('resident agent rejects oversized request bodies and fails closed without OpenAI credentials', async t => {
+test('resident agent defaults to local Ollama without OpenAI credentials and requires a key only for explicit cloud requests', async t => {
   const temp = await mkdtemp(path.join(os.tmpdir(), 'solarminer-intelligence-no-key-'));
   const port = await unusedPort();
   const mockPath = path.join(temp, 'unused-sdk.mjs');
+  const ollamaBase = await startMockOllama(t);
   await writeFile(mockPath, 'export async function* query() {}\n');
   const child = spawn(process.execPath, [service], {
     env: {
@@ -154,6 +185,7 @@ test('resident agent rejects oversized request bodies and fails closed without O
       SOLARMINER_INTELLIGENCE_TOKEN: 'gateway-service-test-token-12345678901234567890',
       OPENAI_API_KEY: '',
       OPENAI_MODEL: 'reasoning-model-test',
+      SOLARMINER_OLLAMA_BASE_URL: ollamaBase,
     },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
@@ -166,8 +198,12 @@ test('resident agent rejects oversized request bodies and fails closed without O
   });
   await waitForHealth(port, child);
   const headers = { authorization: 'Bearer local-agent-test-token-12345678901234567890', 'content-type': 'application/json' };
-  const noKey = await fetch(`http://127.0.0.1:${port}/v1/analyze`, {
+  const local = await fetch(`http://127.0.0.1:${port}/v1/analyze`, {
     method: 'POST', headers, body: JSON.stringify({ prompt: 'Test' }),
+  });
+  assert.equal(local.status, 502, 'the empty mock intentionally returns no answer, but provider resolution must remain local');
+  const noKey = await fetch(`http://127.0.0.1:${port}/v1/analyze`, {
+    method: 'POST', headers, body: JSON.stringify({ prompt: 'Test', provider: 'openai' }),
   });
   assert.equal(noKey.status, 503);
   assert.equal((await noKey.json()).error, 'openai_credential_not_configured');
@@ -188,6 +224,7 @@ test('development session confines source edits to its isolated checkout and sti
   await writeFile(path.join(workspace, 'tests', 'test_existing.py'), 'def test_existing(): assert True\n');
   const mockPath = path.join(temp, 'mock-sdk.mjs');
   const reportPath = path.join(temp, 'tool-report.json');
+  const ollamaBase = await startMockOllama(t);
   await writeFile(mockPath, `
 import { writeFile } from 'node:fs/promises';
 export async function* query({ options }) {
@@ -227,6 +264,7 @@ export async function* query({ options }) {
       SOLARMINER_INTELLIGENCE_TOKEN: 'gateway-service-test-token-12345678901234567890',
       SOLARMINER_INTELLIGENCE_URL: `http://127.0.0.1:${auditPort}/api/v1/intelligence`,
       OPENAI_API_KEY: 'sk-test-only-not-a-real-credential-123456789', OPENAI_MODEL: 'reasoning-model-test',
+      SOLARMINER_OLLAMA_BASE_URL: ollamaBase,
       MOCK_WORKSPACE: workspace, MOCK_REPORT: reportPath,
     },
     stdio: ['ignore', 'ignore', 'pipe'],
@@ -269,6 +307,7 @@ test('scheduled daily review requires the local credential and stores a proposal
   const auditPort = await unusedPort();
   const mockPath = path.join(temp, 'mock-sdk.mjs');
   const reportPath = path.join(temp, 'agent-report.jsonl');
+  const ollamaBase = await startMockOllama(t);
   const requests = [];
   const auditServer = http.createServer(async (request, response) => {
     const chunks = [];
@@ -288,6 +327,7 @@ test('scheduled daily review requires the local credential and stores a proposal
       SOLARMINER_INTELLIGENCE_TOKEN: 'gateway-service-test-token-12345678901234567890',
       SOLARMINER_INTELLIGENCE_URL: `http://127.0.0.1:${auditPort}/api/v1/intelligence`,
       OPENAI_API_KEY: 'sk-test-only-not-a-real-credential-123456789', OPENAI_MODEL: 'reasoning-model-test',
+      SOLARMINER_OLLAMA_BASE_URL: ollamaBase,
       MOCK_REPORT: reportPath }, stdio: 'ignore',
   });
   t.after(async () => {

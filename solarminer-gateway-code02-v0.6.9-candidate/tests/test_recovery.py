@@ -275,8 +275,10 @@ def test_emergency_backup_is_consistent_private_and_contains_no_plaintext_secret
     owner, _, _ = create_owner(client)
     backup = recovery.create_consistent_backup()
     assert backup.exists()
-    assert backup.stat().st_mode & 0o777 == 0o600
-    assert backup.parent.stat().st_mode & 0o777 == 0o700
+    if os.name == "posix":
+        assert backup.stat().st_mode & 0o777 == 0o600
+    if os.name == "posix":
+        assert backup.parent.stat().st_mode & 0o777 == 0o700
     with sqlite3.connect(backup) as conn:
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert conn.execute("SELECT username FROM users WHERE id=?", (owner["user_id"],)).fetchone()[0] == "owner-a2"
@@ -338,7 +340,7 @@ def test_emergency_audit_failure_rolls_back_and_preserves_backup(client, monkeyp
 
 def test_emergency_reset_requires_root_privileges(monkeypatch):
     from solarminer_gateway import cli
-    monkeypatch.setattr(cli.os, "geteuid", lambda: 1001)
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 1001, raising=False)
     with pytest.raises(PermissionError, match="root"):
         cli._require_root()
 

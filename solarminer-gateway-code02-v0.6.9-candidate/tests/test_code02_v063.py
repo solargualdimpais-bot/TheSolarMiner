@@ -8,6 +8,8 @@ from solarminer_gateway import signed_activation
 from solarminer_gateway.runtime_manager import ConnectorWorkerRuntime, WorkerRuntimeError
 from solarminer_gateway.update_transaction import AtomicReleaseStore, UpdateTransactionError
 
+LINUX_ONLY = pytest.mark.skipif(os.name == "nt", reason="Requires Linux fcntl, Unix sockets or symlink semantics")
+
 
 def signed_zip(tmp_path, connector_id="test-connector", version="1.0.0"):
     artifact = tmp_path / f"{version}.zip"
@@ -25,6 +27,7 @@ def signed_zip(tmp_path, connector_id="test-connector", version="1.0.0"):
     return artifact, verified
 
 
+@LINUX_ONLY
 def test_worker_runtime_start_ipc_monitor_stop():
     runtime = ConnectorWorkerRuntime("test-connector", timeout=3)
     result = runtime.start()
@@ -45,6 +48,7 @@ def test_worker_runtime_rejects_invalid_id_and_timeout():
         ConnectorWorkerRuntime("connector", timeout=99)
 
 
+@LINUX_ONLY
 def test_atomic_store_activates_verified_archive_and_preserves_previous(tmp_path):
     store = AtomicReleaseStore(tmp_path / "store")
     first, manifest1 = signed_zip(tmp_path, version="1.0.0")
@@ -58,6 +62,7 @@ def test_atomic_store_activates_verified_archive_and_preserves_previous(tmp_path
     assert "COMMITTED" in store.journal.read_text()
 
 
+@LINUX_ONLY
 def test_atomic_store_rolls_back_after_post_switch_failure(tmp_path):
     store = AtomicReleaseStore(tmp_path / "store")
     first, m1 = signed_zip(tmp_path, version="1.0.0")
@@ -71,6 +76,7 @@ def test_atomic_store_rolls_back_after_post_switch_failure(tmp_path):
 
 
 @pytest.mark.parametrize("fault", ["staging", "validation", "pre_switch"])
+@LINUX_ONLY
 def test_atomic_store_failures_before_switch_preserve_active(tmp_path, fault):
     store = AtomicReleaseStore(tmp_path / "store")
     first, m1 = signed_zip(tmp_path, version="1.0.0")
@@ -92,6 +98,7 @@ def test_atomic_store_rejects_modified_artifact_and_unsigned_manifest(tmp_path):
         signed_activation.VerifiedManifest({"connector_id": "test", "version": "1"})
 
 
+@LINUX_ONLY
 def test_atomic_store_rejects_zip_path_traversal(tmp_path):
     store = AtomicReleaseStore(tmp_path / "store")
     artifact = tmp_path / "evil.zip"
@@ -106,6 +113,7 @@ def test_atomic_store_rejects_zip_path_traversal(tmp_path):
         store.activate(verified, artifact, lambda p: True)
 
 
+@LINUX_ONLY
 def test_atomic_store_keeps_active_pointers_per_connector(tmp_path):
     store = AtomicReleaseStore(tmp_path / "store")
     a1, m1 = signed_zip(tmp_path, connector_id="inverter-one", version="1.0.0")

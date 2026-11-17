@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -16,6 +17,7 @@ from solarminer_gateway import connector_plugins
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG_DIR = ROOT / "packaging" / "catalog"
+LINUX_ONLY = pytest.mark.skipif(os.name == "nt", reason="Connector worker runtime requires Linux Unix sockets and peer credentials")
 
 
 @pytest.fixture
@@ -58,6 +60,7 @@ def test_catalog_tampering_fails_closed(tmp_path, monkeypatch, catalog_paths):
         manager.load_catalog()
 
 
+@LINUX_ONLY
 def test_install_configure_test_remove_and_audit(catalog_paths, monkeypatch):
     conn = connection()
     with pytest.raises(PermissionError):
@@ -96,6 +99,7 @@ def test_install_configure_test_remove_and_audit(catalog_paths, monkeypatch):
     conn.close()
 
 
+@LINUX_ONLY
 def test_audit_failure_rolls_back_install(catalog_paths):
     conn = connection()
     conn.execute("CREATE TRIGGER reject_connector_audit BEFORE INSERT ON audit BEGIN SELECT RAISE(ABORT,'audit unavailable'); END")
@@ -148,6 +152,7 @@ def test_public_ip_and_loopback_targets_rejected(monkeypatch):
         connector_plugins.tcp_readonly_probe("127.0.0.1", 443)
 
 
+@LINUX_ONLY
 def test_concurrent_install_is_serialized_and_consistent(tmp_path, catalog_paths):
     db_path = tmp_path / "connectors.db"
     initial = connection(str(db_path)); initial.close()
@@ -203,6 +208,7 @@ def _make_owner(client):
     return {"Authorization": f"Bearer {login.json()['access_token']}"}
 
 
+@LINUX_ONLY
 def test_api_auth_catalog_install_and_discovery(tmp_path, monkeypatch):
     monkeypatch.setattr(manager, "catalog_paths", lambda: (
         CATALOG_DIR / "catalog.json", CATALOG_DIR / "catalog.sig", CATALOG_DIR / "catalog.pub"))

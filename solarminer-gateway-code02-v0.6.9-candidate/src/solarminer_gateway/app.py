@@ -70,7 +70,7 @@ from . import smart_device_engine
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.246"
+PACKAGE_VERSION = "0.6.247"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 INTELLIGENCE_LOCAL_TOKEN_PATH = Path(os.environ.get("SOLARMINER_INTELLIGENCE_CLIENT_TOKEN_FILE", "/etc/solarminer/intelligence-client.token"))
@@ -2532,6 +2532,9 @@ class IntelligenceProviderConfig(BaseModel):
 class IntelligenceAskRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     prompt: StrictStr = Field(min_length=1, max_length=8000)
+    # Local Ollama is the default. Cloud inference must be explicitly selected
+    # for an individual Owner request; scheduled error reviews never use it.
+    provider: Literal["ollama", "openai"] = "ollama"
 
 
 class IntelligenceAgentAuditEvent(BaseModel):
@@ -3258,17 +3261,34 @@ def intelligence_provider_status(
             raise HTTPException(403, "owner_required")
     try:
         status_result = update_helper_client.request("intelligence_openai_status")
+        openai_state = "configured" if status_result.get("configured") is True else "not_configured"
     except Exception as exc:
-        with db() as conn:
-            audit(conn, session["user_id"], "intelligence.provider.status", "openai", "failed",
-                  {"error_type": type(exc).__name__})
-        raise HTTPException(503, "intelligence_provider_status_unavailable") from exc
-    configured = status_result.get("configured") is True
+        openai_state = "status_unavailable"
+        openai_error_type = type(exc).__name__
+    else:
+        openai_error_type = None
+    local_state: dict[str, Any] = {"runtime": "unavailable", "installed": False,
+                                   "loaded": False, "working": False, "model": "qwen3.5:9b-q4_K_M"}
+    agent_state = "unavailable"
+    try:
+        with http.client.HTTPConnection("127.0.0.1", 8765, timeout=3) as connection:
+            connection.request("GET", "/health", headers={"Accept": "application/json"})
+            response = connection.getresponse()
+            agent_payload = json.loads(response.read(8000).decode("utf-8")) if response.status == 200 else {}
+        if isinstance(agent_payload, dict):
+            candidate = agent_payload.get("ollama")
+            if isinstance(candidate, dict):
+                local_state = {key: candidate.get(key) for key in ("runtime", "installed", "loaded", "working", "model")}
+            agent_state = "available" if agent_payload.get("configured") is True else "starting_or_not_ready"
+    except (OSError, ValueError, TimeoutError, http.client.HTTPException):
+        pass
     with db() as conn:
-        audit(conn, session["user_id"], "intelligence.provider.status", "openai",
-              "success", {"configured": configured})
-    return {"provider": "openai", "configured": configured, "model_required": True,
-            "credential_display": "never_returned"}
+        audit(conn, session["user_id"], "intelligence.provider.status", "ollama",
+              "success", {"runtime": local_state.get("runtime"), "model_installed": local_state.get("installed"),
+                          "openai_state": openai_state})
+    return {"default_provider": "ollama", "agent": agent_state, "ollama": local_state,
+            "openai": {"state": openai_state, "configured": openai_state == "configured",
+                       "error_type": openai_error_type, "credential_display": "never_returned"}}
 
 
 @app.put("/api/v1/intelligence/provider")
@@ -3355,8 +3375,16 @@ def intelligence_ask(
         local_token = _read_intelligence_local_token()
         if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", local_token):
             raise OSError("local_agent_credential_invalid")
+        if payload.provider == "openai":
+            with db() as conn:
+                _require_owner(session, conn)
+                actor = _revalidate_actor(conn, session, "manage_gateway")
+                if actor["role"] != "owner":
+                    raise HTTPException(403, "owner_required_for_cloud_provider")
         with http.client.HTTPConnection("127.0.0.1", 8765, timeout=125) as connection:
-            connection.request("POST", "/v1/analyze", body=json.dumps({"prompt": payload.prompt}),
+            connection.request("POST", "/v1/analyze", body=json.dumps({
+                "prompt": payload.prompt, "provider": payload.provider,
+            }),
                                headers={"Authorization": f"Bearer {local_token}",
                                         "Content-Type": "application/json", "Accept": "application/json"})
             response = connection.getresponse()
@@ -3374,14 +3402,17 @@ def intelligence_ask(
         if reason in {"openai_credential_not_configured", "openai_model_not_configured",
                       "solarminer_service_credential_not_configured"}:
             raise HTTPException(503, "intelligence_credentials_not_configured")
+        if reason in {"ollama_runtime_unavailable", "ollama_model_not_installed"}:
+            raise HTTPException(503, reason)
         if reason == "analysis_busy":
             raise HTTPException(429, "intelligence_agent_busy")
         raise HTTPException(503, "intelligence_analysis_failed")
     with db() as conn:
         audit(conn, session["user_id"], "intelligence.ask", "openclaude", "success",
-              {"prompt_characters": len(payload.prompt), "answer_characters": len(response_payload["answer"])})
+              {"provider": payload.provider, "prompt_characters": len(payload.prompt),
+               "answer_characters": len(response_payload["answer"])})
     return {"status": "ok", "answer": response_payload["answer"], "agent": "SolarMiner Intelligence",
-            "provider": "OpenAI", "source": "SolarMiner MCP read-only tools"}
+            "provider": payload.provider, "source": "SolarMiner MCP read-only tools"}
 
 
 @app.get("/api/v1/energy/categories")
@@ -4193,7 +4224,19 @@ def _persist_deye_telemetry(conn: sqlite3.Connection, deye: dict[str, Any] | Non
         "inversores": (f"deye-inverter-{identity}", "Inversor Deye"),
         "baterias": (f"deye-battery-{identity}", "Bateria Deye"),
     }
-    observed_at = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    observed_at = datetime.now(timezone.utc)
+    latest = conn.execute(
+        "SELECT MAX(observed_at) FROM energy_readings WHERE equipment_id=? AND source=?",
+        (equipment_by_category["inversores"][0], "DEYE_MODBUS_FC03_CANDIDATE_MAP"),
+    ).fetchone()[0]
+    if latest:
+        try:
+            latest_at = datetime.fromisoformat(str(latest).replace("Z", "+00:00"))
+            if observed_at <= latest_at:
+                observed_at = latest_at + timedelta(microseconds=1)
+        except ValueError:
+            pass
+    observed_at = observed_at.isoformat(timespec="microseconds")
     register_map = deye.get("register_map", {})
     persisted = 0
     for category, (equipment_id, name) in equipment_by_category.items():
@@ -4522,8 +4565,15 @@ def _persist_tuya_device_events(conn: sqlite3.Connection, readings: list[dict[st
                               (device_id,)).fetchone()
         if latest:
             try:
-                if datetime.fromisoformat(latest["observed_at"].replace("Z", "+00:00")) >= datetime.fromisoformat(observed_at):
+                latest_at = datetime.fromisoformat(latest["observed_at"].replace("Z", "+00:00"))
+                observed = datetime.fromisoformat(observed_at)
+                if latest_at > observed:
                     continue
+                if latest_at == observed:
+                    # Several device transitions may be observed within one
+                    # clock tick; keep their order instead of dropping the
+                    # later state as a duplicate timestamp.
+                    observed_at = (latest_at + timedelta(microseconds=1)).isoformat()
             except (TypeError, ValueError):
                 pass
         available = reading.get("connection_state") in {"local_responded", "local_responded_no_properties"}

@@ -1,0 +1,2 @@
+solarminer-gateway-code02-v0.6.9-candidate/packaging/catalog/catalog.json -text
+solarminer-gateway-code02-v0.6.9-candidate/src/solarminer_gateway/connector_plugins.py -text

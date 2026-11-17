@@ -294,9 +294,9 @@ export async function saveGatewayIntelligenceProvider(apiKey, model) {
 export async function revokeGatewayIntelligenceProvider() {
   return gatewayApi("/api/v1/intelligence/provider", { method: "DELETE" });
 }
-export async function askGatewayIntelligence(prompt) {
-  if (typeof prompt !== "string") throw new Error("Pergunta inválida.");
-  return gatewayApi("/api/v1/intelligence/ask", { method: "POST", body: { prompt } });
+export async function askGatewayIntelligence(prompt, provider = "ollama") {
+  if (typeof prompt !== "string" || !["ollama", "openai"].includes(provider)) throw new Error("Pergunta ou fornecedor inválido.");
+  return gatewayApi("/api/v1/intelligence/ask", { method: "POST", body: { prompt, provider } });
 }
 export async function readGatewayIntelligenceReviews(limit = 10) {
   const bounded = Math.max(1, Math.min(30, Number.isInteger(limit) ? limit : 10));

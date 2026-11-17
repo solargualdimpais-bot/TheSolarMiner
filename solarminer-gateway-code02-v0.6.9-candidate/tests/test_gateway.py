@@ -795,9 +795,13 @@ def test_real_tls_certificate_validation_and_untrusted_rejection(tmp_path):
     import socket
     import ssl
     import subprocess
+    import shutil
     import sys
     import urllib.error
     import urllib.request
+
+    if shutil.which("openssl") is None:
+        pytest.skip("OpenSSL CLI is required for the real TLS integration test")
 
     cert = tmp_path / "server.crt"
     key = tmp_path / "server.key"
@@ -914,6 +918,7 @@ def test_concurrent_bootstrap_creates_only_one_owner(tmp_path, monkeypatch):
             assert conn.execute("SELECT COUNT(*) FROM users WHERE role='owner' AND status='active'").fetchone()[0] == 1
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows keeps SQLite database files locked while the app lifespan is active")
 def test_missing_database_after_initialization_fails_closed(client):
     marker = gateway.INSTANCE_MARKER
     assert marker.exists()

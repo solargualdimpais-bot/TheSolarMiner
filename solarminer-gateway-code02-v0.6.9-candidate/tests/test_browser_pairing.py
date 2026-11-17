@@ -15,6 +15,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from solarminer_gateway import app as gateway
 
+LINUX_ONLY = pytest.mark.skipif(os.name == "nt", reason="Gateway subprocess imports POSIX-only fcntl")
+
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
@@ -206,6 +208,7 @@ def test_webcrypto_login_signature_matches_existing_gateway_canonical_format(cli
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required for browser-to-Gateway integration test")
+@LINUX_ONLY
 def test_complete_browser_pair_login_read_logout_over_local_http(client):
     # The real JavaScript/Web Crypto client calls a separate loopback Uvicorn process.
     # Keeping the server in a child process prevents pytest's executor/thread shutdown

@@ -10,7 +10,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import hashlib
-from pathlib import Path
+from pathlib import PurePosixPath
 
 CONNECTOR_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 
@@ -31,8 +31,10 @@ def render_systemd_unit(connector_id: str, executable: str, worker_args: list[st
     allowed; otherwise all IP network access is denied.
     """
     connector_id = validate_connector_id(connector_id)
-    executable_path = Path(executable)
-    state_path = Path(state_dir)
+    # These strings describe Linux paths written into a systemd unit, even
+    # when the renderer is exercised on a Windows development workstation.
+    executable_path = PurePosixPath(executable)
+    state_path = PurePosixPath(state_dir)
     if not executable_path.is_absolute() or not state_path.is_absolute():
         raise ValueError("absolute_paths_required")
     if "\n" in str(executable_path) or "\n" in str(state_path) or any("\n" in a for a in worker_args):

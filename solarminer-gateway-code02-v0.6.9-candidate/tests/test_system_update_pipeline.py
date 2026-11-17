@@ -19,6 +19,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from solarminer_gateway.system_update_pipeline import PipelineError, SystemUpdatePipeline, _validate_deployment_root_permissions
 from solarminer_gateway.updates import canonical_manifest
 
+LINUX_ONLY = pytest.mark.skipif(os.name == "nt", reason="Update pipeline integration tests require POSIX symlinks and fcntl locks")
+
 
 def _make_package(tmp_path: Path, version: str = "0.6.9") -> Path:
     tree = tmp_path / "deb-tree"
@@ -119,6 +121,7 @@ def _pipeline_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, versio
     return pipeline, root, previous, db, op_id
 
 
+@LINUX_ONLY
 def test_apply_commits_only_after_release_health_check(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     pipeline, root, previous, db, op_id = _pipeline_fixture(tmp_path, monkeypatch)
     checked = []
@@ -255,6 +258,7 @@ def test_health_check_classifies_url_errors_without_persisting_details(
     assert "reason" not in diagnostic and "message" not in diagnostic
 
 
+@LINUX_ONLY
 def test_queued_update_is_not_activated_without_preflight(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     pipeline, _root, _previous, _db, op_id = _pipeline_fixture(tmp_path, monkeypatch)
     monkeypatch.setattr(pipeline, "preflight", lambda: (_ for _ in ()).throw(PipelineError("independent_recovery_timer_not_active")))
@@ -262,6 +266,7 @@ def test_queued_update_is_not_activated_without_preflight(tmp_path: Path, monkey
         pipeline.enqueue(op_id)
 
 
+@LINUX_ONLY
 def test_recovery_defers_while_gateway_restart_update_worker_is_active(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     pipeline = SystemUpdatePipeline(root=tmp_path / "opt/solarminer")
     op_id = "12345678-1234-4234-8234-123456789abc"
@@ -290,6 +295,7 @@ def test_recovery_defers_while_gateway_restart_update_worker_is_active(tmp_path:
     assert requested == [["/usr/bin/systemctl", "is-active", f"solarminer-update-apply@{op_id}.service"]]
 
 
+@LINUX_ONLY
 def test_apply_rolls_back_pointer_when_new_release_fails_health(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     pipeline, root, previous, _db, op_id = _pipeline_fixture(tmp_path, monkeypatch)
     answers = iter([False, True])
@@ -315,6 +321,7 @@ def test_apply_rolls_back_pointer_when_new_release_fails_health(tmp_path: Path, 
         assert conn.execute("SELECT state FROM update_operations WHERE id=?", (op_id,)).fetchone()[0] == "ROLLED_BACK"
 
 
+@LINUX_ONLY
 def test_watchdog_rollback_restores_only_the_previous_active_release_and_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from solarminer_gateway.database_backup import create_database_backup
     pipeline, root, previous, db, op_id = _pipeline_fixture(tmp_path, monkeypatch, version="0.6.96")
@@ -363,6 +370,7 @@ def test_watchdog_rollback_restores_only_the_previous_active_release_and_databas
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 
+@LINUX_ONLY
 def test_watchdog_rollback_fails_closed_without_signed_health_attestation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from solarminer_gateway.database_backup import create_database_backup
     pipeline, root, _previous, db, op_id = _pipeline_fixture(tmp_path, monkeypatch, version="0.6.96")
@@ -383,6 +391,7 @@ def test_watchdog_rollback_fails_closed_without_signed_health_attestation(tmp_pa
     assert os.readlink(root / "current") == "releases/0.6.96"
 
 
+@LINUX_ONLY
 def test_recovery_reconciles_interrupted_switch_and_restores_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from solarminer_gateway.database_backup import create_database_backup
     pipeline, root, previous, db, op_id = _pipeline_fixture(tmp_path, monkeypatch)
@@ -421,6 +430,7 @@ def test_recovery_reconciles_interrupted_switch_and_restores_database(tmp_path: 
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 
+@LINUX_ONLY
 def test_recovery_retries_pending_gateway_start_and_attests_health(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     pipeline, root, _previous, _db, op_id = _pipeline_fixture(tmp_path, monkeypatch)
     pipeline._record("ROLLED_BACK", operation_id=op_id, target_version="0.6.9",
@@ -456,6 +466,7 @@ def test_recovery_retries_pending_gateway_start_and_attests_health(tmp_path: Pat
     assert state["rollback_health_check"] == "passed"
 
 
+@LINUX_ONLY
 def test_recovery_retries_recovery_blocked_operation_with_valid_backup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from solarminer_gateway.database_backup import create_database_backup
     pipeline, root, previous, db, op_id = _pipeline_fixture(tmp_path, monkeypatch)

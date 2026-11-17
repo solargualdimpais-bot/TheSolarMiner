@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 from solarminer_gateway.deployment_recovery import DeploymentReleaseSwitch, DeploymentRecoveryError
 
+LINUX_ONLY = pytest.mark.skipif(os.name == "nt", reason="Requires Linux symlink and fcntl semantics")
+
 
 def release(root: Path, name: str, marker: str) -> Path:
     path = root / "releases" / name
@@ -16,6 +18,7 @@ def release(root: Path, name: str, marker: str) -> Path:
     return path
 
 
+@LINUX_ONLY
 def test_switch_commits_only_after_health_check_and_rolls_back_on_failure(tmp_path: Path):
     root = tmp_path / "deployment"
     release(root, "v1", "1")
@@ -27,6 +30,7 @@ def test_switch_commits_only_after_health_check_and_rolls_back_on_failure(tmp_pa
     assert os.readlink(root / "current") == "releases/v1"
 
 
+@LINUX_ONLY
 def test_kill9_after_atomic_symlink_switch_is_recovered_to_previous_release(tmp_path: Path):
     root = tmp_path / "deployment"
     release(root, "v1", "1")
@@ -52,6 +56,7 @@ DeploymentReleaseSwitch(root).switch("releases/v2", fault_hook=fault)
     assert os.readlink(root / "current") == "releases/v1"
 
 
+@LINUX_ONLY
 def test_kill9_before_switch_cleans_pending_pointer_without_changing_active(tmp_path: Path):
     root = tmp_path / "deployment"
     release(root, "v1", "1")
@@ -78,6 +83,7 @@ DeploymentReleaseSwitch(root).switch("releases/v2", fault_hook=fault)
     assert not list(root.glob(".current.pending-*"))
 
 
+@LINUX_ONLY
 def test_non_symlink_active_path_is_never_overwritten(tmp_path: Path):
     root = tmp_path / "deployment"
     release(root, "v1", "1")
@@ -89,6 +95,7 @@ def test_non_symlink_active_path_is_never_overwritten(tmp_path: Path):
     assert (root / "current").read_text() == "do-not-overwrite"
 
 
+@LINUX_ONLY
 def test_corrupt_complete_journal_record_blocks_recovery(tmp_path: Path):
     root = tmp_path / "deployment"
     release(root, "v1", "1")

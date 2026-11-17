@@ -31,6 +31,26 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _sync_file(path: Path) -> None:
+    # Windows rejects fsync on a read-only descriptor; reopening read/write
+    # keeps the bytes unchanged and works on both supported test platforms.
+    with path.open("r+b") as stream:
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _sync_directory(path: Path) -> None:
+    # Directory descriptors are not available through the Windows CRT. Debian
+    # retains the fsync durability barrier used by the production Gateway.
+    if os.name == "nt":
+        return
+    dir_fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
 def _check_integrity(conn: sqlite3.Connection, label: str) -> None:
     row = conn.execute("PRAGMA integrity_check").fetchone()
     if not row or row[0] != "ok":
@@ -76,14 +96,9 @@ def create_database_backup(source_path: str | Path, backup_dir: str | Path) -> d
                     raise DatabaseBackupError("backup_schema_version_mismatch")
                 dst.commit()
         os.chmod(temporary, 0o600)
-        with temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
+        _sync_file(temporary)
         os.replace(temporary, final_path)
-        dir_fd = os.open(destination, os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
+        _sync_directory(destination)
         metadata = {
             "format_version": 1,
             "backup_id": backup_id,
@@ -100,9 +115,9 @@ def create_database_backup(source_path: str | Path, backup_dir: str | Path) -> d
         metadata_tmp = metadata_path.with_suffix(metadata_path.suffix + ".tmp")
         metadata_tmp.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         os.chmod(metadata_tmp, 0o600)
-        with metadata_tmp.open("rb") as stream:
-            os.fsync(stream.fileno())
+        _sync_file(metadata_tmp)
         os.replace(metadata_tmp, metadata_path)
+        _sync_directory(destination)
         return {**metadata, "backup_path": str(final_path), "metadata_path": str(metadata_path)}
     except Exception:
         temporary.unlink(missing_ok=True)
@@ -162,14 +177,9 @@ def restore_database_backup(backup_path: str | Path, target_path: str | Path, *,
                     raise DatabaseBackupError("backup_metadata_schema_version_mismatch")
                 dst.commit()
         os.chmod(temporary, 0o600)
-        with temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
+        _sync_file(temporary)
         os.replace(temporary, target)
-        dir_fd = os.open(target.parent, os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
+        _sync_directory(target.parent)
         with closing(sqlite3.connect(target, timeout=10)) as restored:
             _check_integrity(restored, "restored_database")
             restored_versions = _schema_metadata(restored)
