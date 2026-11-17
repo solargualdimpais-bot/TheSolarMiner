@@ -4,6 +4,8 @@ case "${1:-}" in
   configure)
     if ! getent group solarminer >/dev/null 2>&1; then addgroup --system solarminer; fi
     if ! getent passwd solarminer >/dev/null 2>&1; then adduser --system --ingroup solarminer --home /var/lib/solarminer --no-create-home --shell /usr/sbin/nologin solarminer; fi
+    if ! getent group solarminer-intelligence >/dev/null 2>&1; then addgroup --system solarminer-intelligence; fi
+    if ! getent passwd solarminer-intelligence >/dev/null 2>&1; then adduser --system --ingroup solarminer-intelligence --home /var/lib/solarminer-intelligence --no-create-home --shell /usr/sbin/nologin solarminer-intelligence; fi
     if ! getent group solarminer-intelligence-test >/dev/null 2>&1; then addgroup --system solarminer-intelligence-test; fi
     if ! getent passwd solarminer-intelligence-test >/dev/null 2>&1; then adduser --system --ingroup solarminer-intelligence-test --home /var/lib/solarminer-intelligence-test --no-create-home --shell /usr/sbin/nologin solarminer-intelligence-test; fi
     [ ! -L /var/lib/solarminer-intelligence ] || { echo "Refusing symlink Intelligence state directory" >&2; exit 1; }
