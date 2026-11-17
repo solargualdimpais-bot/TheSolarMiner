@@ -134,6 +134,89 @@ def diagnostics_upload_status(token_path: Path | None = None) -> dict[str, Any]:
     return {"configured": configured, "destination": REPOSITORY}
 
 
+def read_recent_gateway_errors(limit: int = 100, queue_path: Path | None = None) -> list[dict[str, Any]]:
+    """Read a bounded tail of the sanitized local error queue for Intelligence."""
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
+        raise ValueError("diagnostic_limit_invalid")
+    path = queue_path or QUEUE_PATH
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_QUEUE_BYTES:
+            return []
+        lines = path.read_bytes().splitlines()[-limit:]
+    except OSError:
+        return []
+    result: list[dict[str, Any]] = []
+    for line in lines:
+        try:
+            record = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        level = record.get("level")
+        if level not in {"ERROR", "CRITICAL", "WARNING"}:
+            continue
+        result.append({
+            "occurred_at": str(record.get("occurred_at") or "")[:40],
+            "level": level,
+            "component": re.sub(r"[^A-Za-z0-9_.-]", "_", str(record.get("component") or ""))[:100],
+            "message": sanitize_message(record.get("message") or "")[:500],
+            "exception_type": str(record.get("exception_type") or "")[:80] or None,
+        })
+    return result
+
+
+def read_github_diagnostics_reports(limit: int = 10, token_path: Path | None = None) -> dict[str, Any]:
+    """Read recent issues from the fixed private diagnostics repository; never return its token."""
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
+        raise ValueError("diagnostic_limit_invalid")
+    path = token_path or TOKEN_PATH
+    try:
+        if path.is_symlink() or not path.is_file():
+            return {"state": "not_configured", "repository": REPOSITORY, "reports": []}
+        token = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return {"state": "not_configured", "repository": REPOSITORY, "reports": []}
+    if not re.fullmatch(r"github_pat_[A-Za-z0-9_]{20,}", token):
+        return {"state": "credential_invalid", "repository": REPOSITORY, "reports": []}
+
+    request = urllib.request.Request(
+        f"{ISSUES_URL}?state=all&per_page={limit}",
+        headers={"Accept": "application/vnd.github+json", "Authorization": f"Bearer {token}",
+                 "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "SolarMiner-Intelligence"},
+        method="GET",
+    )
+
+    class RejectRedirects(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    opener = urllib.request.build_opener(RejectRedirects)
+    try:
+        with opener.open(request, timeout=8) as response:
+            payload = json.loads(response.read(512 * 1024).decode("utf-8"))
+    except (OSError, ValueError, urllib.error.URLError, urllib.error.HTTPError) as exc:
+        status = getattr(exc, "code", None)
+        return {"state": "unavailable", "repository": REPOSITORY,
+                "reason": "github_http_error" if status else "github_connection_failed", "http_status": status,
+                "reports": []}
+    if not isinstance(payload, list):
+        return {"state": "unavailable", "repository": REPOSITORY, "reason": "github_response_invalid", "reports": []}
+    reports = []
+    for issue in payload:
+        if not isinstance(issue, dict) or "pull_request" in issue:
+            continue
+        reports.append({
+            "number": issue.get("number") if isinstance(issue.get("number"), int) else None,
+            "title": sanitize_message(issue.get("title") or "")[:300],
+            "state": issue.get("state") if issue.get("state") in {"open", "closed"} else "unknown",
+            "created_at": str(issue.get("created_at") or "")[:40],
+            "updated_at": str(issue.get("updated_at") or "")[:40],
+            "body": sanitize_message(issue.get("body") or "")[:6000],
+        })
+    return {"state": "available", "repository": REPOSITORY, "reports": reports}
+
+
 def configure_diagnostics_upload(token: str, token_path: Path | None = None) -> None:
     """Atomically store a GitHub fine-grained credential for the service account."""
     token_path = token_path or TOKEN_PATH
@@ -196,6 +279,22 @@ def _collect_system_diagnostics() -> str:
     except Exception as exc:
         return f"System snapshot unavailable ({type(exc).__name__})."
     lines: list[str] = []
+    update = snapshot.get("update_transaction")
+    if isinstance(update, dict):
+        lines.append("Latest updater transaction (allowlisted fields):")
+        for key in ("state", "target_version", "previous_target", "updated_at_utc", "failure", "rollback_failure"):
+            value = update.get(key)
+            if isinstance(value, str):
+                lines.append(f"update {key}: {sanitize_message(value)}")
+        for key in ("failed_command", "rollback_command", "health_diagnostic", "rollback_health_diagnostic"):
+            value = update.get(key)
+            if isinstance(value, dict):
+                fields = []
+                for field, item in value.items():
+                    if field in {"executable", "operation", "target", "outcome", "error_type", "timeout_seconds", "exit_code", "attempts", "status_code"}:
+                        fields.append(f"{field}={sanitize_message(item)}")
+                if fields:
+                    lines.append(f"update {key}: " + ", ".join(fields))
     services = snapshot.get("services")
     if isinstance(services, dict):
         lines.extend(f"service {sanitize_message(key)}: {sanitize_message(value)}"
@@ -397,6 +496,7 @@ def flush_reports(path: Path = QUEUE_PATH, token_path: Path = TOKEN_PATH,
     snapshot = _collect_system_diagnostics()
     system_fingerprint = _system_failure_fingerprint(snapshot)
     system_changed = fingerprint_path.exists() and fingerprint_path.read_text(encoding="ascii", errors="ignore").strip() != system_fingerprint
+    force_system_report = force_system_report or os.environ.get("SOLARMINER_FORCE_SYSTEM_REPORT") == "1"
     has_system_failure = (force_system_report or
                           (_system_snapshot_is_actionable(snapshot) and (not fingerprint_path.exists() or system_changed)))
     if not batch and not has_system_failure:

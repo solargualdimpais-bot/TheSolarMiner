@@ -7,7 +7,7 @@ import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classi
 import { isHeicPhoto } from "./photo-format.js";
 import { addFavoriteId, normalizeFavoriteIds, reorderFavoriteIds } from "./favorite-list.js";
 import { homeCacheKey, readHomeDisplayCache, writeHomeDisplayCache } from "./home-startup-cache.js";
-import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, redeemGatewayInvite, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, readGatewayEnergyEngineConfig, readGatewayUserAutomations, createGatewayUserAutomation, updateGatewayUserAutomation, deleteGatewayUserAutomation, dryRunGatewayUserAutomation, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayDiagnosticsUpload, saveGatewayDiagnosticsUploadToken, disableGatewayDiagnosticsUpload, sendGatewayDiagnosticsReport, setGatewayWatchdogEnabled, reportGatewayClientDiagnostics, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, syncGatewayTuyaSubdevices, previewGatewayTuyaProductImport, applyGatewayTuyaProductImport, saveGatewayTuyaProductMetadata, controlGatewayAntminer, testGatewayAntminerControl, readGatewayAntminerManagement, writeGatewayAntminerManagement, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, controlGatewayTuyaSetting, saveGatewayTuyaProductDpsDescription, saveGatewayTuyaPidDpsMap, readGatewayDeviceCards, saveGatewayDeviceCard, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, testGatewayTuyaLanReachability, discoverGatewayTuyaLanDevices, scanGatewayLocalNetwork, readGatewayDeviceInventory, readGatewaySmartProductCatalog, readGatewayShellyProductProfiles, readGatewayShellyDevices, discoverGatewayShellyDevices, registerGatewayShellyDevice, renameGatewayShellyDevice, readGatewayShellySettings, saveGatewayShellySettings, registerGatewayShellyBluDevice, discoverGatewayShellyBluDevices, controlGatewayShellySwitch, controlGatewayShellyLight, applyGatewayLocalNetworkMatches, saveGatewayLocalNetworkDevice, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, startGatewayTeslaOAuth, completeGatewayTeslaOAuth, saveGatewayTeslaRelay, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging, readGatewayTeslaLocalPresence } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, redeemGatewayInvite, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, readGatewayEnergyEngineConfig, readGatewayUserAutomations, createGatewayUserAutomation, updateGatewayUserAutomation, deleteGatewayUserAutomation, dryRunGatewayUserAutomation, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayIntelligenceProvider, saveGatewayIntelligenceProvider, revokeGatewayIntelligenceProvider, askGatewayIntelligence, readGatewayIntelligenceReviews, readGatewayDiagnosticsUpload, saveGatewayDiagnosticsUploadToken, disableGatewayDiagnosticsUpload, sendGatewayDiagnosticsReport, setGatewayWatchdogEnabled, reportGatewayClientDiagnostics, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, syncGatewayTuyaSubdevices, previewGatewayTuyaProductImport, applyGatewayTuyaProductImport, saveGatewayTuyaProductMetadata, controlGatewayAntminer, testGatewayAntminerControl, readGatewayAntminerManagement, writeGatewayAntminerManagement, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, controlGatewayTuyaSetting, saveGatewayTuyaProductDpsDescription, saveGatewayTuyaPidDpsMap, readGatewayDeviceCards, saveGatewayDeviceCard, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, testGatewayTuyaLanReachability, discoverGatewayTuyaLanDevices, scanGatewayLocalNetwork, readGatewayDeviceInventory, readGatewaySmartProductCatalog, readGatewayShellyProductProfiles, readGatewayShellyDevices, discoverGatewayShellyDevices, registerGatewayShellyDevice, renameGatewayShellyDevice, readGatewayShellySettings, saveGatewayShellySettings, registerGatewayShellyBluDevice, discoverGatewayShellyBluDevices, controlGatewayShellySwitch, controlGatewayShellyLight, applyGatewayLocalNetworkMatches, saveGatewayLocalNetworkDevice, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, startGatewayTeslaOAuth, completeGatewayTeslaOAuth, saveGatewayTeslaRelay, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging, readGatewayTeslaLocalPresence } from "./gateway-auth.js";
 
 let automationEditingId = "";
 let energyEngineActiveTab="summary";
@@ -3099,6 +3099,7 @@ document.querySelector(".owner-tabs")?.addEventListener("click", event => {
   if (tab) {
     selectOwnerTab(tab.dataset.ownerTab);
     if (tab.dataset.ownerTab === "gateway") { refreshGatewayConsole(); refreshDiagnosticsUploadStatus(); }
+    if (tab.dataset.ownerTab === "intelligence") { refreshGatewayIntelligenceProvider(); refreshGatewayIntelligenceReviews(); }
   }
 });
 document.querySelector(".owner-device-tabs")?.addEventListener("click", event => {
@@ -3450,6 +3451,77 @@ function renderGatewayConsoleLogs({ preserveScroll = false } = {}) {
 $("#gateway-console-service-filter")?.addEventListener("change", () => renderGatewayConsoleLogs());
 $("#gateway-console-level-filter")?.addEventListener("change", () => renderGatewayConsoleLogs());
 $("#gateway-console-refresh")?.addEventListener("click", refreshGatewayConsole);
+async function refreshGatewayIntelligenceProvider() {
+  const status = $("#gateway-intelligence-provider-status"), revoke = $("#gateway-intelligence-provider-revoke");
+  if (!status || !sessionInfo().authenticated || sessionInfo().user?.role !== "owner") return;
+  status.textContent = "A verificar a configuração protegida da OpenAI…";
+  try {
+    const state = await readGatewayIntelligenceProvider();
+    status.textContent = state.configured ? "OpenAI configurada no Gateway. A credencial não é devolvida à PWA." : "OpenAI ainda não configurada. O agente mantém-se sem análises até guardares a credencial e o modelo.";
+    if (revoke) revoke.disabled = !state.configured;
+  } catch (error) {
+    status.textContent = `Não foi possível consultar a configuração: ${error.message}`;
+  }
+}
+async function refreshGatewayIntelligenceReviews() {
+  const output = $("#gateway-intelligence-reviews");
+  if (!output || !sessionInfo().authenticated || sessionInfo().user?.role !== "owner") return;
+  output.textContent = "A consultar as revisões diárias guardadas no Gateway…";
+  try {
+    const result = await readGatewayIntelligenceReviews(10);
+    const rows = Array.isArray(result.reviews) ? result.reviews : [];
+    output.textContent = rows.length ? rows.map(item =>
+      `${item.created_at} · ${item.review_kind}\n${item.report_text}`
+    ).join("\n\n---\n\n") : "Ainda não existe uma revisão diária guardada.";
+  } catch (error) { output.textContent = `Não foi possível ler as revisões: ${error.message}`; }
+}
+$("#gateway-intelligence-reviews-refresh")?.addEventListener("click", refreshGatewayIntelligenceReviews);
+$("#gateway-intelligence-provider-form")?.addEventListener("submit", async event => {
+  event.preventDefault();
+  const form = event.currentTarget, status = $("#gateway-intelligence-provider-status");
+  const key = $("#gateway-intelligence-api-key"), model = $("#gateway-intelligence-model");
+  const button = form.querySelector('[type="submit"]');
+  if (!sessionInfo().authenticated || sessionInfo().user?.role !== "owner") { if (status) status.textContent = "Só o Owner autenticado pode configurar o fornecedor."; return; }
+  if (!key?.value || !model?.value.trim()) { if (status) status.textContent = "Indica a chave e o identificador do modelo OpenAI."; return; }
+  if (button) button.disabled = true;
+  if (status) status.textContent = "A guardar a credencial no broker protegido do Gateway…";
+  try {
+    await saveGatewayIntelligenceProvider(key.value, model.value.trim());
+    key.value = "";
+    if (status) status.textContent = "Credencial e modelo guardados no Gateway. A chave não foi devolvida nem incluída na auditoria.";
+    await refreshGatewayIntelligenceProvider();
+  } catch (error) {
+    if (status) status.textContent = `Não foi possível guardar: ${error.message}`;
+  } finally { if (button) button.disabled = false; }
+});
+$("#gateway-intelligence-provider-revoke")?.addEventListener("click", async event => {
+  const button = event.currentTarget, status = $("#gateway-intelligence-provider-status");
+  if (!sessionInfo().authenticated || sessionInfo().user?.role !== "owner") return;
+  button.disabled = true;
+  try {
+    await revokeGatewayIntelligenceProvider();
+    if (status) status.textContent = "Credencial OpenAI revogada no Gateway.";
+    await refreshGatewayIntelligenceProvider();
+  } catch (error) {
+    if (status) status.textContent = `Não foi possível revogar a credencial: ${error.message}`;
+    button.disabled = false;
+  }
+});
+$("#gateway-intelligence-ask-form")?.addEventListener("submit", async event => {
+  event.preventDefault();
+  const form = event.currentTarget, question = $("#gateway-intelligence-question"), answer = $("#gateway-intelligence-answer");
+  const button = $("#gateway-intelligence-ask");
+  if (!sessionInfo().authenticated || sessionInfo().user?.role !== "owner") { if (answer) answer.textContent = "Só o Owner autenticado pode consultar o Intelligence."; return; }
+  if (!question?.value.trim() || !answer) return;
+  if (button) button.disabled = true;
+  answer.textContent = "A consultar os dados e diagnósticos disponíveis no Gateway…";
+  try {
+    const result = await askGatewayIntelligence(question.value.trim());
+    answer.textContent = result.answer || "O agente não devolveu texto.";
+  } catch (error) {
+    answer.textContent = `A análise não foi concluída: ${error.message}`;
+  } finally { if (button) button.disabled = false; }
+});
 async function refreshDiagnosticsUploadStatus() {
   const status = $("#gateway-diagnostics-upload-status");
   if (!status || !sessionInfo().authenticated || sessionInfo().user?.role !== "owner") return;

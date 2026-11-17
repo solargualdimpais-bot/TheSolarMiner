@@ -49,7 +49,7 @@
       <section id="page-content" aria-live="polite"></section>
       <section id="gateway-owner-page" class="owner-admin-page" hidden aria-labelledby="owner-page-title">
         <div class="page-heading"><div><p class="eyebrow">ADMINISTRAÇÃO PRIVADA</p><h1 id="owner-page-title">Owner</h1><p>Escolhe uma área para configurar.</p></div></div>
-        <nav class="owner-tabs" aria-label="Secções Owner" role="tablist"><button type="button" class="selected" data-owner-tab="access" role="tab" aria-selected="true">Acessos</button><button type="button" data-owner-tab="updates" role="tab" aria-selected="false">Atualizações</button><button type="button" data-owner-tab="tailscale" role="tab" aria-selected="false">Tailscale</button><button type="button" data-owner-tab="gateway" role="tab" aria-selected="false">Gateway</button><button type="button" data-owner-tab="equipment" role="tab" aria-selected="false">Equipamentos</button><button type="button" data-owner-tab="modem" role="tab" aria-selected="false">Modem</button></nav>
+        <nav class="owner-tabs" aria-label="Secções Owner" role="tablist"><button type="button" class="selected" data-owner-tab="access" role="tab" aria-selected="true">Acessos</button><button type="button" data-owner-tab="updates" role="tab" aria-selected="false">Atualizações</button><button type="button" data-owner-tab="tailscale" role="tab" aria-selected="false">Tailscale</button><button type="button" data-owner-tab="gateway" role="tab" aria-selected="false">Gateway</button><button type="button" data-owner-tab="intelligence" role="tab" aria-selected="false">Intelligence</button><button type="button" data-owner-tab="equipment" role="tab" aria-selected="false">Equipamentos</button><button type="button" data-owner-tab="modem" role="tab" aria-selected="false">Modem</button></nav>
         <section class="owner-tab-panel" data-owner-panel="gateway" hidden>
           <div class="panel"><div class="panel-header"><div><p class="eyebrow">LIGAÇÃO SEGURA</p><h3>Ligação ao Gateway</h3></div></div><p class="field-note">Configura o endereço e inicia sessão no Gateway.</p><button id="owner-open-gateway" class="button primary" type="button">Configurar ligação</button><div id="owner-gateway-status" class="connection-result" role="status" aria-live="polite"></div></div>
           <section class="panel gateway-auth-panel" id="gateway-console-management">
@@ -88,6 +88,24 @@
             <pre id="gateway-terminal-output" class="gateway-terminal-output" aria-label="Terminal em tempo real" aria-live="polite">Terminal desligado.</pre>
             <form id="gateway-terminal-form" class="gateway-terminal-input-row"><label for="gateway-terminal-command">Comando</label><input id="gateway-terminal-command" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Escreve um comando e prime Enter" disabled><button id="gateway-terminal-send" class="button primary" type="submit" disabled>Enviar</button></form>
           </section>
+        </section>
+        <section class="panel gateway-auth-panel owner-tab-panel" data-owner-panel="intelligence" id="gateway-intelligence-management" hidden>
+          <div class="panel-header"><div><p class="eyebrow">AGENTE RESIDENTE</p><h3>SolarMiner Intelligence</h3></div><span class="source-tag">OPENCLAUDE · LEITURA</span></div>
+          <p class="field-note">O OpenClaude analisa valores guardados de todos os equipamentos e motores, previsões e histórico do Energy Engine, respostas observadas aos comandos, falhas de atualização, inventário MAC/IP e atribuições DPS com a respetiva confiança. Gera uma revisão diária com propostas baseadas em evidência; ainda não edita o código dos motores nem aplica alterações em produção. Esta consola não envia comandos físicos. As análises pedidas pelo Owner são limitadas a 30 por hora.</p>
+          <div id="gateway-intelligence-provider-status" class="connection-result" role="status" aria-live="polite">A verificar configuração do fornecedor…</div>
+          <form id="gateway-intelligence-provider-form" class="gateway-form-grid">
+            <label for="gateway-intelligence-api-key">Chave da OpenAI<input id="gateway-intelligence-api-key" type="password" autocomplete="new-password" spellcheck="false" maxlength="512" placeholder="sk-…" required></label>
+            <label for="gateway-intelligence-model">Modelo OpenAI<input id="gateway-intelligence-model" type="text" autocomplete="off" spellcheck="false" maxlength="120" placeholder="ID do modelo escolhido" required></label>
+            <button class="button primary" type="submit">Guardar credencial no Gateway</button>
+            <button class="button secondary" id="gateway-intelligence-provider-revoke" type="button" disabled>Revogar credencial</button>
+          </form>
+          <form id="gateway-intelligence-ask-form" class="gateway-form-grid">
+            <label for="gateway-intelligence-question">Pergunta de diagnóstico ou melhoria<textarea id="gateway-intelligence-question" rows="3" maxlength="8000" placeholder="Avalia a previsão solar face à produção histórica e propõe melhorias testáveis." required></textarea></label>
+            <button id="gateway-intelligence-ask" class="button primary" type="submit">Analisar dados do Gateway</button>
+          </form>
+          <pre id="gateway-intelligence-answer" class="integration-result" aria-label="Resposta do SolarMiner Intelligence" aria-live="polite">Aguardando uma pergunta autenticada do Owner.</pre>
+          <div class="panel-header"><h4>Revisões automáticas</h4><button type="button" class="button secondary" id="gateway-intelligence-reviews-refresh">Atualizar revisões</button></div>
+          <pre id="gateway-intelligence-reviews" class="integration-result" aria-label="Revisões do SolarMiner Intelligence" aria-live="polite">Aguardando a primeira revisão diária.</pre>
         </section>
         <section class="panel gateway-auth-panel owner-tab-panel" data-owner-panel="access" id="gateway-invite-management" hidden>
         <div class="panel-header"><div><p class="eyebrow">ADMINISTRAÇÃO DO GATEWAY</p><h3>Convites de utilização única</h3></div><span class="source-tag">OWNER</span></div>

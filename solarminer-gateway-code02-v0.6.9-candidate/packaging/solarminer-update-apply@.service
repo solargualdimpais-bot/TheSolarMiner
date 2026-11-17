@@ -1,6 +1,7 @@
 [Unit]
 Description=SolarMiner verified update operation %i
 After=local-fs.target solarminer-recovery.service
+OnFailure=solarminer-update-failure-report.service
 ConditionPathExists=/opt/solarminer/current
 RequiresMountsFor=/var/lib/solarminer
 

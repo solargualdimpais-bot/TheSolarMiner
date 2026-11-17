@@ -23,7 +23,7 @@ def test_owner_console_includes_bounded_nginx_proxy_error_tail():
     assert "def _read_fixed_root_log(path: str, max_bytes: int)" in broker
     assert "not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0" in broker
     assert 'logs += "\\n\\n--- Recent Nginx proxy errors ---\\n" + nginx_errors' in broker
-    assert "ReadWritePaths=/opt/solarminer /var/lib/solarminer /var/log/nginx /run" in service
+    assert "ReadWritePaths=/opt/solarminer /var/lib/solarminer /var/lib/solarminer-intelligence/test-runs /var/log/nginx /etc/solarminer /run" in service
 
 
 def test_fresh_usb_installer_reuses_data_volume_and_classifies_owner_without_recreating_it():

@@ -1,0 +1,47 @@
+[Unit]
+Description=SolarMiner Intelligence resident OpenClaude agent
+After=network-online.target tailscaled.service solarminer-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=solarminer-intelligence
+Group=solarminer-intelligence
+EnvironmentFile=/etc/solarminer/intelligence-agent.env
+EnvironmentFile=-/etc/solarminer/intelligence-openai.env
+Environment=HOME=/var/lib/solarminer-intelligence/home
+Environment=OPENCLAUDE_CONFIG_DIR=/var/lib/solarminer-intelligence/home/.openclaude
+Environment=CLAUDE_CODE_USE_OPENAI=1
+Environment=OPENAI_BASE_URL=https://api.openai.com/v1
+Environment=SOLARMINER_INTELLIGENCE_URL=https://localhost:8443/api/v1/intelligence
+Environment=SOLARMINER_GATEWAY_CA=/usr/share/solarminer/intelligence-agent/gateway-ca.crt
+Environment=NODE_EXTRA_CA_CERTS=/usr/share/solarminer/intelligence-agent/gateway-ca.crt
+Environment=SOLARMINER_INTELLIGENCE_STATE=/var/lib/solarminer-intelligence/work
+Environment=SOLARMINER_INTELLIGENCE_DEV_WORKSPACE=/var/lib/solarminer-intelligence/work/source/solarminer-gateway-code02-v0.6.9-candidate
+Environment=SOLARMINER_OPENCLAUDE_SDK=/opt/solarminer/intelligence/app/node_modules/@twigpine/openclaude/dist/sdk.mjs
+ExecStartPre=/usr/bin/test -s /opt/solarminer/intelligence/app/node_modules/@twigpine/openclaude/dist/sdk.mjs
+ExecStart=/opt/solarminer/intelligence/node-v24.22.1/bin/node /usr/share/solarminer/intelligence-agent/agent-service.mjs
+Restart=on-failure
+RestartSec=10s
+TimeoutStartSec=30s
+TimeoutStopSec=15s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryMax=1G
+CPUQuota=150%
+TasksMax=64
+ReadWritePaths=/var/lib/solarminer-intelligence/work /var/lib/solarminer-intelligence/home
+ReadOnlyPaths=/usr/share/solarminer/intelligence-agent /usr/share/solarminer/intelligence-mcp /opt/solarminer/intelligence
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

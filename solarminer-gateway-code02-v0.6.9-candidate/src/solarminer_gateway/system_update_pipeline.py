@@ -82,6 +82,7 @@ class SystemUpdatePipeline:
         self.proxy_health_url = proxy_health_url
         self.health_timeout = min(max(int(health_timeout), 1), 60)
         self._last_health_diagnostic: dict[str, Any] = {"outcome": "not_run", "attempts": 0}
+        self._last_command_diagnostic: dict[str, Any] = {"outcome": "not_run"}
         self.runner = runner
         self.clock = clock
         self.sleep = sleep
@@ -112,12 +113,40 @@ class SystemUpdatePipeline:
             os.close(fd)
 
     def _run(self, args: list[str], *, timeout: int = 15, check: bool = False) -> subprocess.CompletedProcess:
+        executable = Path(args[0]).name if args else "unknown"
+        operation = str(args[1]) if len(args) > 1 else "unknown"
+        target = str(args[-1]) if len(args) > 2 else "unknown"
+        self._last_command_diagnostic = {
+            "executable": executable,
+            "operation": operation,
+            "target": target,
+            "timeout_seconds": int(timeout),
+            "outcome": "running",
+        }
         try:
             result = self.runner(args, capture_output=True, text=True, timeout=timeout, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
-            raise PipelineError(f"command_failed:{Path(args[0]).name}:{type(exc).__name__}") from exc
+            self._last_command_diagnostic = {
+                "executable": executable,
+                "operation": operation,
+                "target": target,
+                "timeout_seconds": int(timeout),
+                "outcome": "timeout" if isinstance(exc, subprocess.TimeoutExpired) else "execution_error",
+                "error_type": type(exc).__name__,
+            }
+            raise PipelineError(f"command_failed:{executable}:{operation}:{type(exc).__name__}:timeout={int(timeout)}") from exc
         if check and result.returncode != 0:
-            raise PipelineError(f"command_failed:{Path(args[0]).name}:{result.returncode}")
+            self._last_command_diagnostic = {
+                "executable": executable,
+                "operation": operation,
+                "target": target,
+                "timeout_seconds": int(timeout),
+                "outcome": "nonzero_exit",
+                "exit_code": int(result.returncode),
+            }
+            raise PipelineError(f"command_failed:{executable}:{operation}:exit={int(result.returncode)}")
+        self._last_command_diagnostic["outcome"] = "completed"
+        self._last_command_diagnostic["exit_code"] = int(result.returncode)
         return result
 
     def _record(self, state: str, **details: Any) -> dict[str, Any]:
@@ -533,7 +562,11 @@ class SystemUpdatePipeline:
             self._record("SERVICE_RESTARTING", operation_id=op_id, target_version=release_name, previous_target=previous_target,
                          new_target=os.path.relpath(target, self.root), backup_path=str(backup_path), package_sha256=digest,
                          health_timeout_seconds=60)
-            self._run(["/usr/bin/systemctl", "restart", self.service], timeout=20, check=True)
+            # Queue the restart and let the health check observe the real
+            # service state. A synchronous `systemctl restart` can time out
+            # while systemd is still starting the unit, causing a needless
+            # rollback even when the new release would become healthy.
+            self._run(["/usr/bin/systemctl", "restart", "--no-block", self.service], timeout=8, check=True)
             self._record("HEALTH_CHECKING", operation_id=op_id, target_version=release_name, previous_target=previous_target,
                          new_target=os.path.relpath(target, self.root), backup_path=str(backup_path), package_sha256=digest,
                          health_timeout_seconds=60)
@@ -545,11 +578,13 @@ class SystemUpdatePipeline:
             return {"status": "COMMITTED", "operation_id": op_id, "version": release_name, "backup_path": str(backup_path)}
         except Exception as exc:
             failed_health_diagnostic = dict(self._last_health_diagnostic)
+            failed_command_diagnostic = dict(self._last_command_diagnostic)
             current_state = self._read_state() or {}
             self._record("ROLLING_BACK", operation_id=op_id, target_version=release_name, previous_target=previous_target,
                          new_target=os.path.relpath(target, self.root) if target.exists() else None,
                          backup_path=str(backup_path), failure=_failure_code(exc), health_timeout_seconds=60,
-                         health_diagnostic=dict(self._last_health_diagnostic))
+                         health_diagnostic=failed_health_diagnostic,
+                         failed_command=failed_command_diagnostic)
             try:
                 self._run(["/usr/bin/systemctl", "stop", self.service], timeout=15, check=True)
                 self._switch(previous_path)
@@ -560,6 +595,7 @@ class SystemUpdatePipeline:
                 self._record("ROLLED_BACK", operation_id=op_id, target_version=release_name, previous_target=previous_target,
                              backup_path=str(backup_path), failure=_failure_code(exc),
                              health_diagnostic=failed_health_diagnostic,
+                             failed_command=failed_command_diagnostic,
                              rollback_health_diagnostic=dict(self._last_health_diagnostic),
                              rollback_health_check="passed", finished_at_utc=_utc())
                 return {"status": "ROLLED_BACK", "operation_id": op_id, "reason": type(exc).__name__}
@@ -567,6 +603,8 @@ class SystemUpdatePipeline:
                 self._record("RECOVERY_BLOCKED", operation_id=op_id, target_version=release_name, previous_target=previous_target,
                              backup_path=str(backup_path), failure=_failure_code(exc), rollback_failure=_failure_code(rollback_exc),
                              health_diagnostic=failed_health_diagnostic,
+                             failed_command=failed_command_diagnostic,
+                             rollback_command=dict(self._last_command_diagnostic),
                              rollback_health_diagnostic=dict(self._last_health_diagnostic), finished_at_utc=_utc())
                 raise PipelineError("update_failed_and_rollback_requires_manual_recovery") from rollback_exc
 
@@ -744,6 +782,10 @@ def main() -> int:
         elif args.rollback_committed: result = pipeline.rollback_committed()
         else: result = pipeline.recover()
         print(json.dumps(result, sort_keys=True))
+        # A completed rollback is still a failed update. Returning nonzero
+        # lets systemd's OnFailure hook send the structured snapshot promptly.
+        if isinstance(result, dict) and result.get("status") in {"ROLLED_BACK", "RECOVERY_BLOCKED"}:
+            return 2
         return 0
     except (PipelineError, UpdateValidationError, OSError, ValueError, sqlite3.Error, KeyError) as exc:
         print(json.dumps({"status": "error", "reason": str(exc)[:180]}, sort_keys=True), file=sys.stderr)

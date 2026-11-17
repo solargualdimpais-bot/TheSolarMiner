@@ -33,7 +33,7 @@ def test_update_broker_is_root_owned_and_socket_is_private_to_service_account():
     assert "User=root" in service_unit
     assert "NoNewPrivileges=true" in service_unit
     assert "RestrictSUIDSGID=true" in service_unit
-    assert "ReadWritePaths=/opt/solarminer /var/lib/solarminer /var/log/nginx /run" in service_unit
+    assert "ReadWritePaths=/opt/solarminer /var/lib/solarminer /var/lib/solarminer-intelligence/test-runs /var/log/nginx /etc/solarminer /run" in service_unit
 
 
 def test_root_broker_accepts_only_allowlisted_actions_and_validated_enqueue(monkeypatch):
@@ -73,6 +73,50 @@ def test_root_broker_only_enables_watchdog_through_fixed_systemd_unit():
     ]
     assert update_broker.handle_request(b'{"action":"watchdog_set","enabled":"yes"}\n', runner)["status"] == "error"
     assert len(calls) == 2
+
+
+def test_root_broker_stores_openai_key_without_returning_it_and_restarts_only_intelligence(monkeypatch):
+    stored = []
+    calls = []
+    secret = "sk-project-test-credential-12345678901234567890"
+    monkeypatch.setattr(update_broker, "_write_openai_environment",
+                        lambda key, model: stored.append((key, model)))
+    def runner(args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    response = update_broker.handle_request(json.dumps({
+        "action": "intelligence_openai_set", "api_key": secret, "model": "reasoning-model-latest",
+    }).encode() + b"\n", runner)
+
+    assert response == {"status": "ok", "configured": True}
+    assert secret not in json.dumps(response)
+    assert stored == [(secret, "reasoning-model-latest")]
+    assert calls[0][0] == ["/usr/bin/systemctl", "restart", "solarminer-intelligence.service"]
+    assert calls[0][1]["timeout"] == 15
+    assert update_broker.handle_request(json.dumps({
+        "action": "intelligence_openai_set", "api_key": "bad", "model": None,
+    }).encode() + b"\n", runner)["reason"] == "openai_api_key_invalid"
+    assert len(calls) == 1
+
+
+def test_root_broker_runs_only_fixed_isolated_intelligence_test_suites():
+    calls = []
+    output = json.dumps({"status": "passed", "suite": "intelligence", "exit_code": 0,
+                         "isolation": "separate_uid_private_network_read_only_snapshot", "output": "tests 5\npass 5\nfail 0"})
+
+    def runner(args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=0, stdout=output, stderr="")
+
+    result = update_broker.handle_request(b'{"action":"intelligence_workspace_tests","suite":"intelligence"}\n', runner)
+    assert result == json.loads(output)
+    assert calls[0][0] == [update_broker.INTELLIGENCE_TEST_RUNNER, "intelligence"]
+    assert calls[0][1]["timeout"] == 635
+    assert update_broker.handle_request(
+        b'{"action":"intelligence_workspace_tests","suite":"gateway-python","command":"id"}\n', runner
+    ) == {"status": "error", "reason": "intelligence_test_request_invalid"}
+    assert len(calls) == 1
 
 
 def test_root_broker_console_reads_fixed_service_logs_and_tailscale_setup_log_and_redacts_secrets(monkeypatch):

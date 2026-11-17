@@ -4,6 +4,12 @@ case "${1:-}" in
   configure)
     if ! getent group solarminer >/dev/null 2>&1; then addgroup --system solarminer; fi
     if ! getent passwd solarminer >/dev/null 2>&1; then adduser --system --ingroup solarminer --home /var/lib/solarminer --no-create-home --shell /usr/sbin/nologin solarminer; fi
+    if ! getent group solarminer-intelligence-test >/dev/null 2>&1; then addgroup --system solarminer-intelligence-test; fi
+    if ! getent passwd solarminer-intelligence-test >/dev/null 2>&1; then adduser --system --ingroup solarminer-intelligence-test --home /var/lib/solarminer-intelligence-test --no-create-home --shell /usr/sbin/nologin solarminer-intelligence-test; fi
+    [ ! -L /var/lib/solarminer-intelligence ] || { echo "Refusing symlink Intelligence state directory" >&2; exit 1; }
+    install -d -o root -g solarminer-intelligence -m 0750 /var/lib/solarminer-intelligence
+    [ ! -L /var/lib/solarminer-intelligence/test-runs ] || { echo "Refusing symlink Intelligence test directory" >&2; exit 1; }
+    install -d -o root -g root -m 0711 /var/lib/solarminer-intelligence/test-runs
     if [ -f /etc/solarminer/data-volume.uuid ]; then
       mountpoint -q /var/lib/solarminer || { echo "SolarMiner data volume is not mounted; refusing to initialize the database on the system partition" >&2; exit 1; }
       expected_uuid=$(cat /etc/solarminer/data-volume.uuid)
@@ -121,6 +127,7 @@ case "${1:-}" in
       systemctl disable --now solarminer-gateway-watchdog.timer || true
       systemctl enable --now solarminer-error-report.timer
       systemctl enable --now solarminer-tailscale-cert.timer
+      systemctl enable --now solarminer-intelligence-bootstrap.timer
       if command -v tailscale >/dev/null 2>&1; then
         systemctl enable --now tailscaled.service
       fi

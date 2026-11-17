@@ -17,7 +17,9 @@ import socket
 import shutil
 import secrets
 import ssl
+import stat
 import subprocess
+import statistics
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 import sqlite3
 import threading
@@ -68,9 +70,10 @@ from . import smart_device_engine
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.245"
+PACKAGE_VERSION = "0.6.246"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
+INTELLIGENCE_LOCAL_TOKEN_PATH = Path(os.environ.get("SOLARMINER_INTELLIGENCE_CLIENT_TOKEN_FILE", "/etc/solarminer/intelligence-client.token"))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
 INSTANCE_MARKER = Path(os.environ.get("SOLARMINER_INSTANCE_MARKER", str(DATA_DIR / "initialized.marker")))
 BOOTSTRAP_TTL = 15 * 60
@@ -168,6 +171,27 @@ CREATE TABLE IF NOT EXISTS nonces(
 CREATE TABLE IF NOT EXISTS audit(
  id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at TEXT NOT NULL, actor_user_id TEXT,
  action TEXT NOT NULL, target TEXT, outcome TEXT NOT NULL, details_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS intelligence_service_tokens(
+ id TEXT PRIMARY KEY, label TEXT NOT NULL, token_sha256 TEXT NOT NULL UNIQUE,
+ created_at TEXT NOT NULL, revoked_at TEXT
+);
+CREATE TABLE IF NOT EXISTS intelligence_request_limits(
+ user_id TEXT NOT NULL, window_start INTEGER NOT NULL, request_count INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(user_id, window_start)
+);
+CREATE TABLE IF NOT EXISTS intelligence_workspace_test_limits(
+ service_id TEXT NOT NULL, window_start INTEGER NOT NULL, request_count INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(service_id, window_start)
+);
+CREATE TABLE IF NOT EXISTS intelligence_device_latency_observations(
+ device_key TEXT NOT NULL, last_attempt_at REAL NOT NULL, latency_ms REAL NOT NULL,
+ sampled_at TEXT NOT NULL, PRIMARY KEY(device_key,last_attempt_at)
+);
+CREATE TABLE IF NOT EXISTS intelligence_reviews(
+ id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
+ review_kind TEXT NOT NULL CHECK(review_kind IN ('daily_engine_review')),
+ report_text TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'scheduled_openclaude'
 );
 CREATE TABLE IF NOT EXISTS device_events(
  id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at TEXT NOT NULL, device_id TEXT NOT NULL,
@@ -1416,6 +1440,8 @@ def initialize() -> None:
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(11,?)", (utcnow(),))
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(12,?)", (utcnow(),))
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(12,?)", (utcnow(),))
+        conn.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(13,?)", (utcnow(),))
+        conn.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(14,?)", (utcnow(),))
         _upsert_smart_product_catalog(conn, manufacturer="Shelly", protocol="shelly_bluetooth_gateway",
             product_code="family:blu-gateway", product_name="Shelly BLU Gateway (modelo por confirmar)",
             device_kind="smart_blugw", capabilities=["bluetooth_gateway"], source="manufacturer_family",
@@ -2496,6 +2522,36 @@ async def security_response_headers(request: Request, call_next):
     return response
 
 
+class IntelligenceProviderConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    api_key: StrictStr = Field(min_length=23, max_length=512, pattern=r"^sk-[A-Za-z0-9_-]{20,500}$")
+    model: StrictStr = Field(min_length=1, max_length=120,
+                              pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$")
+
+
+class IntelligenceAskRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    prompt: StrictStr = Field(min_length=1, max_length=8000)
+
+
+class IntelligenceAgentAuditEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    event: StrictStr = Field(pattern=r"^(tool_denied|workspace_file_edit|workspace_file_write|workspace_tests_started|workspace_tests_passed|workspace_tests_failed)$")
+    tool: StrictStr = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_.:-]+$")
+    path: StrictStr | None = Field(default=None, max_length=256, pattern=r"^[A-Za-z0-9_./-]+$")
+
+
+class IntelligenceWorkspaceTestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    suite: Literal["intelligence", "gateway-python"]
+
+
+class IntelligenceReviewCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    review_kind: StrictStr = Field(pattern=r"^daily_engine_review$")
+    report_text: StrictStr = Field(min_length=40, max_length=20000)
+
+
 class BootstrapOwner(BaseModel):
     # bootstrap_token remains optional for older locally issued tokens. Fresh
     # installs use the password chosen on the Gateway console as the one-time
@@ -2753,6 +2809,579 @@ def status_endpoint(session: dict[str, Any] = Depends(require_permission("read")
         users = conn.execute("SELECT COUNT(*) FROM users WHERE status='active'").fetchone()[0]
         devices = conn.execute("SELECT COUNT(*) FROM devices WHERE status='active'").fetchone()[0]
     return {"status": "ok", "bootstrap_state": state, "active_users": users, "active_devices": devices}
+
+
+def _intelligence_service_identity(authorization: str | None = Header(default=None)) -> dict[str, str]:
+    """Authenticate a dedicated, revocable, read-only Intelligence credential."""
+    if not authorization or not authorization.startswith("Bearer "):
+        with db() as conn:
+            audit(conn, None, "intelligence.service_auth", None, "failed", {"reason": "missing_bearer"})
+        raise HTTPException(401, "authentication_required")
+    raw_token = authorization[7:].strip()
+    if len(raw_token) < 32 or len(raw_token) > 256:
+        with db() as conn:
+            audit(conn, None, "intelligence.service_auth", None, "failed", {"reason": "token_shape_invalid"})
+        raise HTTPException(401, "service_identity_invalid")
+    digest = token_hash(raw_token)
+    with db() as conn:
+        row = conn.execute("""SELECT id,label,revoked_at FROM intelligence_service_tokens
+          WHERE token_sha256=?""", (digest,)).fetchone()
+    if not row or row["revoked_at"] is not None:
+        with db() as conn:
+            audit(conn, None, "intelligence.service_auth", None, "failed", {"reason": "unknown_or_revoked"})
+        raise HTTPException(401, "service_identity_invalid_or_revoked")
+    with db() as conn:
+        audit(conn, None, "intelligence.service_auth", row["id"], "success", {"label": row["label"]})
+    return {"service_id": row["id"], "label": row["label"]}
+
+
+@app.post("/api/v1/intelligence/service-tokens", status_code=201)
+def create_intelligence_service_token(
+    payload: dict[str, Any], session: dict[str, Any] = Depends(require_permission("manage_gateway"))
+) -> dict[str, Any]:
+    """Create a one-time read-only service credential; the raw token is never stored."""
+    label = str(payload.get("label") or "SolarMiner Intelligence").strip()
+    if not label or len(label) > 80:
+        raise HTTPException(422, "service_label_must_be_1_to_80_characters")
+    service_id = str(uuid.uuid4())
+    raw_token = secrets.token_urlsafe(48)
+    with db() as conn:
+        _require_owner(session, conn)
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        conn.execute("INSERT INTO intelligence_service_tokens(id,label,token_sha256,created_at) VALUES(?,?,?,?)",
+                     (service_id, label, token_hash(raw_token), utcnow()))
+        audit(conn, session["user_id"], "intelligence.service_token.create", service_id, "success",
+              {"label": label, "scope": "read_only"})
+    return {"service_id": service_id, "label": label, "scope": ["read"], "token": raw_token,
+            "token_display": "shown_once", "expires_at": None}
+
+
+@app.delete("/api/v1/intelligence/service-tokens/{service_id}")
+def revoke_intelligence_service_token(
+    service_id: str, session: dict[str, Any] = Depends(require_permission("manage_gateway"))
+) -> dict[str, Any]:
+    with db() as conn:
+        _require_owner(session, conn)
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        cursor = conn.execute("UPDATE intelligence_service_tokens SET revoked_at=? WHERE id=? AND revoked_at IS NULL",
+                              (utcnow(), service_id))
+        if cursor.rowcount != 1:
+            raise HTTPException(404, "service_identity_not_found")
+        audit(conn, session["user_id"], "intelligence.service_token.revoke", service_id, "success", {})
+    return {"service_id": service_id, "revoked": True}
+
+
+def _intelligence_safe_device(raw: dict[str, Any], now: float) -> dict[str, Any]:
+    provider, sep, device_id = str(raw.get("engine_key") or "").partition(":")
+    if not sep or provider not in {"tuya", "shelly"}:
+        return {}
+    view = _smart_engine_device_view(provider, device_id, now=now)
+    # Device DPS are user-/vendor-defined. Exclude likely credentials and network
+    # configuration before exposing the remaining cached readings to an agent.
+    unsafe = re.compile(r"password|passwd|token|secret|credential|ssid|wifi|private.?key", re.I)
+    statuses = view.get("status") if isinstance(view.get("status"), list) else []
+    safe_status = [item for item in statuses if isinstance(item, dict)
+                   and not unsafe.search(str(item.get("code") or ""))
+                   and not unsafe.search(str(item.get("label") or ""))]
+    return {"provider": provider, "device_id": device_id,
+            "name": str(view.get("name") or device_id)[:120],
+            "online": bool(view.get("online")), "lan_online": bool(view.get("lan_online")),
+            "measurement_valid": bool(view.get("measurement_valid")),
+            "availability_source": view.get("availability_source"),
+            "latency_ms": view.get("latency_ms"), "age_seconds": view.get("age_seconds"),
+            "last_success_at": view.get("last_success_at"), "last_attempt_at": view.get("last_attempt_at"),
+            "status": safe_status}
+
+
+def _intelligence_event_value(channel_code: Any, encoded: Any) -> Any:
+    if re.search(r"password|passwd|token|secret|credential|ssid|wifi|private.?key", str(channel_code or ""), re.I):
+        return None
+    try:
+        value = json.loads(encoded) if encoded is not None else None
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if isinstance(value, str):
+        return value[:256]
+    if isinstance(value, (bool, int)) or isinstance(value, float) and math.isfinite(value):
+        return value
+    return None
+
+
+def _intelligence_update_history(conn: sqlite3.Connection, limit: int = 20) -> dict[str, Any]:
+    """Return update outcomes with a strict diagnostic allowlist; omit arbitrary details/secrets."""
+    rows = conn.execute("SELECT state,installed_version,target_version,created_at,updated_at,details_json "
+                        "FROM update_operations ORDER BY updated_at DESC,rowid DESC LIMIT ?", (limit,)).fetchall()
+    history = []
+    allowed = {"reason", "failure", "rollback_failure", "recovery", "rollback_reason", "phase",
+               "command", "timeout_seconds", "elapsed_seconds", "finished_at_utc"}
+    for row in rows:
+        try:
+            details = json.loads(row["details_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            details = {}
+        safe = {key: value[:300] if isinstance(value, str) else value
+                for key, value in details.items() if key in allowed and
+                (isinstance(value, (str, int, float, bool)) or value is None)} if isinstance(details, dict) else {}
+        pipeline = details.get("pipeline") if isinstance(details, dict) else None
+        if isinstance(pipeline, dict):
+            safe["pipeline"] = {key: value[:300] if isinstance(value, str) else value
+                                for key, value in pipeline.items() if key in allowed and
+                                (isinstance(value, (str, int, float, bool)) or value is None)}
+        history.append({"state": row["state"], "installed_version": row["installed_version"],
+                        "target_version": row["target_version"], "created_at": row["created_at"],
+                        "updated_at": row["updated_at"], "diagnostic": safe})
+    return {"source": "persisted_update_operations", "records": history,
+            "latest_state": history[0]["state"] if history else "no_recorded_updates"}
+
+
+def _intelligence_device_inventory(conn: sqlite3.Connection, limit: int = 500) -> list[dict[str, Any]]:
+    """Expose known inventory identifiers and local addresses, never credentials."""
+    rows = conn.execute("SELECT device_key,source_provider,source_device_id,name,device_type,mac,last_ip,"
+                        "manufacturer,model,product_id,confirmation_status,last_seen_at "
+                        "FROM gateway_device_inventory ORDER BY name COLLATE NOCASE LIMIT ?", (limit,)).fetchall()
+    output = []
+    for row in rows:
+        address = row["last_ip"] if _is_private_lan_target(row["last_ip"]) else None
+        mac = str(row["mac"] or "")
+        try:
+            mac = normalize_mac(mac) if mac else ""
+        except HTTPException:
+            mac = ""
+        output.append({"device_key": row["device_key"], "provider": row["source_provider"],
+                       "source_device_id": row["source_device_id"], "name": row["name"],
+                       "device_type": row["device_type"], "mac": mac or None, "last_ip": address,
+                       "manufacturer": row["manufacturer"], "model": row["model"],
+                       "product_id": row["product_id"] or None,
+                       "confirmation_status": row["confirmation_status"], "last_seen_at": row["last_seen_at"]})
+    return output
+
+
+def _intelligence_tuya_dps_knowledge() -> dict[str, Any]:
+    """Provide the Gateway's existing DPS interpretations, without raw DPS or credentials."""
+    try:
+        config = hardware_integrations.public_config()
+        devices = config.get("tuya", {}).get("devices", [])
+    except Exception:
+        return {"state": "unavailable", "devices": []}
+    result = []
+    for device in devices[:200] if isinstance(devices, list) else []:
+        if not isinstance(device, dict):
+            continue
+        knowledge = device.get("dps_knowledge") if isinstance(device.get("dps_knowledge"), dict) else {}
+        entries = []
+        for item in knowledge.get("dps", [])[:512] if isinstance(knowledge.get("dps"), list) else []:
+            if not isinstance(item, dict):
+                continue
+            entries.append({key: item.get(key) for key in ("dps_id", "semantic_code", "display_name", "data_type",
+                "unit", "scale", "confidence", "source", "validation_status", "read_supported", "write_supported",
+                "function_code") if key in item})
+        result.append({"device_id": str(device.get("device_id") or "")[:128],
+                       "product_id": str(device.get("product_id") or "")[:128] or None,
+                       "product_name": str(device.get("product_name") or device.get("product_name_pt") or "")[:120],
+                       "schema_source": str(device.get("schema_source") or "UNKNOWN")[:48],
+                       "confidence": knowledge.get("confidence", "UNKNOWN"),
+                       "mapping_conflicts": knowledge.get("mapping_conflicts", [])[:100], "dps": entries})
+    return {"state": "available", "source": "SolarMiner_Tuya_DPS_registry_and_saved_product_schema",
+            "write_authorized": False, "devices": result}
+
+
+def _intelligence_update_latency_learning(conn: sqlite3.Connection, identity: dict[str, str],
+                                         devices: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Learn per-device communication baselines from distinct persisted engine samples only."""
+    result: list[dict[str, Any]] = []
+    cutoff = datetime.now(timezone.utc) - timedelta(days=90)
+    conn.execute("DELETE FROM intelligence_device_latency_observations WHERE sampled_at < ?", (cutoff.isoformat(),))
+    for device in devices:
+        attempt = _smart_engine_timestamp_epoch(device.get("last_attempt_at"))
+        raw_latency = device.get("latency_ms")
+        if attempt is None or isinstance(raw_latency, bool):
+            continue
+        try:
+            latency = float(raw_latency)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not math.isfinite(latency) or not 0 <= latency <= 300_000:
+            continue
+        device_key = f"{device['provider']}:{device['device_id']}"
+        previous = conn.execute("SELECT latency_ms FROM intelligence_device_latency_observations "
+                                "WHERE device_key=? ORDER BY last_attempt_at DESC LIMIT 30",
+                                (device_key,)).fetchall()
+        previous_values = [float(row[0]) for row in previous]
+        previous_median = statistics.median(previous_values) if previous_values else None
+        threshold = max(previous_median * 2.5, previous_median + 500.0) if previous_median is not None else None
+        is_new_sample = conn.execute("INSERT OR IGNORE INTO intelligence_device_latency_observations "
+                                      "(device_key,last_attempt_at,latency_ms,sampled_at) VALUES(?,?,?,?)",
+                                      (device_key, attempt, latency, utcnow())).rowcount == 1
+        is_anomaly = bool(is_new_sample and len(previous_values) >= 5 and threshold is not None and latency > threshold)
+        if is_new_sample:
+            audit(conn, None, "intelligence.learning.observation", identity["service_id"], "recorded",
+                  {"device": device_key, "latency_ms": round(latency, 2), "baseline_samples": len(previous_values)})
+        if is_anomaly:
+            audit(conn, None, "intelligence.learning.latency_anomaly", identity["service_id"], "detected",
+                  {"device": device_key, "latency_ms": round(latency, 2),
+                   "baseline_median_ms": round(previous_median, 2), "threshold_ms": round(threshold, 2)})
+        values = previous_values + ([latency] if is_new_sample else [])
+        result.append({"provider": device["provider"], "device_id": device["device_id"],
+                       "method": "rolling_median_30_distinct_engine_samples",
+                       "state": "learning" if len(values) < 5 else "baseline_ready",
+                       "sample_count": len(values), "median_latency_ms": round(statistics.median(values), 2),
+                       "current_latency_ms": round(latency, 2),
+                       "anomaly_threshold_ms": round(threshold, 2) if threshold is not None else None,
+                       "latency_anomaly": is_anomaly,
+                       "sample_is_new": is_new_sample})
+    return result
+
+
+@app.get("/api/v1/intelligence/snapshot")
+def intelligence_snapshot(
+    history_hours: int = 24,
+    identity: dict[str, str] = Depends(_intelligence_service_identity),
+) -> dict[str, Any]:
+    """Read-only aggregate for MCP/agent clients; never polls or commands devices."""
+    if isinstance(history_hours, bool) or not 1 <= history_hours <= 168:
+        raise HTTPException(422, "history_hours_must_be_1_to_168")
+    now = time.time()
+    snapshot = _smart_engine_snapshot()
+    devices = []
+    for key, raw in snapshot.get("devices", {}).items():
+        if isinstance(raw, dict):
+            view = _intelligence_safe_device({**raw, "engine_key": key}, now)
+            if view:
+                devices.append(view)
+    service_session = {"user_id": None}
+    energy = energy_engine_summary(history_hours=history_hours, session=service_session)
+    with db() as conn:
+        bootstrap = conn.execute("SELECT value FROM system_state WHERE key='bootstrap_state'").fetchone()
+        recent_audit = conn.execute("""SELECT occurred_at,action,outcome,target FROM audit
+          WHERE occurred_at >= ? ORDER BY id DESC LIMIT 50""",
+          ((datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(),)).fetchall()
+        recent_events = conn.execute("""SELECT occurred_at,device_name,event_type,channel_code,
+          old_value_json,new_value_json,source FROM device_events ORDER BY id DESC LIMIT 100""").fetchall()
+        learning = _intelligence_update_latency_learning(conn, identity, devices)
+        inventory = _intelligence_device_inventory(conn)
+        update_history = _intelligence_update_history(conn)
+        dps_knowledge = _intelligence_tuya_dps_knowledge()
+        audit(conn, None, "intelligence.snapshot.read", identity["service_id"], "success",
+              {"label": identity["label"], "device_count": len(devices), "history_hours": history_hours,
+               "inventory_count": len(inventory),
+               "learning_samples": sum(1 for item in learning if item["sample_is_new"])})
+    return {"gateway": {"status": "ok", "version": VERSION, "package_version": PACKAGE_VERSION,
+                         "bootstrap_state": bootstrap[0] if bootstrap else "unknown"},
+            "device_engine": {"state_source": "gateway_persisted_snapshot", "managed_providers": ["tuya", "shelly"],
+                              "device_count": len(devices), "devices": devices, "observed_at": now,
+                              "learning": {"state": "rolling_historical_baseline", "source": "persisted_device_engine_samples",
+                                           "devices": learning, "physical_device_io_performed": False}},
+            "energy_engine": energy,
+            "recent_audit": [{"occurred_at": row["occurred_at"], "action": row["action"],
+                              "outcome": row["outcome"], "target": row["target"]} for row in recent_audit],
+            "recent_device_events": [{"occurred_at": row["occurred_at"], "device_name": row["device_name"],
+                                      "event_type": row["event_type"], "channel_code": row["channel_code"],
+                                      "old_value": _intelligence_event_value(row["channel_code"], row["old_value_json"]),
+                                      "new_value": _intelligence_event_value(row["channel_code"], row["new_value_json"]),
+                                      "source": row["source"]} for row in recent_events],
+            "device_inventory": {"source": "gateway_device_inventory_cached", "devices": inventory,
+                                 "device_count": len(inventory), "active_discovery_performed": False},
+            "tuya_dps_knowledge": dps_knowledge,
+            "update_history": update_history,
+            "source_semantics": {"device_values": "cached_gateway_values; measurement_valid indicates LAN freshness",
+                                 "energy_forecasts": "existing_Energy_Engine_outputs_and_historical_calibration",
+                                 "device_io_performed": False}}
+
+
+@app.get("/api/v1/intelligence/diagnostics")
+def intelligence_diagnostics(
+    limit: int = 100,
+    identity: dict[str, str] = Depends(_intelligence_service_identity),
+) -> dict[str, Any]:
+    """Expose bounded, redacted application errors and allowlisted service journals to the service identity."""
+    if isinstance(limit, bool) or not 1 <= limit <= 200:
+        raise HTTPException(422, "diagnostic_limit_must_be_1_to_200")
+    try:
+        gateway = update_helper_client.request("diagnostics")
+        if gateway.get("status") != "ok":
+            raise RuntimeError("gateway_journal_unavailable")
+        app_errors = error_reporting.read_recent_gateway_errors(limit=limit)
+    except Exception as exc:
+        with db() as conn:
+            audit(conn, None, "intelligence.diagnostics.read", identity["service_id"], "failed",
+                  {"error_type": type(exc).__name__})
+        raise HTTPException(503, "gateway_diagnostics_unavailable") from exc
+    logs = gateway.get("logs") if isinstance(gateway.get("logs"), str) else ""
+    logs = logs[-24000:]
+    with db() as conn:
+        audit(conn, None, "intelligence.diagnostics.read", identity["service_id"], "success",
+              {"label": identity["label"], "application_error_count": len(app_errors),
+               "journal_characters": len(logs)})
+    return {"state": "available", "captured_at": utcnow(), "application_errors": app_errors,
+            "allowlisted_service_journal": logs, "journal_truncated": len(gateway.get("logs", "")) > len(logs),
+            "coverage": {"application_error_queue": "bounded_recent_sanitized_records",
+                         "system_journal": "root_broker_allowlisted_services_last_7_days_max_400_lines"}}
+
+
+@app.get("/api/v1/intelligence/github-reports")
+def intelligence_github_reports(
+    limit: int = 10,
+    identity: dict[str, str] = Depends(_intelligence_service_identity),
+) -> dict[str, Any]:
+    """Read sanitized reports from the already-configured private diagnostics repository."""
+    if isinstance(limit, bool) or not 1 <= limit <= 20:
+        raise HTTPException(422, "diagnostic_limit_must_be_1_to_20")
+    result = error_reporting.read_github_diagnostics_reports(limit=limit)
+    with db() as conn:
+        audit(conn, None, "intelligence.github_reports.read", identity["service_id"],
+              "success" if result.get("state") == "available" else "unavailable",
+              {"label": identity["label"], "state": result.get("state"),
+               "report_count": len(result.get("reports", []))})
+    return result
+
+
+def _intelligence_redact_report(value: str) -> str:
+    value = re.sub(r"\bsk-[A-Za-z0-9_-]{20,}\b", "[REDACTED_OPENAI_KEY]", value)
+    value = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/-]{20,}", "Bearer [REDACTED]", value)
+    value = re.sub(r"(?i)(api[_ -]?key|password|passwd|secret|token)\s*[:=]\s*[^\s,;]+",
+                   r"\1=[REDACTED]", value)
+    return value[:20000]
+
+
+@app.post("/api/v1/intelligence/reviews", status_code=201)
+def intelligence_review_create(
+    payload: IntelligenceReviewCreate,
+    identity: dict[str, str] = Depends(_intelligence_service_identity),
+) -> dict[str, Any]:
+    """Persist one bounded, redacted, append-only automatic review per 20 hours."""
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(hours=20)).isoformat()
+    report = _intelligence_redact_report(payload.report_text)
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        recent = conn.execute("SELECT id,created_at FROM intelligence_reviews WHERE created_at>=? "
+                              "ORDER BY id DESC LIMIT 1", (cutoff,)).fetchone()
+        if recent:
+            audit(conn, None, "intelligence.review.create", identity["service_id"], "rate_limited",
+                  {"review_kind": payload.review_kind, "existing_review_id": recent["id"]})
+            conn.commit()
+            raise HTTPException(429, "intelligence_daily_review_already_recorded")
+        created_at = now.isoformat()
+        cursor = conn.execute("INSERT INTO intelligence_reviews(created_at,review_kind,report_text) VALUES(?,?,?)",
+                              (created_at, payload.review_kind, report))
+        review_id = cursor.lastrowid
+        audit(conn, None, "intelligence.review.create", identity["service_id"], "success",
+              {"review_kind": payload.review_kind, "review_id": review_id, "report_characters": len(report)})
+        conn.commit()
+    return {"status": "recorded", "review_id": review_id, "created_at": created_at}
+
+
+@app.get("/api/v1/intelligence/reviews")
+def intelligence_reviews(
+    limit: int = 10,
+    session: dict[str, Any] = Depends(require_permission("manage_gateway")),
+) -> dict[str, Any]:
+    if isinstance(limit, bool) or not 1 <= limit <= 30:
+        raise HTTPException(422, "review_limit_must_be_1_to_30")
+    with db() as conn:
+        _require_owner(session, conn)
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+        rows = conn.execute("SELECT id,created_at,review_kind,report_text FROM intelligence_reviews "
+                            "ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        audit(conn, session["user_id"], "intelligence.review.read", "scheduled_reviews", "success",
+              {"review_count": len(rows)})
+    return {"reviews": [dict(row) for row in rows], "count": len(rows),
+            "generation": "automatic_once_per_day", "status": "proposal_only"}
+
+
+@app.post("/api/v1/intelligence/agent-events", status_code=201)
+def intelligence_agent_event(
+    payload: IntelligenceAgentAuditEvent,
+    identity: dict[str, str] = Depends(_intelligence_service_identity),
+) -> dict[str, Any]:
+    """Append a bounded agent permission, workspace edit, or test lifecycle event."""
+    if payload.path and (payload.path.startswith("/") or ".." in payload.path.split("/") or "\\" in payload.path):
+        raise HTTPException(422, "invalid_workspace_audit_path")
+    outcome = {"tool_denied": "denied", "workspace_tests_failed": "failed"}.get(payload.event, "success")
+    with db() as conn:
+        audit(conn, None, "intelligence.agent.action", identity["service_id"], outcome,
+              {"event": payload.event, "tool": payload.tool, "path": payload.path, "label": identity["label"]})
+    return {"status": "recorded"}
+
+
+@app.post("/api/v1/intelligence/workspace-tests")
+def intelligence_workspace_tests(
+    payload: IntelligenceWorkspaceTestRequest,
+    identity: dict[str, str] = Depends(_intelligence_service_identity),
+) -> dict[str, Any]:
+    """Run a fixed suite from a root-created, isolated source snapshot."""
+    window = int(time.time()) // 3600 * 3600
+    with db() as conn:
+        conn.execute("INSERT OR IGNORE INTO intelligence_workspace_test_limits(service_id,window_start,request_count) VALUES(?,?,0)",
+                     (identity["service_id"], window))
+        accepted = conn.execute("UPDATE intelligence_workspace_test_limits SET request_count=request_count+1 "
+                                "WHERE service_id=? AND window_start=? AND request_count<6",
+                                (identity["service_id"], window)).rowcount
+        if accepted != 1:
+            audit(conn, None, "intelligence.agent.action", identity["service_id"], "rate_limited",
+                  {"event": "workspace_tests_rate_limited", "suite": payload.suite,
+                   "limit_per_hour": 6, "label": identity["label"]})
+            raise HTTPException(429, "intelligence_workspace_test_hourly_limit_reached")
+        audit(conn, None, "intelligence.agent.action", identity["service_id"], "started",
+              {"event": "workspace_tests_started", "suite": payload.suite, "label": identity["label"]})
+    try:
+        result = update_helper_client.request("intelligence_workspace_tests", suite=payload.suite)
+    except Exception as exc:
+        with db() as conn:
+            audit(conn, None, "intelligence.agent.action", identity["service_id"], "failed",
+                  {"event": "workspace_tests_failed", "suite": payload.suite, "error_type": type(exc).__name__,
+                   "label": identity["label"]})
+        raise HTTPException(503, "isolated_workspace_tests_unavailable") from exc
+    passed = result.get("status") == "passed"
+    with db() as conn:
+        audit(conn, None, "intelligence.agent.action", identity["service_id"],
+              "success" if passed else "failed",
+              {"event": "workspace_tests_passed" if passed else "workspace_tests_failed",
+               "suite": payload.suite, "exit_code": result.get("exit_code"), "label": identity["label"]})
+    return result
+
+
+@app.get("/api/v1/intelligence/provider")
+def intelligence_provider_status(
+    session: dict[str, Any] = Depends(require_permission("manage_gateway")),
+) -> dict[str, Any]:
+    with db() as conn:
+        _require_owner(session, conn)
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+    try:
+        status_result = update_helper_client.request("intelligence_openai_status")
+    except Exception as exc:
+        with db() as conn:
+            audit(conn, session["user_id"], "intelligence.provider.status", "openai", "failed",
+                  {"error_type": type(exc).__name__})
+        raise HTTPException(503, "intelligence_provider_status_unavailable") from exc
+    configured = status_result.get("configured") is True
+    with db() as conn:
+        audit(conn, session["user_id"], "intelligence.provider.status", "openai",
+              "success", {"configured": configured})
+    return {"provider": "openai", "configured": configured, "model_required": True,
+            "credential_display": "never_returned"}
+
+
+@app.put("/api/v1/intelligence/provider")
+def configure_intelligence_provider(
+    payload: IntelligenceProviderConfig,
+    session: dict[str, Any] = Depends(require_permission("manage_gateway")),
+) -> dict[str, Any]:
+    with db() as conn:
+        _require_owner(session, conn)
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+    try:
+        result = update_helper_client.request("intelligence_openai_set", api_key=payload.api_key,
+                                              model=payload.model)
+    except Exception as exc:
+        with db() as conn:
+            audit(conn, session["user_id"], "intelligence.provider.configure", "openai", "failed",
+                  {"error_type": type(exc).__name__})
+        raise HTTPException(503, "intelligence_provider_configuration_failed") from exc
+    with db() as conn:
+        audit(conn, session["user_id"], "intelligence.provider.configure", "openai", "success",
+              {"model_configured": payload.model is not None})
+    return {"provider": "openai", "configured": result.get("configured") is True,
+            "model_configured": True, "credential_display": "stored_once_not_returned",
+            "service_restart": "requested"}
+
+
+@app.delete("/api/v1/intelligence/provider")
+def revoke_intelligence_provider(
+    session: dict[str, Any] = Depends(require_permission("manage_gateway")),
+) -> dict[str, Any]:
+    with db() as conn:
+        _require_owner(session, conn)
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+    try:
+        result = update_helper_client.request("intelligence_openai_clear")
+    except Exception as exc:
+        with db() as conn:
+            audit(conn, session["user_id"], "intelligence.provider.revoke", "openai", "failed",
+                  {"error_type": type(exc).__name__})
+        raise HTTPException(503, "intelligence_provider_revocation_failed") from exc
+    with db() as conn:
+        audit(conn, session["user_id"], "intelligence.provider.revoke", "openai", "success", {})
+    return {"provider": "openai", "configured": result.get("configured") is True}
+
+
+def _read_intelligence_local_token() -> str:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(INTELLIGENCE_LOCAL_TOKEN_PATH, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o027:
+            raise OSError("local_agent_credential_permissions_invalid")
+        raw = os.read(descriptor, 257)
+        if len(raw) > 256:
+            raise OSError("local_agent_credential_invalid")
+        return raw.decode("ascii").strip()
+    finally:
+        os.close(descriptor)
+
+
+@app.post("/api/v1/intelligence/ask")
+def intelligence_ask(
+    payload: IntelligenceAskRequest,
+    session: dict[str, Any] = Depends(require_permission("read")),
+) -> dict[str, Any]:
+    """Forward an authenticated Gateway request to the local OpenClaude process."""
+    # Persisted per-user hourly limit bounds accidental loops and cloud spend.
+    window_start = int(time.time()) // 3600 * 3600
+    with db() as conn:
+        conn.execute("INSERT OR IGNORE INTO intelligence_request_limits(user_id,window_start,request_count) VALUES(?,?,0)",
+                     (session["user_id"], window_start))
+        updated = conn.execute("UPDATE intelligence_request_limits SET request_count=request_count+1 "
+                               "WHERE user_id=? AND window_start=? AND request_count<30",
+                               (session["user_id"], window_start))
+        if updated.rowcount != 1:
+            audit(conn, session["user_id"], "intelligence.ask", "openclaude", "rate_limited",
+                  {"window_seconds": 3600, "limit": 30})
+            raise HTTPException(429, "intelligence_hourly_limit_reached")
+    try:
+        local_token = _read_intelligence_local_token()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", local_token):
+            raise OSError("local_agent_credential_invalid")
+        with http.client.HTTPConnection("127.0.0.1", 8765, timeout=125) as connection:
+            connection.request("POST", "/v1/analyze", body=json.dumps({"prompt": payload.prompt}),
+                               headers={"Authorization": f"Bearer {local_token}",
+                                        "Content-Type": "application/json", "Accept": "application/json"})
+            response = connection.getresponse()
+            response_payload = json.loads(response.read(20000).decode("utf-8"))
+    except (OSError, ValueError, TimeoutError, http.client.HTTPException) as exc:
+        with db() as conn:
+            audit(conn, session["user_id"], "intelligence.ask", "openclaude", "failed",
+                  {"error_type": type(exc).__name__, "prompt_characters": len(payload.prompt)})
+        raise HTTPException(503, "intelligence_agent_unavailable") from exc
+    if response.status != 200 or not isinstance(response_payload, dict) or not isinstance(response_payload.get("answer"), str):
+        with db() as conn:
+            audit(conn, session["user_id"], "intelligence.ask", "openclaude", "failed",
+                  {"agent_status": response.status, "prompt_characters": len(payload.prompt)})
+        reason = response_payload.get("error") if isinstance(response_payload, dict) else None
+        if reason in {"openai_credential_not_configured", "openai_model_not_configured",
+                      "solarminer_service_credential_not_configured"}:
+            raise HTTPException(503, "intelligence_credentials_not_configured")
+        if reason == "analysis_busy":
+            raise HTTPException(429, "intelligence_agent_busy")
+        raise HTTPException(503, "intelligence_analysis_failed")
+    with db() as conn:
+        audit(conn, session["user_id"], "intelligence.ask", "openclaude", "success",
+              {"prompt_characters": len(payload.prompt), "answer_characters": len(response_payload["answer"])})
+    return {"status": "ok", "answer": response_payload["answer"], "agent": "SolarMiner Intelligence",
+            "provider": "OpenAI", "source": "SolarMiner MCP read-only tools"}
 
 
 @app.get("/api/v1/energy/categories")

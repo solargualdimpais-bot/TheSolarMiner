@@ -1,6 +1,7 @@
 PYTHON ?= python3
 OUT ?= dist
-PACKAGE = $(OUT)/solarminer-gateway_0.6.245_amd64.deb
+PACKAGE_VERSION = $(shell sed -n 's/^Version: //p' packaging/control)
+PACKAGE = $(OUT)/solarminer-gateway_$(PACKAGE_VERSION)_amd64.deb
 
 .PHONY: test deb test-package clean
 

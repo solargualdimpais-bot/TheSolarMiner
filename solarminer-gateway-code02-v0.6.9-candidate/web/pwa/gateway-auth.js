@@ -284,6 +284,24 @@ export async function readGatewayTailscale() {
 export async function readGatewayConsole() {
   return gatewayApi("/api/v1/system/console");
 }
+export async function readGatewayIntelligenceProvider() {
+  return gatewayApi("/api/v1/intelligence/provider");
+}
+export async function saveGatewayIntelligenceProvider(apiKey, model) {
+  if (typeof apiKey !== "string" || typeof model !== "string") throw new Error("Configuração OpenAI inválida.");
+  return gatewayApi("/api/v1/intelligence/provider", { method: "PUT", body: { api_key: apiKey, model } });
+}
+export async function revokeGatewayIntelligenceProvider() {
+  return gatewayApi("/api/v1/intelligence/provider", { method: "DELETE" });
+}
+export async function askGatewayIntelligence(prompt) {
+  if (typeof prompt !== "string") throw new Error("Pergunta inválida.");
+  return gatewayApi("/api/v1/intelligence/ask", { method: "POST", body: { prompt } });
+}
+export async function readGatewayIntelligenceReviews(limit = 10) {
+  const bounded = Math.max(1, Math.min(30, Number.isInteger(limit) ? limit : 10));
+  return gatewayApi(`/api/v1/intelligence/reviews?limit=${bounded}`);
+}
 export async function readGatewayDiagnosticsUpload() {
   return gatewayApi("/api/v1/system/diagnostics-upload");
 }

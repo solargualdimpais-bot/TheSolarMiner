@@ -13,7 +13,7 @@ StandardOutput=socket
 StandardError=journal
 ExecStart=/usr/bin/solarminer-update-broker
 ExecStartPre=/usr/bin/solarminer-data-volume-check
-TimeoutStartSec=35
+TimeoutStartSec=670
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
@@ -22,7 +22,7 @@ ProtectSystem=strict
 ProtectHome=true
 # Nginx -t opens its configured error log and PID file. Keep these paths
 # writable inside the strict namespace so diagnostics reflect the host config.
-ReadWritePaths=/opt/solarminer /var/lib/solarminer /var/log/nginx /run
+ReadWritePaths=/opt/solarminer /var/lib/solarminer /var/lib/solarminer-intelligence/test-runs /var/log/nginx /etc/solarminer /run
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

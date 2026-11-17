@@ -10,8 +10,12 @@ from typing import Any
 DEFAULT_SOCKET_PATH = "/run/solarminer/update-broker.sock"
 
 
-def request(action: str, operation_id: str | None = None, enabled: bool | None = None) -> dict[str, Any]:
-    if action not in {"preflight", "enqueue", "tailscale_status", "tailscale_connect", "diagnostics", "watchdog_set"}:
+def request(action: str, operation_id: str | None = None, enabled: bool | None = None,
+            api_key: str | None = None, model: str | None = None,
+            suite: str | None = None) -> dict[str, Any]:
+    if action not in {"preflight", "enqueue", "tailscale_status", "tailscale_connect", "diagnostics", "watchdog_set",
+                      "intelligence_openai_set", "intelligence_openai_status", "intelligence_openai_clear",
+                      "intelligence_workspace_tests"}:
         raise ValueError("update_broker_action_invalid")
     payload: dict[str, Any] = {"action": action}
     if action == "enqueue":
@@ -26,23 +30,41 @@ def request(action: str, operation_id: str | None = None, enabled: bool | None =
         if operation_id is not None or not isinstance(enabled, bool):
             raise ValueError("watchdog_state_invalid")
         payload["enabled"] = enabled
+    elif action == "intelligence_openai_set":
+        if operation_id is not None or enabled is not None or not isinstance(api_key, str) or not isinstance(model, str):
+            raise ValueError("openai_configuration_invalid")
+        payload.update({"api_key": api_key, "model": model})
+    elif action in {"intelligence_openai_status", "intelligence_openai_clear"}:
+        if operation_id is not None or enabled is not None or api_key is not None or model is not None:
+            raise ValueError("openai_configuration_unexpected")
+    elif action == "intelligence_workspace_tests":
+        if operation_id is not None or enabled is not None or api_key is not None or model is not None:
+            raise ValueError("intelligence_test_request_invalid")
+        if suite not in {"intelligence", "gateway-python"}:
+            raise ValueError("intelligence_test_suite_invalid")
+        payload["suite"] = suite
     elif operation_id is not None or enabled is not None:
         raise ValueError("update_operation_id_unexpected")
+    if action not in {"intelligence_openai_set", "intelligence_openai_status", "intelligence_openai_clear"} and (api_key is not None or model is not None):
+        raise ValueError("openai_configuration_unexpected")
+    if action != "intelligence_workspace_tests" and suite is not None:
+        raise ValueError("intelligence_test_suite_unexpected")
     path = os.environ.get("SOLARMINER_UPDATE_BROKER_SOCKET", DEFAULT_SOCKET_PATH)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        client.settimeout(35 if action == "tailscale_connect" else 30 if action == "diagnostics" else 15)
+        client.settimeout(650 if action == "intelligence_workspace_tests" else 35 if action == "tailscale_connect" else 30 if action == "diagnostics" else 15)
         client.connect(path)
         client.sendall(json.dumps(payload, separators=(",", ":")).encode("utf-8") + b"\n")
         client.shutdown(socket.SHUT_WR)
         response = bytearray()
-        while len(response) <= 65536:
+        response_limit = 40000 if action == "intelligence_workspace_tests" else 65536
+        while len(response) <= response_limit:
             chunk = client.recv(4096)
             if not chunk:
                 break
             response.extend(chunk)
             if b"\n" in chunk:
                 break
-    if len(response) > 65536:
+    if len(response) > (40000 if action == "intelligence_workspace_tests" else 65536):
         raise RuntimeError("update_broker_response_too_large")
     try:
         result = json.loads(response.decode("utf-8").split("\n", 1)[0])

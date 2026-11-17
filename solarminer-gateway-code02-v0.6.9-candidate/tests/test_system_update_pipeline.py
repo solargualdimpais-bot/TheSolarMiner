@@ -148,6 +148,37 @@ def test_health_check_has_a_hard_sixty_second_deadline(tmp_path: Path, monkeypat
     assert pipeline._last_health_diagnostic["attempts"] > 0
 
 
+def test_system_command_timeout_is_classified_with_operation_and_limit(tmp_path: Path):
+    def timeout_runner(args, **kwargs):
+        raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+
+    pipeline = SystemUpdatePipeline(root=tmp_path / "opt/solarminer", runner=timeout_runner)
+    with pytest.raises(PipelineError, match=r"command_failed:systemctl:restart:TimeoutExpired:timeout=8"):
+        pipeline._run(["/usr/bin/systemctl", "restart", "--no-block", "solarminer-gateway.service"],
+                      timeout=8, check=True)
+    assert pipeline._last_command_diagnostic == {
+        "executable": "systemctl",
+        "operation": "restart",
+        "target": "solarminer-gateway.service",
+        "timeout_seconds": 8,
+        "outcome": "timeout",
+        "error_type": "TimeoutExpired",
+    }
+
+
+def test_cli_returns_failure_for_completed_rollback(monkeypatch, capsys):
+    from solarminer_gateway import system_update_pipeline as updater
+
+    class RolledBackPipeline:
+        def apply(self, operation_id):
+            return {"status": "ROLLED_BACK", "operation_id": operation_id}
+
+    monkeypatch.setattr(updater, "SystemUpdatePipeline", RolledBackPipeline)
+    monkeypatch.setattr("sys.argv", ["solarminer-update-apply", "--operation", "operation-1"])
+    assert updater.main() == 2
+    assert '"status": "ROLLED_BACK"' in capsys.readouterr().out
+
+
 def test_health_check_records_reported_version_mismatch_without_payload_secrets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     pipeline = SystemUpdatePipeline(root=tmp_path / "opt/solarminer", health_timeout=1)
     monkeypatch.setattr("solarminer_gateway.system_update_pipeline.ssl.create_default_context", lambda **kwargs: object())

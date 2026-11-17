@@ -1,0 +1,146 @@
+#!/usr/bin/python3
+"""Root broker for running agent-authored tests without agent credentials or network."""
+from __future__ import annotations
+
+import fcntl
+import json
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import uuid
+from pathlib import Path
+
+SOURCE = Path("/var/lib/solarminer-intelligence/work/source/solarminer-gateway-code02-v0.6.9-candidate")
+RUNS = Path("/var/lib/solarminer-intelligence/test-runs")
+LOCK = Path("/run/solarminer/intelligence-tests.lock")
+TEST_USER = "solarminer-intelligence-test"
+TEST_GROUP = "solarminer-intelligence-test"
+MAX_FILES = 12000
+MAX_BYTES = 160 * 1024 * 1024
+
+
+def _copy_regular_tree(source: Path, destination: Path) -> None:
+    count = 0
+    total = 0
+    for current, directories, files in os.walk(source, followlinks=False):
+        current_path = Path(current)
+        relative = current_path.relative_to(source)
+        target_dir = destination / relative
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for name in list(directories):
+            candidate = current_path / name
+            info = os.lstat(candidate)
+            if not stat.S_ISDIR(info.st_mode):
+                raise ValueError("workspace_contains_non_directory_entry")
+        directories[:] = [name for name in directories if name not in {".git", "node_modules", ".venv", "__pycache__", ".pytest_cache"}]
+        for name in files:
+            candidate = current_path / name
+            info = os.lstat(candidate)
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("workspace_contains_non_regular_file")
+            count += 1
+            total += info.st_size
+            if count > MAX_FILES or total > MAX_BYTES:
+                raise ValueError("workspace_test_snapshot_too_large")
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+            descriptor = os.open(candidate, flags)
+            try:
+                opened = os.fstat(descriptor)
+                if not stat.S_ISREG(opened.st_mode) or opened.st_ino != info.st_ino or opened.st_dev != info.st_dev:
+                    raise ValueError("workspace_changed_during_snapshot")
+                with os.fdopen(descriptor, "rb", closefd=False) as reader, open(target_dir / name, "xb") as writer:
+                    shutil.copyfileobj(reader, writer, 1024 * 1024)
+            finally:
+                os.close(descriptor)
+
+
+def _readonly_tree(root: Path) -> None:
+    for current, directories, files in os.walk(root, topdown=False, followlinks=False):
+        for name in files:
+            os.chmod(Path(current) / name, 0o444, follow_symlinks=False)
+        for name in directories:
+            os.chmod(Path(current) / name, 0o555, follow_symlinks=False)
+    os.chmod(root, 0o555)
+
+
+def run_suite(suite: str) -> dict[str, object]:
+    if suite not in {"intelligence", "gateway-python"}:
+        return {"status": "error", "reason": "validation_suite_not_allowed"}
+    try:
+        source_real = SOURCE.resolve(strict=True)
+        if source_real != SOURCE or not SOURCE.is_dir() or SOURCE.is_symlink():
+            return {"status": "error", "reason": "development_workspace_unavailable"}
+        RUNS.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if RUNS.is_symlink() or os.stat(RUNS).st_uid != 0 or os.stat(RUNS).st_mode & 0o022:
+            return {"status": "error", "reason": "test_runner_directory_unsafe"}
+        lock_fd = os.open(LOCK, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return {"status": "error", "reason": "workspace_tests_busy"}
+            run_id = uuid.uuid4().hex
+            run_root = RUNS / run_id
+            snapshot = run_root / "source"
+            run_root.mkdir(mode=0o711)
+            snapshot.mkdir(mode=0o700)
+            try:
+                _copy_regular_tree(SOURCE, snapshot)
+                test_user = shutil.which("id") and subprocess.run(
+                    ["/usr/bin/id", "-u", TEST_USER], capture_output=True, text=True, timeout=3, check=False)
+                if not test_user or test_user.returncode != 0:
+                    return {"status": "error", "reason": "isolated_test_account_unavailable"}
+                _readonly_tree(snapshot)
+                os.chmod(run_root, 0o711)
+                node = "/opt/solarminer/intelligence/node-v24.22.1/bin/node"
+                if suite == "intelligence":
+                    test_args = [node, "--test", "tools/solarminer_intelligence_mcp/server.test.mjs",
+                                 "tools/solarminer_intelligence_mcp/agent-service.test.mjs"]
+                    environment = ["HOME=/tmp", "TMPDIR=/tmp", "NODE_OPTIONS=--disable-proto=throw"]
+                else:
+                    test_args = ["/usr/bin/python3", "-B", "-m", "pytest", "-p", "no:cacheprovider", "-q", "tests"]
+                    environment = ["HOME=/tmp", "TMPDIR=/tmp", "PYTHONDONTWRITEBYTECODE=1",
+                                   "PYTHONPATH=src", "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1"]
+                unit = f"solarminer-intelligence-test-{run_id}"
+                command = ["/usr/bin/systemd-run", "--wait", "--pipe", "--quiet", "--collect",
+                           f"--unit={unit}", f"--working-directory={snapshot}",
+                           f"--property=User={TEST_USER}", f"--property=Group={TEST_GROUP}",
+                           "--property=Type=exec", "--property=RuntimeMaxSec=620s",
+                           "--property=TimeoutStartSec=30s", "--property=NoNewPrivileges=yes",
+                           "--property=PrivateNetwork=yes", "--property=PrivateTmp=yes",
+                           "--property=PrivateDevices=yes", "--property=ProtectSystem=strict",
+                           "--property=ProtectHome=yes", "--property=ProtectKernelTunables=yes",
+                           "--property=ProtectKernelModules=yes", "--property=ProtectControlGroups=yes",
+                           "--property=RestrictSUIDSGID=yes", "--property=LockPersonality=yes",
+                           "--property=MemoryMax=768M", "--property=CPUQuota=100%",
+                           "--property=TasksMax=32", "--property=RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+                           "--property=InaccessiblePaths=/etc/solarminer /var/lib/solarminer /run/solarminer /opt/solarminer/intelligence /usr/share/solarminer/intelligence-mcp",
+                           f"--property=ReadOnlyPaths={snapshot}"]
+                command.extend(f"--property=Environment={item}" for item in environment)
+                command.extend(["--", *test_args])
+                completed = subprocess.run(command, capture_output=True, text=True, timeout=630, check=False,
+                                           env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root"})
+                output = (completed.stdout or "") + (completed.stderr or "")
+                return {"status": "passed" if completed.returncode == 0 else "failed",
+                        "suite": suite, "exit_code": completed.returncode,
+                        "isolation": "separate_uid_private_network_read_only_snapshot",
+                        "output": output[-24000:] or ("tests_passed" if completed.returncode == 0 else "tests_failed")}
+            except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+                reason = str(error) if isinstance(error, ValueError) else "isolated_test_execution_failed"
+                return {"status": "error", "reason": reason[:120]}
+            finally:
+                shutil.rmtree(run_root, ignore_errors=True)
+        finally:
+            os.close(lock_fd)
+    except (OSError, RuntimeError, ValueError):
+        return {"status": "error", "reason": "isolated_test_runner_unavailable"}
+
+
+if __name__ == "__main__":
+    if os.geteuid() != 0 or len(sys.argv) != 2:
+        print(json.dumps({"status": "error", "reason": "test_runner_invocation_invalid"}))
+        raise SystemExit(2)
+    print(json.dumps(run_suite(sys.argv[1]), separators=(",", ":")))

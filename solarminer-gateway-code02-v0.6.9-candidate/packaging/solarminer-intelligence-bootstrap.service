@@ -1,0 +1,16 @@
+[Unit]
+Description=Install verified SolarMiner Intelligence runtime after Tailscale and TLS readiness
+After=network-online.target tailscaled.service nginx.service solarminer-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/solarminer-intelligence-bootstrap
+TimeoutStartSec=15min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/etc/solarminer /opt/solarminer/intelligence /usr/share/solarminer/intelligence-agent /usr/share/solarminer/intelligence-mcp /var/lib/solarminer/intelligence /var/lib/solarminer-intelligence /var/log
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

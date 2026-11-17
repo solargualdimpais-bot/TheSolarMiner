@@ -424,6 +424,7 @@ done
 
 # The local probe above proves only that the Gateway serves HTTPS on loopback.
 # Also provision and probe the actual MagicDNS/SNI vhost used by the PWA.
+INTELLIGENCE_PREREQUISITES_CONFIRMED=0
 TAILSCALE_STATE=$(tailscale status --json 2>/dev/null || true)
 TAILSCALE_DNS=$(printf '%s' "$TAILSCALE_STATE" | python3 -c '
 import json,re,sys
@@ -476,6 +477,7 @@ PY
       fi
     done
     if [ "$tls_probe_ok" -eq 1 ]; then
+      INTELLIGENCE_PREREQUISITES_CONFIRMED=1
       log "HTTPS Tailscale, certificado, Nginx e API confirmados pelo mesmo endereço usado pela PWA."
     else
       log "AVISO: o teste HTTPS Tailscale ainda falha; a instalação local do Gateway continua válida e o serviço de certificados voltará a tentar automaticamente."
@@ -511,6 +513,11 @@ PY
 else
   log "Tailscale ainda não autorizado. O Gateway local está instalado, mas o acesso HTTPS da PWA fica pendente até a autorização da conta Tailscale."
   log "A autorização inicial exige aprovação da conta; depois disso, o serviço de certificados tenta automaticamente e valida por timer."
+fi
+if [ "$INTELLIGENCE_PREREQUISITES_CONFIRMED" -eq 1 ]; then
+  log "PRÉ-REQUISITOS DE REDE E SEGURANÇA CONFIRMADOS: Tailscale autorizado e HTTPS/TLS validado; só a partir deste ponto pode iniciar a instalação do SolarMiner Intelligence."
+else
+  log "SOLARMINER INTELLIGENCE ADIADO: Tailscale e HTTPS/TLS ainda não foram ambos confirmados. Nenhum runtime ou agente de IA deve ser instalado antes de esta verificação passar."
 fi
 log "Instalação inicial SolarMiner Gateway $PACKAGE_VERSION concluída."
 log "O Gateway está configurado para verificar diariamente o repositório oficial; aplicar uma atualização continua a exigir ação Owner na PWA."

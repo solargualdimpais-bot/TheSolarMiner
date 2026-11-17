@@ -89,6 +89,27 @@ def test_flush_posts_sanitized_batch_and_retains_newer_records(tmp_path, monkeyp
     assert "secret-token-value" not in body
 
 
+def test_update_failure_report_forces_system_snapshot_even_if_fingerprint_is_unchanged(tmp_path, monkeypatch):
+    token = tmp_path / "token"
+    token.write_text("secret-token-value")
+    fingerprint = tmp_path / "system-fingerprint"
+    snapshot = "update state: ROLLED_BACK\nupdate failure: command_failed:systemctl:restart"
+    fingerprint.write_text(error_reporting._system_failure_fingerprint(snapshot))
+    monkeypatch.setattr(error_reporting, "_collect_system_diagnostics", lambda: snapshot)
+    monkeypatch.setenv("SOLARMINER_FORCE_SYSTEM_REPORT", "1")
+
+    class _Opener:
+        def open(self, request, timeout):
+            assert "update state: ROLLED_BACK" in request.data.decode()
+            return _Response()
+
+    monkeypatch.setattr(error_reporting.urllib.request, "build_opener", lambda *_: _Opener())
+    result = error_reporting.flush_reports(tmp_path / "empty-queue", token, fingerprint)
+
+    assert result["status"] == "sent"
+    assert result["system_diagnostics"] is True
+
+
 def test_failed_github_request_keeps_queue(tmp_path, monkeypatch):
     queue = tmp_path / "queue.ndjson"
     token = tmp_path / "token"
@@ -150,6 +171,55 @@ def test_private_diagnostics_token_rejects_non_fine_grained_and_symlink_paths(tm
     assert target.read_text() == "untouched"
 
 
+def test_intelligence_reads_sanitized_recent_error_queue(tmp_path):
+    queue = tmp_path / "errors.ndjson"
+    queue.write_text(json.dumps({"occurred_at": "2026-11-16T00:00:00Z", "level": "ERROR",
+        "component": "gateway.api", "message": "Authorization: Bearer secret-value at 10.1.2.3",
+        "exception_type": "TimeoutError"}) + "\n", encoding="utf-8")
+
+    result = error_reporting.read_recent_gateway_errors(queue_path=queue)
+
+    assert len(result) == 1
+    assert "secret-value" not in json.dumps(result)
+    assert "10.1.2.3" not in json.dumps(result)
+
+
+def test_intelligence_reads_only_fixed_github_diagnostics_repository(tmp_path, monkeypatch):
+    token_path = tmp_path / "github-token"
+    token = "github_pat_" + "x" * 40
+    token_path.write_text(token, encoding="utf-8")
+    seen = {}
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self, limit):
+            seen["read_limit"] = limit
+            return json.dumps([
+                {"number": 7, "title": "Timeout", "state": "open", "created_at": "2026-11-16T00:00:00Z",
+                 "updated_at": "2026-11-16T00:00:00Z", "body": "token=do-not-expose"},
+                {"number": 8, "title": "PR is not a report", "pull_request": {"url": "ignored"}},
+            ]).encode()
+
+    class Opener:
+        def open(self, request, timeout):
+            seen["url"] = request.full_url
+            seen["authorization"] = request.get_header("Authorization")
+            seen["timeout"] = timeout
+            return Response()
+
+    monkeypatch.setattr(error_reporting.urllib.request, "build_opener", lambda *_: Opener())
+    result = error_reporting.read_github_diagnostics_reports(limit=5, token_path=token_path)
+
+    assert result["state"] == "available"
+    assert result["repository"] == error_reporting.REPOSITORY
+    assert [item["number"] for item in result["reports"]] == [7]
+    assert "do-not-expose" not in json.dumps(result)
+    assert seen["url"].startswith(error_reporting.ISSUES_URL + "?")
+    assert seen["authorization"] == "Bearer " + token
+    assert seen["timeout"] == 8
+
+
 def test_system_snapshot_uses_broker_and_redacts_secrets_and_private_addresses(monkeypatch):
     from solarminer_gateway import update_helper_client
     monkeypatch.setattr(update_helper_client, "request", lambda action: {
@@ -182,6 +252,34 @@ def test_system_snapshot_includes_io_mount_and_top_process_metrics_without_paths
     assert "process uvicorn: cpu_percent=32.4, memory_percent=4.1" in snapshot
     assert "must_not_be_reported" not in snapshot
     assert "/var/lib/solarminer" not in snapshot
+
+
+def test_system_snapshot_includes_structured_update_failure_without_secrets_or_paths(monkeypatch):
+    from solarminer_gateway import update_helper_client
+    monkeypatch.setattr(update_helper_client, "request", lambda action: {
+        "status": "ok",
+        "update_transaction": {
+            "state": "ROLLED_BACK",
+            "target_version": "0.6.246",
+            "failure": "command_failed:systemctl:restart:TimeoutExpired:timeout=8",
+            "failed_command": {
+                "executable": "systemctl", "operation": "restart",
+                "target": "solarminer-gateway.service", "outcome": "timeout",
+                "error_type": "TimeoutExpired", "timeout_seconds": 8,
+            },
+            "private_path": "/root/private/file",
+            "token": "must-not-appear",
+        },
+        "services": {}, "resources": {}, "logs": "",
+    })
+    snapshot = error_reporting._collect_system_diagnostics()
+    assert "update state: ROLLED_BACK" in snapshot
+    assert "update failed_command: executable=systemctl, operation=restart" in snapshot
+    assert "target=solarminer-gateway.service" in snapshot
+    assert "timeout_seconds=8" in snapshot
+    assert "private_path" not in snapshot
+    assert "must-not-appear" not in snapshot
+    assert "/root/private/file" not in snapshot
 
 
 def test_automatic_triage_compares_safari_and_chrome_without_claiming_root_cause():

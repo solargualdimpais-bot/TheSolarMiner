@@ -1,0 +1,12 @@
+[Unit]
+Description=Retry SolarMiner Intelligence bootstrap until network security prerequisites are met
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=10min
+Unit=solarminer-intelligence-bootstrap.service
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

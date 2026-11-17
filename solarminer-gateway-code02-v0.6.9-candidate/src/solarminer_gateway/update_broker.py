@@ -33,6 +33,11 @@ TAILSCALE_CERT_LOG = "/var/log/solarminer-tailscale-cert.log"
 TAILSCALE_CERT_LOG_MAX_BYTES = 12_000
 NGINX_ERROR_LOG = "/var/log/nginx/error.log"
 NGINX_ERROR_LOG_MAX_BYTES = 8_000
+UPDATE_STATE_PATH = "/opt/solarminer/update-state.json"
+OPENAI_ENV_PATH = "/etc/solarminer/intelligence-openai.env"
+INTELLIGENCE_TEST_RUNNER = "/usr/sbin/solarminer-intelligence-test-runner"
+OPENAI_KEY_PATTERN = re.compile(r"^sk-[A-Za-z0-9_-]{20,500}$")
+OPENAI_MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$")
 CONSOLE_SERVICES = {
     "solarminer-gateway.service": "gateway",
     "solarminer-gateway-watchdog.timer": "gateway_watchdog",
@@ -183,6 +188,42 @@ def _read_fixed_root_log(path: str, max_bytes: int) -> str:
         return ""
 
 
+def _update_transaction_snapshot() -> dict[str, object] | None:
+    """Read only allowlisted fields from the root-owned updater state file."""
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(UPDATE_STATE_PATH, flags)
+        with os.fdopen(descriptor, "rb") as stream:
+            metadata = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0
+                    or metadata.st_size <= 0 or metadata.st_size > 64 * 1024):
+                return None
+            record = json.loads(stream.read(64 * 1024).decode("utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(record, dict):
+        return None
+    result: dict[str, object] = {}
+    for key in ("state", "target_version", "previous_target", "updated_at_utc", "failure", "rollback_failure"):
+        value = record.get(key)
+        if isinstance(value, str) and len(value) <= 180:
+            result[key] = value
+    for key in ("failed_command", "rollback_command", "health_diagnostic", "rollback_health_diagnostic"):
+        value = record.get(key)
+        if not isinstance(value, dict):
+            continue
+        safe: dict[str, object] = {}
+        for field in ("executable", "operation", "target", "outcome", "error_type", "timeout_seconds", "exit_code", "attempts", "status_code"):
+            item = value.get(field)
+            if isinstance(item, str) and len(item) <= 100:
+                safe[field] = _redact_diagnostics(item)
+            elif isinstance(item, (int, float)) and not isinstance(item, bool):
+                safe[field] = item
+        if safe:
+            result[key] = safe
+    return result or None
+
+
 def _read_tailscale_cert_log() -> str:
     """Read only the fixed, root-owned Tailscale certificate service log."""
     return _read_fixed_root_log(TAILSCALE_CERT_LOG, TAILSCALE_CERT_LOG_MAX_BYTES)
@@ -191,6 +232,68 @@ def _read_tailscale_cert_log() -> str:
 def _read_nginx_error_log() -> str:
     """Read the bounded Nginx error tail to diagnose API and WebSocket proxy failures."""
     return _read_fixed_root_log(NGINX_ERROR_LOG, NGINX_ERROR_LOG_MAX_BYTES)
+
+
+def _write_openai_environment(api_key: str, model: str) -> None:
+    """Atomically store the OpenAI credential in a root-only environment file."""
+    directory = os.path.dirname(OPENAI_ENV_PATH)
+    metadata = os.lstat(directory)
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
+        raise ValueError("openai_environment_directory_unsafe")
+    if os.path.islink(OPENAI_ENV_PATH):
+        raise ValueError("openai_environment_path_unsafe")
+    contents = f"OPENAI_API_KEY={api_key}\n"
+    contents += f"OPENAI_MODEL={model}\n"
+    temporary = f"{OPENAI_ENV_PATH}.{uuid.uuid4().hex}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(temporary, flags, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="ascii") as stream:
+            stream.write(contents)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chown(temporary, 0, 0)
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, OPENAI_ENV_PATH)
+        directory_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def _openai_environment_configured() -> bool:
+    try:
+        metadata = os.lstat(OPENAI_ENV_PATH)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o077:
+            return False
+        with open(OPENAI_ENV_PATH, "r", encoding="ascii") as stream:
+            contents = stream.read(2048)
+        key = re.search(r"(?m)^OPENAI_API_KEY=(sk-[A-Za-z0-9_-]{20,500})$", contents)
+        model = re.search(r"(?m)^OPENAI_MODEL=([A-Za-z0-9][A-Za-z0-9._:/-]{0,119})$", contents)
+        return bool(key and OPENAI_KEY_PATTERN.fullmatch(key.group(1)) and
+                    model and OPENAI_MODEL_PATTERN.fullmatch(model.group(1)))
+    except (OSError, UnicodeError):
+        return False
+
+
+def _remove_openai_environment() -> None:
+    if os.path.islink(OPENAI_ENV_PATH):
+        raise ValueError("openai_environment_path_unsafe")
+    try:
+        os.unlink(OPENAI_ENV_PATH)
+        directory_fd = os.open(os.path.dirname(OPENAI_ENV_PATH), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except FileNotFoundError:
+        pass
 
 
 def handle_request(raw: bytes, runner=subprocess.run) -> dict[str, object]:
@@ -202,10 +305,69 @@ def handle_request(raw: bytes, runner=subprocess.run) -> dict[str, object]:
         return {"status": "error", "reason": "request_invalid"}
     if not isinstance(request, dict) or request.get("action") not in {
         "preflight", "enqueue", "tailscale_status", "tailscale_connect", "diagnostics",
-        "watchdog_set"
+        "watchdog_set", "intelligence_openai_set", "intelligence_openai_status",
+        "intelligence_openai_clear", "intelligence_workspace_tests"
     }:
         return {"status": "error", "reason": "request_invalid"}
     action = request["action"]
+    if action == "intelligence_openai_status":
+        if set(request) != {"action"}:
+            return {"status": "error", "reason": "request_invalid"}
+        return {"status": "ok", "configured": _openai_environment_configured()}
+    if action == "intelligence_workspace_tests":
+        if set(request) != {"action", "suite"} or request.get("suite") not in {"intelligence", "gateway-python"}:
+            return {"status": "error", "reason": "intelligence_test_request_invalid"}
+        try:
+            result = runner([INTELLIGENCE_TEST_RUNNER, request["suite"]],
+                            capture_output=True, text=True, timeout=635, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            return {"status": "error", "reason": "isolated_test_runner_unavailable"}
+        try:
+            payload = json.loads(result.stdout or "")
+        except (ValueError, TypeError):
+            return {"status": "error", "reason": "isolated_test_runner_response_invalid"}
+        if not isinstance(payload, dict) or payload.get("suite") not in {None, request["suite"]}:
+            return {"status": "error", "reason": "isolated_test_runner_response_invalid"}
+        if payload.get("status") not in {"passed", "failed", "error"}:
+            return {"status": "error", "reason": "isolated_test_runner_response_invalid"}
+        if payload.get("status") == "error":
+            reason = payload.get("reason")
+            return {"status": "error", "reason": reason if isinstance(reason, str) and re.fullmatch(r"[a-z0-9_:-]{1,120}", reason) else "isolated_test_runner_failed"}
+        output = payload.get("output")
+        if not isinstance(output, str):
+            return {"status": "error", "reason": "isolated_test_runner_response_invalid"}
+        return {"status": payload["status"], "suite": request["suite"],
+                "exit_code": payload.get("exit_code"),
+                "isolation": "separate_uid_private_network_read_only_snapshot",
+                "output": _redact_diagnostics(output)[:24000]}
+    if action in {"intelligence_openai_set", "intelligence_openai_clear"}:
+        if action == "intelligence_openai_set":
+            if set(request) != {"action", "api_key", "model"}:
+                return {"status": "error", "reason": "request_invalid"}
+            api_key, model = request.get("api_key"), request.get("model")
+            if not isinstance(api_key, str) or not OPENAI_KEY_PATTERN.fullmatch(api_key):
+                return {"status": "error", "reason": "openai_api_key_invalid"}
+            if not isinstance(model, str) or not OPENAI_MODEL_PATTERN.fullmatch(model):
+                return {"status": "error", "reason": "openai_model_invalid"}
+            try:
+                _write_openai_environment(api_key, model)
+            except (OSError, ValueError) as exc:
+                return {"status": "error", "reason": str(exc)[:100] if isinstance(exc, ValueError) else "openai_environment_write_failed"}
+        else:
+            if set(request) != {"action"}:
+                return {"status": "error", "reason": "request_invalid"}
+            try:
+                _remove_openai_environment()
+            except (OSError, ValueError) as exc:
+                return {"status": "error", "reason": str(exc)[:100] if isinstance(exc, ValueError) else "openai_environment_remove_failed"}
+        try:
+            restarted = runner(["/usr/bin/systemctl", "restart", "solarminer-intelligence.service"],
+                               capture_output=True, text=True, timeout=15, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            return {"status": "error", "reason": "intelligence_service_restart_failed"}
+        if restarted.returncode != 0:
+            return {"status": "error", "reason": "intelligence_service_restart_failed"}
+        return {"status": "ok", "configured": action == "intelligence_openai_set"}
     if action == "watchdog_set":
         if set(request) != {"action", "enabled"} or not isinstance(request.get("enabled"), bool):
             return {"status": "error", "reason": "watchdog_state_invalid"}
@@ -273,6 +435,7 @@ def handle_request(raw: bytes, runner=subprocess.run) -> dict[str, object]:
         truncated = len(logs) > 24000
         return {"status": "ok", "logs": _redact_diagnostics(logs),
                 "services": _service_statuses(runner), "resources": _system_resources(runner),
+                "update_transaction": _update_transaction_snapshot(),
                 "truncated": truncated,
                 "scope": "allowlisted_services_last_7_days_including_update_recovery_plus_tailscale_setup_log_tail"}
     if action == "tailscale_connect" and result.returncode != 0:
