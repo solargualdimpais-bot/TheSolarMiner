@@ -75,7 +75,10 @@ jobs:
           grep -q 'PrivateNetwork=yes' packaging/solarminer-intelligence-test-runner
           grep -q 'InaccessiblePaths=/etc/solarminer' packaging/solarminer-intelligence-test-runner
           grep -q 'ReadOnlyPaths=' packaging/solarminer-intelligence-test-runner
-          grep -q '^Environment=CLAUDE_CODE_USE_OPENAI=1$' packaging/solarminer-intelligence.service
+          grep -q '^Environment=SOLARMINER_OLLAMA_BASE_URL=http://127.0.0.1:11434/v1$' packaging/solarminer-intelligence.service
+          grep -q '^Environment=SOLARMINER_OLLAMA_MODEL=qwen3.5:9b-q4_K_M$' packaging/solarminer-intelligence.service
+          grep -q '^EnvironmentFile=-/etc/solarminer/intelligence-openai.env$' packaging/solarminer-intelligence.service
+          ! grep -q '^Environment=CLAUDE_CODE_USE_OPENAI=1$' packaging/solarminer-intelligence.service
           grep -q '^Environment=HOME=/var/lib/solarminer-intelligence/home$' packaging/solarminer-intelligence.service
           ! grep -Eq 'PACKAGE_NAME=solarminer-gateway_[0-9]|version = "[0-9]' packaging/install-from-usb.sh
           grep -q 'OWNER_STATE' packaging/install-from-usb.sh
