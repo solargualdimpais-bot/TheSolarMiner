@@ -70,10 +70,11 @@ from . import smart_device_engine
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.251"
+PACKAGE_VERSION = "0.6.252"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 INTELLIGENCE_LOCAL_TOKEN_PATH = Path(os.environ.get("SOLARMINER_INTELLIGENCE_CLIENT_TOKEN_FILE", "/etc/solarminer/intelligence-client.token"))
+INTELLIGENCE_BOOTSTRAP_STATUS_PATH = Path(os.environ.get("SOLARMINER_INTELLIGENCE_BOOTSTRAP_STATUS_FILE", str(DATA_DIR / "intelligence-bootstrap-status.json")))
 BOOTSTRAP_PATH = Path(os.environ.get("SOLARMINER_BOOTSTRAP_PATH", str(DATA_DIR / "bootstrap.token")))
 INSTANCE_MARKER = Path(os.environ.get("SOLARMINER_INSTANCE_MARKER", str(DATA_DIR / "initialized.marker")))
 BOOTSTRAP_TTL = 15 * 60
@@ -3286,7 +3287,14 @@ def intelligence_provider_status(
         audit(conn, session["user_id"], "intelligence.provider.status", "ollama",
               "success", {"runtime": local_state.get("runtime"), "model_installed": local_state.get("installed"),
                           "openai_state": openai_state})
+    try:
+        bootstrap_state = _read_intelligence_bootstrap_status()
+    except OSError:
+        bootstrap_state = {"state": "unavailable", "stage": "unknown",
+                           "message": "Não foi possível validar o estado da instalação.",
+                           "percent": None, "downloaded_bytes": None, "total_bytes": None, "updated_at": None}
     return {"default_provider": "ollama", "agent": agent_state, "ollama": local_state,
+            "bootstrap": bootstrap_state,
             "openai": {"state": openai_state, "configured": openai_state == "configured",
                        "error_type": openai_error_type, "credential_display": "never_returned"}}
 
@@ -3351,6 +3359,55 @@ def _read_intelligence_local_token() -> str:
         return raw.decode("ascii").strip()
     finally:
         os.close(descriptor)
+
+
+def _read_intelligence_bootstrap_status() -> dict[str, Any]:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(INTELLIGENCE_BOOTSTRAP_STATUS_PATH, flags)
+    except FileNotFoundError:
+        return {"state": "not_started", "stage": "waiting", "message": "A instalação do Intelligence ainda não começou.",
+                "percent": None, "downloaded_bytes": None, "total_bytes": None, "updated_at": None}
+    try:
+        metadata = os.fstat(descriptor)
+        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o037 or
+                metadata.st_size > 8192):
+            raise OSError("intelligence_bootstrap_status_permissions_invalid")
+        raw = os.read(descriptor, 8193)
+        if len(raw) > 8192:
+            raise OSError("intelligence_bootstrap_status_too_large")
+    finally:
+        os.close(descriptor)
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise OSError("intelligence_bootstrap_status_invalid") from exc
+    if not isinstance(value, dict) or value.get("state") not in {"running", "completed", "failed"}:
+        raise OSError("intelligence_bootstrap_status_invalid")
+    stage = value.get("stage")
+    message = value.get("message")
+    if not isinstance(stage, str) or not re.fullmatch(r"[a-z_]{1,48}", stage):
+        raise OSError("intelligence_bootstrap_status_invalid")
+    if not isinstance(message, str) or len(message) > 180:
+        raise OSError("intelligence_bootstrap_status_invalid")
+    percent = value.get("percent")
+    if percent is not None and (not isinstance(percent, int) or isinstance(percent, bool) or not 0 <= percent <= 100):
+        raise OSError("intelligence_bootstrap_status_invalid")
+    byte_values = []
+    for key in ("downloaded_bytes", "total_bytes"):
+        item = value.get(key)
+        if item is not None and (not isinstance(item, int) or isinstance(item, bool) or item < 0 or item > 2**53):
+            raise OSError("intelligence_bootstrap_status_invalid")
+        byte_values.append(item)
+    updated_at = value.get("updated_at")
+    if not isinstance(updated_at, (int, float)) or isinstance(updated_at, bool) or updated_at < 0:
+        raise OSError("intelligence_bootstrap_status_invalid")
+    if value["state"] == "running" and time.time() - updated_at > 180:
+        return {"state": "stale", "stage": stage, "message": "A instalação deixou de atualizar o estado.",
+                "percent": percent, "downloaded_bytes": byte_values[0], "total_bytes": byte_values[1],
+                "updated_at": updated_at}
+    return {"state": value["state"], "stage": stage, "message": message, "percent": percent,
+            "downloaded_bytes": byte_values[0], "total_bytes": byte_values[1], "updated_at": updated_at}
 
 
 @app.post("/api/v1/intelligence/ask")

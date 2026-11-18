@@ -10,6 +10,12 @@ const auth = read('gateway-auth.js');
 test('Owner has an Intelligence panel with protected provider setup and read-only scope disclosure', () => {
   assert.match(html, /data-owner-tab="intelligence"/);
   assert.match(html, /data-owner-panel="intelligence"/);
+  for (const tab of ["ollama", "openclaude", "openai", "chat", "reviews"]) {
+    assert.match(html, new RegExp(`data-intelligence-tab="${tab}"`));
+    assert.match(html, new RegExp(`data-intelligence-panel="${tab}"`));
+  }
+  assert.match(html, /gateway-intelligence-download-progress/);
+  assert.match(html, /gateway-intelligence-status-refresh/);
   assert.match(html, /gateway-intelligence-api-key/);
   assert.match(html, /gateway-intelligence-model/);
   assert.match(html, /gateway-intelligence-question/);
@@ -30,6 +36,9 @@ test('PWA uses authenticated Gateway endpoints for provider setup, revocation an
   assert.match(auth, /askGatewayIntelligence/);
   assert.match(auth, /readGatewayIntelligenceReviews/);
   assert.match(app, /refreshGatewayIntelligenceProvider/);
+  assert.match(app, /state\.bootstrap/);
+  assert.match(app, /gateway-intelligence-download-progress/);
+  assert.match(app, /setInterval\(refreshGatewayIntelligenceProvider, 5000\)/);
   assert.match(app, /OpenClaude ativo, mas ainda não pronto/);
   assert.match(app, /OpenClaude indisponível/);
   assert.match(app, /refreshGatewayIntelligenceReviews/);

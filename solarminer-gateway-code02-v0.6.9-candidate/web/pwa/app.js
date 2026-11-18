@@ -3072,6 +3072,8 @@ const tailscalePanel = $("#gateway-tailscale-management");
 const hardwarePanel = $("#gateway-hardware-management");
 let activeOwnerTab = "access";
 let activeOwnerDevice = "deye";
+let intelligenceStatusTimer = null;
+let activeIntelligenceTab = "ollama";
 function selectOwnerTab(name) {
   activeOwnerTab = name;
   document.querySelectorAll("[data-owner-tab]").forEach(button => {
@@ -3097,8 +3099,28 @@ document.querySelector(".owner-tabs")?.addEventListener("click", event => {
   if (tab) {
     selectOwnerTab(tab.dataset.ownerTab);
     if (tab.dataset.ownerTab === "gateway") { refreshGatewayConsole(); refreshDiagnosticsUploadStatus(); }
-    if (tab.dataset.ownerTab === "intelligence") { refreshGatewayIntelligenceProvider(); refreshGatewayIntelligenceReviews(); }
+    if (tab.dataset.ownerTab === "intelligence") {
+      refreshGatewayIntelligenceProvider();
+      if (intelligenceStatusTimer === null) intelligenceStatusTimer = window.setInterval(refreshGatewayIntelligenceProvider, 5000);
+    } else if (intelligenceStatusTimer !== null) {
+      window.clearInterval(intelligenceStatusTimer);
+      intelligenceStatusTimer = null;
+    }
   }
+});
+document.querySelector("#gateway-intelligence-management")?.addEventListener("click", event => {
+  const tab = event.target.closest("[data-intelligence-tab]");
+  if (!tab) return;
+  activeIntelligenceTab = tab.dataset.intelligenceTab;
+  document.querySelectorAll("[data-intelligence-tab]").forEach(button => {
+    const selected = button.dataset.intelligenceTab === activeIntelligenceTab;
+    button.classList.toggle("selected", selected);
+    button.setAttribute("aria-selected", String(selected));
+  });
+  document.querySelectorAll("[data-intelligence-panel]").forEach(panel => {
+    panel.hidden = panel.dataset.intelligencePanel !== activeIntelligenceTab;
+  });
+  if (activeIntelligenceTab === "reviews") refreshGatewayIntelligenceReviews();
 });
 document.querySelector(".owner-device-tabs")?.addEventListener("click", event => {
   const tab = event.target.closest("[data-owner-device]");
@@ -3450,9 +3472,11 @@ $("#gateway-console-service-filter")?.addEventListener("change", () => renderGat
 $("#gateway-console-level-filter")?.addEventListener("change", () => renderGatewayConsoleLogs());
 $("#gateway-console-refresh")?.addEventListener("click", refreshGatewayConsole);
 async function refreshGatewayIntelligenceProvider() {
-  const status = $("#gateway-intelligence-provider-status"), revoke = $("#gateway-intelligence-provider-revoke");
-  if (!status || !sessionInfo().authenticated || sessionInfo().user?.role !== "owner") return;
-  status.textContent = "Ollama local é o fornecedor predefinido. A verificar se a OpenAI opcional está configurada…";
+  const ollamaStatus = $("#gateway-intelligence-ollama-status"), agentStatus = $("#gateway-intelligence-agent-status");
+  const openaiStatus = $("#gateway-intelligence-provider-status"), downloadStatus = $("#gateway-intelligence-download-status");
+  const progress = $("#gateway-intelligence-download-progress"), revoke = $("#gateway-intelligence-provider-revoke");
+  if (!ollamaStatus || !sessionInfo().authenticated || sessionInfo().user?.role !== "owner") return;
+  ollamaStatus.textContent = "A consultar o estado do runtime e do modelo local…";
   try {
     const state = await readGatewayIntelligenceProvider();
     const local = state.ollama || {}, model = local.model || "modelo local";
@@ -3466,10 +3490,36 @@ async function refreshGatewayIntelligenceProvider() {
     const cloudState = state.openai?.configured
       ? "OpenAI configurada, usada só quando escolhida explicitamente"
       : state.openai?.state === "status_unavailable" ? "estado da OpenAI indisponível" : "OpenAI opcional não configurada";
-    status.textContent = `${agentState} · padrão local · ${runtime} · ${model} · ${modelState} · ${loadState} · ${workState} · ${cloudState}.`;
+    ollamaStatus.textContent = `${runtime} · ${model} · ${modelState} · ${loadState} · ${workState}.`;
+    if (openaiStatus) openaiStatus.textContent = cloudState;
+    const bootstrap = state.bootstrap || {};
+    if (agentStatus) {
+      const bootstrapDetail = bootstrap.state && bootstrap.state !== "completed" && bootstrap.state !== "not_started"
+        ? ` Bootstrap: ${bootstrap.state}, etapa ${String(bootstrap.stage || "unknown").replace(/_/g, " ")}. ${bootstrap.message || ""}` : "";
+      agentStatus.textContent = `${agentState}.${bootstrapDetail}`;
+    }
+    const bytes = value => Number.isFinite(value) ? `${(value / (1024 ** 3)).toFixed(2)} GB` : null;
+    const amount = bytes(bootstrap.downloaded_bytes), total = bytes(bootstrap.total_bytes);
+    const percent = Number.isInteger(bootstrap.percent) ? bootstrap.percent : null;
+    if (downloadStatus) {
+      const stage = typeof bootstrap.stage === "string" ? bootstrap.stage.replace(/_/g, " ") : "desconhecida";
+      const stageText = bootstrap.message || (bootstrap.state === "not_started" ? "A instalação ainda não começou." : "Sem detalhe de instalação.");
+      const transferText = amount && total ? ` ${amount} de ${total} recebidos${percent === null ? "" : ` (${percent}%)`}.`
+        : percent !== null ? ` ${percent}% concluído.` : "";
+      downloadStatus.textContent = `Estado: ${bootstrap.state || "desconhecido"} · Etapa: ${stage}. ${stageText}${transferText}`;
+    }
+    if (progress) {
+      progress.hidden = percent === null || ["not_started", "completed", "unavailable"].includes(bootstrap.state);
+      if (percent !== null) progress.value = percent;
+    }
     if (revoke) revoke.disabled = !state.openai?.configured;
   } catch (error) {
-    status.textContent = `Não foi possível consultar a configuração: ${error.message}`;
+    const message = `Não foi possível consultar o estado: ${error.message}`;
+    ollamaStatus.textContent = message;
+    if (agentStatus) agentStatus.textContent = message;
+    if (openaiStatus) openaiStatus.textContent = message;
+    if (downloadStatus) downloadStatus.textContent = "O estado do bootstrap não pôde ser consultado.";
+    if (progress) progress.hidden = true;
   }
 }
 async function refreshGatewayIntelligenceReviews() {
@@ -3485,6 +3535,7 @@ async function refreshGatewayIntelligenceReviews() {
   } catch (error) { output.textContent = `Não foi possível ler as revisões: ${error.message}`; }
 }
 $("#gateway-intelligence-reviews-refresh")?.addEventListener("click", refreshGatewayIntelligenceReviews);
+$("#gateway-intelligence-status-refresh")?.addEventListener("click", refreshGatewayIntelligenceProvider);
 $("#gateway-intelligence-ask-provider")?.addEventListener("change", event => {
   const button = $("#gateway-intelligence-ask");
   if (button) button.textContent = event.currentTarget.value === "openai"

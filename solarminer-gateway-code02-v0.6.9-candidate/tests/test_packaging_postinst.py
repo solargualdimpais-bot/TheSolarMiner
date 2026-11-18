@@ -13,10 +13,33 @@ def test_postinst_creates_intelligence_group_before_using_it():
     assert postinst.index(create_user) < postinst.index(use_group)
 
 
+def test_agent_writable_paths_exist_before_systemd_mount_namespace():
+    root = Path(__file__).parents[1]
+    postinst = (root / "packaging" / "postinst").read_text(encoding="utf-8")
+    service = (root / "packaging" / "solarminer-intelligence.service").read_text(encoding="utf-8")
+    work = "install -d -o solarminer-intelligence -g solarminer-intelligence -m 0750 /var/lib/solarminer-intelligence/work"
+    home = "install -d -o solarminer-intelligence -g solarminer-intelligence -m 0700 /var/lib/solarminer-intelligence/home"
+    timer_enable = "systemctl enable --now solarminer-intelligence-bootstrap.timer"
+
+    assert work in postinst and home in postinst
+    assert postinst.index(work) < postinst.index(timer_enable)
+    assert postinst.index(home) < postinst.index(timer_enable)
+    assert "ReadWritePaths=/var/lib/solarminer-intelligence/work /var/lib/solarminer-intelligence/home" in service
+    assert "ConditionPathExists=/var/lib/solarminer-intelligence/agent-ready" in service
+    assert "ConditionPathIsDirectory=/var/lib/solarminer-intelligence/work" in service
+    assert "ConditionPathIsDirectory=/var/lib/solarminer-intelligence/home" in service
+
+
 def test_intelligence_service_waits_for_bootstrap_credentials():
     service = (Path(__file__).parents[1] / "packaging" / "solarminer-intelligence.service").read_text(encoding="utf-8")
     assert "ConditionPathExists=/etc/solarminer/intelligence-agent.env" in service
     assert "EnvironmentFile=/etc/solarminer/intelligence-agent.env" in service
+    bootstrap = (Path(__file__).parents[1] / "packaging" / "solarminer-intelligence-bootstrap").read_text(encoding="utf-8")
+    ready = 'install -o root -g root -m 0644 /dev/null "$READY_FILE"'
+    start = "systemctl enable --now solarminer-intelligence.service"
+    assert ready in bootstrap
+    assert bootstrap.index(ready) < bootstrap.index(start)
+    assert 'rm -f "$READY_FILE"' in bootstrap
 
 
 def test_bootstrap_service_can_install_system_runtime_after_security_checks():
@@ -44,3 +67,11 @@ def test_bootstrap_uses_packaged_zstd_instead_of_mutating_apt_sources():
     assert "command -v zstd" in bootstrap
     assert "apt-get update" not in bootstrap
     assert "apt-get install" not in bootstrap
+
+
+def test_bootstrap_publishes_download_progress_for_owner_console():
+    bootstrap = (Path(__file__).parents[1] / "packaging" / "solarminer-intelligence-bootstrap").read_text(encoding="utf-8")
+    for expected in ("/api/pull", '"percent":percent', '"downloaded_bytes":downloaded',
+                     '"total_bytes":total', '"stage":"downloading_model"',
+                     'write_status failed "$CURRENT_STAGE"'):
+        assert expected in bootstrap

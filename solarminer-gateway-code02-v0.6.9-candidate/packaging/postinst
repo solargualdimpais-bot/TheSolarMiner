@@ -15,6 +15,11 @@ case "${1:-}" in
     [ ! -L /var/lib/solarminer ] || { echo "Refusing symlink SolarMiner state directory" >&2; exit 1; }
     [ ! -L /var/lib/solarminer-intelligence ] || { echo "Refusing symlink Intelligence state directory" >&2; exit 1; }
     install -d -o root -g solarminer-intelligence -m 0750 /var/lib/solarminer-intelligence
+    # Create every path granted writable by the agent unit before systemd
+    # builds its mount namespace. A missing ReadWritePaths target can fail the
+    # service with status 226/NAMESPACE before ExecStartPre is reached.
+    install -d -o solarminer-intelligence -g solarminer-intelligence -m 0750 /var/lib/solarminer-intelligence/work
+    install -d -o solarminer-intelligence -g solarminer-intelligence -m 0700 /var/lib/solarminer-intelligence/home
     [ ! -L /var/lib/solarminer-intelligence/test-runs ] || { echo "Refusing symlink Intelligence test directory" >&2; exit 1; }
     install -d -o root -g root -m 0711 /var/lib/solarminer-intelligence/test-runs
     if [ -f /etc/solarminer/data-volume.uuid ]; then

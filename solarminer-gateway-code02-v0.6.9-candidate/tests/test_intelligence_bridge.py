@@ -378,6 +378,10 @@ def test_intelligence_provider_configuration_is_owner_only_and_never_returns_or_
 
 def test_intelligence_provider_status_reports_local_runtime_model_and_optional_cloud_state(client, monkeypatch):
     owner = _owner(client)
+    monkeypatch.setattr(gateway, "_read_intelligence_bootstrap_status", lambda: {
+        "state": "running", "stage": "downloading_model", "message": "A descarregar o modelo.",
+        "percent": 42, "downloaded_bytes": 420, "total_bytes": 1000, "updated_at": 1000,
+    })
     monkeypatch.setattr(gateway.update_helper_client, "request", lambda action, **kwargs:
                         {"status": "ok", "configured": False})
 
@@ -405,6 +409,8 @@ def test_intelligence_provider_status_reports_local_runtime_model_and_optional_c
                    "working": False, "model": "qwen3.5:9b-q4_K_M"},
         "openai": {"state": "not_configured", "configured": False,
                    "error_type": None, "credential_display": "never_returned"},
+        "bootstrap": {"state": "running", "stage": "downloading_model", "message": "A descarregar o modelo.",
+                      "percent": 42, "downloaded_bytes": 420, "total_bytes": 1000, "updated_at": 1000},
     }
 
 

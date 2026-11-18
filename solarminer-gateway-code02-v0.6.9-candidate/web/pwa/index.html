@@ -92,21 +92,46 @@
         <section class="panel gateway-auth-panel owner-tab-panel" data-owner-panel="intelligence" id="gateway-intelligence-management" hidden>
           <div class="panel-header"><div><p class="eyebrow">AGENTE RESIDENTE</p><h3>SolarMiner Intelligence</h3></div><span class="source-tag">OPENCLAUDE · LEITURA</span></div>
           <p class="field-note">O OpenClaude analisa valores guardados de todos os equipamentos e motores, previsões e histórico do Energy Engine, respostas observadas aos comandos, falhas de atualização, inventário MAC/IP e atribuições DPS com a respetiva confiança. Por defeito, perguntas e relatórios usam o Ollama local; a OpenAI só é usada quando o Owner a escolhe para uma pergunta. Os relatórios automáticos permanecem locais. Esta consola não envia comandos físicos. As análises pedidas pelo Owner são limitadas a 30 por hora.</p>
-          <div id="gateway-intelligence-provider-status" class="connection-result" role="status" aria-live="polite">A verificar configuração do fornecedor…</div>
-          <form id="gateway-intelligence-provider-form" class="gateway-form-grid">
-            <label for="gateway-intelligence-api-key">Chave da OpenAI<input id="gateway-intelligence-api-key" type="password" autocomplete="new-password" spellcheck="false" maxlength="512" placeholder="sk-…" required></label>
-            <label for="gateway-intelligence-model">Modelo OpenAI<input id="gateway-intelligence-model" type="text" autocomplete="off" spellcheck="false" maxlength="120" placeholder="ID do modelo escolhido" required></label>
-            <button class="button primary" type="submit">Guardar credencial no Gateway</button>
-            <button class="button secondary" id="gateway-intelligence-provider-revoke" type="button" disabled>Revogar credencial</button>
-          </form>
-          <form id="gateway-intelligence-ask-form" class="gateway-form-grid">
-            <label for="gateway-intelligence-ask-provider">Fornecedor desta pergunta<select id="gateway-intelligence-ask-provider"><option value="ollama" selected>Ollama local — privado, sem custo por chamada</option><option value="openai">OpenAI — enviar esta pergunta para a cloud</option></select></label>
-            <label for="gateway-intelligence-question">Pergunta de diagnóstico ou melhoria<textarea id="gateway-intelligence-question" rows="3" maxlength="8000" placeholder="Avalia a previsão solar face à produção histórica e propõe melhorias testáveis." required></textarea></label>
-            <button id="gateway-intelligence-ask" class="button primary" type="submit">Analisar com Ollama local</button>
-          </form>
-          <pre id="gateway-intelligence-answer" class="integration-result" aria-label="Resposta do SolarMiner Intelligence" aria-live="polite">Aguardando uma pergunta autenticada do Owner.</pre>
-          <div class="panel-header"><h4>Revisões automáticas</h4><button type="button" class="button secondary" id="gateway-intelligence-reviews-refresh">Atualizar revisões</button></div>
-          <pre id="gateway-intelligence-reviews" class="integration-result" aria-label="Revisões do SolarMiner Intelligence" aria-live="polite">Aguardando a primeira revisão diária.</pre>
+          <nav class="owner-device-tabs" aria-label="Componentes do Intelligence" role="tablist">
+            <button type="button" class="selected" data-intelligence-tab="ollama" role="tab" aria-selected="true">Ollama e modelo</button>
+            <button type="button" data-intelligence-tab="openclaude" role="tab" aria-selected="false">OpenClaude</button>
+            <button type="button" data-intelligence-tab="openai" role="tab" aria-selected="false">OpenAI</button>
+            <button type="button" data-intelligence-tab="chat" role="tab" aria-selected="false">Conversa</button>
+            <button type="button" data-intelligence-tab="reviews" role="tab" aria-selected="false">Relatórios</button>
+          </nav>
+          <section data-intelligence-panel="ollama">
+            <div class="panel-header"><h4>Ollama local e modelo</h4><button type="button" class="button secondary" id="gateway-intelligence-status-refresh">Consultar estado</button></div>
+            <div id="gateway-intelligence-ollama-status" class="connection-result" role="status" aria-live="polite">A consultar o Ollama…</div>
+            <div id="gateway-intelligence-download-status" class="field-note" role="status" aria-live="polite">Ainda sem estado de instalação.</div>
+            <progress id="gateway-intelligence-download-progress" max="100" value="0" aria-label="Progresso do download do modelo" hidden></progress>
+          </section>
+          <section data-intelligence-panel="openclaude" hidden>
+            <h4>Agente residente OpenClaude</h4>
+            <div id="gateway-intelligence-agent-status" class="connection-result" role="status" aria-live="polite">A consultar o serviço residente…</div>
+          </section>
+          <section data-intelligence-panel="openai" hidden>
+            <h4>Fornecedor OpenAI opcional</h4>
+            <div id="gateway-intelligence-provider-status" class="connection-result" role="status" aria-live="polite">A verificar configuração da OpenAI…</div>
+            <form id="gateway-intelligence-provider-form" class="gateway-form-grid">
+              <label for="gateway-intelligence-api-key">Chave da OpenAI<input id="gateway-intelligence-api-key" type="password" autocomplete="new-password" spellcheck="false" maxlength="512" placeholder="sk-…" required></label>
+              <label for="gateway-intelligence-model">Modelo OpenAI<input id="gateway-intelligence-model" type="text" autocomplete="off" spellcheck="false" maxlength="120" placeholder="ID do modelo escolhido" required></label>
+              <button class="button primary" type="submit">Guardar credencial no Gateway</button>
+              <button class="button secondary" id="gateway-intelligence-provider-revoke" type="button" disabled>Revogar credencial</button>
+            </form>
+          </section>
+          <section data-intelligence-panel="chat" hidden>
+            <h4>Conversa com o Intelligence</h4>
+            <form id="gateway-intelligence-ask-form" class="gateway-form-grid">
+              <label for="gateway-intelligence-ask-provider">Fornecedor desta pergunta<select id="gateway-intelligence-ask-provider"><option value="ollama" selected>Ollama local — privado, sem custo por chamada</option><option value="openai">OpenAI — enviar esta pergunta para a cloud</option></select></label>
+              <label for="gateway-intelligence-question">Pergunta de diagnóstico ou melhoria<textarea id="gateway-intelligence-question" rows="3" maxlength="8000" placeholder="Avalia a previsão solar face à produção histórica e propõe melhorias testáveis." required></textarea></label>
+              <button id="gateway-intelligence-ask" class="button primary" type="submit">Analisar com Ollama local</button>
+            </form>
+            <pre id="gateway-intelligence-answer" class="integration-result" aria-label="Resposta do SolarMiner Intelligence" aria-live="polite">Aguardando uma pergunta autenticada do Owner.</pre>
+          </section>
+          <section data-intelligence-panel="reviews" hidden>
+            <div class="panel-header"><h4>Relatórios e revisões automáticas</h4><button type="button" class="button secondary" id="gateway-intelligence-reviews-refresh">Atualizar relatórios</button></div>
+            <pre id="gateway-intelligence-reviews" class="integration-result" aria-label="Revisões do SolarMiner Intelligence" aria-live="polite">Aguardando a primeira revisão diária.</pre>
+          </section>
         </section>
         <section class="panel gateway-auth-panel owner-tab-panel" data-owner-panel="access" id="gateway-invite-management" hidden>
         <div class="panel-header"><div><p class="eyebrow">ADMINISTRAÇÃO DO GATEWAY</p><h3>Convites de utilização única</h3></div><span class="source-tag">OWNER</span></div>
@@ -183,7 +208,7 @@
       </dialog>
       </section>
 
-      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.5.184</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
+      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.5.185</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
     </main>
   </div>
 

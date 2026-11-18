@@ -7,11 +7,46 @@ mkdir -p /var/log /var/lib/solarminer/intelligence
 touch "$LOG"
 chmod 0600 "$LOG"
 log() { printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" | tee -a "$LOG"; }
-fail() { log "ERROR: $*"; exit 1; }
+STATUS_FILE=/var/lib/solarminer/intelligence-bootstrap-status.json
+READY_FILE=/var/lib/solarminer-intelligence/agent-ready
+CURRENT_STAGE=checking_prerequisites
+write_status() {
+  status_state=${1:-running}; status_stage=${2:-$CURRENT_STAGE}; status_message=${3:-A verificar a instalação.}
+  status_percent=${4:--}; status_downloaded=${5:--}; status_total=${6:--}
+  if ! python3 - "$STATUS_FILE" "$status_state" "$status_stage" "$status_message" "$status_percent" "$status_downloaded" "$status_total" <<'PY'
+import grp, json, os, sys, tempfile, time
+path, state, stage, message, percent, downloaded, total = sys.argv[1:]
+def number(value):
+    return int(value) if value.isdigit() else None
+payload = {"state": state, "stage": stage, "message": message[:180], "percent": number(percent),
+           "downloaded_bytes": number(downloaded), "total_bytes": number(total), "updated_at": time.time()}
+directory = os.path.dirname(path)
+fd, temporary = tempfile.mkstemp(prefix=".intelligence-bootstrap-status-", dir=directory)
+try:
+    os.fchown(fd, 0, grp.getgrnam("solarminer").gr_gid)
+    os.fchmod(fd, 0o640)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump(payload, stream, separators=(",", ":"))
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+    directory_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try: os.fsync(directory_fd)
+    finally: os.close(directory_fd)
+finally:
+    try: os.unlink(temporary)
+    except FileNotFoundError: pass
+PY
+  then log "WARNING: não foi possível atualizar o estado visível do bootstrap."; fi
+}
+fail() { rm -f "$READY_FILE" 2>/dev/null || true; write_status failed "$CURRENT_STAGE" "A instalação falhou nesta etapa. Consulta o registo do bootstrap."; log "ERROR: $*"; exit 1; }
 
 STATE=/var/lib/solarminer/intelligence/runtime-installed
-[ ! -e "$STATE" ] || exit 0
+[ ! -e "$STATE" ] || { write_status completed complete "O Intelligence já está instalado." 100; exit 0; }
 [ "$(id -u)" -eq 0 ] || fail "bootstrap exige root"
+rm -f "$READY_FILE"
+write_status running "$CURRENT_STAGE" "A verificar os pré-requisitos de segurança."
 command -v tailscale >/dev/null 2>&1 || fail "Tailscale não está instalado"
 command -v curl >/dev/null 2>&1 || fail "curl não está instalado"
 command -v python3 >/dev/null 2>&1 || fail "Python 3 não está instalado"
@@ -70,6 +105,8 @@ trap 'rm -rf "$TMP" "$HEALTH"; [ -z "$LOCAL_HEALTH" ] || rm -f "$LOCAL_HEALTH"' 
 # and local Gateway TLS endpoint have all passed above. Its installer is
 # pinned and hash-checked; inference and model pulls remain loopback-only.
 if ! command -v ollama >/dev/null 2>&1 || ! ollama --version 2>&1 | grep -Fq "$OLLAMA_VERSION"; then
+  CURRENT_STAGE=installing_ollama
+  write_status running "$CURRENT_STAGE" "A instalar o Ollama local."
   log "A instalar Ollama $OLLAMA_VERSION pelo instalador oficial verificado."
   curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
     "https://github.com/ollama/ollama/releases/download/v$OLLAMA_VERSION/install.sh" \
@@ -77,6 +114,8 @@ if ! command -v ollama >/dev/null 2>&1 || ! ollama --version 2>&1 | grep -Fq "$O
   printf '%s  %s\n' "$OLLAMA_INSTALLER_SHA256" "$TMP/ollama-install.sh" | sha256sum --check --status || fail "hash do instalador Ollama não corresponde"
   OLLAMA_VERSION="$OLLAMA_VERSION" /bin/sh "$TMP/ollama-install.sh" >>"$LOG" 2>&1 || fail "instalação oficial Ollama falhou"
 fi
+CURRENT_STAGE=starting_ollama
+write_status running "$CURRENT_STAGE" "A iniciar e verificar o serviço Ollama local."
 install -d -o root -g root -m 0755 /etc/systemd/system/ollama.service.d
 cat > /etc/systemd/system/ollama.service.d/solarminer.conf <<'EOF'
 [Service]
@@ -97,9 +136,70 @@ for attempt in $(seq 1 60); do
 done
 [ "$OLLAMA_READY" -eq 1 ] || fail "API local do Ollama não ficou disponível em 127.0.0.1"
 if ! ollama list 2>>"$LOG" | awk -v model="$OLLAMA_MODEL" 'NR > 1 && $1 == model { found=1 } END { exit !found }'; then
+  CURRENT_STAGE=downloading_model
+  write_status running "$CURRENT_STAGE" "A iniciar o download do modelo Ollama."
   log "A descarregar o modelo local $OLLAMA_MODEL; esta transferência pode demorar e ocupar vários gigabytes."
-  ollama pull "$OLLAMA_MODEL" >>"$LOG" 2>&1 || fail "download do modelo local Ollama falhou"
+  python3 - "$OLLAMA_MODEL" "$STATUS_FILE" <<'PY' || fail "download do modelo local Ollama falhou"
+import grp, json, os, sys, tempfile, time
+from urllib.request import Request, urlopen
+
+model, status_path = sys.argv[1:]
+layers = {}
+last_write = 0.0
+last_percent = -1
+
+def write_status(percent, downloaded, total, message):
+    global last_write, last_percent
+    now = time.time()
+    if percent == last_percent and now - last_write < 2:
+        return
+    payload = {"state":"running", "stage":"downloading_model", "message":message[:180],
+               "percent":percent, "downloaded_bytes":downloaded, "total_bytes":total, "updated_at":now}
+    directory = os.path.dirname(status_path)
+    fd, temporary = tempfile.mkstemp(prefix=".intelligence-bootstrap-status-", dir=directory)
+    try:
+        os.fchown(fd, 0, grp.getgrnam("solarminer").gr_gid)
+        os.fchmod(fd, 0o640)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, separators=(",", ":")); stream.write("\n")
+            stream.flush(); os.fsync(stream.fileno())
+        os.replace(temporary, status_path)
+    finally:
+        try: os.unlink(temporary)
+        except FileNotFoundError: pass
+    last_write, last_percent = now, percent
+
+request = Request("http://127.0.0.1:11434/api/pull",
+                  data=json.dumps({"name":model,"stream":True}).encode("utf-8"),
+                  headers={"Content-Type":"application/json"}, method="POST")
+finished = False
+with urlopen(request, timeout=120) as response:
+    for raw_line in response:
+        if not raw_line.strip():
+            continue
+        event = json.loads(raw_line.decode("utf-8"))
+        if event.get("error"):
+            raise RuntimeError("ollama_pull_failed")
+        digest = event.get("digest")
+        if isinstance(digest, str) and isinstance(event.get("total"), int):
+            layers[digest] = (max(0, int(event.get("completed") or 0)), max(0, int(event["total"])))
+        total = sum(item[1] for item in layers.values())
+        downloaded = sum(min(item[0], item[1]) for item in layers.values())
+        percent = min(100, int(downloaded * 100 / total)) if total else None
+        status = str(event.get("status") or "")
+        if status == "success":
+            finished = True
+            write_status(100, total, total, "Download do modelo concluído; a verificar a resposta local.")
+        elif percent is not None:
+            write_status(percent, downloaded, total, "A descarregar o modelo Ollama.")
+        else:
+            write_status(None, None, None, "A preparar o download do modelo Ollama.")
+if not finished:
+    raise RuntimeError("ollama_pull_did_not_complete")
+PY
 fi
+CURRENT_STAGE=model_smoke_test
+write_status running "$CURRENT_STAGE" "A testar a resposta local do modelo."
 curl --fail --silent --show-error --max-time 600 http://127.0.0.1:11434/api/generate \
   -H 'Content-Type: application/json' \
   --data-binary "{\"model\":\"$OLLAMA_MODEL\",\"prompt\":\"Responde apenas com OK.\",\"stream\":false,\"options\":{\"num_ctx\":8192,\"num_predict\":16}}" \
@@ -112,6 +212,8 @@ PY
 log "Ollama $OLLAMA_VERSION e modelo $OLLAMA_MODEL instalados; inferência local smoke test passou."
 
 if [ ! -x "$NODE_DIR/bin/node" ]; then
+  CURRENT_STAGE=installing_node
+  write_status running "$CURRENT_STAGE" "A instalar o Node.js local."
   log "A descarregar Node.js $NODE_VERSION do domínio oficial nodejs.org."
   curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
     "https://nodejs.org/dist/v$NODE_VERSION/$ARCHIVE" -o "$TMP/$ARCHIVE" || fail "download oficial Node.js falhou"
@@ -121,6 +223,8 @@ if [ ! -x "$NODE_DIR/bin/node" ]; then
 fi
 [ "$("$NODE_DIR/bin/node" --version)" = "v$NODE_VERSION" ] || fail "versão Node instalada não corresponde"
 
+CURRENT_STAGE=installing_openclaude
+write_status running "$CURRENT_STAGE" "A instalar o OpenClaude e a ponte MCP."
 if ! getent group solarminer-intelligence >/dev/null 2>&1; then addgroup --system solarminer-intelligence; fi
 if ! getent passwd solarminer-intelligence >/dev/null 2>&1; then
   adduser --system --ingroup solarminer-intelligence --home /var/lib/solarminer-intelligence --no-create-home --shell /usr/sbin/nologin solarminer-intelligence
@@ -141,6 +245,8 @@ if [ ! -x "$APP_DIR/node_modules/.bin/openclaude" ]; then
 fi
 OPENCLAUDE_VERSION_ACTUAL=$(runuser -u solarminer-intelligence -- env HOME=/var/lib/solarminer-intelligence/home PATH="$NODE_DIR/bin:/usr/bin:/bin" "$APP_DIR/node_modules/.bin/openclaude" --version 2>>"$LOG" | tail -n 1) || fail "OpenClaude não iniciou na verificação de versão"
 case "$OPENCLAUDE_VERSION_ACTUAL" in *"$OPENCLAUDE_VERSION"*) ;; *) fail "versão OpenClaude inesperada: $OPENCLAUDE_VERSION_ACTUAL" ;; esac
+CURRENT_STAGE=provisioning_credentials
+write_status running "$CURRENT_STAGE" "A preparar a identidade local do Intelligence."
 python3 - <<'PY' || fail "não foi possível provisionar a identidade de serviço do Intelligence"
 import grp, hashlib, json, os, re, secrets, sqlite3, tempfile, uuid
 from datetime import datetime, timezone
@@ -231,9 +337,14 @@ fi
 if [ ! -d "$SOURCE_CANDIDATE" ]; then
   log "AVISO: candidato Gateway não existe no checkout; edição de código ficará indisponível."
 fi
+CURRENT_STAGE=starting_agent
+write_status running "$CURRENT_STAGE" "A iniciar e verificar o agente Intelligence."
 printf 'node=%s\nopenclaude=%s\nollama=%s\nmodel=%s\n' "$NODE_VERSION" "$OPENCLAUDE_VERSION" "$OLLAMA_VERSION" "$OLLAMA_MODEL" > "$TMP/runtime-installed"
+install -o root -g root -m 0644 /dev/null "$READY_FILE"
 systemctl enable --now solarminer-intelligence.service || fail "Node/OpenClaude foram instalados, mas o serviço residente não iniciou"
 systemctl is-active --quiet solarminer-intelligence.service || fail "serviço OpenClaude não ficou ativo"
 install -o root -g root -m 0644 "$TMP/runtime-installed" "$STATE"
 systemctl disable --now solarminer-intelligence-bootstrap.timer >/dev/null 2>&1 || true
+CURRENT_STAGE=complete
+write_status completed "$CURRENT_STAGE" "O Ollama, o modelo e o agente OpenClaude estão instalados e ativos." 100
 log "Node.js $NODE_VERSION, OpenClaude $OPENCLAUDE_VERSION, Ollama $OLLAMA_VERSION e $OLLAMA_MODEL instalados; serviço residente confirmado ativo."
