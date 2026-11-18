@@ -116,7 +116,7 @@ test("status-device selector filters favorites, configured divisions, then all d
 });
 
 test("static cache is versioned for the current Owner admin release", () => {
-  assert.match(worker, /the-solar-miner-static-v0\.5\.190-system-diagnostics/);
+  assert.match(worker, /the-solar-miner-static-v0\.5\.191-intelligence-timeout/);
 });
 
 test("Agenda trigger opens navigable time, sunrise, sunset, location, and repeat previews", () => {
