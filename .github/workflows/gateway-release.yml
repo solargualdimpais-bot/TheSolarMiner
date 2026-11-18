@@ -230,11 +230,11 @@ jobs:
           for EXPECTED in \
             './usr/sbin/solarminer-intelligence-bootstrap' \
             './usr/lib/solarminer-gateway/solarminer_gateway/intelligence_health.py' \
-            './usr/share/solarminer/intelligence-agent/agent-service.mjs' \
-            './usr/lib/systemd/system/solarminer-intelligence.service' \
-            './usr/lib/systemd/system/solarminer-intelligence-bootstrap-broker.socket' \
-            './usr/lib/systemd/system/solarminer-admin-terminal.socket'; do
+            './usr/share/solarminer/intelligence-agent/agent-service.mjs'; do
             printf '%s\n' "$CONTENTS" | grep -F "$EXPECTED"
+          done
+          for UNIT in solarminer-intelligence.service solarminer-intelligence-bootstrap-broker.socket solarminer-admin-terminal.socket; do
+            printf '%s\n' "$CONTENTS" | grep -Eq "\\./(usr/)?lib/systemd/system/$UNIT$"
           done
 
       - name: Confirm repair bundle uses the same signed release package
