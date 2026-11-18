@@ -66,10 +66,16 @@ async function gatewayRequest(baseUrl, path, { method = "GET", body, authenticat
     if (!token) throw new Error("É necessária uma sessão autenticada do Gateway.");
     headers.Authorization = `Bearer ${token}`;
   }
-  const response = await fetch(new URL(path, base.origin), {
-    method, headers, body: body === undefined ? undefined : JSON.stringify(body),
-    credentials: "omit", cache: "no-store", redirect: "error", signal,
-  });
+  let response;
+  try {
+    response = await fetch(new URL(path, base.origin), {
+      method, headers, body: body === undefined ? undefined : JSON.stringify(body),
+      credentials: "omit", cache: "no-store", redirect: "error", signal,
+    });
+  } catch (error) {
+    if (!error?.status) error.code = error?.name === "AbortError" ? "timeout" : "transport_error";
+    throw error;
+  }
   let data = null;
   try { data = await response.json(); } catch { /* HTTP error body may be empty or non-JSON. */ }
   if (response.status === 401 && authenticated) {
@@ -101,6 +107,7 @@ async function gatewayRequest(baseUrl, path, { method = "GET", body, authenticat
     })[detail] || detail;
     const error = new Error(message);
     error.status = response.status;
+    error.detail = detail;
     throw error;
   }
   return data;
@@ -285,7 +292,69 @@ export async function readGatewayConsole() {
   return gatewayApi("/api/v1/system/console");
 }
 export async function readGatewayIntelligenceProvider() {
-  return gatewayApi("/api/v1/intelligence/provider");
+  const timeoutMs = 15000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await gatewayApi("/api/v1/intelligence/provider", { signal: controller.signal });
+  } catch (error) {
+    error.operation = "status";
+    error.timeoutMs = timeoutMs;
+    throw error;
+  } finally { clearTimeout(timer); }
+}
+export async function diagnoseGatewayIntelligenceFailure(error, { gatewayUrl = currentGateway, fetchImpl = globalThis.fetch, timeoutMs = 3000 } = {}) {
+  if (error?.code === "timeout" || error?.name === "AbortError") {
+    const seconds = Math.max(1, Math.ceil((Number(error.timeoutMs) || 15000) / 1000));
+    return error.operation === "analysis"
+      ? `Tempo limite: a análise excedeu ${seconds} segundos sem resposta. Verifica o estado do agente local e tenta novamente quando estiver disponível.`
+      : `Tempo limite: a consulta do estado do Intelligence excedeu ${seconds} segundos. A API do Gateway não concluiu a leitura; isto não prova que os componentes estejam ausentes.`;
+  }
+  if (error?.status === 401) return "A API do Gateway respondeu, mas a sessão Owner expirou ou foi rejeitada. Inicia sessão novamente.";
+  if (error?.status === 403) return "A API do Gateway respondeu, mas esta sessão não tem permissão Owner para consultar o Intelligence.";
+  if (error?.status === 404) return "O Gateway respondeu, mas não reconhece este endpoint. A PWA e a versão do Gateway podem estar dessincronizadas.";
+  if (error?.status === 429) {
+    if (error.detail === "intelligence_agent_busy") return "O agente local está ocupado com outra análise. Aguarda a análise atual terminar e tenta novamente.";
+    if (error.detail === "intelligence_hourly_limit_reached") return "Foi atingido o limite de 30 perguntas por utilizador nesta hora. Tenta novamente quando a janela horária renovar.";
+    return "O Gateway limitou temporariamente este pedido. Aguarda antes de tentar novamente.";
+  }
+  if (error?.status >= 500) {
+    if (error.detail === "intelligence_bootstrap_unavailable") return "A API do Gateway respondeu, mas não conseguiu iniciar o broker de instalação do Intelligence.";
+    if (error.detail === "intelligence_agent_unavailable") return "A API do Gateway respondeu, mas não conseguiu contactar o serviço local OpenClaude. O estado do Ollama pode ser consultado separadamente.";
+    if (error.detail === "ollama_runtime_unavailable") return "O Gateway contactou o agente, mas o serviço local Ollama não respondeu. Isto não prova que o Ollama esteja desinstalado.";
+    if (error.detail === "ollama_model_not_installed") return "O Ollama respondeu, mas o modelo local pedido não está instalado. Usa Instalar/atualizar componentes do Intelligence para o obter.";
+    if (error.detail === "intelligence_credentials_not_configured") return "O agente respondeu, mas falta configurar a credencial do fornecedor selecionado.";
+    if (error.detail === "intelligence_analysis_failed") return "O agente local respondeu, mas não conseguiu concluir a análise. Consulta o estado do agente e do fornecedor local.";
+    if (error.detail === "intelligence_provider_configuration_failed") return "O serviço de configuração do fornecedor não respondeu ao Gateway.";
+    return `A API do Gateway respondeu com erro interno HTTP ${error.status}; isto não confirma que os modelos estejam ausentes.`;
+  }
+  if (!gatewayUrl) return "Não há um Gateway associado à sessão para verificar. O estado dos componentes é desconhecido.";
+  const probe = async path => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetchImpl(new URL(path, gatewayUrl), {
+        method: "GET", headers: { Accept: "application/json" }, credentials: "omit",
+        cache: "no-store", redirect: "error", signal: controller.signal,
+      });
+      return { responded: true, ok: response.ok, status: response.status };
+    } catch (probeError) {
+      return { responded: false, ok: false, error: probeError?.name === "AbortError" ? "timeout" : "transport" };
+    } finally { clearTimeout(timer); }
+  };
+  const [health, info] = await Promise.all([probe("/api/v1/health"), probe("/api/v1/info")]);
+  if (!health.responded && !info.responded) {
+    const timedOut = health.error === "timeout" || info.error === "timeout";
+    return timedOut
+      ? "A ligação HTTPS ao Gateway excedeu o tempo limite. A PWA não consegue confirmar se Ollama, modelo ou OpenClaude estão instalados."
+      : "O browser não conseguiu estabelecer HTTPS com o Gateway. A causa pode ser rede/Tailscale, DNS ou certificado; o estado dos componentes é desconhecido.";
+  }
+  if (!health.responded || !info.responded) return "O Gateway responde, mas um endpoint público de saúde falhou. A API pode estar a iniciar ou com uma configuração incompleta.";
+  if ([401, 403].includes(health.status) || [401, 403].includes(info.status)) return "O HTTPS e o servidor respondem, mas até um endpoint público está a exigir autenticação. Há uma configuração de acesso/API a verificar; o estado dos componentes continua desconhecido.";
+  if (!health.ok || !info.ok) return "O HTTPS e a API respondem, mas um endpoint público foi recusado ou não existe. Há incompatibilidade/configuração do Gateway a verificar.";
+  return error?.code === "transport_error"
+    ? "O Gateway e o HTTPS respondem, mas o pedido autenticado ao Intelligence falhou antes de receber uma resposta HTTP. Pode ser uma falha transitória ou específica dessa rota; o browser não consegue apurar mais e os componentes continuam com estado desconhecido."
+    : "O Gateway e o HTTPS respondem, mas a consulta autenticada do Intelligence falhou. Verifica a rota, sessão ou autorização; os componentes continuam com estado desconhecido.";
 }
 export async function startGatewayIntelligenceBootstrap() {
   return gatewayApi("/api/v1/intelligence/bootstrap", { method: "POST", body: {} });
@@ -299,7 +368,16 @@ export async function revokeGatewayIntelligenceProvider() {
 }
 export async function askGatewayIntelligence(prompt, provider = "ollama") {
   if (typeof prompt !== "string" || !["ollama", "openai"].includes(provider)) throw new Error("Pergunta ou fornecedor inválido.");
-  return gatewayApi("/api/v1/intelligence/ask", { method: "POST", body: { prompt, provider } });
+  const timeoutMs = 130000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await gatewayApi("/api/v1/intelligence/ask", { method: "POST", body: { prompt, provider }, signal: controller.signal });
+  } catch (error) {
+    error.operation = "analysis";
+    error.timeoutMs = timeoutMs;
+    throw error;
+  } finally { clearTimeout(timer); }
 }
 export async function readGatewayIntelligenceReviews(limit = 10) {
   const bounded = Math.max(1, Math.min(30, Number.isInteger(limit) ? limit : 10));

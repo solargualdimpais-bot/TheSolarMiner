@@ -169,6 +169,10 @@ jobs:
           node --check app.js
           node --check gateway-auth.js
 
+      - name: Run packaged PWA tests
+        working-directory: solarminer-gateway-code02-v0.6.9-candidate/web/pwa
+        run: node --test tests/*.test.js
+
       - name: Run PWA candidate tests
         working-directory: the-solar-miner-pwa-v0.5.7-candidate
         run: npm test
