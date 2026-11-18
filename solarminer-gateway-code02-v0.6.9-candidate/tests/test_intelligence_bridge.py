@@ -386,12 +386,12 @@ def test_intelligence_provider_status_reports_local_runtime_model_and_optional_c
     monkeypatch.setattr(gateway.update_helper_client, "request", lambda action, **kwargs:
                         {"status": "ok", "configured": False})
     monkeypatch.setattr(gateway.system_components, "installed_component_status", lambda: {
-        "status": "OK", "version": "0.6.260", "protocol": 1, "reason": None,
+        "status": "OK", "version": "0.6.261", "protocol": 1, "reason": None,
     })
     monkeypatch.setattr(gateway.system_components, "integrated_diagnostics", lambda _version: {
-        "status": "OK", "reason": None, "application_version": "0.6.260",
-        "debian_package_version": "0.6.260", "active_release": "0.6.260",
-        "system_components": {"status": "OK", "version": "0.6.260", "protocol": 1, "reason": None},
+        "status": "OK", "reason": None, "application_version": "0.6.261",
+        "debian_package_version": "0.6.261", "active_release": "0.6.261",
+        "system_components": {"status": "OK", "version": "0.6.261", "protocol": 1, "reason": None},
         "operating_system": {"id": "debian", "version": "13", "codename": "trixie"},
         "python_version": "3.13.0", "units": {}, "paths": {},
     })
@@ -403,8 +403,7 @@ def test_intelligence_provider_status_reports_local_runtime_model_and_optional_c
             assert timeout in {2, 3}
             self.port = port
             self.path = None
-        def __enter__(self): return self
-        def __exit__(self, *_args): return False
+        def close(self): pass
         def request(self, method, path, *, headers):
             assert method == "GET"
             self.path = path
@@ -442,11 +441,11 @@ def test_intelligence_provider_status_reports_local_runtime_model_and_optional_c
                       "percent": 42, "downloaded_bytes": 420, "total_bytes": 1000, "updated_at": 1000},
     }
     assert payload["system_components"] == {
-        "status": "OK", "version": "0.6.260", "protocol": 1, "reason": None,
+        "status": "OK", "version": "0.6.261", "protocol": 1, "reason": None,
     }
     assert payload["system_diagnostics"]["status"] == "OK"
-    assert payload["system_diagnostics"]["active_release"] == "0.6.260"
-    assert payload["system_diagnostics"]["debian_package_version"] == "0.6.260"
+    assert payload["system_diagnostics"]["active_release"] == "0.6.261"
+    assert payload["system_diagnostics"]["debian_package_version"] == "0.6.261"
     assert payload["diagnostic"]["request_id"] == request_id
     assert payload["diagnostic"]["state"] == "completed"
     assert payload["diagnostic"]["stage"] == "complete"
@@ -507,8 +506,7 @@ def test_provider_status_reports_invalid_ollama_tags_schema_without_failing_the_
         def __init__(self, host, port, timeout):
             self.port = port
             self.path = None
-        def __enter__(self): return self
-        def __exit__(self, *_args): return False
+        def close(self): pass
         def request(self, method, path, *, headers): self.path = path
         def getresponse(self):
             if self.path == "/api/version":
@@ -551,8 +549,7 @@ def test_provider_status_continues_after_ollama_binary_check_type_error(client, 
         def __init__(self, host, port, timeout):
             self.port = port
             self.path = None
-        def __enter__(self): return self
-        def __exit__(self, *_args): return False
+        def close(self): pass
         def request(self, method, path, *, headers): self.path = path
         def getresponse(self):
             ollama_paths.append(self.path) if self.port == 11434 else None
@@ -581,6 +578,46 @@ def test_provider_status_continues_after_ollama_binary_check_type_error(client, 
     assert payload["diagnostic"]["stage"] == "complete"
     assert payload["diagnostic"]["error_type"] == "TypeError"
     assert payload["diagnostic"]["error_reason"] == "ollama_binary_check_failed"
+
+
+def test_provider_status_records_type_error_from_openclaude_health(client, monkeypatch):
+    owner = _owner(client)
+    monkeypatch.setattr(gateway, "_intelligence_ollama_binary_installed", lambda: True)
+    monkeypatch.setattr(gateway.update_helper_client, "request",
+                        lambda *_args, **_kwargs: {"status": "ok", "configured": False})
+    monkeypatch.setattr(gateway, "_read_intelligence_bootstrap_status", lambda: {
+        "state": "not_started", "stage": "waiting", "message": "A instalação ainda não começou.",
+        "percent": None, "downloaded_bytes": None, "total_bytes": None, "updated_at": time.time(),
+    })
+    monkeypatch.setattr(gateway.http.client, "HTTPConnection",
+                        lambda _host, port, _timeout: (_ for _ in ()).throw(TypeError("health schema mismatch"))
+                        if port == 8765 else _fake_ollama_connection(port))
+
+    request_id = "e5e5e5e5-e5e5-45e5-85e5-e5e5e5e5e5e5"
+    response = client.get("/api/v1/intelligence/provider",
+                          headers={**owner, "X-SolarMiner-Diagnostic-ID": request_id})
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["agent"] == "unavailable"
+    assert payload["diagnostic"]["state"] == "degraded"
+    assert payload["diagnostic"]["stage"] == "complete"
+    assert payload["diagnostic"]["error_type"] == "TypeError"
+    assert payload["diagnostic"]["error_reason"] == "openclaude_health_type_error"
+
+
+def _fake_ollama_connection(port):
+    class FakeConnection:
+        def __init__(self):
+            self.port = port
+            self.path = None
+        def close(self): pass
+        def request(self, _method, path, *, headers): self.path = path
+        def getresponse(self):
+            if self.path == "/api/version":
+                return SimpleNamespace(status=200, read=lambda _limit: b'{"version":"0.40.16"}')
+            return SimpleNamespace(status=200, read=lambda _limit: b'{"models":[]}')
+    return FakeConnection()
 
 
 def test_ollama_installation_detection_is_independent_of_runtime_health(monkeypatch, tmp_path):
@@ -654,8 +691,7 @@ def test_intelligence_ask_forwards_only_authenticated_local_request_and_audits_m
     class FakeConnection:
         def __init__(self, host, port, timeout):
             observed.update(host=host, port=port, timeout=timeout)
-        def __enter__(self): return self
-        def __exit__(self, *_args): return False
+        def close(self): pass
         def request(self, method, path, *, body, headers):
             observed.update(method=method, path=path, body=json.loads(body), headers=headers)
         def getresponse(self):
@@ -684,6 +720,25 @@ def test_intelligence_ask_forwards_only_authenticated_local_request_and_audits_m
     assert cloud.status_code == 200, cloud.text
     assert cloud.json()["provider"] == "openai"
     assert observed["body"]["provider"] == "openai"
+
+
+def test_intelligence_ask_reports_type_error_at_local_agent_boundary(client, monkeypatch):
+    owner = _owner(client)
+    monkeypatch.setattr(gateway, "_read_intelligence_local_token",
+                        lambda: "local-client-token-123456789012345678901234567890")
+    monkeypatch.setattr(gateway.http.client, "HTTPConnection",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(TypeError("response schema mismatch")))
+
+    response = client.post("/api/v1/intelligence/ask", headers=owner,
+                           json={"prompt": "Estado do inversor?"})
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "intelligence_agent_type_error"
+    with gateway.db() as conn:
+        details = conn.execute("SELECT details_json FROM audit WHERE action='intelligence.ask' "
+                               "AND outcome='failed' ORDER BY id DESC LIMIT 1").fetchone()[0]
+    assert json.loads(details)["error_type"] == "TypeError"
+    assert json.loads(details)["error_reason"] == "intelligence_agent_type_error"
 
 
 def test_intelligence_ask_enforces_persistent_hourly_cost_limit(client):

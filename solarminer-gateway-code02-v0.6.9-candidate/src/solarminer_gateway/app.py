@@ -72,7 +72,7 @@ from . import system_components
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.260"
+PACKAGE_VERSION = "0.6.261"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 INTELLIGENCE_LOCAL_TOKEN_PATH = Path(os.environ.get("SOLARMINER_INTELLIGENCE_CLIENT_TOKEN_FILE", "/etc/solarminer/intelligence-client.token"))
@@ -3442,7 +3442,8 @@ def intelligence_provider_status(
     mark("ollama_runtime")
     ollama_runtime_available = False
     try:
-        with http.client.HTTPConnection("127.0.0.1", 11434, timeout=2) as connection:
+        connection = http.client.HTTPConnection("127.0.0.1", 11434, timeout=2)
+        try:
             connection.request("GET", "/api/version", headers={"Accept": "application/json"})
             runtime_response = connection.getresponse()
             runtime_payload = json.loads(runtime_response.read(4096).decode("utf-8")) if runtime_response.status == 200 else {}
@@ -3453,11 +3454,16 @@ def intelligence_provider_status(
             elif not ollama_runtime_available:
                 mark("ollama_runtime", state="degraded", reason="ollama_version_response_invalid",
                      http_status=runtime_response.status)
+        finally:
+            connection.close()
         if ollama_runtime_available:
-            with http.client.HTTPConnection("127.0.0.1", 11434, timeout=3) as connection:
+            connection = http.client.HTTPConnection("127.0.0.1", 11434, timeout=3)
+            try:
                 connection.request("GET", "/api/tags", headers={"Accept": "application/json"})
                 tags_response = connection.getresponse()
                 tags_payload = json.loads(tags_response.read(16000).decode("utf-8")) if tags_response.status == 200 else {}
+            finally:
+                connection.close()
             models = tags_payload.get("models") if isinstance(tags_payload, dict) else None
             if tags_response.status != 200:
                 mark("ollama_runtime", state="degraded", reason="ollama_tags_http_error",
@@ -3481,17 +3487,21 @@ def intelligence_provider_status(
     if not ollama_runtime_available:
         mark("openclaude_agent")
     try:
-        with http.client.HTTPConnection("127.0.0.1", 8765, timeout=3) as connection:
+        connection = http.client.HTTPConnection("127.0.0.1", 8765, timeout=3)
+        try:
             connection.request("GET", "/health", headers={"Accept": "application/json"})
             response = connection.getresponse()
             agent_payload = json.loads(response.read(8000).decode("utf-8")) if response.status == 200 else {}
+        finally:
+            connection.close()
         if isinstance(agent_payload, dict):
             candidate = agent_payload.get("ollama")
             if isinstance(candidate, dict):
                 local_state = {key: candidate.get(key) for key in ("runtime", "installed", "loaded", "working", "model")}
             agent_state = "available" if agent_payload.get("configured") is True else "starting_or_not_ready"
-    except (OSError, ValueError, TimeoutError, http.client.HTTPException) as exc:
-        mark("openclaude_agent", state="degraded", error=exc)
+    except (OSError, ValueError, TypeError, TimeoutError, http.client.HTTPException) as exc:
+        reason = "openclaude_health_type_error" if isinstance(exc, TypeError) else "openclaude_health_request_failed"
+        mark("openclaude_agent", state="degraded", error=exc, reason=reason)
     else:
         mark("bootstrap_state")
     with db() as conn:
@@ -3731,7 +3741,8 @@ def intelligence_ask(
                 actor = _revalidate_actor(conn, session, "manage_gateway")
                 if actor["role"] != "owner":
                     raise HTTPException(403, "owner_required_for_cloud_provider")
-        with http.client.HTTPConnection("127.0.0.1", 8765, timeout=125) as connection:
+        connection = http.client.HTTPConnection("127.0.0.1", 8765, timeout=125)
+        try:
             connection.request("POST", "/v1/analyze", body=json.dumps({
                 "prompt": payload.prompt, "provider": payload.provider,
             }),
@@ -3739,11 +3750,17 @@ def intelligence_ask(
                                         "Content-Type": "application/json", "Accept": "application/json"})
             response = connection.getresponse()
             response_payload = json.loads(response.read(20000).decode("utf-8"))
-    except (OSError, ValueError, TimeoutError, http.client.HTTPException) as exc:
+        finally:
+            connection.close()
+    except (OSError, ValueError, TypeError, TimeoutError, http.client.HTTPException) as exc:
+        error_type = type(exc).__name__
+        reason = "intelligence_agent_type_error" if isinstance(exc, TypeError) else "intelligence_agent_request_failed"
         with db() as conn:
             audit(conn, session["user_id"], "intelligence.ask", "openclaude", "failed",
-                  {"error_type": type(exc).__name__, "prompt_characters": len(payload.prompt)})
-        raise HTTPException(503, "intelligence_agent_unavailable") from exc
+                  {"error_type": error_type, "error_reason": reason,
+                   "prompt_characters": len(payload.prompt)})
+        LOG.warning("Intelligence ask failed stage=openclaude_agent error_type=%s reason=%s", error_type, reason)
+        raise HTTPException(503, reason) from exc
     if response.status != 200 or not isinstance(response_payload, dict) or not isinstance(response_payload.get("answer"), str):
         with db() as conn:
             audit(conn, session["user_id"], "intelligence.ask", "openclaude", "failed",
