@@ -379,6 +379,12 @@ def test_intelligence_provider_configuration_is_owner_only_and_never_returns_or_
 def test_intelligence_provider_status_reports_local_runtime_model_and_optional_cloud_state(client, monkeypatch):
     owner = _owner(client)
     monkeypatch.setattr(gateway, "_intelligence_ollama_binary_installed", lambda: True)
+    real_is_file = gateway.Path.is_file
+    def deny_gateway_access_to_protected_intelligence_tree(path):
+        if str(path).startswith("/opt/solarminer/intelligence/"):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_is_file(path)
+    monkeypatch.setattr(gateway.Path, "is_file", deny_gateway_access_to_protected_intelligence_tree)
     monkeypatch.setattr(gateway, "_read_intelligence_bootstrap_status", lambda: {
         "state": "running", "stage": "downloading_model", "message": "A descarregar o modelo.",
         "percent": 42, "downloaded_bytes": 420, "total_bytes": 1000, "updated_at": 1000,
@@ -432,8 +438,7 @@ def test_intelligence_provider_status_reports_local_runtime_model_and_optional_c
         "default_provider": "ollama", "agent": "available",
         "ollama": {"runtime": "available", "installed": True, "loaded": False,
                    "working": False, "model": "qwen3.5:9b-q4_K_M"},
-        "installation": {"node": gateway.Path("/opt/solarminer/intelligence/node-v24.22.1/bin/node").is_file(),
-                         "openclaude": gateway.Path("/opt/solarminer/intelligence/app/node_modules/.bin/openclaude").is_file(),
+        "installation": {"node": True, "openclaude": True,
                          "ollama": True, "model": True},
         "openai": {"state": "not_configured", "configured": False,
                    "error_type": None, "credential_display": "never_returned"},
@@ -705,6 +710,7 @@ def test_intelligence_ask_forwards_only_authenticated_local_request_and_audits_m
     assert response.json()["answer"] == "Leitura local concluida."
     assert response.json()["provider"] == "ollama"
     assert observed["host"] == "127.0.0.1" and observed["port"] == 8765
+    assert observed["timeout"] == 305
     assert observed["method"] == "POST" and observed["path"] == "/v1/analyze"
     assert observed["headers"]["Authorization"] == "Bearer local-client-token-123456789012345678901234567890"
     assert observed["body"] == {"prompt": prompt, "provider": "ollama"}
@@ -739,6 +745,30 @@ def test_intelligence_ask_reports_type_error_at_local_agent_boundary(client, mon
                                "AND outcome='failed' ORDER BY id DESC LIMIT 1").fetchone()[0]
     assert json.loads(details)["error_type"] == "TypeError"
     assert json.loads(details)["error_reason"] == "intelligence_agent_type_error"
+
+
+def test_intelligence_ask_reports_agent_analysis_timeout_as_gateway_504(client, monkeypatch):
+    owner = _owner(client)
+    monkeypatch.setattr(gateway, "_read_intelligence_local_token",
+                        lambda: "local-client-token-123456789012345678901234567890")
+
+    class TimeoutResponse:
+        status = 504
+        def read(self, _limit): return b'{"error":"analysis_timeout"}'
+
+    class FakeConnection:
+        def __init__(self, host, port, timeout):
+            assert (host, port, timeout) == ("127.0.0.1", 8765, 305)
+        def close(self): pass
+        def request(self, method, path, *, body, headers):
+            assert (method, path) == ("POST", "/v1/analyze")
+        def getresponse(self): return TimeoutResponse()
+
+    monkeypatch.setattr(gateway.http.client, "HTTPConnection", FakeConnection)
+    response = client.post("/api/v1/intelligence/ask", headers=owner,
+                           json={"prompt": "Hello World"})
+    assert response.status_code == 504
+    assert response.json()["detail"] == "intelligence_analysis_timeout"
 
 
 def test_intelligence_ask_enforces_persistent_hourly_cost_limit(client):

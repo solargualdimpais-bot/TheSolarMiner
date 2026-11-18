@@ -224,7 +224,9 @@ async function runAnalysis(prompt, { development = false, provider = 'ollama' } 
   requestCount += 1;
   active = true;
   const abortController = new AbortController();
-  const timeout = setTimeout(() => abortController.abort(), development ? 20 * 60 * 1000 : 120000);
+  // The 9B local model can take several minutes on CPU. The PWA, Gateway and
+  // Nginx use slightly longer deadlines so the model's own timeout is decisive.
+  const timeout = setTimeout(() => abortController.abort(), development ? 20 * 60 * 1000 : 300000);
   try {
     const agentQuery = query({
       prompt,
@@ -360,13 +362,15 @@ const server = http.createServer(async (request, response) => {
       'openai_credential_not_configured', 'openai_model_not_configured', 'solarminer_service_credential_not_configured', 'provider_invalid',
       'ollama_runtime_unavailable', 'ollama_model_not_installed',
       'analysis_busy', 'analysis_hourly_limit_reached', 'request_too_large',
-      'analysis_returned_no_text', 'resident_session_id_invalid', 'development_workspace_unavailable',
+      'analysis_returned_no_text', 'analysis_timeout', 'resident_session_id_invalid', 'development_workspace_unavailable',
     ]);
-    const raw = String(error?.message || 'analysis_failed');
+    const timedOut = error?.name === 'AbortError' || error?.code === 'ABORT_ERR';
+    const raw = timedOut ? 'analysis_timeout' : String(error?.message || 'analysis_failed');
     const message = known.has(raw) ? raw : 'provider_or_agent_request_failed';
     const status = message === 'openai_credential_not_configured' || message === 'openai_model_not_configured' ||
       message === 'ollama_runtime_unavailable' || message === 'ollama_model_not_installed' ||
       message === 'solarminer_service_credential_not_configured' ? 503
+      : message === 'analysis_timeout' ? 504
       : message === 'analysis_busy' || message === 'analysis_hourly_limit_reached' ? 429
       : message === 'request_too_large' ? 413 : 502;
     return send(response, status, { error: message.slice(0, 120) });

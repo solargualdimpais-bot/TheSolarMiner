@@ -331,6 +331,7 @@ export async function diagnoseGatewayIntelligenceFailure(error, { gatewayUrl = c
     if (error.detail === "ollama_runtime_unavailable") return "O Gateway contactou o agente, mas o serviço local Ollama não respondeu. Isto não prova que o Ollama esteja desinstalado.";
     if (error.detail === "ollama_model_not_installed") return "O Ollama respondeu, mas o modelo local pedido não está instalado. Usa Instalar/atualizar componentes do Intelligence para o obter.";
     if (error.detail === "intelligence_credentials_not_configured") return "O agente respondeu, mas falta configurar a credencial do fornecedor selecionado.";
+    if (error.detail === "intelligence_analysis_timeout") return "A análise local excedeu o limite de cinco minutos. O Ollama pode continuar ativo; tenta novamente com uma pergunta mais curta ou consulta os registos do agente.";
     if (error.detail === "intelligence_analysis_failed") return "O agente local respondeu, mas não conseguiu concluir a análise. Consulta o estado do agente e do fornecedor local.";
     if (error.detail === "intelligence_provider_configuration_failed") return "O serviço de configuração do fornecedor não respondeu ao Gateway.";
     return `A API do Gateway respondeu com erro interno HTTP ${error.status}; isto não confirma que os modelos estejam ausentes.`;
@@ -379,7 +380,7 @@ export async function revokeGatewayIntelligenceProvider() {
 }
 export async function askGatewayIntelligence(prompt, provider = "ollama") {
   if (typeof prompt !== "string" || !["ollama", "openai"].includes(provider)) throw new Error("Pergunta ou fornecedor inválido.");
-  const timeoutMs = 130000;
+  const timeoutMs = 320000;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {

@@ -1075,6 +1075,7 @@ def test_deye_sg05lp3_reads_full_candidate_telemetry_without_fc43(monkeypatch):
     reads = []
     blocks = {
         0: (5,), 24: (2,), 108: (40, 50), 115: (20,), 500: (2,),
+        512: (2,),
         514: (12, 7, 256, 1, 512, 2, 33, 9, 1000, 3, 20, 0, 50, 1200, 4, 82, 0, 0, 0, 0, 3456, 5),
         586: (1250, 5378, 100, 77, 65250, 65006, 676, 5200, 300, 156, 1210),
         598: tuple([0] * 28),
@@ -1082,16 +1083,20 @@ def test_deye_sg05lp3_reads_full_candidate_telemetry_without_fc43(monkeypatch):
               0, 1458, 169, 33, 1660, 2290, 2299, 2294, 0, 0, 0, 1458, 169, 33, 1660, 1660, 5000),
         672: (1869, 173, 0, 0, 3935, 47, 2412, 50),
     }
+    reject_candidate = False
     def read_registers(host, **kwargs):
         assert host == "192.168.8.10"
         reads.append((kwargs["start_address"], kwargs["count"], kwargs["port"], kwargs["unit_id"]))
+        if reject_candidate and kwargs["start_address"] == 512:
+            raise integrations.deye_modbus.ModbusExceptionResponse(3, 2)
         block = blocks[kwargs["start_address"]]
         assert len(block) == kwargs["count"]
         return type("Probe", (), {"raw_registers": block})()
     monkeypatch.setattr(integrations.deye_modbus, "read_holding_registers", read_registers)
     result = integrations.read_deye({"host": "192.168.8.10", "port": 502, "unit_id": 1, "model": "SUN-15K-SG05LP3-EU-SM2"})
     assert reads == [(0, 1, 502, 1), (108, 2, 502, 1), (500, 1, 502, 1),
-                     (514, 22, 502, 1), (24, 1, 502, 1), (586, 11, 502, 1),
+                     (514, 22, 502, 1), (24, 1, 502, 1), (512, 1, 502, 1),
+                     (586, 11, 502, 1),
                      (115, 1, 502, 1),
                      (598, 28, 502, 1), (627, 29, 502, 1), (672, 8, 502, 1)]
     assert result["metrics_decoded"] is True
@@ -1111,6 +1116,8 @@ def test_deye_sg05lp3_reads_full_candidate_telemetry_without_fc43(monkeypatch):
     assert (metrics["battery_total_charge_power"]["value"], metrics["battery_total_discharge_power"]["value"]) == (286, 0)
     assert metrics["battery_cutoff_soc_percent"]["value"] == 20
     assert metrics["battery_input_count"]["value"] == 2
+    assert (metrics["battery_pack_count_candidate"]["register"],
+            metrics["battery_pack_count_candidate"]["value"]) == (40513, 2)
     assert result["battery_banks_detected"] == [
         {"channel": 1, "online": True, "detection_source": "DEYE_MODBUS_BATTERY_INPUT_VOLTAGE", "voltage_v": 53.78},
         {"channel": 2, "online": True, "detection_source": "DEYE_MODBUS_BATTERY_INPUT_VOLTAGE", "voltage_v": 52.0},
@@ -1134,15 +1141,27 @@ def test_deye_sg05lp3_reads_full_candidate_telemetry_without_fc43(monkeypatch):
     assert metrics["load_total_energy"]["value"] == 26334.4
     assert (metrics["inverter_power_total"]["value"], metrics["load_total_power"]["value"]) == (1660, 1660)
     assert metrics["grid_power_factor"]["register"] == 40622
-    assert len(result["metrics"]) == 95
+    assert len(result["metrics"]) == 96
     checks = {item["field"]: item for item in result["quality_checks"]}
     assert checks["device_type"]["state"] == "protocol_value_mismatch"
+    assert checks["battery_pack_count_candidate"]["state"] == "candidate_value_unverified"
     assert checks["pv1_power_vs_voltage_current"]["state"] == "consistent"
     assert checks["pv2_power_vs_voltage_current"]["state"] == "inconsistent"
     assert checks["grid_voltage_and_frequency"]["state"] == "all_zero_check_meter_or_logger_mapping"
     assert result["register_map"]["status"] == "COMMUNITY_MAP_LIVE_BLOCKS_CONFIRMED_NOT_MANUFACTURER_FIRMWARE_VALIDATED"
     assert result["trust"] == "LIVE_UNVERIFIED"
     assert result["control_commands_sent"] is False
+
+    # Unsupported candidate must not break the validated telemetry windows.
+    reject_candidate = True
+    reads.clear()
+    fallback = integrations.read_deye({"host": "192.168.8.10", "port": 502, "unit_id": 1,
+                                       "model": "SUN-15K-SG05LP3-EU-SM2"})
+    fallback_metrics = {metric["field"]: metric for metric in fallback["metrics"]}
+    fallback_checks = {item["field"]: item for item in fallback["quality_checks"]}
+    assert fallback["metrics_decoded"] is True
+    assert "battery_pack_count_candidate" not in fallback_metrics
+    assert fallback_checks["battery_pack_count_candidate"]["state"] == "candidate_read_failed"
 
 
 def test_successful_deye_snapshot_is_persisted_for_pwa_energy_pages():

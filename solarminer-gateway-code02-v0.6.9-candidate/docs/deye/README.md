@@ -13,6 +13,7 @@ As referências abaixo usam a notação 4xxxx; o pedido Modbus converte `40001` 
 | MPPT 1 | Potência, tensão, corrente | 40673, 40677, 40678 | W ×1, V ×0,1, A ×0,1 |
 | MPPT 2 | Potência, tensão, corrente | 40674, 40679, 40680 | W ×1, V ×0,1, A ×0,1 |
 | Bateria | Energia de carga/descarga diária e acumulada | 40515–40520 | kWh ×0,1; acumulados U32 com low word antes de high word |
+| Diagnóstico experimental da bateria | Candidato a número de packs | 40513 (offset PDU 512) | FC03, valor bruto; não confirmado para este inversor e não usado para criar bancos |
 | Bateria | Temperatura, tensão, SOC, potência e corrente assinadas, capacidade corrigida | 40587–40593 (campos mapeados; 40590 reservado) | °C `(raw−1000)×0,1`, V ×0,01, %, S16 W ×1, S16 A ×0,01, Ah ×1 |
 | Rede interna | Tensão L1–L3, potência/frequência/corrente por fase e totais aplicáveis | 40599–40613 | V ×0,1, W ×1, Hz ×0,01, S16 A ×0,01 |
 | Medidor/CT externo | Corrente e potência por fase e total | 40614–40620 | S16 A ×0,01, S16 W ×1 |

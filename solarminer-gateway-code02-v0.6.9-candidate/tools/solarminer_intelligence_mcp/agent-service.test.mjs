@@ -169,6 +169,35 @@ test('resident agent authenticates requests, persists sessions and only allows t
   assert.equal(reports[0].mcpArgs.join(' ').includes('gateway-service-test-token'), false);
 });
 
+test('resident agent returns an explicit 504 when the OpenClaude SDK aborts inference', async t => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), 'solarminer-intelligence-timeout-'));
+  const port = await unusedPort();
+  const mockPath = path.join(temp, 'timeout-sdk.mjs');
+  const ollamaBase = await startMockOllama(t);
+  await writeFile(mockPath, `export async function* query() { const error = new Error('aborted'); error.name = 'AbortError'; throw error; }\n`);
+  const child = spawn(process.execPath, [service], {
+    env: { ...process.env, SOLARMINER_OPENCLAUDE_SDK: mockPath,
+      SOLARMINER_INTELLIGENCE_PORT: String(port), SOLARMINER_INTELLIGENCE_STATE: path.join(temp, 'state'),
+      SOLARMINER_INTELLIGENCE_LOCAL_TOKEN: 'local-agent-test-token-12345678901234567890',
+      SOLARMINER_INTELLIGENCE_TOKEN: 'gateway-service-test-token-12345678901234567890',
+      SOLARMINER_OLLAMA_BASE_URL: ollamaBase },
+    stdio: 'ignore',
+  });
+  t.after(async () => {
+    child.kill();
+    if (child.exitCode === null && child.signalCode === null) await once(child, 'exit').catch(() => {});
+    await rm(temp, { recursive: true, force: true });
+  });
+  await waitForHealth(port, child);
+  const response = await fetch(`http://127.0.0.1:${port}/v1/analyze`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer local-agent-test-token-12345678901234567890', 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt: 'Teste de timeout.' }),
+  });
+  assert.equal(response.status, 504);
+  assert.deepEqual(await response.json(), { error: 'analysis_timeout' });
+});
+
 test('resident agent defaults to local Ollama without OpenAI credentials and requires a key only for explicit cloud requests', async t => {
   const temp = await mkdtemp(path.join(os.tmpdir(), 'solarminer-intelligence-no-key-'));
   const port = await unusedPort();

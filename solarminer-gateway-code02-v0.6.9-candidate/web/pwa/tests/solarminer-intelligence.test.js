@@ -49,7 +49,8 @@ test('PWA uses authenticated Gateway endpoints for provider setup, revocation an
   assert.match(auth, /timeoutMs = 45000/);
   assert.match(auth, /X-SolarMiner-Diagnostic-ID/);
   assert.match(auth, /readGatewayIntelligenceRequestDiagnostic/);
-  assert.match(auth, /timeoutMs = 130000/);
+  assert.match(auth, /timeoutMs = 320000/);
+  assert.match(auth, /intelligence_analysis_timeout/);
   assert.match(auth, /\/api\/v1\/health/);
   assert.match(auth, /\/api\/v1\/info/);
   assert.match(auth, /credentials: "omit"/);
@@ -103,7 +104,8 @@ test('Intelligence diagnostics distinguish Gateway transport, API, auth, and boo
   assert.match(await diagnoseGatewayIntelligenceFailure(Object.assign(error(429), { detail: 'intelligence_hourly_limit_reached' })), /limite de 30 perguntas/);
   assert.match(await diagnoseGatewayIntelligenceFailure(error(503)), /erro interno HTTP 503/);
   assert.match(await diagnoseGatewayIntelligenceFailure(Object.assign(new Error('timeout'), { code: 'timeout' })), /Tempo limite: a consulta do estado do Intelligence/);
-  assert.match(await diagnoseGatewayIntelligenceFailure(Object.assign(new Error('timeout'), { code: 'timeout', operation: 'analysis', timeoutMs: 130000 })), /análise excedeu 130 segundos/);
+  assert.match(await diagnoseGatewayIntelligenceFailure(Object.assign(new Error('timeout'), { code: 'timeout', operation: 'analysis', timeoutMs: 320000 })), /análise excedeu 320 segundos/);
+  assert.match(await diagnoseGatewayIntelligenceFailure(Object.assign(error(504), { detail: 'intelligence_analysis_timeout' })), /excedeu o limite de cinco minutos/);
 
   const noConnection = await diagnoseGatewayIntelligenceFailure(new TypeError('fetch failed'), {
     gatewayUrl, fetchImpl: async () => { throw new TypeError('fetch failed'); },

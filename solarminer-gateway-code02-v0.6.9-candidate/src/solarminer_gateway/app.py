@@ -72,7 +72,7 @@ from . import system_components
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.261"
+PACKAGE_VERSION = "0.6.262"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 INTELLIGENCE_LOCAL_TOKEN_PATH = Path(os.environ.get("SOLARMINER_INTELLIGENCE_CLIENT_TOKEN_FILE", "/etc/solarminer/intelligence-client.token"))
@@ -3418,18 +3418,14 @@ def intelligence_provider_status(
     local_state: dict[str, Any] = {"runtime": "unavailable", "installed": False,
                                    "loaded": False, "working": False, "model": "qwen3.5:9b-q4_K_M"}
     agent_state = "unavailable"
-    installation: dict[str, bool | None] = {"node": None, "openclaude": None, "ollama": None, "model": False}
-    for component, path in (
-        ("node", "/opt/solarminer/intelligence/node-v24.22.1/bin/node"),
-        ("openclaude", "/opt/solarminer/intelligence/app/node_modules/.bin/openclaude"),
-    ):
-        mark(f"{component}_installation")
-        try:
-            installation[component] = Path(path).is_file() and os.access(path, os.X_OK)
-        except Exception as exc:
-            installation[component] = None
-            mark(f"{component}_installation", state="degraded", error=exc,
-                 reason=f"{component}_presence_check_failed")
+    # The Gateway runs as `solarminer`, while the Node/OpenClaude tree is
+    # intentionally restricted to `solarminer-intelligence` (root-owned,
+    # group mode 0750/0640). Do not stat those protected paths from this
+    # service: EACCES here means isolation is working, not that installation
+    # failed. A successful local agent health response proves Node started and
+    # imported its OpenClaude SDK; otherwise keep both states unknown.
+    installation: dict[str, bool | None] = {"node": None, "openclaude": None,
+                                            "ollama": None, "model": False}
     mark("ollama_binary_detection")
     try:
         installation["ollama"] = _intelligence_ollama_binary_installed()
@@ -3494,11 +3490,16 @@ def intelligence_provider_status(
             agent_payload = json.loads(response.read(8000).decode("utf-8")) if response.status == 200 else {}
         finally:
             connection.close()
-        if isinstance(agent_payload, dict):
+        if response.status == 200 and isinstance(agent_payload, dict):
+            installation["node"] = True
+            installation["openclaude"] = True
             candidate = agent_payload.get("ollama")
             if isinstance(candidate, dict):
                 local_state = {key: candidate.get(key) for key in ("runtime", "installed", "loaded", "working", "model")}
             agent_state = "available" if agent_payload.get("configured") is True else "starting_or_not_ready"
+        elif response.status != 200:
+            mark("openclaude_agent", state="degraded", reason="openclaude_health_http_error",
+                 http_status=response.status)
     except (OSError, ValueError, TypeError, TimeoutError, http.client.HTTPException) as exc:
         reason = "openclaude_health_type_error" if isinstance(exc, TypeError) else "openclaude_health_request_failed"
         mark("openclaude_agent", state="degraded", error=exc, reason=reason)
@@ -3741,7 +3742,7 @@ def intelligence_ask(
                 actor = _revalidate_actor(conn, session, "manage_gateway")
                 if actor["role"] != "owner":
                     raise HTTPException(403, "owner_required_for_cloud_provider")
-        connection = http.client.HTTPConnection("127.0.0.1", 8765, timeout=125)
+        connection = http.client.HTTPConnection("127.0.0.1", 8765, timeout=305)
         try:
             connection.request("POST", "/v1/analyze", body=json.dumps({
                 "prompt": payload.prompt, "provider": payload.provider,
@@ -3771,6 +3772,8 @@ def intelligence_ask(
             raise HTTPException(503, "intelligence_credentials_not_configured")
         if reason in {"ollama_runtime_unavailable", "ollama_model_not_installed"}:
             raise HTTPException(503, reason)
+        if reason == "analysis_timeout":
+            raise HTTPException(504, "intelligence_analysis_timeout")
         if reason == "analysis_busy":
             raise HTTPException(429, "intelligence_agent_busy")
         raise HTTPException(503, "intelligence_analysis_failed")

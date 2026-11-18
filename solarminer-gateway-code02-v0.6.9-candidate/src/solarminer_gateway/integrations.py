@@ -2683,6 +2683,16 @@ def _read_deye_sg05lp3_candidate_map(host: str, port: int, unit: int) -> dict[st
     # Protocol V104: zero is the default value and still means one battery input.
     battery_input_count = (1 if battery_input_count_raw == 0 else
                            battery_input_count_raw if 1 <= battery_input_count_raw <= 4 else 0)
+    # Community map candidate: PDU offset 512 (4xxxx reference 40513) is
+    # described as Packnum Number. Probe it independently so unsupported
+    # firmware cannot fail the established telemetry read. Keep it explicitly
+    # diagnostic-only until validated against the inverter model/firmware.
+    battery_pack_count_raw: int | None = None
+    battery_pack_count_probe_error: str | None = None
+    try:
+        battery_pack_count_raw = read(512, 1)[0]
+    except deye_modbus.ModbusError as exc:
+        battery_pack_count_probe_error = type(exc).__name__
     battery = read(586, 11)           # refs 40587..40597, including Battery 2
     battery_cutoff = read(115, 1)[0]  # ref 40116, configured shutdown SOC
     grid = read(598, 28)              # refs 40599..40626
@@ -2768,6 +2778,10 @@ def _read_deye_sg05lp3_candidate_map(host: str, port: int, unit: int) -> dict[st
     )
     for field, ref, raw, value, unit, label in battery_specs:
         add(field, ref, raw, value, unit, "baterias", label)
+    if battery_pack_count_raw is not None:
+        add("battery_pack_count_candidate", 40513, battery_pack_count_raw,
+            battery_pack_count_raw, "packs", "baterias",
+            "Candidato 40513 — número de packs (não confirmado)")
     # The protocol labels these signed values as battery output current/power.
     # On this live endpoint negative values coincided with PV surplus and are
     # reported as charging; positive values are reported as discharging.
@@ -2885,6 +2899,15 @@ def _read_deye_sg05lp3_candidate_map(host: str, port: int, unit: int) -> dict[st
                               "difference_w": round(difference, 1), "tolerance_w": round(tolerance, 1)})
     if all(metric_values.get(f"grid_voltage_{phase}") == 0 for phase in "abc") and metric_values.get("grid_frequency") == 0:
         quality_checks.append({"field": "grid_voltage_and_frequency", "state": "all_zero_check_meter_or_logger_mapping"})
+    quality_checks.append({
+        "field": "battery_pack_count_candidate",
+        "register": 40513,
+        "pdu_offset": 512,
+        "state": ("candidate_value_unverified" if battery_pack_count_raw is not None
+                  else "candidate_read_failed"),
+        **({"raw_value": battery_pack_count_raw} if battery_pack_count_raw is not None else {}),
+        **({"error_type": battery_pack_count_probe_error} if battery_pack_count_probe_error else {}),
+    })
 
     return {
         "device_type_code": device_type,
@@ -2895,6 +2918,7 @@ def _read_deye_sg05lp3_candidate_map(host: str, port: int, unit: int) -> dict[st
         "read_windows": [
             {"start_address": 0, "count": 1}, {"start_address": 108, "count": 2},
             {"start_address": 500, "count": 1}, {"start_address": 514, "count": 22},
+            {"start_address": 512, "count": 1, "purpose": "unverified_battery_pack_count_candidate"},
             {"start_address": 24, "count": 1}, {"start_address": 586, "count": 11},
             {"start_address": 115, "count": 1}, {"start_address": 598, "count": 28},
             {"start_address": 627, "count": 29}, {"start_address": 672, "count": 8},
