@@ -58,7 +58,7 @@ export async function loadDeviceIdentity(gatewayUrl) {
   const normalized = validateGatewayUrl(gatewayUrl, { allowLocalHttp: ["localhost", "127.0.0.1", "::1"].includes(location.hostname.replace(/^\[|\]$/g, "")) }).origin;
   return identityDbRequest("readonly", store => store.get(normalized));
 }
-async function gatewayRequest(baseUrl, path, { method = "GET", body, authenticated = false, token = bearerToken, signal } = {}) {
+async function gatewayRequest(baseUrl, path, { method = "GET", body, authenticated = false, token = bearerToken, signal, diagnosticId } = {}) {
   const base = validateGatewayUrl(baseUrl, { allowLocalHttp: ["localhost", "127.0.0.1", "::1"].includes(location.hostname.replace(/^\[|\]$/g, "")) });
   const headers = { Accept: "application/json" };
   if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -66,6 +66,7 @@ async function gatewayRequest(baseUrl, path, { method = "GET", body, authenticat
     if (!token) throw new Error("É necessária uma sessão autenticada do Gateway.");
     headers.Authorization = `Bearer ${token}`;
   }
+  if (diagnosticId) headers["X-SolarMiner-Diagnostic-ID"] = diagnosticId;
   let response;
   try {
     response = await fetch(new URL(path, base.origin), {
@@ -292,19 +293,56 @@ export async function readGatewayConsole() {
   return gatewayApi("/api/v1/system/console");
 }
 export async function readGatewayIntelligenceProvider() {
-  const timeoutMs = 15000;
+  const timeoutMs = 45000;
+  const diagnosticId = crypto.randomUUID();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await gatewayApi("/api/v1/intelligence/provider", { signal: controller.signal });
+    return await gatewayApi("/api/v1/intelligence/provider", { signal: controller.signal, diagnosticId });
   } catch (error) {
     error.operation = "status";
     error.timeoutMs = timeoutMs;
+    error.requestId = diagnosticId;
     throw error;
   } finally { clearTimeout(timer); }
 }
-export async function diagnoseGatewayIntelligenceFailure(error, { gatewayUrl = currentGateway, fetchImpl = globalThis.fetch, timeoutMs = 3000 } = {}) {
+export async function readGatewayIntelligenceRequestDiagnostic(requestId) {
+  if (typeof requestId !== "string" || !/^[0-9a-f-]{36}$/i.test(requestId)) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
+  try {
+    return await gatewayApi(`/api/v1/intelligence/provider/diagnostics/${encodeURIComponent(requestId)}`,
+      { signal: controller.signal });
+  } finally { clearTimeout(timer); }
+}
+async function intelligenceRequestTraceDiagnosis(requestId, diagnosticFetch = readGatewayIntelligenceRequestDiagnostic) {
+  if (!requestId) return null;
+  try {
+    const trace = await diagnosticFetch(requestId);
+    if (trace?.state === "in_progress") {
+      const stage = String(trace.stage || "etapa desconhecida").replace(/_/g, " ");
+      return `O Gateway recebeu o pedido, mas ainda está a processá-lo na etapa “${stage}” há ${Math.max(1, Math.ceil((trace.stage_elapsed_ms || 0) / 1000))} s. O estado dos componentes ainda não foi confirmado. Referência de diagnóstico: ${requestId}.`;
+    }
+    if (trace?.state === "failed") {
+      const stage = String(trace.stage || "etapa desconhecida").replace(/_/g, " ");
+      return `O Gateway recebeu o pedido e registou uma falha na etapa “${stage}”${trace.error_type ? ` (${trace.error_type})` : ""}. O estado dos componentes pode estar incompleto. Referência de diagnóstico: ${requestId}.`;
+    }
+    if (trace?.state === "completed" || trace?.state === "degraded") {
+      const stage = String(trace.stage || "etapa desconhecida").replace(/_/g, " ");
+      return `O Gateway concluiu o pedido${trace.http_status ? ` com HTTP ${trace.http_status}` : ""}, na etapa “${stage}”, mas a resposta não chegou à PWA. Isto indica uma falha depois do processamento da rota. Referência de diagnóstico: ${requestId}.`;
+    }
+    if (trace?.state === "not_seen") {
+      return `O Gateway e o HTTPS respondem, mas não há registo deste pedido dentro da rota do Intelligence. A falha ocorreu antes do processamento da rota ou o registo já expirou. Os componentes continuam com estado desconhecido. Referência de diagnóstico: ${requestId}.`;
+    }
+  } catch { /* Older Gateway versions do not expose request traces. */ }
+  return null;
+}
+export async function diagnoseGatewayIntelligenceFailure(error, { gatewayUrl = currentGateway, fetchImpl = globalThis.fetch,
+  diagnosticFetch = readGatewayIntelligenceRequestDiagnostic, timeoutMs = 3000 } = {}) {
   if (error?.code === "timeout" || error?.name === "AbortError") {
+    const traceDiagnosis = error.operation === "status"
+      ? await intelligenceRequestTraceDiagnosis(error.requestId, diagnosticFetch) : null;
+    if (traceDiagnosis) return traceDiagnosis;
     const seconds = Math.max(1, Math.ceil((Number(error.timeoutMs) || 15000) / 1000));
     return error.operation === "analysis"
       ? `Tempo limite: a análise excedeu ${seconds} segundos sem resposta. Verifica o estado do agente local e tenta novamente quando estiver disponível.`
@@ -352,6 +390,10 @@ export async function diagnoseGatewayIntelligenceFailure(error, { gatewayUrl = c
   if (!health.responded || !info.responded) return "O Gateway responde, mas um endpoint público de saúde falhou. A API pode estar a iniciar ou com uma configuração incompleta.";
   if ([401, 403].includes(health.status) || [401, 403].includes(info.status)) return "O HTTPS e o servidor respondem, mas até um endpoint público está a exigir autenticação. Há uma configuração de acesso/API a verificar; o estado dos componentes continua desconhecido.";
   if (!health.ok || !info.ok) return "O HTTPS e a API respondem, mas um endpoint público foi recusado ou não existe. Há incompatibilidade/configuração do Gateway a verificar.";
+  if (error?.requestId) {
+    const traceDiagnosis = await intelligenceRequestTraceDiagnosis(error.requestId, diagnosticFetch);
+    if (traceDiagnosis) return traceDiagnosis;
+  }
   return error?.code === "transport_error"
     ? "O Gateway e o HTTPS respondem, mas o pedido autenticado ao Intelligence falhou antes de receber uma resposta HTTP. Pode ser uma falha transitória ou específica dessa rota; o browser não consegue apurar mais e os componentes continuam com estado desconhecido."
     : "O Gateway e o HTTPS respondem, mas a consulta autenticada do Intelligence falhou. Verifica a rota, sessão ou autorização; os componentes continuam com estado desconhecido.";

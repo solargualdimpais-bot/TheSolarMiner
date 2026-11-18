@@ -128,12 +128,21 @@ EOF
 chmod 0644 /etc/systemd/system/ollama.service.d/solarminer.conf
 systemctl daemon-reload
 systemctl enable --now ollama.service || fail "serviço Ollama não iniciou"
+systemctl restart ollama.service || fail "não foi possível aplicar a configuração local do Ollama"
 OLLAMA_READY=0
 for attempt in $(seq 1 60); do
   if curl --fail --silent --max-time 2 http://127.0.0.1:11434/api/version -o "$TMP/ollama-version.json"; then OLLAMA_READY=1; break; fi
   sleep 1
 done
 [ "$OLLAMA_READY" -eq 1 ] || fail "API local do Ollama não ficou disponível em 127.0.0.1"
+OLLAMA_MAIN_PID=$(systemctl show --property=MainPID --value ollama.service 2>>"$LOG") || fail "não foi possível consultar o processo Ollama"
+case "$OLLAMA_MAIN_PID" in ''|*[!0-9]*|0) fail "processo Ollama não tem PID válido" ;; esac
+PYTHONPATH=/usr/lib/solarminer-gateway python3 - "$OLLAMA_MAIN_PID" <<'PY' || fail "a configuração local efetiva do Ollama não corresponde às restrições do Gateway"
+import sys
+from pathlib import Path
+from solarminer_gateway.intelligence_health import validate_ollama_environment
+validate_ollama_environment(Path("/proc", sys.argv[1], "environ").read_bytes())
+PY
 if ! ollama list 2>>"$LOG" | awk -v model="$OLLAMA_MODEL" 'NR > 1 && $1 == model { found=1 } END { exit !found }'; then
   CURRENT_STAGE=downloading_model
   write_status running "$CURRENT_STAGE" "A iniciar o download do modelo Ollama."
@@ -356,6 +365,13 @@ else
   systemctl start solarminer-intelligence.service || fail "Node/OpenClaude foram instalados, mas o serviço residente não iniciou"
 fi
 systemctl is-active --quiet solarminer-intelligence.service || fail "serviço OpenClaude não ficou ativo"
+CURRENT_STAGE=agent_health_check
+write_status running "$CURRENT_STAGE" "A confirmar a API real do OpenClaude, a configuração local e o modelo."
+PYTHONPATH=/usr/lib/solarminer-gateway python3 - "$OLLAMA_MODEL" <<'PY' || fail "o agente OpenClaude não passou o health check HTTP local"
+import sys
+from solarminer_gateway.intelligence_health import wait_for_agent_health
+wait_for_agent_health(sys.argv[1], timeout_seconds=120, poll_interval=2)
+PY
 install -o root -g root -m 0644 "$TMP/runtime-installed" "$STATE"
 systemctl disable --now solarminer-intelligence-bootstrap.timer >/dev/null 2>&1 || true
 CURRENT_STAGE=complete

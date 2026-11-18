@@ -125,22 +125,35 @@ class SystemUpdatePipeline:
         except system_components.SystemComponentError as exc:
             raise PipelineError(str(exc)) from exc
         try:
-            self._run(["/usr/bin/systemctl", "daemon-reload"], timeout=15, check=True)
-            for unit in system_components.REQUIRED_SOCKETS:
-                self._run(["/usr/bin/systemctl", "enable", "--now", unit], timeout=20, check=True)
+            self._reload_socket_units()
         except Exception:
             self._restore_system_components(snapshot)
             raise
         return snapshot
+
+    def _reload_socket_units(self) -> None:
+        """Restart package-owned sockets so systemd drops stale loaded units.
+
+        `enable --now` is not sufficient when a socket is already active: it
+        leaves the old listening unit and inherited socket configuration in
+        place after the package files have been replaced.
+        """
+        for unit in system_components.REQUIRED_SOCKETS:
+            active = self._run(["/usr/bin/systemctl", "is-active", "--quiet", unit],
+                               timeout=10, check=False)
+            if active.returncode == 0:
+                self._run(["/usr/bin/systemctl", "stop", unit], timeout=20, check=True)
+        self._run(["/usr/bin/systemctl", "daemon-reload"], timeout=15, check=True)
+        for unit in system_components.REQUIRED_SOCKETS:
+            self._run(["/usr/bin/systemctl", "enable", "--now", unit], timeout=20, check=True)
+            self._run(["/usr/bin/systemctl", "is-active", "--quiet", unit], timeout=10, check=True)
 
     def _restore_system_components(self, snapshot: Path) -> None:
         try:
             system_components.restore(snapshot, self.root, system_root=self.system_root)
         except system_components.SystemComponentError as exc:
             raise PipelineError(str(exc)) from exc
-        self._run(["/usr/bin/systemctl", "daemon-reload"], timeout=15, check=True)
-        for unit in system_components.REQUIRED_SOCKETS:
-            self._run(["/usr/bin/systemctl", "enable", "--now", unit], timeout=20, check=True)
+        self._reload_socket_units()
 
     @contextmanager
     def _locked(self):

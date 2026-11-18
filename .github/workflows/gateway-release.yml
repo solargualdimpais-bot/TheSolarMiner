@@ -69,6 +69,7 @@ jobs:
           bash -n tools/tesla_oauth_relay/install-ubuntu.sh tools/tesla_oauth_relay/bootstrap-ubuntu.sh
           python3 -m py_compile src/solarminer_gateway/admin_terminal_broker.py
           python3 -m py_compile src/solarminer_gateway/intelligence_bootstrap_broker.py src/solarminer_gateway/intelligence_bootstrap_client.py
+          python3 -m py_compile src/solarminer_gateway/intelligence_health.py
           sh -n packaging/install-from-usb.sh
           sh -n packaging/solarminer-intelligence-bootstrap
           grep -q '^Depends: .*zstd' packaging/control
@@ -94,6 +95,10 @@ jobs:
           grep -q 'integrated_diagnostics' src/solarminer_gateway/system_components.py
           grep -q 'system_diagnostics' src/solarminer_gateway/app.py
           grep -q '^ReadWritePaths=/var/lib/solarminer-intelligence/work /var/lib/solarminer-intelligence/home$' packaging/solarminer-intelligence.service
+          grep -q 'systemctl restart ollama.service' packaging/solarminer-intelligence-bootstrap
+          grep -q 'wait_for_agent_health' packaging/solarminer-intelligence-bootstrap
+          grep -q 'validate_ollama_environment' packaging/solarminer-intelligence-bootstrap
+          grep -q 'proxy_read_timeout 135s;' packaging/solarminer-gateway-nginx.conf
           grep -q 'install -d -o root -g root -m 0755 /opt/solarminer/intelligence' packaging/postinst
           grep -q 'install -d -o root -g root -m 0750 /var/lib/solarminer/intelligence' packaging/postinst
           python3 -m py_compile packaging/reset-data-volume.py
@@ -173,6 +178,25 @@ jobs:
         working-directory: solarminer-gateway-code02-v0.6.9-candidate
         run: node --test tools/solarminer_intelligence_mcp/server.test.mjs tools/solarminer_intelligence_mcp/agent-service.test.mjs
 
+      - name: Verify the pinned OpenClaude SDK with the production Node runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.22.1
+      - name: Install and import the real OpenClaude SDK package
+        working-directory: solarminer-gateway-code02-v0.6.9-candidate
+        run: |
+          set -euxo pipefail
+          SDK_ROOT="$(mktemp -d)"
+          npm install --prefix "$SDK_ROOT" --omit=dev --no-audit --no-fund \
+            '@twigpine/openclaude@0.36.0' '@modelcontextprotocol/sdk@1.32.1'
+          node --input-type=module - "$SDK_ROOT/node_modules/@twigpine/openclaude/dist/sdk.mjs" <<'NODE'
+          import assert from 'node:assert/strict';
+          import { pathToFileURL } from 'node:url';
+          const sdk = await import(pathToFileURL(process.argv[2]).href);
+          assert.equal(typeof sdk.query, 'function');
+          console.log('Pinned OpenClaude SDK imported with the production Node runtime.');
+          NODE
+
       - name: Check packaged PWA syntax
         working-directory: solarminer-gateway-code02-v0.6.9-candidate/web/pwa
         run: |
@@ -190,6 +214,40 @@ jobs:
       - name: Build Debian package
         working-directory: solarminer-gateway-code02-v0.6.9-candidate
         run: make deb
+
+      - name: Verify Debian artifact identity and release payload
+        working-directory: solarminer-gateway-code02-v0.6.9-candidate
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euxo pipefail
+          PACKAGE="dist/solarminer-gateway_${RELEASE_VERSION}_amd64.deb"
+          test -s "$PACKAGE"
+          test "$(dpkg-deb -f "$PACKAGE" Package)" = "solarminer-gateway"
+          test "$(dpkg-deb -f "$PACKAGE" Version)" = "$RELEASE_VERSION"
+          dpkg-deb -f "$PACKAGE" Depends | grep -F 'python3 (>= 3.13)'
+          CONTENTS="$(dpkg-deb -c "$PACKAGE")"
+          for EXPECTED in \
+            './usr/sbin/solarminer-intelligence-bootstrap' \
+            './usr/lib/solarminer-gateway/solarminer_gateway/intelligence_health.py' \
+            './usr/share/solarminer/intelligence-agent/agent-service.mjs' \
+            './usr/lib/systemd/system/solarminer-intelligence.service' \
+            './usr/lib/systemd/system/solarminer-intelligence-bootstrap-broker.socket' \
+            './usr/lib/systemd/system/solarminer-admin-terminal.socket'; do
+            printf '%s\n' "$CONTENTS" | grep -F "$EXPECTED"
+          done
+
+      - name: Confirm repair bundle uses the same signed release package
+        working-directory: solarminer-gateway-code02-v0.6.9-candidate
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euxo pipefail
+          test -s "dist/solarminer-gateway_${RELEASE_VERSION}_amd64.deb"
+          test "$(sed -n 's/^Version: //p' packaging/control)" = "$RELEASE_VERSION"
+          test "$(sed -n 's/^TARGET_VERSION=//p' packaging/repair-existing-from-usb.sh)" = "$RELEASE_VERSION"
+          grep -F "${RELEASE_VERSION}" packaging/USB_INSTALL_README.txt
+          grep -F "${RELEASE_VERSION}" packaging/USB_REPAIR_README.txt
 
       - name: Create and sign release manifest
         id: manifest

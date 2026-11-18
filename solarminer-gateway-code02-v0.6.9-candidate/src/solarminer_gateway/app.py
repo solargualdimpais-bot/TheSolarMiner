@@ -72,7 +72,7 @@ from . import system_components
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.258"
+PACKAGE_VERSION = "0.6.259"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 INTELLIGENCE_LOCAL_TOKEN_PATH = Path(os.environ.get("SOLARMINER_INTELLIGENCE_CLIENT_TOKEN_FILE", "/etc/solarminer/intelligence-client.token"))
@@ -122,6 +122,57 @@ _deye_history_jobs_lock = threading.Lock()
 _deye_history_jobs: dict[str, dict[str, Any]] = {}
 _tesla_oauth_pending_lock = threading.Lock()
 _tesla_oauth_pending: dict[str, dict[str, Any]] = {}
+_intelligence_provider_diagnostics_lock = threading.Lock()
+_intelligence_provider_diagnostics: dict[str, dict[str, Any]] = {}
+
+
+def _provider_diagnostic_update(request_id: str | None, *, stage: str | None = None,
+                                state: str | None = None, error_type: str | None = None,
+                                http_status: int | None = None) -> None:
+    """Keep a bounded, secret-free trace for Owner troubleshooting of provider status."""
+    if not isinstance(request_id, str):
+        return
+    try:
+        uuid.UUID(request_id)
+    except (ValueError, AttributeError):
+        return
+    now = time.monotonic()
+    with _intelligence_provider_diagnostics_lock:
+        entry = _intelligence_provider_diagnostics.get(request_id)
+        if entry is None:
+            return
+        if stage and stage != entry.get("stage"):
+            previous = entry.get("stage")
+            if previous:
+                entry["steps"].append({"stage": previous,
+                                       "duration_ms": max(0, round((now - entry["stage_started"]) * 1000))})
+            entry["stage"] = stage
+            entry["stage_started"] = now
+        if state:
+            entry["state"] = state
+        if error_type:
+            entry["error_type"] = error_type[:80]
+        if http_status is not None:
+            entry["http_status"] = http_status
+        entry["updated_at"] = utcnow()
+        entry["total_elapsed_ms"] = max(0, round((now - entry["started"]) * 1000))
+        if error_type:
+            LOG.warning("Intelligence provider diagnostic request_id=%s stage=%s error_type=%s",
+                        request_id, entry.get("stage") or "unknown", error_type[:80])
+
+
+def _provider_diagnostic_snapshot(request_id: str) -> dict[str, Any] | None:
+    now = time.monotonic()
+    with _intelligence_provider_diagnostics_lock:
+        entry = _intelligence_provider_diagnostics.get(request_id)
+        if entry is None:
+            return None
+        snapshot = {key: entry.get(key) for key in
+                    ("request_id", "state", "stage", "error_type", "http_status", "updated_at")}
+        snapshot["total_elapsed_ms"] = max(0, round((now - entry["started"]) * 1000))
+        snapshot["stage_elapsed_ms"] = max(0, round((now - entry["stage_started"]) * 1000))
+        snapshot["steps"] = list(entry["steps"])
+        return snapshot
 
 
 def _expire_tesla_oauth_pending(state: str) -> None:
@@ -2514,6 +2565,28 @@ app = FastAPI(title="SolarMiner Gateway", version=VERSION, docs_url=None, redoc_
 @app.middleware("http")
 async def report_http_server_errors(request: Request, call_next):
     started = time.perf_counter()
+    provider_diagnostic_id = request.headers.get("X-SolarMiner-Diagnostic-ID") if request.url.path == "/api/v1/intelligence/provider" else None
+    if provider_diagnostic_id:
+        try:
+            provider_diagnostic_id = str(uuid.UUID(provider_diagnostic_id))
+        except (ValueError, AttributeError):
+            provider_diagnostic_id = None
+    if provider_diagnostic_id:
+        now = time.monotonic()
+        with _intelligence_provider_diagnostics_lock:
+            _intelligence_provider_diagnostics[provider_diagnostic_id] = {
+                "request_id": provider_diagnostic_id, "state": "in_progress", "stage": "gateway_route",
+                "error_type": None, "http_status": None, "updated_at": utcnow(),
+                "started": now, "stage_started": now, "steps": [],
+            }
+            # Keep memory bounded and discard diagnostic traces older than ten minutes.
+            for key, value in list(_intelligence_provider_diagnostics.items()):
+                if now - value.get("started", now) > 600:
+                    _intelligence_provider_diagnostics.pop(key, None)
+            while len(_intelligence_provider_diagnostics) > 64:
+                oldest = min(_intelligence_provider_diagnostics,
+                             key=lambda key: _intelligence_provider_diagnostics[key].get("started", now))
+                _intelligence_provider_diagnostics.pop(oldest, None)
     def route_label() -> str:
         route = request.scope.get("route")
         value = getattr(route, "path", "unmatched")
@@ -2525,10 +2598,17 @@ async def report_http_server_errors(request: Request, call_next):
         response = await call_next(request)
     except Exception as exc:
         elapsed_ms = round((time.perf_counter() - started) * 1000)
+        if provider_diagnostic_id:
+            _provider_diagnostic_update(provider_diagnostic_id, state="failed", error_type=type(exc).__name__)
         LOG.error("Unhandled Gateway request exception route=%s type=%s latency_ms=%d",
                   route_label(), type(exc).__name__, elapsed_ms)
         raise
     elapsed_ms = round((time.perf_counter() - started) * 1000)
+    if provider_diagnostic_id:
+        _provider_diagnostic_update(provider_diagnostic_id,
+                                    state="failed" if response.status_code >= 500 else
+                                    "rejected" if response.status_code >= 400 else None,
+                                    http_status=response.status_code)
     if response.status_code >= 500:
         LOG.error("Gateway returned HTTP server error status=%s route=%s latency_ms=%d",
                   response.status_code, route_label(), elapsed_ms)
@@ -3301,21 +3381,35 @@ def intelligence_workspace_tests(
 
 @app.get("/api/v1/intelligence/provider")
 def intelligence_provider_status(
+    request: Request,
     session: dict[str, Any] = Depends(require_permission("manage_gateway")),
 ) -> dict[str, Any]:
+    diagnostic_id = request.headers.get("X-SolarMiner-Diagnostic-ID")
+    diagnostic_degraded = False
+    def mark(stage: str, *, state: str | None = None, error: BaseException | None = None) -> None:
+        nonlocal diagnostic_degraded
+        if state == "degraded" or error is not None:
+            diagnostic_degraded = True
+        _provider_diagnostic_update(diagnostic_id, stage=stage, state=state,
+                                    error_type=type(error).__name__ if error else None)
+
     with db() as conn:
+        mark("owner_session")
         _require_owner(session, conn)
         actor = _revalidate_actor(conn, session, "manage_gateway")
         if actor["role"] != "owner":
             raise HTTPException(403, "owner_required")
+    mark("openai_configuration")
     try:
         status_result = update_helper_client.request("intelligence_openai_status")
         openai_state = "configured" if status_result.get("configured") is True else "not_configured"
     except Exception as exc:
         openai_state = "status_unavailable"
         openai_error_type = type(exc).__name__
+        mark("openai_configuration", state="degraded", error=exc)
     else:
         openai_error_type = None
+    mark("ollama_runtime")
     local_state: dict[str, Any] = {"runtime": "unavailable", "installed": False,
                                    "loaded": False, "working": False, "model": "qwen3.5:9b-q4_K_M"}
     agent_state = "unavailable"
@@ -3342,8 +3436,10 @@ def intelligence_provider_status(
             models = tags_payload.get("models", []) if isinstance(tags_payload, dict) else []
             installation["model"] = any(isinstance(item, dict) and item.get("name") == "qwen3.5:9b-q4_K_M"
                                          for item in models)
-    except (OSError, ValueError, TimeoutError, http.client.HTTPException):
-        pass
+    except (OSError, ValueError, TimeoutError, http.client.HTTPException) as exc:
+        mark("ollama_runtime", state="degraded", error=exc)
+    if not ollama_runtime_available:
+        mark("openclaude_agent")
     try:
         with http.client.HTTPConnection("127.0.0.1", 8765, timeout=3) as connection:
             connection.request("GET", "/health", headers={"Accept": "application/json"})
@@ -3354,8 +3450,10 @@ def intelligence_provider_status(
             if isinstance(candidate, dict):
                 local_state = {key: candidate.get(key) for key in ("runtime", "installed", "loaded", "working", "model")}
             agent_state = "available" if agent_payload.get("configured") is True else "starting_or_not_ready"
-    except (OSError, ValueError, TimeoutError, http.client.HTTPException):
-        pass
+    except (OSError, ValueError, TimeoutError, http.client.HTTPException) as exc:
+        mark("openclaude_agent", state="degraded", error=exc)
+    else:
+        mark("bootstrap_state")
     with db() as conn:
         audit(conn, session["user_id"], "intelligence.provider.status", "ollama",
               "success", {"runtime": local_state.get("runtime"), "model_installed": local_state.get("installed"),
@@ -3366,13 +3464,49 @@ def intelligence_provider_status(
         bootstrap_state = {"state": "unavailable", "stage": "unknown",
                            "message": "Não foi possível validar o estado da instalação.",
                            "percent": None, "downloaded_bytes": None, "total_bytes": None, "updated_at": None}
+        mark("bootstrap_state", state="degraded", error=OSError("bootstrap_status_unreadable"))
+    else:
+        mark("system_diagnostics")
+    try:
+        diagnostics = system_components.integrated_diagnostics(PACKAGE_VERSION)
+        mark("complete", state="degraded" if diagnostic_degraded else "completed")
+    except Exception as exc:
+        # Keep provider/runtime state usable if optional OS diagnostics fail.
+        diagnostics = {"status": "UNAVAILABLE", "reason": "system_diagnostics_failed",
+                       "diagnostic_error_type": type(exc).__name__,
+                       "system_components": {"status": "UNKNOWN"}, "units": {}, "paths": {}}
+        mark("complete", state="degraded", error=exc)
+    trace = _provider_diagnostic_snapshot(diagnostic_id) if diagnostic_id else None
     return {"default_provider": "ollama", "agent": agent_state, "ollama": local_state,
             "bootstrap": bootstrap_state, "installation": installation,
-            "system_components": system_components.installed_component_status(),
-            "system_diagnostics": {**system_components.integrated_diagnostics(PACKAGE_VERSION),
+            "system_components": diagnostics.get("system_components", {}),
+            "system_diagnostics": {**diagnostics,
                                    "smart_device_engine": dict(_smart_device_engine_status)},
+            "diagnostic": trace,
             "openai": {"state": openai_state, "configured": openai_state == "configured",
                        "error_type": openai_error_type, "credential_display": "never_returned"}}
+
+
+@app.get("/api/v1/intelligence/provider/diagnostics/{request_id}")
+def intelligence_provider_request_diagnostic(
+    request_id: str,
+    session: dict[str, Any] = Depends(require_permission("manage_gateway")),
+) -> dict[str, Any]:
+    """Return the short-lived, secret-free server trace for one Owner status request."""
+    try:
+        normalized_id = str(uuid.UUID(request_id))
+    except (ValueError, AttributeError) as exc:
+        raise HTTPException(422, "intelligence_diagnostic_id_invalid") from exc
+    with db() as conn:
+        _require_owner(session, conn)
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+    trace = _provider_diagnostic_snapshot(normalized_id)
+    if trace is None:
+        return {"state": "not_seen", "request_id": normalized_id,
+                "reason": "gateway_route_did_not_record_request"}
+    return trace
 
 
 def _intelligence_ollama_binary_installed() -> bool:

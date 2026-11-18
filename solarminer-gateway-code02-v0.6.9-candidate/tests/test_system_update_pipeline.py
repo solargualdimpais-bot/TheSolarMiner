@@ -166,6 +166,29 @@ def test_health_check_has_a_hard_sixty_second_deadline(tmp_path: Path, monkeypat
     assert pipeline._last_health_diagnostic["attempts"] > 0
 
 
+def test_reconcile_restarts_active_socket_units_after_daemon_reload(tmp_path: Path):
+    from solarminer_gateway import system_components
+
+    calls = []
+
+    def runner(args, **kwargs):
+        calls.append(list(args))
+        return subprocess.CompletedProcess(args, 0, "active\n", "")
+
+    pipeline = SystemUpdatePipeline(root=tmp_path / "opt/solarminer", runner=runner)
+    pipeline._reload_socket_units()
+
+    expected = system_components.REQUIRED_SOCKETS
+    stops = [call[2] for call in calls if call[1:2] == ["stop"]]
+    assert stops == list(expected)
+    reload_index = calls.index(["/usr/bin/systemctl", "daemon-reload"])
+    assert all(calls.index(["/usr/bin/systemctl", "stop", unit]) < reload_index for unit in expected)
+    for unit in expected:
+        enable = calls.index(["/usr/bin/systemctl", "enable", "--now", unit])
+        verify = calls.index(["/usr/bin/systemctl", "is-active", "--quiet", unit], reload_index + 1)
+        assert reload_index < enable < verify
+
+
 def test_system_command_timeout_is_classified_with_operation_and_limit(tmp_path: Path):
     def timeout_runner(args, **kwargs):
         raise subprocess.TimeoutExpired(args, kwargs["timeout"])

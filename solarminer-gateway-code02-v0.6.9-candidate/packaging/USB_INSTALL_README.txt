@@ -1,9 +1,11 @@
-SolarMiner Gateway CODE02 0.6.258 — instalador inicial USB
+SolarMiner Gateway CODE02 0.6.259 — instalador inicial USB
 
 O envio automático de diagnósticos para o repositório privado exige um token Fine-grained limitado ao repositório de diagnósticos e à permissão Issues: Read and write. Configura-o depois em Owner → Gateway → Relatórios automáticos; sem token, os relatórios permanecem na fila local.
 ==========================================================
 
 Requisitos: Gateway Lenovo AMD64, Debian 13 (Trixie), Python 3.13 ou posterior e acesso à Internet para os repositórios oficiais Debian e Tailscale.
+
+Layout recomendado para instalação limpa num disco de cerca de 180 GB: durante a instalação do Debian, usa uma tabela GPT, deixa o Debian na área inicial de cerca de 60 GB (incluindo a pequena partição EFI criada pelo instalador, se arrancares em UEFI) e deixa os cerca de 120 GB restantes como espaço não atribuído. Não cries nem formates manualmente a partição de dados SolarMiner. O instalador USB identifica o disco que contém `/`, exige exatamente uma área livre de pelo menos 40 GiB nesse disco, cria aí a partição `SOLARMINER_DATA` e formata apenas essa nova partição como ext4. Se encontrar mais de uma área grande livre, um volume ext4 sem etiqueta que possa conter dados, uma tabela que não seja GPT, ou não conseguir identificar o disco interno com segurança, interrompe sem criar ou formatar partições.
 
 1. Extrai todo o conteúdo deste ZIP para a raiz da pen USB.
 2. No Gateway, inicia sessão como root e monta a pen.
@@ -13,7 +15,7 @@ O script valida manifesto, assinatura Ed25519, hash, tamanho, versão e arquitet
 
 Na primeira ligação, `tailscale up` pode apresentar um endereço para aprovar este Gateway na tua conta Tailscale. Essa aprovação é obrigatória se não existir uma chave de inscrição previamente configurada. No painel de administração Tailscale ativa MagicDNS e HTTPS Certificates. Depois da aprovação, o instalador solicita o certificado, configura Nginx e testa o endpoint HTTPS com o nome Tailscale, TLS/SNI e API que a PWA usa. Se a aprovação ou os certificados estiverem pendentes, o instalador identifica esse estado em vez de declarar o endpoint pronto. Instala a app Tailscale no iPhone e liga-o à mesma conta/Tailnet. Não abras nem encaminhes portas no router.
 
-A pen não executa programas automaticamente ao ser inserida; em Debian, inicia o script uma vez como root. Este comando destina-se apenas a um Debian limpo. Podes formatar a partição do Debian mantendo a partição SOLARMINER_DATA intacta. Não escolhas opções de instalação que apaguem o disco inteiro. A formatação da partição de dados só ocorre se escreveres explicitamente `APAGAR DADOS` no instalador. Mantém uma cópia externa. Para um Gateway já instalado, usa `repair-existing-from-usb.sh` e segue `REPAIR_EXISTING_README.txt`. A chave privada de release não é incluída neste ZIP.
+A pen não executa programas automaticamente ao ser inserida; em Debian, inicia o script uma vez como root. Este comando destina-se apenas a um Debian limpo. No cenário recomendado acima, o instalador cria a partição de dados no espaço que deixaste não atribuído; não é necessário formatar novamente o disco nem a partição Debian. Num disco com volume SOLARMINER_DATA já existente, o instalador valida e reutiliza-o por padrão, sem o formatar. A ação explícita `APAGAR DADOS` só se aplica ao volume SolarMiner já identificado e apaga os dados desse volume. Mantém uma cópia externa. Para um Gateway já instalado, usa `repair-existing-from-usb.sh` e segue `REPAIR_EXISTING_README.txt`. A chave privada de release não é incluída neste ZIP.
 
 Na primeira ligação, usa o endpoint Tailscale detetado (a opção recomendada para evitar instalar certificados no iPhone). Se o disco de dados já contiver Owner, usa as credenciais existentes; uma nova palavra-passe só é definida quando não existe Owner ativo. O IP LAN `https://192.168.8.168:8443` está disponível na rede local, mas usa um certificado local próprio; o iPhone tem de confiar nesse certificado. Não existe forma de um PWA HTTPS confiar em HTTPS de IP privado sem certificado confiável. Guarda a chave de recuperação Owner, apresentada uma única vez, num ficheiro offline. O manual completo fica em /usr/share/doc/solarminer-gateway/OWNER_FIRST_BOOTSTRAP.md.
 

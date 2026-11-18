@@ -3101,7 +3101,7 @@ document.querySelector(".owner-tabs")?.addEventListener("click", event => {
     if (tab.dataset.ownerTab === "gateway") { refreshGatewayConsole(); refreshDiagnosticsUploadStatus(); }
     if (tab.dataset.ownerTab === "intelligence") {
       refreshGatewayIntelligenceProvider();
-      if (intelligenceStatusTimer === null) intelligenceStatusTimer = window.setInterval(refreshGatewayIntelligenceProvider, 5000);
+      if (intelligenceStatusTimer === null) intelligenceStatusTimer = window.setInterval(refreshGatewayIntelligenceProvider, 15000);
     } else if (intelligenceStatusTimer !== null) {
       window.clearInterval(intelligenceStatusTimer);
       intelligenceStatusTimer = null;
@@ -3471,6 +3471,7 @@ function renderGatewayConsoleLogs({ preserveScroll = false } = {}) {
 $("#gateway-console-service-filter")?.addEventListener("change", () => renderGatewayConsoleLogs());
 $("#gateway-console-level-filter")?.addEventListener("change", () => renderGatewayConsoleLogs());
 $("#gateway-console-refresh")?.addEventListener("click", refreshGatewayConsole);
+let gatewayIntelligenceProviderRefreshInFlight = false;
 async function refreshGatewayIntelligenceProvider() {
   const ollamaStatus = $("#gateway-intelligence-ollama-status"), agentStatus = $("#gateway-intelligence-agent-status");
   const openaiStatus = $("#gateway-intelligence-provider-status"), downloadStatus = $("#gateway-intelligence-download-status");
@@ -3480,7 +3481,8 @@ async function refreshGatewayIntelligenceProvider() {
   const modelInstallation = $("#gateway-intelligence-model-installation");
   const agentInstallation = $("#gateway-intelligence-openclaude-installation");
   const systemDiagnostics = $("#gateway-intelligence-system-diagnostics");
-  if (!ollamaStatus || !sessionInfo().authenticated || sessionInfo().user?.role !== "owner") return;
+  if (!ollamaStatus || !sessionInfo().authenticated || sessionInfo().user?.role !== "owner" || gatewayIntelligenceProviderRefreshInFlight) return;
+  gatewayIntelligenceProviderRefreshInFlight = true;
   ollamaStatus.textContent = "A consultar o estado do runtime e do modelo local…";
   try {
     const state = await readGatewayIntelligenceProvider();
@@ -3510,11 +3512,14 @@ async function refreshGatewayIntelligenceProvider() {
       const components = diagnostics.system_components || {};
       const engine = diagnostics.smart_device_engine || {};
       const paths = diagnostics.paths || {};
+      const providerTrace = state.diagnostic || {};
+      const providerTraceText = providerTrace.request_id
+        ? ` Consulta Intelligence: ${providerTrace.state || "desconhecido"}, etapa ${String(providerTrace.stage || "desconhecida").replace(/_/g, " ")}${providerTrace.error_type ? `, erro ${providerTrace.error_type}` : ""}, ${providerTrace.total_elapsed_ms || 0} ms.` : "";
       const pathText = ["intelligence_bootstrap_binary", "intelligence_runtime", "intelligence_state",
         "intelligence_agent_env", "admin_terminal_socket"].map(name =>
         `${name.replace(/_/g, " ")}: ${paths[name]?.state || "desconhecido"}`).join("; ");
       systemDiagnostics.textContent = diagnostics.status
-        ? `Compatibilidade ${diagnostics.status}${diagnostics.reason ? ` (${diagnostics.reason})` : ""}. Debian ${diagnostics.operating_system?.version || "?"}, Python ${diagnostics.python_version || "?"}; app ${diagnostics.application_version || "?"}, pacote Debian ${diagnostics.debian_package_version || "desconhecido"}, release ativa ${diagnostics.active_release || "desconhecida"}, componentes ${components.version || "desconhecida"} (${components.status || "desconhecido"}). ${unitText}; ${pathText}; Smart Device Engine: ${engine.state || "desconhecido"}${engine.last_error_type ? `, erro ${engine.last_error_type}, nova tentativa em ${engine.retry_in_seconds}s` : ""}.`
+        ? `Compatibilidade ${diagnostics.status}${diagnostics.reason ? ` (${diagnostics.reason})` : ""}. Debian ${diagnostics.operating_system?.version || "?"}, Python ${diagnostics.python_version || "?"}; app ${diagnostics.application_version || "?"}, pacote Debian ${diagnostics.debian_package_version || "desconhecido"}, release ativa ${diagnostics.active_release || "desconhecida"}, componentes ${components.version || "desconhecida"} (${components.status || "desconhecido"}). ${unitText}; ${pathText}; Smart Device Engine: ${engine.state || "desconhecido"}${engine.last_error_type ? `, erro ${engine.last_error_type}, nova tentativa em ${engine.retry_in_seconds}s` : ""}.${providerTraceText}`
         : "Diagnóstico dos componentes de sistema não foi disponibilizado por esta versão do Gateway.";
     }
     if (bootstrapButton) {
@@ -3555,7 +3560,7 @@ async function refreshGatewayIntelligenceProvider() {
     if (systemDiagnostics) systemDiagnostics.textContent = "Compatibilidade do sistema desconhecida: a consulta autenticada ao Gateway falhou.";
     if (downloadStatus) downloadStatus.textContent = "O estado e o progresso da instalação não puderam ser consultados no Gateway.";
     if (progress) progress.hidden = true;
-  }
+  } finally { gatewayIntelligenceProviderRefreshInFlight = false; }
 }
 $("#gateway-intelligence-bootstrap-start")?.addEventListener("click", async event => {
   const button = event.currentTarget, status = $("#gateway-intelligence-download-status");

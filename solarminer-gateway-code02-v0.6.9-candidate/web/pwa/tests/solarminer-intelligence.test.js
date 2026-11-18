@@ -46,7 +46,9 @@ test('PWA uses authenticated Gateway endpoints for provider setup, revocation an
   assert.match(auth, /intelligence_agent_unavailable/);
   assert.match(auth, /ollama_runtime_unavailable/);
   assert.match(auth, /ollama_model_not_installed/);
-  assert.match(auth, /timeoutMs = 15000/);
+  assert.match(auth, /timeoutMs = 45000/);
+  assert.match(auth, /X-SolarMiner-Diagnostic-ID/);
+  assert.match(auth, /readGatewayIntelligenceRequestDiagnostic/);
   assert.match(auth, /timeoutMs = 130000/);
   assert.match(auth, /\/api\/v1\/health/);
   assert.match(auth, /\/api\/v1\/info/);
@@ -67,7 +69,8 @@ test('PWA uses authenticated Gateway endpoints for provider setup, revocation an
   assert.match(app, /startGatewayIntelligenceBootstrap\(\)/);
   assert.match(app, /Instalar\/atualizar componentes do Intelligence/);
   assert.match(app, /gateway-intelligence-download-progress/);
-  assert.match(app, /setInterval\(refreshGatewayIntelligenceProvider, 5000\)/);
+  assert.match(app, /setInterval\(refreshGatewayIntelligenceProvider, 15000\)/);
+  assert.match(app, /gatewayIntelligenceProviderRefreshInFlight/);
   assert.match(app, /OpenClaude ativo, mas ainda não pronto/);
   assert.match(app, /OpenClaude indisponível/);
   assert.match(app, /refreshGatewayIntelligenceReviews/);
@@ -132,6 +135,25 @@ test('Intelligence diagnostics distinguish Gateway transport, API, auth, and boo
     gatewayUrl, fetchImpl: async () => response(200),
   });
   assert.match(intelligenceRouteFailure, /pedido autenticado ao Intelligence falhou/);
+
+  const requestId = 'a1a1a1a1-a1a1-41a1-81a1-a1a1a1a1a1a1';
+  const timedOutInRoute = await diagnoseGatewayIntelligenceFailure(Object.assign(new Error('timeout'), {
+    code: 'timeout', operation: 'status', requestId, timeoutMs: 45000,
+  }), { diagnosticFetch: async () => ({ state: 'in_progress', stage: 'openclaude_agent', stage_elapsed_ms: 12000 }) });
+  assert.match(timedOutInRoute, /processá-lo na etapa “openclaude agent” há 12 s/);
+  assert.match(timedOutInRoute, new RegExp(requestId));
+
+  const routeFailure = await diagnoseGatewayIntelligenceFailure(Object.assign(new TypeError('fetch failed'), {
+    code: 'transport_error', requestId,
+  }), { gatewayUrl, fetchImpl: async () => response(200),
+    diagnosticFetch: async () => ({ state: 'failed', stage: 'ollama_runtime', error_type: 'TimeoutError' }) });
+  assert.match(routeFailure, /falha na etapa “ollama runtime” \(TimeoutError\)/);
+
+  const routeNotSeen = await diagnoseGatewayIntelligenceFailure(Object.assign(new TypeError('fetch failed'), {
+    code: 'transport_error', requestId,
+  }), { gatewayUrl, fetchImpl: async () => response(200),
+    diagnosticFetch: async () => ({ state: 'not_seen', request_id: requestId }) });
+  assert.match(routeNotSeen, /não há registo deste pedido dentro da rota/);
 
   const localAgentUnavailable = await diagnoseGatewayIntelligenceFailure(Object.assign(error(503), { detail: 'intelligence_agent_unavailable' }));
   assert.match(localAgentUnavailable, /serviço local OpenClaude/);

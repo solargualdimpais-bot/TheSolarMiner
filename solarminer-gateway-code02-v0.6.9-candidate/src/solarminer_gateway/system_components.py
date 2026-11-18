@@ -47,6 +47,7 @@ REQUIRED_COMPONENTS = (
     "usr/bin/solarminer-intelligence-bootstrap-broker",
     "usr/lib/solarminer-gateway/solarminer_gateway/system_update_pipeline.py",
     "usr/lib/solarminer-gateway/solarminer_gateway/system_components.py",
+    "usr/lib/solarminer-gateway/solarminer_gateway/intelligence_health.py",
     "usr/lib/solarminer-gateway/solarminer_gateway/update_broker.py",
     "usr/lib/solarminer-gateway/solarminer_gateway/intelligence_bootstrap_broker.py",
     "usr/lib/solarminer-gateway/solarminer_gateway/admin_terminal_broker.py",

@@ -386,12 +386,12 @@ def test_intelligence_provider_status_reports_local_runtime_model_and_optional_c
     monkeypatch.setattr(gateway.update_helper_client, "request", lambda action, **kwargs:
                         {"status": "ok", "configured": False})
     monkeypatch.setattr(gateway.system_components, "installed_component_status", lambda: {
-        "status": "OK", "version": "0.6.258", "protocol": 1, "reason": None,
+        "status": "OK", "version": "0.6.259", "protocol": 1, "reason": None,
     })
     monkeypatch.setattr(gateway.system_components, "integrated_diagnostics", lambda _version: {
-        "status": "OK", "reason": None, "application_version": "0.6.258",
-        "debian_package_version": "0.6.258", "active_release": "0.6.258",
-        "system_components": {"status": "OK", "version": "0.6.258", "protocol": 1, "reason": None},
+        "status": "OK", "reason": None, "application_version": "0.6.259",
+        "debian_package_version": "0.6.259", "active_release": "0.6.259",
+        "system_components": {"status": "OK", "version": "0.6.259", "protocol": 1, "reason": None},
         "operating_system": {"id": "debian", "version": "13", "codename": "trixie"},
         "python_version": "3.13.0", "units": {}, "paths": {},
     })
@@ -420,7 +420,9 @@ def test_intelligence_provider_status_reports_local_runtime_model_and_optional_c
             return SimpleNamespace(status=200, read=lambda _limit: json.dumps(health).encode())
 
     monkeypatch.setattr(gateway.http.client, "HTTPConnection", FakeConnection)
-    response = client.get("/api/v1/intelligence/provider", headers=owner)
+    request_id = "a1a1a1a1-a1a1-41a1-81a1-a1a1a1a1a1a1"
+    response = client.get("/api/v1/intelligence/provider",
+                          headers={**owner, "X-SolarMiner-Diagnostic-ID": request_id})
     assert response.status_code == 200, response.text
     payload = response.json()
     assert {key: payload[key] for key in (
@@ -438,11 +440,32 @@ def test_intelligence_provider_status_reports_local_runtime_model_and_optional_c
                       "percent": 42, "downloaded_bytes": 420, "total_bytes": 1000, "updated_at": 1000},
     }
     assert payload["system_components"] == {
-        "status": "OK", "version": "0.6.258", "protocol": 1, "reason": None,
+        "status": "OK", "version": "0.6.259", "protocol": 1, "reason": None,
     }
     assert payload["system_diagnostics"]["status"] == "OK"
-    assert payload["system_diagnostics"]["active_release"] == "0.6.258"
-    assert payload["system_diagnostics"]["debian_package_version"] == "0.6.258"
+    assert payload["system_diagnostics"]["active_release"] == "0.6.259"
+    assert payload["system_diagnostics"]["debian_package_version"] == "0.6.259"
+    assert payload["diagnostic"]["request_id"] == request_id
+    assert payload["diagnostic"]["state"] == "completed"
+    assert payload["diagnostic"]["stage"] == "complete"
+    assert any(step["stage"] == "ollama_runtime" for step in payload["diagnostic"]["steps"])
+
+    trace = client.get(f"/api/v1/intelligence/provider/diagnostics/{request_id}", headers=owner)
+    assert trace.status_code == 200, trace.text
+    assert trace.json()["state"] == "completed"
+    assert trace.json()["request_id"] == request_id
+    assert client.get(f"/api/v1/intelligence/provider/diagnostics/{request_id}").status_code == 401
+
+
+def test_provider_status_diagnostic_endpoint_distinguishes_unknown_and_rejects_invalid_ids(client):
+    owner = _owner(client)
+    unknown_id = "b2b2b2b2-b2b2-42b2-82b2-b2b2b2b2b2b2"
+    unknown = client.get(f"/api/v1/intelligence/provider/diagnostics/{unknown_id}", headers=owner)
+    assert unknown.status_code == 200, unknown.text
+    assert unknown.json() == {"state": "not_seen", "request_id": unknown_id,
+                              "reason": "gateway_route_did_not_record_request"}
+    invalid = client.get("/api/v1/intelligence/provider/diagnostics/not-a-uuid", headers=owner)
+    assert invalid.status_code == 422
 
 
 def test_provider_status_separates_installed_ollama_from_unreachable_local_services(client, monkeypatch):
