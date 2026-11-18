@@ -4,3 +4,4 @@
 - Applied the fix to Ollama version/model checks, OpenClaude health checks, and Intelligence conversation forwarding.
 - Added regression coverage using connection objects that do not implement the context manager protocol.
 - Preserved TypeError stage reporting at the Gateway-to-agent boundary.
+- Included the currently installed 0.6.260 package in the signed USB rollback bundle.
