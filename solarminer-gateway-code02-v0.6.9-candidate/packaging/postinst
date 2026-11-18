@@ -136,6 +136,7 @@ case "${1:-}" in
       systemctl stop solarminer-public-tls-renew.service || true
       systemctl enable --now solarminer-recovery.timer
       systemctl enable --now solarminer-update-broker.socket
+      systemctl enable --now solarminer-intelligence-bootstrap-broker.socket
       systemctl enable --now solarminer-admin-terminal.socket
       systemctl enable --now solarminer-update-check-daily.timer
       systemctl disable --now solarminer-gateway-watchdog.timer || true

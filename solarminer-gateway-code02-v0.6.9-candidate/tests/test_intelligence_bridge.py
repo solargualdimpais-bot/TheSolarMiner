@@ -432,14 +432,14 @@ def test_owner_can_queue_intelligence_repair_and_action_is_audited(client, monke
         "state": "failed", "stage": "installing_ollama", "message": "A instalação falhou.",
         "percent": None, "downloaded_bytes": None, "total_bytes": None, "updated_at": time.time(),
     })
-    monkeypatch.setattr(gateway.update_helper_client, "request", lambda action, **kwargs:
-                        calls.append((action, kwargs)) or {"status": "ok", "queued": True})
+    monkeypatch.setattr(gateway.intelligence_bootstrap_client, "request_start", lambda:
+                        calls.append(("start", {})) or {"status": "ok", "queued": True})
 
     response = client.post("/api/v1/intelligence/bootstrap", headers=owner, json={})
 
     assert response.status_code == 200, response.text
     assert response.json() == {"status": "queued", "queued": True}
-    assert calls == [("intelligence_bootstrap_start", {})]
+    assert calls == [("start", {})]
     with gateway.db() as conn:
         audit_row = conn.execute("SELECT outcome FROM audit WHERE action='intelligence.bootstrap.start'").fetchone()
     assert audit_row[0] == "queued"
@@ -452,7 +452,7 @@ def test_intelligence_bootstrap_repair_is_not_queued_twice_while_running(client,
         "state": "running", "stage": "downloading_model", "message": "A descarregar.",
         "percent": 21, "downloaded_bytes": 10, "total_bytes": 50, "updated_at": time.time(),
     })
-    monkeypatch.setattr(gateway.update_helper_client, "request", lambda *args, **kwargs: calls.append(args))
+    monkeypatch.setattr(gateway.intelligence_bootstrap_client, "request_start", lambda: calls.append("start"))
 
     response = client.post("/api/v1/intelligence/bootstrap", headers=owner, json={})
 

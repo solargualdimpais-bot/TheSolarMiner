@@ -9,6 +9,7 @@ import socket
 import pytest
 
 from solarminer_gateway import scheduled_update_check as daily
+from solarminer_gateway import intelligence_bootstrap_broker, intelligence_bootstrap_client
 from solarminer_gateway import update_broker, update_helper_client
 
 
@@ -20,6 +21,15 @@ def test_api_and_daily_units_keep_privilege_escalation_disabled():
         assert "ReadWritePaths=/var/lib/solarminer" in content
         assert "RestrictSUIDSGID=true" in content
         assert "ProtectSystem=strict" in content
+
+
+def test_gateway_and_admin_broker_remain_available_if_release_recovery_fails():
+    packaging = Path(__file__).parents[1] / "packaging"
+    for name in ("solarminer-gateway.service", "solarminer-admin-terminal@.service",
+                 "solarminer-update-broker@.service"):
+        content = (packaging / name).read_text(encoding="utf-8")
+        assert "Wants=solarminer-recovery.service" in content
+        assert "Requires=solarminer-recovery.service" not in content
 
 
 def test_update_broker_is_root_owned_and_socket_is_private_to_service_account():
@@ -34,6 +44,17 @@ def test_update_broker_is_root_owned_and_socket_is_private_to_service_account():
     assert "NoNewPrivileges=true" in service_unit
     assert "RestrictSUIDSGID=true" in service_unit
     assert "ReadWritePaths=/opt/solarminer /var/lib/solarminer /var/lib/solarminer-intelligence/test-runs /var/log/nginx /etc/solarminer /run" in service_unit
+
+
+def test_intelligence_bootstrap_broker_is_independent_of_release_recovery_but_checks_data_volume():
+    packaging = Path(__file__).parents[1] / "packaging"
+    socket_unit = (packaging / "solarminer-intelligence-bootstrap-broker.socket").read_text(encoding="utf-8")
+    service_unit = (packaging / "solarminer-intelligence-bootstrap-broker@.service").read_text(encoding="utf-8")
+    assert "SocketUser=solarminer" in socket_unit and "SocketMode=0600" in socket_unit
+    assert "Requires=solarminer-recovery.service" not in service_unit
+    assert "RequiresMountsFor=/var/lib/solarminer" in service_unit
+    assert "ExecStartPre=/usr/bin/solarminer-data-volume-check" in service_unit
+    assert "RestrictAddressFamilies=AF_UNIX" in service_unit
 
 
 def test_root_broker_accepts_only_allowlisted_actions_and_validated_enqueue(monkeypatch):
@@ -75,27 +96,53 @@ def test_root_broker_only_enables_watchdog_through_fixed_systemd_unit():
     assert len(calls) == 2
 
 
-def test_root_broker_queues_only_the_fixed_intelligence_bootstrap_unit():
+def test_intelligence_bootstrap_broker_queues_only_the_fixed_unit_and_rejects_extra_fields():
     calls = []
     def runner(args, **kwargs):
         calls.append((args, kwargs))
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    response = update_broker.handle_request(b'{"action":"intelligence_bootstrap_start"}\n', runner)
+    response = intelligence_bootstrap_broker.handle_request(b'{"action":"start"}\n', runner)
     assert response == {"status": "ok", "queued": True}
     assert calls[0][0] == ["/usr/bin/systemctl", "start", "--no-block",
                            "solarminer-intelligence-bootstrap.service"]
     assert calls[0][1]["timeout"] == 10
-    assert update_broker.handle_request(
-        b'{"action":"intelligence_bootstrap_start","unit":"arbitrary.service"}\n', runner
+    assert intelligence_bootstrap_broker.handle_request(
+        b'{"action":"start","unit":"arbitrary.service"}\n', runner
     ) == {"status": "error", "reason": "request_invalid"}
     assert len(calls) == 1
 
 
-def test_helper_client_rejects_parameters_for_bootstrap_action_before_socket_access(monkeypatch):
-    monkeypatch.setattr(update_helper_client.socket, "socket", lambda *_args: pytest.fail("socket must not be opened"))
-    with pytest.raises(ValueError, match="intelligence_bootstrap_request_invalid"):
-        update_helper_client.request("intelligence_bootstrap_start", operation_id="unexpected")
+def test_intelligence_bootstrap_broker_fails_closed_if_systemd_rejects_request():
+    response = intelligence_bootstrap_broker.handle_request(
+        b'{"action":"start"}\n', lambda *_args, **_kwargs: SimpleNamespace(returncode=1))
+    assert response == {"status": "error", "reason": "intelligence_bootstrap_start_failed"}
+
+
+def test_general_update_broker_no_longer_accepts_intelligence_bootstrap_action():
+    assert update_broker.handle_request(b'{"action":"intelligence_bootstrap_start"}\n') == {
+        "status": "error", "reason": "request_invalid"}
+
+
+def test_intelligence_bootstrap_client_uses_dedicated_fixed_socket(monkeypatch):
+    calls = []
+
+    class FakeSocket:
+        def __init__(self, *_args): pass
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def settimeout(self, value): assert value == 15
+        def connect(self, path): calls.append(("connect", path))
+        def sendall(self, data): calls.append(("send", data))
+        def shutdown(self, _how): pass
+        def recv(self, _size): return b'{"status":"ok","queued":true}\n'
+
+    monkeypatch.setattr(intelligence_bootstrap_client.socket, "AF_UNIX", 1, raising=False)
+    monkeypatch.setattr(intelligence_bootstrap_client.socket, "SOCK_STREAM", 1, raising=False)
+    monkeypatch.setattr(intelligence_bootstrap_client.socket, "socket", FakeSocket)
+    assert intelligence_bootstrap_client.request_start() == {"status": "ok", "queued": True}
+    assert calls == [("connect", intelligence_bootstrap_client.DEFAULT_SOCKET_PATH),
+                     ("send", b'{"action":"start"}\n')]
 
 
 def test_root_broker_stores_openai_key_without_returning_it_and_restarts_only_intelligence(monkeypatch):

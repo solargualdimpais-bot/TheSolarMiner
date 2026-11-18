@@ -68,6 +68,7 @@ jobs:
           set -euxo pipefail
           bash -n tools/tesla_oauth_relay/install-ubuntu.sh tools/tesla_oauth_relay/bootstrap-ubuntu.sh
           python3 -m py_compile src/solarminer_gateway/admin_terminal_broker.py
+          python3 -m py_compile src/solarminer_gateway/intelligence_bootstrap_broker.py src/solarminer_gateway/intelligence_bootstrap_client.py
           sh -n packaging/install-from-usb.sh
           sh -n packaging/solarminer-intelligence-bootstrap
           grep -q '^Depends: .*zstd' packaging/control
@@ -75,6 +76,12 @@ jobs:
           ! grep -q 'apt-get' packaging/solarminer-intelligence-bootstrap
           ! grep -Eq '^(PrivateTmp|ProtectSystem|ProtectHome|ReadWritePaths)=' packaging/solarminer-intelligence-bootstrap.service
           grep -q '^NoNewPrivileges=true$' packaging/solarminer-intelligence-bootstrap.service
+          grep -q '^Wants=solarminer-recovery.service$' packaging/solarminer-gateway.service
+          ! grep -q '^Requires=solarminer-recovery.service$' packaging/solarminer-gateway.service
+          grep -q '^Wants=solarminer-recovery.service$' packaging/solarminer-update-broker@.service
+          grep -q '^Wants=solarminer-recovery.service$' packaging/solarminer-admin-terminal@.service
+          ! grep -q '^Requires=solarminer-recovery.service$' packaging/solarminer-intelligence-bootstrap-broker@.service
+          grep -q '^ExecStartPre=/usr/bin/solarminer-data-volume-check$' packaging/solarminer-intelligence-bootstrap-broker@.service
           grep -q '^ProtectSystem=strict$' packaging/solarminer-intelligence.service
           grep -q '^ReadWritePaths=/var/lib/solarminer-intelligence/work /var/lib/solarminer-intelligence/home$' packaging/solarminer-intelligence.service
           grep -q 'install -d -o root -g root -m 0755 /opt/solarminer/intelligence' packaging/postinst
@@ -101,6 +108,7 @@ jobs:
           sh -n packaging/install-tailscale.sh
           python3 -m py_compile packaging/provision-data-volume.py
           sh -n packaging/solarminer-update-broker
+          sh -n packaging/solarminer-intelligence-bootstrap-broker
           sh -n packaging/solarminer-tailscale-info
           sh -n packaging/solarminer-tailscale-connect
           sh -n packaging/solarminer-tailscale-cert
@@ -117,6 +125,8 @@ jobs:
           install -m 0644 packaging/solarminer-intelligence-bootstrap.timer "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-intelligence-bootstrap.timer"
           install -m 0644 packaging/solarminer-intelligence.service "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-intelligence.service"
           install -m 0644 packaging/solarminer-update-broker@.service "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-update-broker@.service"
+          install -m 0644 packaging/solarminer-intelligence-bootstrap-broker.socket "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-intelligence-bootstrap-broker.socket"
+          install -m 0644 packaging/solarminer-intelligence-bootstrap-broker@.service "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-intelligence-bootstrap-broker@.service"
           install -m 0644 packaging/solarminer-update-broker.socket "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-update-broker.socket"
           install -m 0644 packaging/solarminer-admin-terminal.socket "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-admin-terminal.socket"
           install -m 0644 packaging/solarminer-admin-terminal@.service "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-admin-terminal@.service"
@@ -124,6 +134,7 @@ jobs:
           install -m 0755 packaging/solarminer-recovery "$VERIFY_ROOT/usr/bin/solarminer-recovery"
           install -m 0755 packaging/solarminer-data-volume-check "$VERIFY_ROOT/usr/bin/solarminer-data-volume-check"
           install -m 0755 packaging/solarminer-update-broker "$VERIFY_ROOT/usr/bin/solarminer-update-broker"
+          install -m 0755 packaging/solarminer-intelligence-bootstrap-broker "$VERIFY_ROOT/usr/bin/solarminer-intelligence-bootstrap-broker"
           install -m 0755 packaging/solarminer-intelligence-test-runner "$VERIFY_ROOT/usr/sbin/solarminer-intelligence-test-runner"
           install -m 0755 /usr/bin/true "$VERIFY_ROOT/usr/bin/true"
           install -m 0755 /usr/bin/true "$VERIFY_ROOT/usr/bin/python3"
@@ -142,7 +153,7 @@ jobs:
           printf '[Unit]\nDescription=Verification placeholder Gateway service\n[Service]\nExecStart=/usr/bin/true\n' > "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-gateway.service"
           install -m 0644 packaging/solarminer-gateway-watchdog.service "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-gateway-watchdog.service"
           install -m 0644 packaging/solarminer-gateway-watchdog.timer "$VERIFY_ROOT/usr/lib/systemd/system/solarminer-gateway-watchdog.timer"
-          systemd-analyze --root="$VERIFY_ROOT" verify solarminer-recovery.service solarminer-error-report.service solarminer-error-report.timer solarminer-intelligence.service solarminer-intelligence-bootstrap.service solarminer-intelligence-bootstrap.timer solarminer-gateway-watchdog.service solarminer-gateway-watchdog.timer solarminer-update-broker.socket solarminer-update-broker@.service solarminer-admin-terminal.socket solarminer-admin-terminal@.service solarminer-tailscale-cert.service
+          systemd-analyze --root="$VERIFY_ROOT" verify solarminer-recovery.service solarminer-error-report.service solarminer-error-report.timer solarminer-intelligence.service solarminer-intelligence-bootstrap.service solarminer-intelligence-bootstrap.timer solarminer-gateway-watchdog.service solarminer-gateway-watchdog.timer solarminer-update-broker.socket solarminer-update-broker@.service solarminer-intelligence-bootstrap-broker.socket solarminer-intelligence-bootstrap-broker@.service solarminer-admin-terminal.socket solarminer-admin-terminal@.service solarminer-tailscale-cert.service
 
       - name: Run Gateway tests
         working-directory: solarminer-gateway-code02-v0.6.9-candidate

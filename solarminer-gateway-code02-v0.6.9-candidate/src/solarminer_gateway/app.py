@@ -62,6 +62,7 @@ from . import integrations as hardware_integrations
 from . import network_scanner
 from . import shelly_credentials
 from . import shelly_product_registry
+from . import intelligence_bootstrap_client
 from . import update_helper_client
 from . import updates as update_manager
 from . import error_reporting
@@ -70,7 +71,7 @@ from . import smart_device_engine
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.253"
+PACKAGE_VERSION = "0.6.254"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 INTELLIGENCE_LOCAL_TOKEN_PATH = Path(os.environ.get("SOLARMINER_INTELLIGENCE_CLIENT_TOKEN_FILE", "/etc/solarminer/intelligence-client.token"))
@@ -3342,7 +3343,7 @@ def start_intelligence_bootstrap(
             audit(conn, session["user_id"], "intelligence.bootstrap.start", "intelligence", "already_running", {})
         return {"status": "already_running", "queued": False}
     try:
-        result = update_helper_client.request("intelligence_bootstrap_start")
+        result = intelligence_bootstrap_client.request_start()
     except Exception as exc:
         with db() as conn:
             audit(conn, session["user_id"], "intelligence.bootstrap.start", "intelligence", "failed",

@@ -1,7 +1,7 @@
 [Unit]
 Description=SolarMiner restricted privileged helper broker request
 After=local-fs.target solarminer-recovery.service
-Requires=solarminer-recovery.service
+Wants=solarminer-recovery.service
 RequiresMountsFor=/var/lib/solarminer
 
 [Service]

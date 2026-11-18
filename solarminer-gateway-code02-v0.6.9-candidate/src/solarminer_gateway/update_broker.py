@@ -306,25 +306,10 @@ def handle_request(raw: bytes, runner=subprocess.run) -> dict[str, object]:
     if not isinstance(request, dict) or request.get("action") not in {
         "preflight", "enqueue", "tailscale_status", "tailscale_connect", "diagnostics",
         "watchdog_set", "intelligence_openai_set", "intelligence_openai_status",
-        "intelligence_openai_clear", "intelligence_workspace_tests", "intelligence_bootstrap_start"
+        "intelligence_openai_clear", "intelligence_workspace_tests"
     }:
         return {"status": "error", "reason": "request_invalid"}
     action = request["action"]
-    if action == "intelligence_bootstrap_start":
-        if set(request) != {"action"}:
-            return {"status": "error", "reason": "request_invalid"}
-        # Fixed, non-blocking, allowlisted unit. The caller cannot provide a
-        # command, path, environment, or unit name; all prerequisite checks
-        # remain in the bootstrap itself.
-        try:
-            result = runner(["/usr/bin/systemctl", "start", "--no-block",
-                             "solarminer-intelligence-bootstrap.service"],
-                            capture_output=True, text=True, timeout=10, check=False)
-        except (OSError, subprocess.TimeoutExpired):
-            return {"status": "error", "reason": "intelligence_bootstrap_start_failed"}
-        if result.returncode != 0:
-            return {"status": "error", "reason": "intelligence_bootstrap_start_failed"}
-        return {"status": "ok", "queued": True}
     if action == "intelligence_openai_status":
         if set(request) != {"action"}:
             return {"status": "error", "reason": "request_invalid"}

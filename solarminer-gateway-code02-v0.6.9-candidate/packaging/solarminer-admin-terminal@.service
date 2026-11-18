@@ -1,7 +1,7 @@
 [Unit]
 Description=SolarMiner Owner-authenticated administrative terminal session
 After=local-fs.target solarminer-recovery.service
-Requires=solarminer-recovery.service
+Wants=solarminer-recovery.service
 RequiresMountsFor=/var/lib/solarminer
 
 [Service]
