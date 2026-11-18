@@ -1,4 +1,8 @@
-from solarminer_gateway.smart_device_engine import SmartDeviceScheduler
+from solarminer_gateway.smart_device_engine import (
+    SmartDeviceScheduler,
+    configured_device_for_cycle,
+    cycle_retry_delay,
+)
 
 
 def test_each_device_uses_its_own_latest_latency_and_waits_twice_that_after_response():
@@ -72,3 +76,28 @@ def test_scheduler_only_keeps_tuya_and_shelly_and_removes_unconfigured_devices()
     assert set(scheduler.devices) == {("tuya", "one"), ("shelly", "two")}
     scheduler.reconcile([("shelly", "two")], 6.0)
     assert set(scheduler.devices) == {("shelly", "two")}
+
+
+def test_stale_cycle_after_device_removal_does_not_require_a_config_entry():
+    scheduler = SmartDeviceScheduler()
+    scheduler.reconcile([("tuya", "removed")], 5.0)
+    cycle = scheduler.due(5.0, 1)[0]
+    scheduler.reconcile([], 5.1)
+    assert configured_device_for_cycle(cycle, {}) is None
+    # Completing a stale reference is safe; the next reconcile does not revive it.
+    scheduler.complete(cycle, 5.1, cycle.latency_seconds, False)
+    assert scheduler.devices == {}
+
+
+def test_incomplete_and_reconfigured_inventory_is_resolved_by_current_key():
+    scheduler = SmartDeviceScheduler()
+    scheduler.reconcile([("shelly", "plug")], 0.0)
+    cycle = scheduler.due(0.0, 1)[0]
+    assert configured_device_for_cycle(cycle, {}) is None
+    current = {"shelly:plug": {"device_id": "plug", "host": "192.0.2.10"}}
+    assert configured_device_for_cycle(cycle, current) == current["shelly:plug"]
+
+
+def test_scheduler_loop_retry_uses_capped_exponential_backoff():
+    assert [cycle_retry_delay(count) for count in range(1, 6)] == [0.25, 0.5, 1.0, 2.0, 4.0]
+    assert cycle_retry_delay(100) == 30.0

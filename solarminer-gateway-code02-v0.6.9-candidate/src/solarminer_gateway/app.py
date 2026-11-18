@@ -68,10 +68,11 @@ from . import updates as update_manager
 from . import error_reporting
 from . import user_automation
 from . import smart_device_engine
+from . import system_components
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.257"
+PACKAGE_VERSION = "0.6.258"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 INTELLIGENCE_LOCAL_TOKEN_PATH = Path(os.environ.get("SOLARMINER_INTELLIGENCE_CLIENT_TOKEN_FILE", "/etc/solarminer/intelligence-client.token"))
@@ -107,6 +108,10 @@ _tuya_last_diagnostic_log_at = 0.0
 SMART_DEVICE_ENGINE_STATE_KEY = "smart_device_engine_snapshot"
 SMART_DEVICE_ENGINE_CONCURRENCY = 8
 _smart_device_engine_tasks: set[asyncio.Task] = set()
+_smart_device_engine_status: dict[str, Any] = {
+    "state": "starting", "consecutive_failures": 0, "last_error_type": None,
+    "last_failure_at": None, "retry_in_seconds": 0,
+}
 _smart_device_command_router = smart_device_engine.SmartDeviceCommandRouter()
 _smart_engine_urgent_polls: set[tuple[str, str]] = set()
 _smart_engine_urgent_polls_lock = threading.Lock()
@@ -2363,14 +2368,20 @@ def _store_smart_engine_cloud_availability(device_id: str, cloud_status: dict[st
 
 async def _smart_device_engine_loop() -> None:
     """Continuous Gateway-owned polling, scheduled independently per Tuya/Shelly device."""
+    _smart_device_engine_status.update({"state": "running", "consecutive_failures": 0,
+                                        "last_error_type": None, "last_failure_at": None,
+                                        "retry_in_seconds": 0})
     scheduler = smart_device_engine.SmartDeviceScheduler()
     semaphore = asyncio.Semaphore(SMART_DEVICE_ENGINE_CONCURRENCY)
     restored: set[str] = set()
     refresh_at = 0.0
     config: dict[str, Any] = {}
     configured: dict[str, dict[str, Any]] = {}
+    consecutive_cycle_failures = 0
+    last_failure_log = 0.0
     try:
         while True:
+            loop_delay = 0.1
             try:
                 now = time.monotonic()
                 if now >= refresh_at:
@@ -2394,7 +2405,18 @@ async def _smart_device_engine_loop() -> None:
                     scheduler.request_now(provider, device_id, now)
                 for cycle in scheduler.due(now, SMART_DEVICE_ENGINE_CONCURRENCY):
                     key = f"{cycle.provider}:{cycle.device_id}"
-                    task = asyncio.create_task(_smart_engine_run_reading(cycle, configured[key], config, scheduler, semaphore),
+                    device = smart_device_engine.configured_device_for_cycle(cycle, configured)
+                    if device is None:
+                        # A stale scheduler cycle can survive a config refresh
+                        # or be restored from an incomplete inventory. Retire
+                        # just that cycle and let reconcile add it back when a
+                        # valid device definition appears; never KeyError-loop.
+                        scheduler.complete(cycle, now, cycle.latency_seconds, False)
+                        fingerprint = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+                        LOG.warning("Smart device engine retired stale cycle provider=%s device_ref=%s",
+                                    cycle.provider, fingerprint)
+                        continue
+                    task = asyncio.create_task(_smart_engine_run_reading(cycle, device, config, scheduler, semaphore),
                                                name=f"smart-device-read-{cycle.provider}")
                     _smart_device_engine_tasks.add(task)
                     task.add_done_callback(_smart_device_engine_tasks.discard)
@@ -2404,11 +2426,31 @@ async def _smart_device_engine_loop() -> None:
                                                    name="smart-device-tuya-cloud-presence")
                         _smart_device_engine_tasks.add(task)
                         task.add_done_callback(_smart_device_engine_tasks.discard)
+                consecutive_cycle_failures = 0
+                _smart_device_engine_status.update({"state": "running", "consecutive_failures": 0,
+                                                    "last_error_type": None, "last_failure_at": None,
+                                                    "retry_in_seconds": 0})
             except asyncio.CancelledError:
+                _smart_device_engine_status["state"] = "stopped"
                 raise
             except Exception as exc:
-                LOG.warning("Smart device engine cycle failed (%s)", type(exc).__name__)
-            await asyncio.sleep(0.1)
+                consecutive_cycle_failures += 1
+                loop_delay = smart_device_engine.cycle_retry_delay(consecutive_cycle_failures)
+                _smart_device_engine_status.update({"state": "degraded", "consecutive_failures": consecutive_cycle_failures,
+                                                    "last_error_type": type(exc).__name__,
+                                                    "last_failure_at": int(time.time()),
+                                                    "retry_in_seconds": loop_delay})
+                current_time = time.monotonic()
+                if consecutive_cycle_failures == 1:
+                    # Keep the traceback for the first occurrence. Subsequent
+                    # repeats are summarized at most once per minute.
+                    LOG.exception("Smart device engine cycle failed; retry_in=%.2fs", loop_delay)
+                    last_failure_log = current_time
+                elif current_time - last_failure_log >= 60:
+                    LOG.error("Smart device engine cycle still failing count=%d error_type=%s retry_in=%.2fs",
+                              consecutive_cycle_failures, type(exc).__name__, loop_delay)
+                    last_failure_log = current_time
+            await asyncio.sleep(loop_delay)
     finally:
         tasks = list(_smart_device_engine_tasks)
         for task in tasks:
@@ -2799,7 +2841,12 @@ async def health() -> dict[str, Any]:
     # watchdog restart a running server or make endpoint checks flap. Keep
     # this async and I/O-free so slow synchronous device routes cannot occupy
     # the worker thread needed to answer liveness probes.
-    return {"status": "ok", "version": VERSION, "package_version": PACKAGE_VERSION}
+    components = system_components.installed_component_status()
+    return {"status": "ok", "version": VERSION, "package_version": PACKAGE_VERSION,
+            "system_components_version": components.get("version"),
+            "system_components_protocol": components.get("protocol"),
+            "system_components_status": components.get("status"),
+            "system_components_reason": components.get("reason")}
 
 
 @app.get("/api/v1/info")
@@ -3321,6 +3368,9 @@ def intelligence_provider_status(
                            "percent": None, "downloaded_bytes": None, "total_bytes": None, "updated_at": None}
     return {"default_provider": "ollama", "agent": agent_state, "ollama": local_state,
             "bootstrap": bootstrap_state, "installation": installation,
+            "system_components": system_components.installed_component_status(),
+            "system_diagnostics": {**system_components.integrated_diagnostics(PACKAGE_VERSION),
+                                   "smart_device_engine": dict(_smart_device_engine_status)},
             "openai": {"state": openai_state, "configured": openai_state == "configured",
                        "error_type": openai_error_type, "credential_display": "never_returned"}}
 
@@ -8821,6 +8871,7 @@ def gateway_terminal_diagnostics(session: dict[str, Any] = Depends(require_permi
 
 async def _proxy_admin_terminal(websocket: WebSocket, session: dict[str, Any], raw_token: str) -> None:
     """Proxy an Owner-authenticated WebSocket to the separately isolated root PTY broker."""
+    writer = None
     try:
         reader, writer = await asyncio.wait_for(asyncio.open_unix_connection("/run/solarminer/admin-terminal.sock"), timeout=5)
         writer.write(json.dumps({"type": "authenticate", "token": raw_token}, separators=(",", ":")).encode() + b"\n")
@@ -8897,10 +8948,37 @@ async def _proxy_admin_terminal(websocket: WebSocket, session: dict[str, Any], r
                 pass
             writer.close()
             await writer.wait_closed()
-    except (OSError, asyncio.TimeoutError, json.JSONDecodeError, WebSocketDisconnect) as exc:
-        LOG.warning("Admin terminal broker proxy failed (%s)", type(exc).__name__)
+    except WebSocketDisconnect:
+        if writer is not None:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except (ConnectionError, OSError):
+                pass
+        return
+    except (OSError, asyncio.TimeoutError, json.JSONDecodeError) as exc:
+        if isinstance(exc, FileNotFoundError):
+            reason, user_message = "socket_missing", "O socket do terminal administrativo não existe; verifica a instalação da unidade."
+        elif isinstance(exc, ConnectionRefusedError):
+            reason, user_message = "broker_not_listening", "O socket existe, mas o broker administrativo recusou a ligação."
+        elif isinstance(exc, PermissionError):
+            reason, user_message = "socket_permission_denied", "O Gateway não tem permissão para abrir o socket administrativo."
+        elif isinstance(exc, asyncio.TimeoutError):
+            reason, user_message = "broker_timeout", "O broker administrativo demorou demasiado tempo a responder."
+        elif isinstance(exc, json.JSONDecodeError):
+            reason, user_message = "broker_response_invalid", "O broker administrativo devolveu uma resposta inválida."
+        else:
+            reason, user_message = "broker_io_error", "Ocorreu um erro de comunicação com o broker administrativo."
+        LOG.warning("Admin terminal broker proxy failed reason=%s error_type=%s", reason, type(exc).__name__)
+        if writer is not None:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except (ConnectionError, OSError):
+                pass
         try:
-            await websocket.send_json({"type": "error", "data": "O broker administrativo não está disponível; a shell limitada continua separada."})
+            await websocket.send_json({"type": "error", "code": f"admin_terminal_{reason}",
+                                       "data": f"{user_message} A shell limitada continua separada."})
             await websocket.close(code=1011)
         except (RuntimeError, WebSocketDisconnect):
             pass

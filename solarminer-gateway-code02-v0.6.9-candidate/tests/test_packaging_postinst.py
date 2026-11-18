@@ -13,6 +13,24 @@ def test_postinst_creates_intelligence_group_before_using_it():
     assert postinst.index(create_user) < postinst.index(use_group)
 
 
+def test_usb_repair_suppresses_gateway_restart_until_new_release_pointer_is_active():
+    root = Path(__file__).parents[1]
+    postinst = (root / "packaging" / "postinst").read_text(encoding="utf-8")
+    repair = (root / "packaging" / "repair-existing-from-usb.sh").read_text(encoding="utf-8")
+    marker = "/run/solarminer/usb-repair-in-progress"
+
+    assert marker in postinst
+    assert 'RUN_DIR=/run/solarminer' in repair
+    assert 'REPAIR_MARKER="$RUN_DIR/usb-repair-in-progress"' in repair
+    assert postinst.index("initialize_installed_manifest") < postinst.index(marker)
+    assert postinst.index(marker) < postinst.index("systemctl restart solarminer-gateway.service")
+    assert repair.index(": > \"$REPAIR_MARKER\"") < repair.index("apt-get install -y \"$PACKAGE\"")
+    pointer_switch = repair.index("mv -Tf /opt/solarminer/.current-usb-new \"$CURRENT\"")
+    gateway_start = repair.index("systemctl start solarminer-gateway.service || fail", pointer_switch)
+    marker_cleanup = repair.rindex("rm -f \"$REPAIR_MARKER\"")
+    assert pointer_switch < gateway_start < marker_cleanup
+
+
 def test_agent_writable_paths_exist_before_systemd_mount_namespace():
     root = Path(__file__).parents[1]
     postinst = (root / "packaging" / "postinst").read_text(encoding="utf-8")

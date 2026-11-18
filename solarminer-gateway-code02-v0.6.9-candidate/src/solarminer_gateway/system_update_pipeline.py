@@ -26,11 +26,12 @@ from pathlib import Path
 from typing import Any
 
 from .database_backup import create_database_backup
+from . import system_components
 from .updates import UpdateValidationError, load_release_key, verify_manifest
 
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 TERMINAL = {"COMMITTED", "ROLLED_BACK", "FAILED", "RECOVERY_BLOCKED"}
-ACTIVE_STATES = {"APPLY_QUEUED", "PRECHECK", "BACKUP_CREATED", "STAGED", "SWITCHED", "SERVICE_RESTARTING", "HEALTH_CHECKING", "ROLLING_BACK"}
+ACTIVE_STATES = {"APPLY_QUEUED", "PRECHECK", "BACKUP_CREATED", "STAGED", "SYSTEM_COMPONENTS_UPDATING", "SWITCHED", "SERVICE_RESTARTING", "HEALTH_CHECKING", "ROLLING_BACK"}
 
 
 def _utc() -> str:
@@ -94,6 +95,48 @@ class SystemUpdatePipeline:
 
     def _check_deployment_root_permissions(self) -> None:
         _validate_deployment_root_permissions(self.root.stat())
+
+    def _legacy_system_component_files(self) -> list[str]:
+        """Get the old dpkg-owned component list when no SolarMiner manifest exists."""
+        manifest = self.root / system_components.MANIFEST_NAME
+        if manifest.exists():
+            return []
+        result = self._run(["/usr/bin/dpkg-query", "--listfiles", "solarminer-gateway"], timeout=10)
+        if result.returncode != 0:
+            raise PipelineError("installed_package_file_list_unavailable")
+        return [line.strip().lstrip("/") for line in result.stdout.splitlines()
+                if line.strip().startswith("/")]
+
+    def _reconcile_system_components(self, stage: Path, version: str, op_id: str,
+                                     *, operation_id_for_state: dict[str, Any]) -> Path:
+        try:
+            snapshot = system_components.reconcile(
+                stage, self.root, version,
+                legacy_files=self._legacy_system_component_files(),
+                operation_id=op_id,
+                on_snapshot_ready=lambda path: self._record(
+                    "SYSTEM_COMPONENTS_UPDATING", **operation_id_for_state,
+                    system_components_backup=str(path)),
+            )
+        except system_components.SystemComponentError as exc:
+            raise PipelineError(str(exc)) from exc
+        try:
+            self._run(["/usr/bin/systemctl", "daemon-reload"], timeout=15, check=True)
+            for unit in system_components.REQUIRED_SOCKETS:
+                self._run(["/usr/bin/systemctl", "enable", "--now", unit], timeout=20, check=True)
+        except Exception:
+            self._restore_system_components(snapshot)
+            raise
+        return snapshot
+
+    def _restore_system_components(self, snapshot: Path) -> None:
+        try:
+            system_components.restore(snapshot, self.root)
+        except system_components.SystemComponentError as exc:
+            raise PipelineError(str(exc)) from exc
+        self._run(["/usr/bin/systemctl", "daemon-reload"], timeout=15, check=True)
+        for unit in system_components.REQUIRED_SOCKETS:
+            self._run(["/usr/bin/systemctl", "enable", "--now", unit], timeout=20, check=True)
 
     @contextmanager
     def _locked(self):
@@ -240,6 +283,10 @@ class SystemUpdatePipeline:
         target_stat = target.stat()
         if target_stat.st_uid != 0 or target_stat.st_mode & 0o022:
             raise PipelineError("current_release_permissions_invalid")
+        components = system_components.compatibility_status(
+            target.name, system_components.installed_component_status(self.root))
+        if components["status"] != "OK":
+            raise PipelineError(str(components["reason"]))
         if not (target / "usr/lib/solarminer-gateway/solarminer_gateway/app.py").is_file():
             raise PipelineError("current_release_backend_missing")
         if not (target / "usr/share/solarminer/pwa/index.html").is_file():
@@ -264,6 +311,7 @@ class SystemUpdatePipeline:
         tls_cert = self.data_dir / "server.crt"
         if tls_cert.is_symlink() or not tls_cert.is_file(): raise PipelineError("gateway_tls_certificate_missing_or_symlink")
         return {"status": "ready", "current_target": os.readlink(self.current), "recovery_timer": "active",
+                "system_components": components,
                 "health_check_seconds": self.health_timeout, "database": str(self.db_path)}
 
     def _verified_artifact(self, op_id: str, row: dict[str, Any], details: dict[str, Any]) -> tuple[Path, dict[str, Any], str]:
@@ -354,8 +402,14 @@ class SystemUpdatePipeline:
                     else:
                         body = json.loads(response.read(65536))
                         reported_version = body.get("package_version") if isinstance(body, dict) else None
+                        reported_components_version = body.get("system_components_version") if isinstance(body, dict) else None
+                        reported_components_status = body.get("system_components_status") if isinstance(body, dict) else None
+                        reported_components_protocol = body.get("system_components_protocol") if isinstance(body, dict) else None
                         if (isinstance(body, dict) and body.get("status") == "ok"
-                                and (expected_package_version is None or reported_version == expected_package_version)):
+                                and (expected_package_version is None or reported_version == expected_package_version)
+                                and reported_components_status == "OK"
+                                and reported_components_protocol == system_components.PROTOCOL_VERSION
+                                and (expected_package_version is None or reported_components_version == expected_package_version)):
                             # The direct API probe alone can pass while the
                             # Nginx route used by the PWA returns 502. Probe
                             # the local Nginx proxy as part of the same release
@@ -373,13 +427,17 @@ class SystemUpdatePipeline:
                                     proxy_status = int(proxy_response.status)
                                     proxy_body = json.loads(proxy_response.read(65536)) if proxy_status == 200 else {}
                                 proxy_version = proxy_body.get("package_version") if isinstance(proxy_body, dict) else None
+                                proxy_components_version = proxy_body.get("system_components_version") if isinstance(proxy_body, dict) else None
                                 if (proxy_status == 200 and isinstance(proxy_body, dict)
                                         and proxy_body.get("status") == "ok"
-                                        and (expected_package_version is None or proxy_version == expected_package_version)):
+                                        and (expected_package_version is None or proxy_version == expected_package_version)
+                                        and (expected_package_version is None or proxy_components_version == expected_package_version)):
                                     self._last_health_diagnostic = {
                                         "outcome": "healthy", "attempts": attempts,
                                         "expected_package_version": expected_package_version,
                                         "reported_package_version": reported_version,
+                                        "reported_system_components_version": reported_components_version,
+                                        "reported_system_components_protocol": reported_components_protocol,
                                         "proxy_outcome": "healthy",
                                     }
                                     return True
@@ -388,10 +446,22 @@ class SystemUpdatePipeline:
                                 elif (not isinstance(proxy_body, dict)
                                       or proxy_body.get("status") != "ok"):
                                     diagnostic = {"outcome": "proxy_health_payload_not_ok", "http_status": proxy_status}
-                                else:
+                                elif expected_package_version is not None and proxy_version != expected_package_version:
                                     diagnostic = {"outcome": "proxy_package_version_mismatch",
                                                   "http_status": proxy_status,
                                                   "reported_package_version": proxy_version}
+                                elif proxy_body.get("system_components_status") != "OK":
+                                    diagnostic = {"outcome": "proxy_system_components_not_healthy",
+                                                  "http_status": proxy_status,
+                                                  "reported_system_components_status": proxy_body.get("system_components_status")}
+                                elif proxy_body.get("system_components_protocol") != system_components.PROTOCOL_VERSION:
+                                    diagnostic = {"outcome": "proxy_system_components_protocol_mismatch",
+                                                  "http_status": proxy_status,
+                                                  "reported_system_components_protocol": proxy_body.get("system_components_protocol")}
+                                else:
+                                    diagnostic = {"outcome": "proxy_system_components_version_mismatch",
+                                                  "http_status": proxy_status,
+                                                  "reported_system_components_version": proxy_components_version}
                             except urllib.error.HTTPError as exc:
                                 diagnostic = {"outcome": "proxy_http_error", "http_status": int(exc.code)}
                             except urllib.error.URLError as exc:
@@ -412,9 +482,23 @@ class SystemUpdatePipeline:
                             continue
                         if not isinstance(body, dict) or body.get("status") != "ok":
                             diagnostic = {"outcome": "health_payload_not_ok", "http_status": status_code}
-                        else:
+                        elif (expected_package_version is not None
+                              and reported_version != expected_package_version):
                             diagnostic = {"outcome": "package_version_mismatch", "http_status": status_code,
                                           "reported_package_version": reported_version}
+                        elif body.get("system_components_status") != "OK":
+                            diagnostic = {"outcome": "system_components_not_healthy", "http_status": status_code,
+                                          "reported_system_components_status": body.get("system_components_status")}
+                        elif body.get("system_components_protocol") != system_components.PROTOCOL_VERSION:
+                            diagnostic = {"outcome": "system_components_protocol_mismatch", "http_status": status_code,
+                                          "reported_system_components_protocol": body.get("system_components_protocol")}
+                        else:
+                            if reported_version != expected_package_version:
+                                diagnostic = {"outcome": "package_version_mismatch", "http_status": status_code,
+                                              "reported_package_version": reported_version}
+                            else:
+                                diagnostic = {"outcome": "system_components_version_mismatch", "http_status": status_code,
+                                              "reported_system_components_version": reported_components_version}
             except urllib.error.HTTPError as exc:
                 diagnostic = {"outcome": "http_error", "http_status": int(exc.code)}
             except urllib.error.URLError as exc:
@@ -539,6 +623,7 @@ class SystemUpdatePipeline:
                      health_timeout_seconds=60)
         stage = self.releases / (".stage-" + uuid.uuid4().hex)
         stage.mkdir(mode=0o700)
+        system_snapshot: Path | None = None
         try:
             self._run(["/usr/bin/dpkg-deb", "--extract", str(package), str(stage)], timeout=60, check=True)
             module_dir = stage / "usr/lib/solarminer-gateway/solarminer_gateway"
@@ -549,18 +634,40 @@ class SystemUpdatePipeline:
             for catalog_file in ("catalog.json", "catalog.sig", "catalog.pub"):
                 if not (stage / "usr/share/solarminer" / catalog_file).is_file():
                     raise PipelineError("release_catalog_payload_incomplete")
+            # Reject signed-but-incomplete artifacts before stopping Gateway or
+            # touching any system-owned helper/unit.
+            system_components.package_components(stage)
             # Only a verified signed package can be extracted. Stage is same filesystem as releases/current.
             os.chmod(stage, 0o755)
             os.replace(stage, target)
             self._record("STAGED", operation_id=op_id, target_version=release_name, previous_target=previous_target,
                          new_target=os.path.relpath(target, self.root), backup_path=str(backup_path), package_sha256=digest,
                          health_timeout_seconds=60)
+            # Do not run dpkg's postinst during an online update: it rewrites
+            # user configuration and performs install-time provisioning. Apply
+            # only the package-owned, allowlisted helpers/modules/units under a
+            # transaction snapshot, with the Gateway stopped to avoid mixed
+            # application and broker versions.
+            self._run(["/usr/bin/systemctl", "stop", self.service], timeout=20, check=True)
+            system_snapshot = self._reconcile_system_components(
+                target, release_name, op_id,
+                operation_id_for_state={"operation_id": op_id, "target_version": release_name,
+                                        "previous_target": previous_target, "new_target": os.path.relpath(target, self.root),
+                                        "backup_path": str(backup_path), "package_sha256": digest,
+                                        "health_timeout_seconds": 60},
+            )
+            self._record("STAGED", operation_id=op_id, target_version=release_name, previous_target=previous_target,
+                         new_target=os.path.relpath(target, self.root), backup_path=str(backup_path),
+                         system_components_backup=str(system_snapshot), package_sha256=digest,
+                         health_timeout_seconds=60)
             self._switch(target)
             self._record("SWITCHED", operation_id=op_id, target_version=release_name, previous_target=previous_target,
                          new_target=os.path.relpath(target, self.root), backup_path=str(backup_path), package_sha256=digest,
+                         system_components_backup=str(system_snapshot) if system_snapshot else None,
                          health_timeout_seconds=60)
             self._record("SERVICE_RESTARTING", operation_id=op_id, target_version=release_name, previous_target=previous_target,
                          new_target=os.path.relpath(target, self.root), backup_path=str(backup_path), package_sha256=digest,
+                         system_components_backup=str(system_snapshot) if system_snapshot else None,
                          health_timeout_seconds=60)
             # Queue the restart and let the health check observe the real
             # service state. A synchronous `systemctl restart` can time out
@@ -580,14 +687,22 @@ class SystemUpdatePipeline:
             failed_health_diagnostic = dict(self._last_health_diagnostic)
             failed_command_diagnostic = dict(self._last_command_diagnostic)
             current_state = self._read_state() or {}
+            if system_snapshot is None:
+                recorded_snapshot = current_state.get("system_components_backup")
+                if isinstance(recorded_snapshot, str):
+                    system_snapshot = Path(recorded_snapshot)
             self._record("ROLLING_BACK", operation_id=op_id, target_version=release_name, previous_target=previous_target,
                          new_target=os.path.relpath(target, self.root) if target.exists() else None,
-                         backup_path=str(backup_path), failure=_failure_code(exc), health_timeout_seconds=60,
+                         backup_path=str(backup_path),
+                         system_components_backup=str(system_snapshot) if system_snapshot else None,
+                         failure=_failure_code(exc), health_timeout_seconds=60,
                          health_diagnostic=failed_health_diagnostic,
                          failed_command=failed_command_diagnostic)
             try:
                 self._run(["/usr/bin/systemctl", "stop", self.service], timeout=15, check=True)
                 self._switch(previous_path)
+                if system_snapshot is not None:
+                    self._restore_system_components(system_snapshot)
                 self._restore_db(backup_path)
                 self._run(["/usr/bin/systemctl", "start", self.service], timeout=20, check=True)
                 if not self._health(str(row["installed_version"]), 60):
@@ -738,6 +853,15 @@ class SystemUpdatePipeline:
         service_was_active = active_result.returncode == 0 and active_result.stdout.strip() == "active"
         if service_was_active:
             self._run(["/usr/bin/systemctl", "stop", self.service], timeout=15, check=True)
+        system_snapshot_raw = record.get("system_components_backup")
+        if system_snapshot_raw is not None:
+            if not isinstance(system_snapshot_raw, str):
+                raise PipelineError("recovery_system_component_snapshot_invalid")
+            system_snapshot = Path(system_snapshot_raw)
+            if (system_snapshot.is_symlink() or
+                    (self.root / "backups" / "system-components").resolve() not in system_snapshot.resolve().parents):
+                raise PipelineError("recovery_system_component_snapshot_invalid")
+            self._restore_system_components(system_snapshot)
         self._switch(previous)
         if isinstance(backup_raw, str): self._restore_db(Path(backup_raw))
         if service_was_active:

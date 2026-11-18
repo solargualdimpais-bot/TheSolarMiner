@@ -13,6 +13,19 @@ from typing import Any
 MIN_POLL_DELAY_SECONDS = 0.01
 MAX_POLL_DELAY_SECONDS = 60.0
 OFFLINE_LATENCY_MULTIPLIER = 5.0
+ENGINE_RETRY_BASE_SECONDS = 0.25
+ENGINE_RETRY_MAX_SECONDS = 30.0
+
+
+def cycle_retry_delay(failure_count: int) -> float:
+    """Bounded exponential retry delay for faults in the scheduler loop itself."""
+    count = max(1, int(failure_count))
+    return min(ENGINE_RETRY_MAX_SECONDS, ENGINE_RETRY_BASE_SECONDS * (2 ** min(count - 1, 7)))
+
+
+def configured_device_for_cycle(cycle: "DeviceCycle", configured: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    """Resolve a due scheduler entry without assuming inventory/config coherence."""
+    return configured.get(f"{cycle.provider}:{cycle.device_id}")
 
 
 @dataclass
