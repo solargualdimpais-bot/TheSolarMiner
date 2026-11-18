@@ -258,7 +258,7 @@ if [ "$OPENCLAUDE_READY" -ne 1 ]; then
   chown solarminer-intelligence:solarminer-intelligence "$APP_DIR"
   runuser -u solarminer-intelligence -- env HOME=/var/lib/solarminer-intelligence/home PATH="$NODE_DIR/bin:/usr/bin:/bin" \
     "$NODE_DIR/bin/npm" install --prefix "$APP_DIR" --omit=dev --no-audit --no-fund \
-    "@twigpine/openclaude@$OPENCLAUDE_VERSION" "@modelcontextprotocol/sdk@1.32.1" >>"$LOG" 2>&1 || fail "instalação npm OpenClaude/MCP falhou"
+    "@twigpine/openclaude@$OPENCLAUDE_VERSION" "@modelcontextprotocol/sdk@1.32.1" "@anthropic-ai/sdk@0.137.0" >>"$LOG" 2>&1 || fail "instalação npm OpenClaude/MCP e dependências do SDK falhou"
 fi
 OPENCLAUDE_VERSION_ACTUAL=$(runuser -u solarminer-intelligence -- env HOME=/var/lib/solarminer-intelligence/home PATH="$NODE_DIR/bin:/usr/bin:/bin" "$APP_DIR/node_modules/.bin/openclaude" --version 2>>"$LOG" | tail -n 1) || fail "OpenClaude não iniciou na verificação de versão"
 case "$OPENCLAUDE_VERSION_ACTUAL" in *"$OPENCLAUDE_VERSION"*) ;; *) fail "versão OpenClaude inesperada: $OPENCLAUDE_VERSION_ACTUAL" ;; esac

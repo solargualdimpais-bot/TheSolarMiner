@@ -188,7 +188,7 @@ jobs:
           set -euxo pipefail
           SDK_ROOT="$(mktemp -d)"
           npm install --prefix "$SDK_ROOT" --omit=dev --no-audit --no-fund \
-            '@twigpine/openclaude@0.36.0' '@modelcontextprotocol/sdk@1.32.1'
+            '@twigpine/openclaude@0.36.0' '@modelcontextprotocol/sdk@1.32.1' '@anthropic-ai/sdk@0.137.0'
           node --input-type=module - "$SDK_ROOT/node_modules/@twigpine/openclaude/dist/sdk.mjs" <<'NODE'
           import assert from 'node:assert/strict';
           import { pathToFileURL } from 'node:url';
