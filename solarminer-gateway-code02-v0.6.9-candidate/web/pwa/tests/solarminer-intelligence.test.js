@@ -62,10 +62,12 @@ test('PWA uses authenticated Gateway endpoints for provider setup, revocation an
   assert.match(app, /Diagnóstico: \$\{diagnosis\}/);
   assert.match(app, /diagnoseGatewayIntelligenceFailure\(error\)/);
   assert.match(app, /state\.bootstrap/);
-  assert.match(app, /installed\.ollama \? \(local\.runtime === "available" \? "instalado e a responder" : "instalado; serviço sem resposta"\)/);
+  assert.match(app, /installed\.ollama === true \? \(local\.runtime === "available" \? "instalado e a responder" : "instalado; serviço sem resposta"\)/);
+  assert.match(app, /installed\.ollama === false \? "executável não encontrado" : "estado de instalação desconhecido/);
   assert.match(app, /estado de instalação desconhecido porque a consulta ao Gateway falhou/);
   assert.match(app, /installed\.model \? "instalado"/);
-  assert.match(app, /installed\.openclaude \? "instalado"/);
+  assert.match(app, /installed\.openclaude === true \? "instalado"/);
+  assert.match(app, /ollama_binary_check_failed: "não foi possível verificar a presença do executável Ollama"/);
   assert.match(app, /startGatewayIntelligenceBootstrap\(\)/);
   assert.match(app, /Instalar\/atualizar componentes do Intelligence/);
   assert.match(app, /gateway-intelligence-download-progress/);

@@ -1074,9 +1074,9 @@ def test_deye_sg05lp3_reads_full_candidate_telemetry_without_fc43(monkeypatch):
                         lambda *_args, **_kwargs: pytest.fail("FC43 must be skipped for DYDA_WiBLE"))
     reads = []
     blocks = {
-        0: (5,), 108: (40, 50), 500: (2,),
+        0: (5,), 24: (2,), 108: (40, 50), 115: (20,), 500: (2,),
         514: (12, 7, 256, 1, 512, 2, 33, 9, 1000, 3, 20, 0, 50, 1200, 4, 82, 0, 0, 0, 0, 3456, 5),
-        586: (1250, 5378, 100, 0, 65250, 65006, 676),
+        586: (1250, 5378, 100, 77, 65250, 65006, 676, 5200, 300, 156, 1210),
         598: tuple([0] * 28),
         627: (2287, 2298, 2299, 630, 60, 10, 1458, 169, 33, 1660, 1660, 5000,
               0, 1458, 169, 33, 1660, 2290, 2299, 2294, 0, 0, 0, 1458, 169, 33, 1660, 1660, 5000),
@@ -1091,7 +1091,8 @@ def test_deye_sg05lp3_reads_full_candidate_telemetry_without_fc43(monkeypatch):
     monkeypatch.setattr(integrations.deye_modbus, "read_holding_registers", read_registers)
     result = integrations.read_deye({"host": "192.168.8.10", "port": 502, "unit_id": 1, "model": "SUN-15K-SG05LP3-EU-SM2"})
     assert reads == [(0, 1, 502, 1), (108, 2, 502, 1), (500, 1, 502, 1),
-                     (514, 22, 502, 1), (586, 7, 502, 1),
+                     (514, 22, 502, 1), (24, 1, 502, 1), (586, 11, 502, 1),
+                     (115, 1, 502, 1),
                      (598, 28, 502, 1), (627, 29, 502, 1), (672, 8, 502, 1)]
     assert result["metrics_decoded"] is True
     assert result["connection_state"] == "mapped_registers_response"
@@ -1102,6 +1103,18 @@ def test_deye_sg05lp3_reads_full_candidate_telemetry_without_fc43(monkeypatch):
     assert (metrics["pv1_current"]["register"], metrics["pv1_current"]["value"]) == (40678, 4.7)
     assert (metrics["pv1_input_power"]["value"], metrics["pv2_input_power"]["value"], metrics["pv_total_power"]["value"]) == (1869, 173, 2042)
     assert (metrics["battery_voltage"]["value"], metrics["battery_soc"]["value"]) == (53.78, 100)
+    assert (metrics["battery_2_voltage"]["value"], metrics["battery_2_soc"]["value"]) == (52.0, 77)
+    assert (metrics["battery_2_current"]["value"], metrics["battery_2_power"]["value"]) == (3.0, 156)
+    # Register 590 is already total inverter battery power. Battery 2's own
+    # register is telemetry for its tab and must not be added a second time.
+    assert (metrics["battery_total_power"]["value"], metrics["battery_total_current"]["value"]) == (-286, -2.3)
+    assert (metrics["battery_total_charge_power"]["value"], metrics["battery_total_discharge_power"]["value"]) == (286, 0)
+    assert metrics["battery_cutoff_soc_percent"]["value"] == 20
+    assert metrics["battery_input_count"]["value"] == 2
+    assert result["battery_banks_detected"] == [
+        {"channel": 1, "online": True, "detection_source": "DEYE_MODBUS_BATTERY_INPUT_VOLTAGE", "voltage_v": 53.78},
+        {"channel": 2, "online": True, "detection_source": "DEYE_MODBUS_BATTERY_INPUT_VOLTAGE", "voltage_v": 52.0},
+    ]
     assert (metrics["battery_output_power"]["value"], metrics["battery_output_current"]["value"]) == (-286, -5.3)
     assert metrics["battery_charge_current"]["value"] == 5.3
     assert metrics["battery_discharge_current"]["value"] == 0
@@ -1121,7 +1134,7 @@ def test_deye_sg05lp3_reads_full_candidate_telemetry_without_fc43(monkeypatch):
     assert metrics["load_total_energy"]["value"] == 26334.4
     assert (metrics["inverter_power_total"]["value"], metrics["load_total_power"]["value"]) == (1660, 1660)
     assert metrics["grid_power_factor"]["register"] == 40622
-    assert len(result["metrics"]) == 76
+    assert len(result["metrics"]) == 95
     checks = {item["field"]: item for item in result["quality_checks"]}
     assert checks["device_type"]["state"] == "protocol_value_mismatch"
     assert checks["pv1_power_vs_voltage_current"]["state"] == "consistent"
@@ -1166,6 +1179,46 @@ def test_successful_deye_snapshot_is_persisted_for_pwa_energy_pages():
     assert battery["readings"][0]["field"] == "battery_soc"
     cumulative = next(reading for reading in battery["readings"] if reading["field"] == "battery_total_charge_energy")
     assert cumulative["evidence"]["registers"] == [40517, 40518]
+    conn.close()
+
+
+def test_deye_detected_battery_inputs_are_persisted_as_distinct_energy_banks():
+    import sqlite3
+    from solarminer_gateway import app as gateway
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    gateway.energy_registry.ensure_schema(conn)
+    snapshot = {
+        "host": "192.168.8.10", "unit_id": 1, "model": "SUN-15K-SG05LP3-EU-SM2",
+        "connection_state": "mapped_registers_response",
+        "register_map": {"source": "https://example.test/map", "protocol_reference": "protocol"},
+        "battery_banks_detected": [
+            {"channel": 1, "online": True, "voltage_v": 53.78},
+            {"channel": 2, "online": True, "voltage_v": 52.0},
+        ],
+        "metrics": [
+            {"field": "pv_total_power", "value": 2048, "unit": "W", "category": "inversores"},
+            {"field": "battery_1_soc", "value": 92, "unit": "%", "category": "baterias", "register": 40589},
+            {"field": "battery_1_current", "value": -5.3, "unit": "A", "category": "baterias", "register": 40592},
+            {"field": "battery_2_soc", "value": 81, "unit": "%", "category": "baterias", "register": 40590},
+            {"field": "battery_2_current", "value": 3.0, "unit": "A", "category": "baterias", "register": 40595},
+        ],
+    }
+    gateway._persist_deye_telemetry(conn, snapshot)
+
+    equipment = gateway.energy_registry.list_equipment(conn, "baterias")
+    banks = {item["id"]: item for item in equipment
+             if isinstance(item.get("config", {}).get("deye_battery_channel"), int)}
+    assert len(equipment) == 3  # the aggregate inverter telemetry record plus two detected banks
+    assert len(banks) == 2
+    assert {item["config"]["deye_battery_channel"] for item in banks.values()} == {1, 2}
+    bank1 = next(item for item in banks.values() if item["config"]["deye_battery_channel"] == 1)
+    bank2 = next(item for item in banks.values() if item["config"]["deye_battery_channel"] == 2)
+    assert {reading["field"] for reading in bank1["readings"]} == {"battery_1_soc", "battery_1_current"}
+    assert {reading["field"] for reading in bank2["readings"]} == {"battery_2_soc", "battery_2_current"}
+    assert all(reading["trust"] == "LIVE_UNVERIFIED" for item in banks.values() for reading in item["readings"])
     conn.close()
 
 

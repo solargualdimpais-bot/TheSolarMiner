@@ -386,12 +386,12 @@ def test_intelligence_provider_status_reports_local_runtime_model_and_optional_c
     monkeypatch.setattr(gateway.update_helper_client, "request", lambda action, **kwargs:
                         {"status": "ok", "configured": False})
     monkeypatch.setattr(gateway.system_components, "installed_component_status", lambda: {
-        "status": "OK", "version": "0.6.259", "protocol": 1, "reason": None,
+        "status": "OK", "version": "0.6.260", "protocol": 1, "reason": None,
     })
     monkeypatch.setattr(gateway.system_components, "integrated_diagnostics", lambda _version: {
-        "status": "OK", "reason": None, "application_version": "0.6.259",
-        "debian_package_version": "0.6.259", "active_release": "0.6.259",
-        "system_components": {"status": "OK", "version": "0.6.259", "protocol": 1, "reason": None},
+        "status": "OK", "reason": None, "application_version": "0.6.260",
+        "debian_package_version": "0.6.260", "active_release": "0.6.260",
+        "system_components": {"status": "OK", "version": "0.6.260", "protocol": 1, "reason": None},
         "operating_system": {"id": "debian", "version": "13", "codename": "trixie"},
         "python_version": "3.13.0", "units": {}, "paths": {},
     })
@@ -412,7 +412,9 @@ def test_intelligence_provider_status_reports_local_runtime_model_and_optional_c
             if self.port == 11434 and self.path == "/api/version":
                 return SimpleNamespace(status=200, read=lambda _limit: b'{"version":"0.40.16"}')
             if self.port == 11434 and self.path == "/api/tags":
-                return SimpleNamespace(status=200, read=lambda _limit: b'{"models":[{"name":"qwen3.5:9b-q4_K_M"}]}')
+                # Ollama-compatible endpoints may identify a model by either
+                # `name` or `model`; the Gateway must accept both shapes.
+                return SimpleNamespace(status=200, read=lambda _limit: b'{"models":[{"model":"qwen3.5:9b-q4_K_M"}]}')
             health = {"configured": True, "ollama": {
                 "runtime": "available", "model": "qwen3.5:9b-q4_K_M",
                 "installed": True, "loaded": False, "working": False,
@@ -440,11 +442,11 @@ def test_intelligence_provider_status_reports_local_runtime_model_and_optional_c
                       "percent": 42, "downloaded_bytes": 420, "total_bytes": 1000, "updated_at": 1000},
     }
     assert payload["system_components"] == {
-        "status": "OK", "version": "0.6.259", "protocol": 1, "reason": None,
+        "status": "OK", "version": "0.6.260", "protocol": 1, "reason": None,
     }
     assert payload["system_diagnostics"]["status"] == "OK"
-    assert payload["system_diagnostics"]["active_release"] == "0.6.259"
-    assert payload["system_diagnostics"]["debian_package_version"] == "0.6.259"
+    assert payload["system_diagnostics"]["active_release"] == "0.6.260"
+    assert payload["system_diagnostics"]["debian_package_version"] == "0.6.260"
     assert payload["diagnostic"]["request_id"] == request_id
     assert payload["diagnostic"]["state"] == "completed"
     assert payload["diagnostic"]["stage"] == "complete"
@@ -489,6 +491,96 @@ def test_provider_status_separates_installed_ollama_from_unreachable_local_servi
     assert payload["installation"]["ollama"] is True
     assert payload["openai"]["state"] == "status_unavailable"
     assert payload["bootstrap"]["state"] == "not_started"
+
+
+def test_provider_status_reports_invalid_ollama_tags_schema_without_failing_the_route(client, monkeypatch):
+    owner = _owner(client)
+    monkeypatch.setattr(gateway, "_intelligence_ollama_binary_installed", lambda: True)
+    monkeypatch.setattr(gateway.update_helper_client, "request", lambda *_args, **_kwargs:
+                        {"status": "ok", "configured": False})
+    monkeypatch.setattr(gateway, "_read_intelligence_bootstrap_status", lambda: {
+        "state": "not_started", "stage": "waiting", "message": "A instalação ainda não começou.",
+        "percent": None, "downloaded_bytes": None, "total_bytes": None, "updated_at": time.time(),
+    })
+
+    class MalformedOllamaConnection:
+        def __init__(self, host, port, timeout):
+            self.port = port
+            self.path = None
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def request(self, method, path, *, headers): self.path = path
+        def getresponse(self):
+            if self.path == "/api/version":
+                return SimpleNamespace(status=200, read=lambda _limit: b'{"version":"0.40.16"}')
+            if self.port == 11434:
+                return SimpleNamespace(status=200, read=lambda _limit: b'{"models":null}')
+            health = {"configured": False, "ollama": {
+                "runtime": "available", "model": "qwen3.5:9b-q4_K_M",
+                "installed": True, "loaded": False, "working": False,
+            }}
+            return SimpleNamespace(status=200, read=lambda _limit: json.dumps(health).encode())
+
+    monkeypatch.setattr(gateway.http.client, "HTTPConnection", MalformedOllamaConnection)
+    request_id = "c3c3c3c3-c3c3-43c3-83c3-c3c3c3c3c3c3"
+    response = client.get("/api/v1/intelligence/provider",
+                          headers={**owner, "X-SolarMiner-Diagnostic-ID": request_id})
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["installation"]["ollama"] is True
+    assert payload["installation"]["model"] is False
+    assert payload["diagnostic"]["state"] == "degraded"
+    assert payload["diagnostic"]["error_type"] == "TypeError"
+    assert payload["diagnostic"]["error_reason"] == "ollama_tags_response_invalid"
+
+
+def test_provider_status_continues_after_ollama_binary_check_type_error(client, monkeypatch):
+    owner = _owner(client)
+    monkeypatch.setattr(gateway, "_intelligence_ollama_binary_installed",
+                        lambda: (_ for _ in ()).throw(TypeError("binary probe type mismatch")))
+    monkeypatch.setattr(gateway.update_helper_client, "request",
+                        lambda *_args, **_kwargs: {"status": "ok", "configured": False})
+    monkeypatch.setattr(gateway, "_read_intelligence_bootstrap_status", lambda: {
+        "state": "not_started", "stage": "waiting", "message": "A instalação ainda não começou.",
+        "percent": None, "downloaded_bytes": None, "total_bytes": None, "updated_at": time.time(),
+    })
+    ollama_paths = []
+
+    class RuntimeConnection:
+        def __init__(self, host, port, timeout):
+            self.port = port
+            self.path = None
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def request(self, method, path, *, headers): self.path = path
+        def getresponse(self):
+            ollama_paths.append(self.path) if self.port == 11434 else None
+            if self.path == "/api/version":
+                return SimpleNamespace(status=200, read=lambda _limit: b'{"version":"0.40.16"}')
+            if self.path == "/api/tags":
+                return SimpleNamespace(status=200, read=lambda _limit: b'{"models":[{"name":"qwen3.5:9b-q4_K_M"}]}')
+            health = {"configured": False, "ollama": {
+                "runtime": "available", "model": "qwen3.5:9b-q4_K_M",
+                "installed": True, "loaded": False, "working": False,
+            }}
+            return SimpleNamespace(status=200, read=lambda _limit: json.dumps(health).encode())
+
+    monkeypatch.setattr(gateway.http.client, "HTTPConnection", RuntimeConnection)
+    request_id = "d4d4d4d4-d4d4-44d4-84d4-d4d4d4d4d4d4"
+    response = client.get("/api/v1/intelligence/provider",
+                          headers={**owner, "X-SolarMiner-Diagnostic-ID": request_id})
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["installation"]["ollama"] is None
+    assert payload["installation"]["model"] is True
+    assert payload["ollama"]["runtime"] == "available"
+    assert ollama_paths == ["/api/version", "/api/tags"]
+    assert payload["diagnostic"]["state"] == "degraded"
+    assert payload["diagnostic"]["stage"] == "complete"
+    assert payload["diagnostic"]["error_type"] == "TypeError"
+    assert payload["diagnostic"]["error_reason"] == "ollama_binary_check_failed"
 
 
 def test_ollama_installation_detection_is_independent_of_runtime_health(monkeypatch, tmp_path):

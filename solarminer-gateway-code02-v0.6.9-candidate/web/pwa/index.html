@@ -214,7 +214,7 @@
       </dialog>
       </section>
 
-      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.5.189</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
+      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.5.190</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
     </main>
   </div>
 
@@ -265,7 +265,7 @@
         <label for="gateway-login-password">Palavra-passe</label><input id="gateway-login-password" type="password" autocomplete="current-password" required>
         <button class="button primary" type="submit">Entrar no Gateway</button>
       </form>
-      <div class="dialog-actions"><button id="open-owner-recovery" class="button secondary" type="button">Recuperar Owner com a pen</button></div>
+      <div class="security-callout"><strong>Recuperação de Owner:</strong> por segurança, a chave offline não é aceite pela API nem pela PWA. A recuperação exige acesso local ao Gateway, terminal root interativo e serviço parado; consulta o procedimento A2 incluído no pacote.</div>
       <div class="security-callout"><strong>Estado de confiança:</strong> o tráfego só é aceite com TLS válido e prova Ed25519 do dispositivo. Estados DEMO locais não são apresentados como comandos LIVE. A aplicação de uma atualização exige versão validada, preflight de recuperação independente e confirmação explícita de um Owner.</div>
       <div class="dialog-actions"><button class="button primary" type="button" id="close-gateway-dialog">Fechar</button></div>
     </div>
@@ -294,25 +294,6 @@
       </form>
       <div id="gateway-bootstrap-recovery" hidden class="invite-created"><strong>Chave de recuperação — guardar offline agora</strong><p class="field-note">Esta chave é apresentada uma única vez e não fica guardada na PWA. Guarda o ficheiro na pen Owner. Contém um segredo em texto simples. Não ignora TLS nem autentica automaticamente.</p><textarea id="gateway-bootstrap-recovery-key" rows="3" readonly></textarea><button class="button secondary" type="button" id="gateway-copy-recovery-key">Copiar chave de recuperação</button><button class="button secondary" type="button" id="gateway-download-recovery-key">Guardar ficheiro para a pen</button></div>
       <div id="gateway-bootstrap-result" class="connection-result" role="status" aria-live="polite"></div>
-    </div>
-  </dialog>
-  <dialog id="gateway-owner-recovery-dialog" class="settings-dialog compact-dialog">
-    <form method="dialog" class="dialog-header"><div><p class="eyebrow">RECUPERAÇÃO OWNER</p><h2>Restaurar acesso pelo ficheiro da pen</h2></div><button class="icon-button" value="cancel" aria-label="Fechar">×</button></form>
-    <div class="dialog-body">
-      <p class="field-note">Seleciona o ficheiro `solarminer-owner-recovery-key.txt` da pen. A chave só é enviada ao Gateway pelo fluxo autenticado por desafio Ed25519 e é consumida/substituída após a recuperação.</p>
-      <form id="gateway-owner-recovery-form" class="gateway-form-grid">
-        <label>Nome de utilizador Owner<input id="gateway-recovery-username" autocomplete="username" required maxlength="128"></label>
-        <label>Ficheiro da pen<input id="gateway-recovery-file" type="file" accept=".txt,text/plain" required></label>
-        <label>Chave de recuperação<textarea id="gateway-recovery-key" rows="3" required autocomplete="off" spellcheck="false"></textarea></label>
-        <label>Fingerprint Ed25519 do Gateway<input id="gateway-recovery-fingerprint" autocomplete="off" spellcheck="false" placeholder="Lida do ficheiro quando disponível"></label>
-        <label>Nova palavra-passe Owner<input id="gateway-recovery-password" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required></label>
-        <label>Repete a nova palavra-passe<input id="gateway-recovery-password-repeat" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required></label>
-        <label>MAC metadata (opcional)<input id="gateway-recovery-mac" value="00:00:00:00:00:00" pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}" required></label>
-        <button class="button primary" type="submit">Recuperar acesso Owner</button>
-      </form>
-      <p class="field-note">O MAC é apenas metadata declarada, não prova identidade. Se não o souberes, mantém `00:00:00:00:00:00` como valor não verificado.</p>
-      <div id="gateway-recovery-result" class="connection-result" role="status" aria-live="polite"></div>
-      <div id="gateway-recovery-new-key-panel" hidden class="invite-created"><strong>Nova chave — a anterior foi consumida</strong><textarea id="gateway-recovery-new-key" rows="3" readonly></textarea><button id="gateway-download-new-recovery-key" class="button secondary" type="button">Descarregar para substituir o ficheiro da pen</button></div>
     </div>
   </dialog>
   <dialog id="operation-dialog" class="settings-dialog operation-dialog" aria-labelledby="operation-dialog-title" aria-describedby="operation-dialog-message">

@@ -2440,7 +2440,7 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
     ids = [e["id"] for e in (inverter, battery) if e]
     series_fields = ("pv_total_power", "pv_daily_energy", "pv1_input_power", "pv1_voltage", "pv1_current",
                      "pv2_input_power", "pv2_voltage", "pv2_current", "load_total_power",
-                     "battery_output_power")
+                     "battery_total_power", "battery_output_power")
     history = {field: _series(conn, ids, field, cutoff, until=history_end_text) for field in series_fields}
     forecast_rows = conn.execute(
         "SELECT estimated_total_kwh,actual_today_kwh,remaining_estimate_kwh,calculated_at,confidence,potential_max_total_kwh "
@@ -2472,20 +2472,56 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
     if banks:
         min_soc = sum(float(bank["capacity_kwh"]) * float(bank["minimum_soc_percent"]) for bank in banks) / capacity
         max_soc = min(float(bank["maximum_soc_percent"]) for bank in banks)
+    # Prefer the inverter's directly reported shutdown SOC when it is recent
+    # and comes from a Deye live reading. Configuration remains the fallback.
+    cutoff_item = battery_readings.get("battery_cutoff_soc_percent")
+    cutoff_value = _number(battery_readings, "battery_cutoff_soc_percent")
+    cutoff_stamp = _parse_utc(cutoff_item.get("observed_at")) if isinstance(cutoff_item, dict) else None
+    reported_cutoff_soc = None
+    if (cutoff_value is not None and 0 <= cutoff_value < 100 and cutoff_stamp is not None
+            and 0 <= (datetime.now(timezone.utc)-cutoff_stamp).total_seconds() <= 120
+            and str(cutoff_item.get("source", "")).upper().startswith("DEYE_")):
+        reported_cutoff_soc = float(cutoff_value)
+        min_soc = reported_cutoff_soc
     available = None
     charge_headroom = None
     bank_summary = []
-    battery_voltage = _number(battery_readings, "battery_voltage")
-    battery_charge_power = _number(battery_readings, "battery_charge_power")
     def fresh_local(item: dict[str, Any] | None) -> bool:
         if not isinstance(item, dict) or str(item.get("source", "")).strip().upper() == "DEYE_CLOUD_HISTORY":
             return False
         stamp = _parse_utc(item.get("observed_at"))
         return stamp is not None and 0 <= (datetime.now(timezone.utc)-stamp).total_seconds() <= 120
-    # The operational SOC is the value read from the Deye register (Modbus
-    # 40589). No voltage/power estimator, plateau inference, or stale fallback.
+    def fresh_deye_value(field: str, fallback: str | None = None) -> float | None:
+        for candidate in (field, fallback):
+            if not candidate:
+                continue
+            item = battery_readings.get(candidate)
+            value = _number(battery_readings, candidate)
+            if (value is not None and fresh_local(item)
+                    and str(item.get("source", "")).strip().upper().startswith("DEYE_")):
+                return value
+        return None
+    battery_charge_power = fresh_deye_value("battery_total_charge_power", "battery_charge_power")
+    battery_discharge_power = fresh_deye_value("battery_total_discharge_power", "battery_discharge_power")
+    battery_total_power = fresh_deye_value("battery_total_power", "battery_output_power")
+    battery_total_current = fresh_deye_value("battery_total_current", "battery_output_current")
+    battery_voltage = fresh_deye_value("battery_voltage")
+    # Channel-specific SOC is direct Deye data. When both inputs are live,
+    # neither channel alone can be represented as the pack-wide SOC without
+    # validated capacity weights.
+    battery_1_voltage = fresh_deye_value("battery_1_voltage", "battery_voltage")
+    battery_2_voltage_item = battery_readings.get("battery_2_voltage")
+    battery_2_voltage = fresh_deye_value("battery_2_voltage")
+    bank_1_live = battery_1_voltage is not None and 30.0 <= battery_1_voltage <= 80.0
+    bank_2_live = battery_2_voltage is not None and 30.0 <= battery_2_voltage <= 80.0
+    if bank_2_live and bank_1_live:
+        soc_fields = ("battery_1_soc", "battery_soc", "battery_soc_percent")
+    elif bank_2_live:
+        soc_fields = ("battery_2_soc",)
+    else:
+        soc_fields = ("battery_1_soc", "battery_soc", "battery_soc_percent")
     soc_candidates = []
-    for field in ("battery_soc_percent", "battery_soc"):
+    for field in soc_fields:
         item = battery_readings.get(field)
         value = _number(battery_readings, field)
         source = str(item.get("source", "")).strip().upper() if isinstance(item, dict) else ""
@@ -2499,17 +2535,24 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
     _, reported_soc, reported_soc_item = max(soc_candidates, key=lambda candidate: candidate[0], default=(None, None, None))
     soc = reported_soc
     displayed_soc = reported_soc
+    multiple_banks_without_capacity_weights = bank_1_live and bank_2_live
+    if multiple_banks_without_capacity_weights:
+        # battery_soc is channel 1 on this candidate map. Do not mislabel it as
+        # a pack-wide SOC when channel 2 is also live and bank capacities are unknown.
+        soc = displayed_soc = None
     soc_estimate = None
-    displayed_soc_source = "deye_reported" if reported_soc is not None else "unavailable"
+    displayed_soc_source = ("deye_individual_banks_no_total_weight" if multiple_banks_without_capacity_weights
+                            else "deye_reported" if reported_soc is not None else "unavailable")
     if displayed_soc is not None and banks:
         capacity = sum(float(bank["capacity_kwh"]) for bank in banks)
         bank_summary = [{**bank, "reported_soc_percent": displayed_soc if bank.get("active", True) else None,
-                         "energy_above_minimum_kwh": round(bank["capacity_kwh"] * max(0.0, displayed_soc-bank["minimum_soc_percent"]) / 100, 3) if bank.get("active", True) else 0.0,
+                         "energy_above_minimum_kwh": round(bank["capacity_kwh"] * max(0.0, displayed_soc-(reported_cutoff_soc if reported_cutoff_soc is not None else bank["minimum_soc_percent"])) / 100, 3) if bank.get("active", True) else 0.0,
                          "charge_headroom_kwh": round(bank["capacity_kwh"] * max(0.0, bank["maximum_soc_percent"]-displayed_soc) / 100, 3) if bank.get("active", True) else 0.0}
                         for bank in all_banks]
         available = round(sum(item["energy_above_minimum_kwh"] for item in bank_summary), 3)
         charge_headroom = round(sum(item["charge_headroom_kwh"] for item in bank_summary), 3)
-        min_soc = round(sum(b["capacity_kwh"] * b["minimum_soc_percent"] for b in banks) / capacity, 2)
+        if reported_cutoff_soc is None:
+            min_soc = round(sum(b["capacity_kwh"] * b["minimum_soc_percent"] for b in banks) / capacity, 2)
         max_soc = min(float(b["maximum_soc_percent"]) for b in banks)
     elif displayed_soc is not None and capacity is not None:
         available = round(float(capacity) * max(0.0, displayed_soc - min_soc) / 100.0, 3)
@@ -2736,11 +2779,18 @@ def build_summary(conn: sqlite3.Connection, history_hours: int = 24,
                         "battery_voltage_max_30d_v": soc_estimate.get("voltage_max_30d_v") if soc_estimate else None,
                         "battery_energy_estimate_state": soc_estimate.get("state", "UNAVAILABLE") if soc_estimate else "UNAVAILABLE",
                         "battery_voltage_v": battery_voltage,
-                        "battery_current_a": _number(battery_readings, "battery_output_current"),
-                        "battery_power_w": _number(battery_readings, "battery_output_power"),
+                        "battery_current_a": battery_total_current,
+                        "battery_power_w": battery_total_power,
+                        "battery_corrected_capacity_ah": fresh_deye_value("battery_corrected_capacity"),
                         "battery_charge_power_w": battery_charge_power,
-                        "battery_discharge_power_w": _number(battery_readings, "battery_discharge_power"),
-                        "battery_temperature_c": _number(battery_readings, "battery_temperature"),
+                        "battery_discharge_power_w": battery_discharge_power,
+                        "battery_2_soc_percent": fresh_deye_value("battery_2_soc"),
+                        "battery_2_voltage_v": battery_2_voltage,
+                        "battery_2_current_a": fresh_deye_value("battery_2_current"),
+                        "battery_2_power_w": fresh_deye_value("battery_2_power"),
+                        "battery_2_temperature_c": fresh_deye_value("battery_2_temperature"),
+                        "battery_cutoff_soc_percent": reported_cutoff_soc,
+                        "battery_temperature_c": fresh_deye_value("battery_temperature"),
                         "battery_energy_available_kwh_above_minimum": available,
                         "battery_autonomy_forecast": battery_autonomy,
                         "battery_charge_headroom_kwh_to_maximum": charge_headroom,

@@ -72,7 +72,7 @@ from . import system_components
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.259"
+PACKAGE_VERSION = "0.6.260"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 INTELLIGENCE_LOCAL_TOKEN_PATH = Path(os.environ.get("SOLARMINER_INTELLIGENCE_CLIENT_TOKEN_FILE", "/etc/solarminer/intelligence-client.token"))
@@ -128,6 +128,7 @@ _intelligence_provider_diagnostics: dict[str, dict[str, Any]] = {}
 
 def _provider_diagnostic_update(request_id: str | None, *, stage: str | None = None,
                                 state: str | None = None, error_type: str | None = None,
+                                error_reason: str | None = None,
                                 http_status: int | None = None) -> None:
     """Keep a bounded, secret-free trace for Owner troubleshooting of provider status."""
     if not isinstance(request_id, str):
@@ -152,6 +153,9 @@ def _provider_diagnostic_update(request_id: str | None, *, stage: str | None = N
             entry["state"] = state
         if error_type:
             entry["error_type"] = error_type[:80]
+        if error_reason:
+            # Stable allow-listed reason, never an exception string or payload.
+            entry["error_reason"] = error_reason[:80]
         if http_status is not None:
             entry["http_status"] = http_status
         entry["updated_at"] = utcnow()
@@ -168,7 +172,7 @@ def _provider_diagnostic_snapshot(request_id: str) -> dict[str, Any] | None:
         if entry is None:
             return None
         snapshot = {key: entry.get(key) for key in
-                    ("request_id", "state", "stage", "error_type", "http_status", "updated_at")}
+                    ("request_id", "state", "stage", "error_type", "error_reason", "http_status", "updated_at")}
         snapshot["total_elapsed_ms"] = max(0, round((now - entry["started"]) * 1000))
         snapshot["stage_elapsed_ms"] = max(0, round((now - entry["stage_started"]) * 1000))
         snapshot["steps"] = list(entry["steps"])
@@ -3386,12 +3390,14 @@ def intelligence_provider_status(
 ) -> dict[str, Any]:
     diagnostic_id = request.headers.get("X-SolarMiner-Diagnostic-ID")
     diagnostic_degraded = False
-    def mark(stage: str, *, state: str | None = None, error: BaseException | None = None) -> None:
+    def mark(stage: str, *, state: str | None = None, error: BaseException | None = None,
+             reason: str | None = None, http_status: int | None = None) -> None:
         nonlocal diagnostic_degraded
         if state == "degraded" or error is not None:
             diagnostic_degraded = True
         _provider_diagnostic_update(diagnostic_id, stage=stage, state=state,
-                                    error_type=type(error).__name__ if error else None)
+                                    error_type=type(error).__name__ if error else None,
+                                    error_reason=reason, http_status=http_status)
 
     with db() as conn:
         mark("owner_session")
@@ -3409,18 +3415,31 @@ def intelligence_provider_status(
         mark("openai_configuration", state="degraded", error=exc)
     else:
         openai_error_type = None
-    mark("ollama_runtime")
     local_state: dict[str, Any] = {"runtime": "unavailable", "installed": False,
                                    "loaded": False, "working": False, "model": "qwen3.5:9b-q4_K_M"}
     agent_state = "unavailable"
-    installation = {
-        "node": Path("/opt/solarminer/intelligence/node-v24.22.1/bin/node").is_file() and
-                os.access("/opt/solarminer/intelligence/node-v24.22.1/bin/node", os.X_OK),
-        "openclaude": Path("/opt/solarminer/intelligence/app/node_modules/.bin/openclaude").is_file() and
-                      os.access("/opt/solarminer/intelligence/app/node_modules/.bin/openclaude", os.X_OK),
-        "ollama": _intelligence_ollama_binary_installed(),
-        "model": False,
-    }
+    installation: dict[str, bool | None] = {"node": None, "openclaude": None, "ollama": None, "model": False}
+    for component, path in (
+        ("node", "/opt/solarminer/intelligence/node-v24.22.1/bin/node"),
+        ("openclaude", "/opt/solarminer/intelligence/app/node_modules/.bin/openclaude"),
+    ):
+        mark(f"{component}_installation")
+        try:
+            installation[component] = Path(path).is_file() and os.access(path, os.X_OK)
+        except Exception as exc:
+            installation[component] = None
+            mark(f"{component}_installation", state="degraded", error=exc,
+                 reason=f"{component}_presence_check_failed")
+    mark("ollama_binary_detection")
+    try:
+        installation["ollama"] = _intelligence_ollama_binary_installed()
+    except Exception as exc:
+        # A failed executable lookup must not prevent independent runtime and
+        # agent checks. Preserve unknown separately from a confirmed absence.
+        installation["ollama"] = None
+        mark("ollama_binary_detection", state="degraded", error=exc,
+             reason="ollama_binary_check_failed")
+    mark("ollama_runtime")
     ollama_runtime_available = False
     try:
         with http.client.HTTPConnection("127.0.0.1", 11434, timeout=2) as connection:
@@ -3428,16 +3447,37 @@ def intelligence_provider_status(
             runtime_response = connection.getresponse()
             runtime_payload = json.loads(runtime_response.read(4096).decode("utf-8")) if runtime_response.status == 200 else {}
             ollama_runtime_available = isinstance(runtime_payload, dict) and isinstance(runtime_payload.get("version"), str)
+            if runtime_response.status != 200:
+                mark("ollama_runtime", state="degraded", reason="ollama_version_http_error",
+                     http_status=runtime_response.status)
+            elif not ollama_runtime_available:
+                mark("ollama_runtime", state="degraded", reason="ollama_version_response_invalid",
+                     http_status=runtime_response.status)
         if ollama_runtime_available:
             with http.client.HTTPConnection("127.0.0.1", 11434, timeout=3) as connection:
                 connection.request("GET", "/api/tags", headers={"Accept": "application/json"})
                 tags_response = connection.getresponse()
                 tags_payload = json.loads(tags_response.read(16000).decode("utf-8")) if tags_response.status == 200 else {}
-            models = tags_payload.get("models", []) if isinstance(tags_payload, dict) else []
-            installation["model"] = any(isinstance(item, dict) and item.get("name") == "qwen3.5:9b-q4_K_M"
-                                         for item in models)
-    except (OSError, ValueError, TimeoutError, http.client.HTTPException) as exc:
-        mark("ollama_runtime", state="degraded", error=exc)
+            models = tags_payload.get("models") if isinstance(tags_payload, dict) else None
+            if tags_response.status != 200:
+                mark("ollama_runtime", state="degraded", reason="ollama_tags_http_error",
+                     http_status=tags_response.status)
+            elif not isinstance(models, list):
+                # Some Ollama-compatible runtimes return an incomplete or
+                # differently shaped payload. Keep status usable and report the
+                # schema fault instead of letting any(...) raise TypeError.
+                mark("ollama_runtime", state="degraded", error=TypeError("invalid_ollama_tags_schema"),
+                     reason="ollama_tags_response_invalid", http_status=tags_response.status)
+            else:
+                expected_model = local_state["model"]
+                installation["model"] = any(
+                    isinstance(item, dict) and
+                    (item.get("name") == expected_model or item.get("model") == expected_model)
+                    for item in models
+                )
+    except (OSError, ValueError, TypeError, TimeoutError, http.client.HTTPException) as exc:
+        reason = "ollama_runtime_type_error" if isinstance(exc, TypeError) else "ollama_runtime_request_failed"
+        mark("ollama_runtime", state="degraded", error=exc, reason=reason)
     if not ollama_runtime_available:
         mark("openclaude_agent")
     try:
@@ -4580,6 +4620,49 @@ def _persist_deye_telemetry(conn: sqlite3.Connection, deye: dict[str, Any] | Non
                              "register_map_source": register_map.get("source"),
                              "register_map_supplement": register_map.get("supplement"),
                              "register_map_sha256": register_map.get("sha256"),
+                             "protocol_reference": register_map.get("protocol_reference")},
+            })
+            persisted += 1
+    # Keep detected battery inputs as first-class records in the same energy
+    # database. A configured inverter input is not enough to create a bank:
+    # integrations.read_deye only reports a channel after its voltage is in
+    # the supported low-voltage range.
+    detected = {int(item["channel"]): item for item in deye.get("battery_banks_detected", [])
+                if isinstance(item, dict) and item.get("channel") in (1, 2)}
+    for channel in (1, 2):
+        equipment_id = f"deye-battery-{identity}-bank-{channel}"
+        if channel not in detected:
+            conn.execute("UPDATE energy_equipment SET connection_state='DISCONNECTED',updated_at=? WHERE id=?",
+                         (observed_at, equipment_id))
+            continue
+        prefix = f"battery_{channel}_"
+        channel_metrics = [item for item in metrics if isinstance(item, dict)
+                           and isinstance(item.get("field"), str)
+                           and item["field"].startswith(prefix)
+                           and isinstance(item.get("value"), (int, float))
+                           and not isinstance(item.get("value"), bool)]
+        energy_registry.upsert_equipment(conn, {
+            "category": "baterias", "name": f"Banco {channel} · Deye",
+            "manufacturer": "Deye", "model": deye.get("model"),
+            "protocol": "Modbus TCP FC03 · entrada de bateria",
+            "connection_state": "CONNECTED", "status": "CONFIGURED",
+            "declared_capabilities": ["battery input telemetry"],
+            "implemented_capabilities": ["SOC, voltage, current, power and temperature when reported"],
+            "verified_capabilities": [],
+            "limitations": ["Tipo e capacidade individual não são reportados com segurança pelo mapa atual."],
+            "config": {"deye_battery_channel": channel, "deye_identity": identity,
+                       "online_detection": detected[channel], "trust": "LIVE_UNVERIFIED"},
+        }, equipment_id=equipment_id)
+        conn.execute("UPDATE energy_equipment SET connection_state='CONNECTED',updated_at=? WHERE id=?",
+                     (observed_at, equipment_id))
+        for item in channel_metrics:
+            energy_registry.add_reading(conn, equipment_id, {
+                "field": item["field"], "value": item["value"], "unit": item.get("unit"),
+                "observed_at": observed_at, "source": "DEYE_MODBUS_FC03_CANDIDATE_MAP",
+                "trust": "LIVE_UNVERIFIED",
+                "evidence": {"register": item.get("register"), "raw_value": item.get("raw_value"),
+                             "label": item.get("label"), "derived": item.get("derived", False),
+                             "detection": detected[channel], "register_map_source": register_map.get("source"),
                              "protocol_reference": register_map.get("protocol_reference")},
             })
             persisted += 1

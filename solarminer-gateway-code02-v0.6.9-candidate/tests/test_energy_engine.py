@@ -361,6 +361,34 @@ def test_fresh_deye_soc_is_the_energy_engine_value_and_dispatch_input():
     assert dispatch["state"] != "BLOCKED_MISSING_TELEMETRY"
 
 
+def test_two_live_battery_inputs_do_not_masquerade_channel_one_soc_as_total_and_sum_power():
+    conn = database()
+    battery = energy_registry.upsert_equipment(conn, {"category": "baterias", "name": "Deye battery",
+        "protocol": "Modbus TCP FC03", "connection_state": "CONNECTED"}, equipment_id="deye-battery-test")
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    for field, value, unit in (
+        ("battery_soc", 92, "%"), ("battery_2_soc", 80, "%"),
+        ("battery_voltage", 53.7, "V"), ("battery_2_voltage", 52.4, "V"),
+        ("battery_output_power", -100, "W"), ("battery_2_power", 40, "W"),
+        ("battery_output_current", -2, "A"), ("battery_2_current", 1, "A"),
+        ("battery_total_power", -60, "W"), ("battery_total_current", -1, "A"),
+        ("battery_total_charge_power", 100, "W"), ("battery_total_discharge_power", 40, "W"),
+    ):
+        insert_reading(conn, battery["id"], field, value, unit, stamp)
+    energy_engine.save_config(conn, {"battery_capacity_kwh": 20})
+
+    current = energy_engine.build_summary(conn)["current"]
+
+    assert current["battery_soc_percent"] is None
+    assert current["battery_soc_source"] == "deye_individual_banks_no_total_weight"
+    assert current["battery_inverter_reported_soc_percent"] == 92
+    assert current["battery_energy_available_kwh_above_minimum"] is None
+    assert current["battery_power_w"] == -60
+    assert current["battery_current_a"] == -1
+    assert current["battery_charge_power_w"] == 100
+    assert current["battery_discharge_power_w"] == 40
+
+
 def test_live_engine_assessment_flags_full_battery_low_charge_and_pv_below_engine_potential(monkeypatch):
     conn = database()
     inverter = energy_registry.upsert_equipment(conn, {"category": "inversores", "name": "Deye",

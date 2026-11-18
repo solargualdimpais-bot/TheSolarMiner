@@ -1,6 +1,10 @@
 #!/bin/sh
 # Installs the pinned OpenClaude runtime only after Tailnet and TLS are verified.
 set -eu
+# systemd system services do not guarantee HOME is present. Ollama's CLI
+# panics without it, which can make version/model checks falsely trigger a
+# reinstall even when the runtime and model are already available.
+export HOME="${HOME:-/root}"
 
 LOG=/var/log/solarminer-intelligence-bootstrap.log
 mkdir -p /var/log /var/lib/solarminer/intelligence
@@ -208,14 +212,19 @@ PY
 fi
 CURRENT_STAGE=model_smoke_test
 write_status running "$CURRENT_STAGE" "A testar a resposta local do modelo."
-curl --fail --silent --show-error --max-time 600 http://127.0.0.1:11434/api/generate \
+curl --fail --silent --show-error --max-time 600 http://127.0.0.1:11434/api/chat \
   -H 'Content-Type: application/json' \
-  --data-binary "{\"model\":\"$OLLAMA_MODEL\",\"prompt\":\"Responde apenas com OK.\",\"stream\":false,\"options\":{\"num_ctx\":8192,\"num_predict\":16}}" \
+  --data-binary "{\"model\":\"$OLLAMA_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"Responde apenas com OK.\"}],\"think\":false,\"stream\":false,\"options\":{\"num_ctx\":8192,\"num_predict\":32}}" \
   -o "$TMP/ollama-smoke.json" || fail "teste local de inferência Ollama falhou"
 python3 - "$TMP/ollama-smoke.json" <<'PY' || fail "modelo Ollama não passou no teste local de resposta"
 import json,sys
 with open(sys.argv[1],encoding="utf-8") as stream: result=json.load(stream)
-raise SystemExit(0 if isinstance(result.get("response"),str) and "ok" in result["response"].lower() else 1)
+message = result.get("message") if isinstance(result, dict) else None
+content = message.get("content") if isinstance(message, dict) else None
+if not isinstance(content, str) or not content.strip():
+    raise SystemExit("OLLAMA_SMOKE_EMPTY_ASSISTANT_CONTENT")
+if result.get("done") is not True:
+    raise SystemExit("OLLAMA_SMOKE_GENERATION_NOT_COMPLETE")
 PY
 log "Ollama $OLLAMA_VERSION e modelo $OLLAMA_MODEL instalados; inferência local smoke test passou."
 

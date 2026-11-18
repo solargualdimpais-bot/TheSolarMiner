@@ -159,37 +159,6 @@ export async function bootstrapGatewayOwner({ gatewayUrl, username, password }) 
   return { ...result, login, gatewayUrl: base, identityValidated: true, gatewayFingerprint: challenge.fingerprint_sha256 };
 }
 
-export async function recoverGatewayOwner({ gatewayUrl, username, recoveryKey, newPassword, mac, expectedGatewayFingerprint }) {
-  const base = validateGatewayUrl(gatewayUrl, { allowLocalHttp: ["localhost", "127.0.0.1", "::1"].includes(location.hostname.replace(/^\[|\]$/g, "")) }).origin;
-  const existingIdentity = await loadDeviceIdentity(base).catch(() => null);
-  const pinnedFingerprint = String(expectedGatewayFingerprint || existingIdentity?.gatewayFingerprint || "").trim().replaceAll(":", "").toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(pinnedFingerprint)) throw new Error("Confirma a fingerprint SHA-256 Ed25519 do Gateway, apresentada no terminal local.");
-  if (!recoveryKey || recoveryKey.length < 20) throw new Error("Chave de recuperação inválida ou ausente.");
-
-  const identityTimestamp = Math.floor(Date.now() / 1000), identityNonce = nonce();
-  const gatewayChallenge = await gatewayRequest(base, `/api/v1/gateway/identity?timestamp=${identityTimestamp}&nonce=${identityNonce}`);
-  await verifyGatewayIdentityChallenge({ fingerprint: pinnedFingerprint }, gatewayChallenge);
-  const challenge = await gatewayRequest(base, "/api/v1/owner/recovery/challenge", {
-    method: "POST", body: { username: username.trim() }
-  });
-  const identity = await createDeviceIdentity(base, pinnedFingerprint);
-  const proofMessage = new TextEncoder().encode(
-    `SOLARMINER-GATEWAY-DEVICE-PROOF-V1\nrecovery\n${challenge.owner_id}\n${challenge.challenge}`
-  );
-  const signatureBytes = new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, identity.privateKey, proofMessage));
-  const signature = Array.from(signatureBytes, b => b.toString(16).padStart(2, "0")).join("");
-  const result = await gatewayRequest(base, "/api/v1/owner/recovery", { method: "POST", body: {
-    username: username.trim(), recovery_key: recoveryKey.trim(), new_password: newPassword,
-    mac: mac.trim().toUpperCase(), public_key_pem: identity.publicKeyPem,
-    challenge: challenge.challenge, signature
-  } });
-  identity.deviceId = result.device_id;
-  identity.userId = challenge.owner_id;
-  await identityDbRequest("readwrite", store => store.put(identity));
-  const login = await loginGateway({ gatewayUrl: base });
-  return { ...result, login, gatewayUrl: base, identityValidated: true, gatewayFingerprint: pinnedFingerprint };
-}
-
 export async function redeemGatewayInvite({ qrText, username, password, mac }) {
   const invite = parseInviteQr(qrText, { allowLocalHttp: ["localhost", "127.0.0.1", "::1"].includes(location.hostname.replace(/^\[|\]$/g, "")) });
   let gatewayUrl = null, lastError = null;
@@ -528,13 +497,6 @@ export async function checkGatewayUpdate(repositoryUrl) {
 }
 export async function readGatewayUpdateStatus() {
   return gatewayApi("/api/v1/system/update/status");
-}
-export function parseOwnerRecoveryFile(contents) {
-  if (typeof contents !== "string" || contents.length > 4096) throw new Error("O ficheiro de recuperação é inválido ou demasiado grande.");
-  const key = contents.match(/\bSMR1(?:-[A-Z2-7]{4}){13}\b/i)?.[0];
-  if (!key) throw new Error("O ficheiro não contém uma chave SolarMiner reconhecida.");
-  const fingerprint = contents.match(/Gateway Ed25519 fingerprint:\s*([0-9a-f]{64})\b/i)?.[1] || "";
-  return { key: key.toUpperCase(), fingerprint: fingerprint.toLowerCase() };
 }
 export async function applyGatewayUpdate(version) {
   if (typeof version !== "string" || !version) throw new Error("Versão de atualização inválida.");

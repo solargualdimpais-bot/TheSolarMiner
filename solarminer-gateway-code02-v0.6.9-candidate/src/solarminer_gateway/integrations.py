@@ -2675,7 +2675,16 @@ def _read_deye_sg05lp3_candidate_map(host: str, port: int, unit: int) -> dict[st
     battery_limits = read(108, 2)        # refs 40109..40110; read-only FC03
     status = read(500, 1)[0]
     energy = read(514, 22)              # refs 40515..40536
-    battery = read(586, 7)            # refs 40587..40593
+    # The three-phase protocol exposes the two inverter battery inputs in
+    # 586..596. Keep this as one bounded FC03 read so the second channel is
+    # sampled atomically with the first. Register 24 reports configured input
+    # count; it does not by itself prove that an input has a connected bank.
+    battery_input_count_raw = read(24, 1)[0]
+    # Protocol V104: zero is the default value and still means one battery input.
+    battery_input_count = (1 if battery_input_count_raw == 0 else
+                           battery_input_count_raw if 1 <= battery_input_count_raw <= 4 else 0)
+    battery = read(586, 11)           # refs 40587..40597, including Battery 2
+    battery_cutoff = read(115, 1)[0]  # ref 40116, configured shutdown SOC
     grid = read(598, 28)              # refs 40599..40626
     output = read(627, 29)            # refs 40628..40656
     pv = read(672, 8)                 # refs 40673..40680 (two MPPTs)
@@ -2736,13 +2745,26 @@ def _read_deye_sg05lp3_candidate_map(host: str, port: int, unit: int) -> dict[st
     add("battery_max_discharge_current", 40110, battery_limits[1], battery_limits[1], "A",
         "baterias", "Limite configurado de corrente de descarga")
 
+    # Preserve legacy aggregate fields for existing Energy calculations while
+    # adding separately named input metrics. Protocol refs are PDU + 40001.
     battery_specs = (
-        ("battery_temperature", 40587, battery[0], round((battery[0] - 1000) * 0.1, 1), "°C", "Temperatura da bateria"),
-        ("battery_voltage", 40588, battery[1], round(battery[1] * 0.01, 2), "V", "Tensão da bateria"),
-        ("battery_soc", 40589, battery[2], battery[2], "%", "Carga da bateria"),
-        ("battery_output_power", 40591, battery[4], s16(battery[4]), "W", "Potência de carga/descarga"),
-        ("battery_output_current", 40592, battery[5], round(s16(battery[5]) * 0.01, 2), "A", "Corrente de carga/descarga"),
-        ("battery_corrected_capacity", 40593, battery[6], battery[6], "Ah", "Capacidade corrigida da bateria"),
+        ("battery_temperature", 40587, battery[0], round((battery[0] - 1000) * 0.1, 1), "°C", "Temperatura da bateria 1"),
+        ("battery_voltage", 40588, battery[1], round(battery[1] * 0.01, 2), "V", "Tensão da bateria 1"),
+        ("battery_soc", 40589, battery[2], battery[2], "%", "SOC da bateria 1"),
+        ("battery_output_power", 40591, battery[4], s16(battery[4]), "W", "Potência de saída total da bateria reportada pelo inversor"),
+        ("battery_output_current", 40592, battery[5], round(s16(battery[5]) * 0.01, 2), "A", "Corrente de carga/descarga da bateria 1"),
+        ("battery_corrected_capacity", 40593, battery[6], battery[6], "Ah", "Capacidade corrigida comunicada pelo inversor"),
+        ("battery_2_soc", 40590, battery[3], battery[3], "%", "SOC da bateria 2"),
+        ("battery_2_voltage", 40594, battery[7], round(battery[7] * 0.01, 2), "V", "Tensão da bateria 2"),
+        ("battery_2_current", 40595, battery[8], round(s16(battery[8]) * 0.01, 2), "A", "Corrente da bateria 2"),
+        ("battery_2_power", 40596, battery[9], s16(battery[9]), "W", "Potência da bateria 2"),
+        ("battery_2_temperature", 40597, battery[10], round((battery[10] - 1000) * 0.1, 1), "°C", "Temperatura da bateria 2"),
+        ("battery_cutoff_soc_percent", 40116, battery_cutoff, battery_cutoff, "%", "SOC de corte configurado no inversor"),
+        ("battery_input_count", 40025, battery_input_count_raw, battery_input_count, "entradas", "Entradas de bateria configuradas; zero significa uma entrada por defeito"),
+        ("battery_1_soc", 40589, battery[2], battery[2], "%", "SOC da bateria 1"),
+        ("battery_1_voltage", 40588, battery[1], round(battery[1] * 0.01, 2), "V", "Tensão da bateria 1"),
+        ("battery_1_current", 40592, battery[5], round(s16(battery[5]) * 0.01, 2), "A", "Corrente assinada da bateria 1"),
+        ("battery_1_temperature", 40587, battery[0], round((battery[0] - 1000) * 0.1, 1), "°C", "Temperatura da bateria 1"),
     )
     for field, ref, raw, value, unit, label in battery_specs:
         add(field, ref, raw, value, unit, "baterias", label)
@@ -2751,10 +2773,38 @@ def _read_deye_sg05lp3_candidate_map(host: str, port: int, unit: int) -> dict[st
     # reported as charging; positive values are reported as discharging.
     current_a = round(s16(battery[5]) * 0.01, 2)
     power_w = s16(battery[4])
+    current_2_a = round(s16(battery[8]) * 0.01, 2)
+    power_2_w = s16(battery[9])
     add("battery_charge_current", 40592, battery[5], max(0.0, -current_a), "A", "baterias", "Corrente de carga", derived=True)
     add("battery_discharge_current", 40592, battery[5], max(0.0, current_a), "A", "baterias", "Corrente de descarga", derived=True)
     add("battery_charge_power", 40591, battery[4], max(0, -power_w), "W", "baterias", "Potência de carga", derived=True)
     add("battery_discharge_power", 40591, battery[4], max(0, power_w), "W", "baterias", "Potência de descarga", derived=True)
+    add("battery_2_charge_current", 40595, battery[8], max(0.0, -current_2_a), "A", "baterias", "Corrente de carga da bateria 2", derived=True)
+    add("battery_2_discharge_current", 40595, battery[8], max(0.0, current_2_a), "A", "baterias", "Corrente de descarga da bateria 2", derived=True)
+    add("battery_2_charge_power", 40596, battery[9], max(0, -power_2_w), "W", "baterias", "Potência de carga da bateria 2", derived=True)
+    add("battery_2_discharge_power", 40596, battery[9], max(0, power_2_w), "W", "baterias", "Potência de descarga da bateria 2", derived=True)
+    # A plausible 40–60 V reading is presence evidence for this 48 V system.
+    # Do not create a bank from the inverter's configured input count alone.
+    battery_banks_detected = []
+    for channel, voltage in ((1, battery[1] * 0.01), (2, battery[7] * 0.01)):
+        if channel <= battery_input_count and 30.0 <= voltage <= 80.0:
+            battery_banks_detected.append({"channel": channel, "online": True,
+                "detection_source": "DEYE_MODBUS_BATTERY_INPUT_VOLTAGE", "voltage_v": round(voltage, 2)})
+    detected_channels = {item["channel"] for item in battery_banks_detected}
+    # Register 590 is the inverter's battery output power; register 595 is the
+    # separate Battery 2 power. Do not add 595 to 590 and double-count it.
+    active_power = power_w
+    active_current = ((current_a if 1 in detected_channels else 0.0) +
+                      (current_2_a if 2 in detected_channels else 0.0))
+    if detected_channels:
+        add("battery_total_power", 40591, battery[4], active_power, "W", "baterias",
+            "Potência total assinada reportada pelo inversor", derived=True)
+        add("battery_total_current", 40592, battery[5], active_current, "A", "baterias",
+            "Corrente total assinada dos bancos detetados", derived=True)
+        add("battery_total_charge_power", 40591, battery[4], max(0, -active_power),
+            "W", "baterias", "Potência total de carga reportada pelo inversor", derived=True)
+        add("battery_total_discharge_power", 40591, battery[4], max(0, active_power),
+            "W", "baterias", "Potência total de descarga reportada pelo inversor", derived=True)
 
     def at(block: tuple[int, ...], base: int, offset: int) -> int:
         return block[offset - base]
@@ -2839,12 +2889,14 @@ def _read_deye_sg05lp3_candidate_map(host: str, port: int, unit: int) -> dict[st
     return {
         "device_type_code": device_type,
         "status_code": status,
+        "battery_banks_detected": battery_banks_detected,
         "metrics": metrics,
         "quality_checks": quality_checks,
         "read_windows": [
             {"start_address": 0, "count": 1}, {"start_address": 108, "count": 2},
             {"start_address": 500, "count": 1}, {"start_address": 514, "count": 22},
-            {"start_address": 586, "count": 7}, {"start_address": 598, "count": 28},
+            {"start_address": 24, "count": 1}, {"start_address": 586, "count": 11},
+            {"start_address": 115, "count": 1}, {"start_address": 598, "count": 28},
             {"start_address": 627, "count": 29}, {"start_address": 672, "count": 8},
         ],
         "register_map": {
@@ -2880,6 +2932,7 @@ def read_deye(config: dict[str, Any]) -> dict[str, Any]:
                     "probe_method": "SG05LP3 community map; FC43 skipped",
                     "connection_state": "mapped_registers_response", "modbus_identity": None,
                     "device_type_code": mapped["device_type_code"], "status_code": mapped["status_code"],
+                    "battery_banks_detected": mapped["battery_banks_detected"],
                     "metrics": mapped["metrics"], "quality_checks": mapped["quality_checks"],
                     "register_map": mapped["register_map"],
                     "read_windows": mapped["read_windows"],

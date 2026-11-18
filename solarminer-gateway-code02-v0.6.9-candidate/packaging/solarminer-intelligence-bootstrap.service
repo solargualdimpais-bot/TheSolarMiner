@@ -10,6 +10,7 @@ ExecStart=/usr/sbin/solarminer-intelligence-bootstrap
 # finish the verified pull instead of terminating the installer after 15 min.
 TimeoutStartSec=2h
 UMask=0077
+Environment=HOME=/root
 NoNewPrivileges=true
 # This root one-shot installs verified system packages (Ollama, Node, and
 # OpenClaude) after Tailscale and TLS checks. Filesystem sandboxing here would

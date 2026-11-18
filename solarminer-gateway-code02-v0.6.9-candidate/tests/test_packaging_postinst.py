@@ -68,6 +68,7 @@ def test_bootstrap_service_can_install_system_runtime_after_security_checks():
     for forbidden in ("PrivateTmp=", "ProtectSystem=", "ProtectHome=", "ReadWritePaths="):
         assert forbidden not in service
     assert "NoNewPrivileges=true" in service
+    assert "Environment=HOME=/root" in service
     assert "TimeoutStartSec=2h" in service
     assert "Tailscale and TLS" in service
     assert "install -d -o root -g root -m 0755 /opt/solarminer/intelligence" in postinst
@@ -75,6 +76,19 @@ def test_bootstrap_service_can_install_system_runtime_after_security_checks():
     assert postinst.index("/opt/solarminer/intelligence") < postinst.index(timer_enable)
     assert postinst.index("/var/lib/solarminer/intelligence") < postinst.index(timer_enable)
     assert postinst.index("mountpoint -q /var/lib/solarminer") < postinst.index("/var/lib/solarminer/intelligence")
+
+
+def test_bootstrap_ollama_checks_have_home_and_smoke_test_accepts_qwen_thinking_model():
+    root = Path(__file__).parents[1]
+    bootstrap = (root / "packaging" / "solarminer-intelligence-bootstrap").read_text(encoding="utf-8")
+    assert 'export HOME="${HOME:-/root}"' in bootstrap
+    assert "http://127.0.0.1:11434/api/chat" in bootstrap
+    assert '\\"think\\":false' in bootstrap
+    assert '\\"num_predict\\":32' in bootstrap
+    assert "message.get(\"content\")" in bootstrap
+    assert "OLLAMA_SMOKE_EMPTY_ASSISTANT_CONTENT" in bootstrap
+    assert "OLLAMA_SMOKE_GENERATION_NOT_COMPLETE" in bootstrap
+    assert "api/generate" not in bootstrap
 
 
 def test_bootstrap_uses_packaged_zstd_instead_of_mutating_apt_sources():
