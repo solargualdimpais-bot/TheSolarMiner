@@ -385,6 +385,16 @@ def test_intelligence_provider_status_reports_local_runtime_model_and_optional_c
     })
     monkeypatch.setattr(gateway.update_helper_client, "request", lambda action, **kwargs:
                         {"status": "ok", "configured": False})
+    monkeypatch.setattr(gateway.system_components, "installed_component_status", lambda: {
+        "status": "OK", "version": "0.6.258", "protocol": 1, "reason": None,
+    })
+    monkeypatch.setattr(gateway.system_components, "integrated_diagnostics", lambda _version: {
+        "status": "OK", "reason": None, "application_version": "0.6.258",
+        "debian_package_version": "0.6.258", "active_release": "0.6.258",
+        "system_components": {"status": "OK", "version": "0.6.258", "protocol": 1, "reason": None},
+        "operating_system": {"id": "debian", "version": "13", "codename": "trixie"},
+        "python_version": "3.13.0", "units": {}, "paths": {},
+    })
 
     class FakeConnection:
         def __init__(self, host, port, timeout):
@@ -412,7 +422,10 @@ def test_intelligence_provider_status_reports_local_runtime_model_and_optional_c
     monkeypatch.setattr(gateway.http.client, "HTTPConnection", FakeConnection)
     response = client.get("/api/v1/intelligence/provider", headers=owner)
     assert response.status_code == 200, response.text
-    assert response.json() == {
+    payload = response.json()
+    assert {key: payload[key] for key in (
+        "default_provider", "agent", "ollama", "installation", "openai", "bootstrap",
+    )} == {
         "default_provider": "ollama", "agent": "available",
         "ollama": {"runtime": "available", "installed": True, "loaded": False,
                    "working": False, "model": "qwen3.5:9b-q4_K_M"},
@@ -424,6 +437,12 @@ def test_intelligence_provider_status_reports_local_runtime_model_and_optional_c
         "bootstrap": {"state": "running", "stage": "downloading_model", "message": "A descarregar o modelo.",
                       "percent": 42, "downloaded_bytes": 420, "total_bytes": 1000, "updated_at": 1000},
     }
+    assert payload["system_components"] == {
+        "status": "OK", "version": "0.6.258", "protocol": 1, "reason": None,
+    }
+    assert payload["system_diagnostics"]["status"] == "OK"
+    assert payload["system_diagnostics"]["active_release"] == "0.6.258"
+    assert payload["system_diagnostics"]["debian_package_version"] == "0.6.258"
 
 
 def test_provider_status_separates_installed_ollama_from_unreachable_local_services(client, monkeypatch):
