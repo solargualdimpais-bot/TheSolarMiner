@@ -72,8 +72,11 @@ class SystemUpdatePipeline:
                  service: str = "solarminer-gateway.service", recovery_timer: str = "solarminer-recovery.timer",
                  health_url: str = "https://127.0.0.1:8443/api/v1/health",
                  proxy_health_url: str = "https://127.0.0.1/api/v1/health", health_timeout: int = 60,
-                 runner=subprocess.run, clock=time.monotonic, sleep=time.sleep):
+                 system_root: str | Path = "/", runner=subprocess.run, clock=time.monotonic, sleep=time.sleep):
         self.root = Path(root)
+        # The production root is `/`; explicit injection keeps reconciliation
+        # integration tests hermetic and prevents fixtures from touching /usr.
+        self.system_root = Path(system_root)
         self.data_dir = Path(data_dir or os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
         self.db_path = Path(db_path or os.environ.get("SOLARMINER_DB_PATH", str(self.data_dir / "gateway.db")))
         self.public_key = Path(public_key)
@@ -114,6 +117,7 @@ class SystemUpdatePipeline:
                 stage, self.root, version,
                 legacy_files=self._legacy_system_component_files(),
                 operation_id=op_id,
+                system_root=self.system_root,
                 on_snapshot_ready=lambda path: self._record(
                     "SYSTEM_COMPONENTS_UPDATING", **operation_id_for_state,
                     system_components_backup=str(path)),
@@ -131,7 +135,7 @@ class SystemUpdatePipeline:
 
     def _restore_system_components(self, snapshot: Path) -> None:
         try:
-            system_components.restore(snapshot, self.root)
+            system_components.restore(snapshot, self.root, system_root=self.system_root)
         except system_components.SystemComponentError as exc:
             raise PipelineError(str(exc)) from exc
         self._run(["/usr/bin/systemctl", "daemon-reload"], timeout=15, check=True)
@@ -284,7 +288,7 @@ class SystemUpdatePipeline:
         if target_stat.st_uid != 0 or target_stat.st_mode & 0o022:
             raise PipelineError("current_release_permissions_invalid")
         components = system_components.compatibility_status(
-            target.name, system_components.installed_component_status(self.root))
+            target.name, system_components.installed_component_status(self.root, system_root=self.system_root))
         if components["status"] != "OK":
             raise PipelineError(str(components["reason"]))
         if not (target / "usr/lib/solarminer-gateway/solarminer_gateway/app.py").is_file():

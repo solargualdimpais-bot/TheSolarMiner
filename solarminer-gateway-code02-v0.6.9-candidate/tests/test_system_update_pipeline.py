@@ -84,7 +84,9 @@ def _pipeline_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, versio
         conn.execute("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
         conn.execute("INSERT INTO schema_migrations VALUES(6,'2026-10-19T00:00:00Z')")
         conn.execute("CREATE TABLE update_operations(id TEXT PRIMARY KEY,state TEXT NOT NULL,installed_version TEXT NOT NULL,target_version TEXT,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,details_json TEXT NOT NULL)")
-    deb = _make_package(tmp_path, version)
+    # Apply-path fixtures must carry the complete package-owned helper/unit
+    # set now that production rejects incomplete signed payloads.
+    deb = _make_package(tmp_path, version, with_system_components=True)
     package = verified / (deb.name + ".verified")
     shutil.copyfile(deb, package)
     private = Ed25519PrivateKey.generate()
@@ -122,7 +124,10 @@ def _pipeline_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, versio
             return subprocess.CompletedProcess(args, 0, "", "")
         return subprocess.CompletedProcess(args, 0, "", "")
     (data / "server.crt").write_text("test-certificate-placeholder")
-    pipeline = SystemUpdatePipeline(root=root, data_dir=data, db_path=db, public_key=key_path, runner=runner)
+    system_root = tmp_path / "fake-system"
+    system_root.mkdir()
+    pipeline = SystemUpdatePipeline(root=root, data_dir=data, db_path=db, public_key=key_path,
+                                    system_root=system_root, runner=runner)
     # These transaction tests focus on apply/rollback; permission policy is tested above.
     monkeypatch.setattr(pipeline, "_check_deployment_root_permissions", lambda: None)
     monkeypatch.setattr("solarminer_gateway.system_update_pipeline._validate_root_owned_not_writable", lambda *_args: None)
@@ -411,11 +416,7 @@ def test_failed_activation_restores_privileged_files_as_well_as_release_pointer(
         "sha256": {"usr/bin/solarminer-test-broker": hashlib.sha256(b"old broker\n").hexdigest(),
                    "lib/systemd/system/solarminer-old.socket": hashlib.sha256(b"old unit\n").hexdigest()},
     }))
-    real_reconcile, real_restore = system_components.reconcile, system_components.restore
-    monkeypatch.setattr(system_components, "reconcile",
-                        lambda *args, **kwargs: real_reconcile(*args, **kwargs, system_root=system_root))
-    monkeypatch.setattr(system_components, "restore",
-                        lambda *args, **kwargs: real_restore(*args, **kwargs, system_root=system_root))
+    pipeline.system_root = system_root
     answers = iter([False, True])
     monkeypatch.setattr(pipeline, "_health", lambda _expected, _seconds: next(answers))
     monkeypatch.setattr(pipeline, "_uid", lambda _name: 0)
