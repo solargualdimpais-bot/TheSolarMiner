@@ -17,6 +17,7 @@ command -v curl >/dev/null 2>&1 || fail "curl não está instalado"
 command -v python3 >/dev/null 2>&1 || fail "Python 3 não está instalado"
 command -v tar >/dev/null 2>&1 || fail "tar não está instalado"
 command -v sha256sum >/dev/null 2>&1 || fail "sha256sum não está instalado"
+command -v zstd >/dev/null 2>&1 || fail "zstd não está instalado; dependência do pacote verificado ausente"
 
 TAILSCALE_JSON=$(tailscale status --json 2>/dev/null) || fail "Tailscale ainda não está autorizado"
 TAILSCALE_DNS=$(printf '%s' "$TAILSCALE_JSON" | python3 -c '
@@ -66,13 +67,8 @@ TMP=$(mktemp -d "$BASE/.bootstrap.XXXXXX")
 trap 'rm -rf "$TMP" "$HEALTH"; [ -z "$LOCAL_HEALTH" ] || rm -f "$LOCAL_HEALTH"' EXIT HUP INT TERM
 
 # Ollama is installed only after the Tailscale identity, public TLS endpoint,
-# and local Gateway TLS endpoint have all passed above. The installer itself
-# is pinned and hash-checked; inference and model pulls remain loopback-only.
-if ! command -v zstd >/dev/null 2>&1; then
-  log "A instalar zstd a partir dos repositórios Debian verificados para o pacote oficial Ollama."
-  apt-get update >>"$LOG" 2>&1 || fail "apt-get update para zstd falhou"
-  DEBIAN_FRONTEND=noninteractive apt-get install -y zstd >>"$LOG" 2>&1 || fail "instalação de zstd falhou"
-fi
+# and local Gateway TLS endpoint have all passed above. Its installer is
+# pinned and hash-checked; inference and model pulls remain loopback-only.
 if ! command -v ollama >/dev/null 2>&1 || ! ollama --version 2>&1 | grep -Fq "$OLLAMA_VERSION"; then
   log "A instalar Ollama $OLLAMA_VERSION pelo instalador oficial verificado."
   curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \

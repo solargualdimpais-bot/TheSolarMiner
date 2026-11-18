@@ -70,6 +70,15 @@ jobs:
           python3 -m py_compile src/solarminer_gateway/admin_terminal_broker.py
           sh -n packaging/install-from-usb.sh
           sh -n packaging/solarminer-intelligence-bootstrap
+          grep -q '^Depends: .*zstd' packaging/control
+          grep -q 'command -v zstd' packaging/solarminer-intelligence-bootstrap
+          ! grep -q 'apt-get' packaging/solarminer-intelligence-bootstrap
+          ! grep -Eq '^(PrivateTmp|ProtectSystem|ProtectHome|ReadWritePaths)=' packaging/solarminer-intelligence-bootstrap.service
+          grep -q '^NoNewPrivileges=true$' packaging/solarminer-intelligence-bootstrap.service
+          grep -q '^ProtectSystem=strict$' packaging/solarminer-intelligence.service
+          grep -q '^ReadWritePaths=/var/lib/solarminer-intelligence/work /var/lib/solarminer-intelligence/home$' packaging/solarminer-intelligence.service
+          grep -q 'install -d -o root -g root -m 0755 /opt/solarminer/intelligence' packaging/postinst
+          grep -q 'install -d -o root -g root -m 0750 /var/lib/solarminer/intelligence' packaging/postinst
           python3 -m py_compile packaging/reset-data-volume.py
           python3 -m py_compile packaging/solarminer-intelligence-test-runner
           grep -q 'PrivateNetwork=yes' packaging/solarminer-intelligence-test-runner

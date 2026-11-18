@@ -9,8 +9,8 @@ ExecStart=/usr/sbin/solarminer-intelligence-bootstrap
 TimeoutStartSec=15min
 UMask=0077
 NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=full
-ProtectHome=true
-ReadWritePaths=/etc/solarminer /opt/solarminer/intelligence /usr/share/solarminer/intelligence-agent /usr/share/solarminer/intelligence-mcp /var/lib/solarminer/intelligence /var/lib/solarminer-intelligence /var/log
+# This root one-shot installs verified system packages (Ollama, Node, and
+# OpenClaude) after Tailscale and TLS checks. Filesystem sandboxing here would
+# block writes to /usr and /etc and fail before the runtime is installed.
+# The long-running Intelligence agent remains separately sandboxed.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
