@@ -3498,7 +3498,7 @@ async function refreshGatewayIntelligenceProvider() {
     if (openaiStatus) openaiStatus.textContent = cloudState;
     const bootstrap = state.bootstrap || {};
     const installed = state.installation || {};
-    if (ollamaInstallation) ollamaInstallation.textContent = `Ollama: ${installed.ollama ? "instalado e a responder" : "não instalado ou indisponível"}.`;
+    if (ollamaInstallation) ollamaInstallation.textContent = `Ollama: ${installed.ollama ? (local.runtime === "available" ? "instalado e a responder" : "instalado; serviço sem resposta") : "executável não encontrado"}.`;
     if (modelInstallation) modelInstallation.textContent = `Modelo local: ${installed.ollama ? (installed.model ? "instalado" : "não instalado") : "não foi possível confirmar porque o Ollama está indisponível"}.`;
     if (agentInstallation) agentInstallation.textContent = `OpenClaude: ${installed.openclaude ? "instalado" : "não instalado"}; Node: ${installed.node ? "instalado" : "não instalado"}.`;
     if (bootstrapButton) {
@@ -3528,11 +3528,14 @@ async function refreshGatewayIntelligenceProvider() {
     }
     if (revoke) revoke.disabled = !state.openai?.configured;
   } catch (error) {
-    const message = `Não foi possível consultar o estado: ${error.message}`;
+    const message = `Estado desconhecido: a consulta ao Gateway falhou (${error.message}). Isto não confirma que os componentes estejam desinstalados.`;
     ollamaStatus.textContent = message;
     if (agentStatus) agentStatus.textContent = message;
     if (openaiStatus) openaiStatus.textContent = message;
-    if (downloadStatus) downloadStatus.textContent = "O estado do bootstrap não pôde ser consultado.";
+    if (ollamaInstallation) ollamaInstallation.textContent = "Ollama: estado de instalação desconhecido porque a consulta ao Gateway falhou.";
+    if (modelInstallation) modelInstallation.textContent = "Modelo local: estado de instalação desconhecido porque a consulta ao Gateway falhou.";
+    if (agentInstallation) agentInstallation.textContent = "OpenClaude e Node: estado de instalação desconhecido porque a consulta ao Gateway falhou.";
+    if (downloadStatus) downloadStatus.textContent = "O estado e o progresso da instalação não puderam ser consultados no Gateway.";
     if (progress) progress.hidden = true;
   }
 }

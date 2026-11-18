@@ -43,7 +43,8 @@ test('PWA uses authenticated Gateway endpoints for provider setup, revocation an
   assert.match(auth, /readGatewayIntelligenceReviews/);
   assert.match(app, /refreshGatewayIntelligenceProvider/);
   assert.match(app, /state\.bootstrap/);
-  assert.match(app, /installed\.ollama \? "instalado e a responder"/);
+  assert.match(app, /installed\.ollama \? \(local\.runtime === "available" \? "instalado e a responder" : "instalado; serviço sem resposta"\)/);
+  assert.match(app, /Isto não confirma que os componentes estejam desinstalados/);
   assert.match(app, /installed\.model \? "instalado"/);
   assert.match(app, /installed\.openclaude \? "instalado"/);
   assert.match(app, /startGatewayIntelligenceBootstrap\(\)/);

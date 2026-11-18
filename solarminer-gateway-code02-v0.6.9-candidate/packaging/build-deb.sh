@@ -77,6 +77,7 @@ cp "$ROOT/docs/CHANGELOG_V06251.md" "$STAGE/usr/share/doc/solarminer-gateway/CHA
 cp "$ROOT/docs/CHANGELOG_V06252.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V06252.md"
 cp "$ROOT/docs/CHANGELOG_V06254.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V06254.md"
 cp "$ROOT/docs/CHANGELOG_V06255.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V06255.md"
+cp "$ROOT/docs/CHANGELOG_V06256.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V06256.md"
 cp "$ROOT/docs/API.md" "$STAGE/usr/share/doc/solarminer-gateway/API.md"
 cp "$ROOT/docs/A1B_SECURITY.md" "$STAGE/usr/share/doc/solarminer-gateway/A1B_SECURITY.md"
 cp "$ROOT/docs/A2_OWNER_RECOVERY.md" "$STAGE/usr/share/doc/solarminer-gateway/A2_OWNER_RECOVERY.md"

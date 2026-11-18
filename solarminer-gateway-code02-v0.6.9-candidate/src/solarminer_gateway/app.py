@@ -71,7 +71,7 @@ from . import smart_device_engine
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.255"
+PACKAGE_VERSION = "0.6.256"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 INTELLIGENCE_LOCAL_TOKEN_PATH = Path(os.environ.get("SOLARMINER_INTELLIGENCE_CLIENT_TOKEN_FILE", "/etc/solarminer/intelligence-client.token"))
@@ -3277,16 +3277,17 @@ def intelligence_provider_status(
                 os.access("/opt/solarminer/intelligence/node-v24.22.1/bin/node", os.X_OK),
         "openclaude": Path("/opt/solarminer/intelligence/app/node_modules/.bin/openclaude").is_file() and
                       os.access("/opt/solarminer/intelligence/app/node_modules/.bin/openclaude", os.X_OK),
-        "ollama": False,
+        "ollama": _intelligence_ollama_binary_installed(),
         "model": False,
     }
+    ollama_runtime_available = False
     try:
         with http.client.HTTPConnection("127.0.0.1", 11434, timeout=2) as connection:
             connection.request("GET", "/api/version", headers={"Accept": "application/json"})
             runtime_response = connection.getresponse()
             runtime_payload = json.loads(runtime_response.read(4096).decode("utf-8")) if runtime_response.status == 200 else {}
-            installation["ollama"] = isinstance(runtime_payload, dict) and isinstance(runtime_payload.get("version"), str)
-        if installation["ollama"]:
+            ollama_runtime_available = isinstance(runtime_payload, dict) and isinstance(runtime_payload.get("version"), str)
+        if ollama_runtime_available:
             with http.client.HTTPConnection("127.0.0.1", 11434, timeout=3) as connection:
                 connection.request("GET", "/api/tags", headers={"Accept": "application/json"})
                 tags_response = connection.getresponse()
@@ -3322,6 +3323,12 @@ def intelligence_provider_status(
             "bootstrap": bootstrap_state, "installation": installation,
             "openai": {"state": openai_state, "configured": openai_state == "configured",
                        "error_type": openai_error_type, "credential_display": "never_returned"}}
+
+
+def _intelligence_ollama_binary_installed() -> bool:
+    """Check the installed executable independently from the daemon/API health."""
+    executable = shutil.which("ollama")
+    return bool(executable and Path(executable).is_file() and os.access(executable, os.X_OK))
 
 
 @app.post("/api/v1/intelligence/bootstrap")

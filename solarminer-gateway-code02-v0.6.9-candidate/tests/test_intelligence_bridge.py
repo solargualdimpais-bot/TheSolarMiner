@@ -378,6 +378,7 @@ def test_intelligence_provider_configuration_is_owner_only_and_never_returns_or_
 
 def test_intelligence_provider_status_reports_local_runtime_model_and_optional_cloud_state(client, monkeypatch):
     owner = _owner(client)
+    monkeypatch.setattr(gateway, "_intelligence_ollama_binary_installed", lambda: True)
     monkeypatch.setattr(gateway, "_read_intelligence_bootstrap_status", lambda: {
         "state": "running", "stage": "downloading_model", "message": "A descarregar o modelo.",
         "percent": 42, "downloaded_bytes": 420, "total_bytes": 1000, "updated_at": 1000,
@@ -425,8 +426,9 @@ def test_intelligence_provider_status_reports_local_runtime_model_and_optional_c
     }
 
 
-def test_provider_status_still_returns_component_state_when_local_services_and_broker_are_down(client, monkeypatch):
+def test_provider_status_separates_installed_ollama_from_unreachable_local_services(client, monkeypatch):
     owner = _owner(client)
+    monkeypatch.setattr(gateway, "_intelligence_ollama_binary_installed", lambda: True)
     monkeypatch.setattr(gateway.update_helper_client, "request",
                         lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("broker absent")))
     monkeypatch.setattr(gateway.http.client, "HTTPConnection",
@@ -442,8 +444,19 @@ def test_provider_status_still_returns_component_state_when_local_services_and_b
     payload = response.json()
     assert payload["agent"] == "unavailable"
     assert payload["ollama"]["runtime"] == "unavailable"
+    assert payload["installation"]["ollama"] is True
     assert payload["openai"]["state"] == "status_unavailable"
     assert payload["bootstrap"]["state"] == "not_started"
+
+
+def test_ollama_installation_detection_is_independent_of_runtime_health(monkeypatch, tmp_path):
+    executable = tmp_path / "ollama"
+    executable.write_text("placeholder", encoding="utf-8")
+    monkeypatch.setattr(gateway.shutil, "which", lambda _name: str(executable))
+    monkeypatch.setattr(gateway.os, "access", lambda _path, _mode: True)
+    assert gateway._intelligence_ollama_binary_installed() is True
+    monkeypatch.setattr(gateway.os, "access", lambda _path, _mode: False)
+    assert gateway._intelligence_ollama_binary_installed() is False
 
 
 def test_owner_can_queue_intelligence_repair_and_action_is_audited(client, monkeypatch):
