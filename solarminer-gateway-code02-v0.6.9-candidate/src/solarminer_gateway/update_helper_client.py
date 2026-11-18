@@ -15,7 +15,7 @@ def request(action: str, operation_id: str | None = None, enabled: bool | None =
             suite: str | None = None) -> dict[str, Any]:
     if action not in {"preflight", "enqueue", "tailscale_status", "tailscale_connect", "diagnostics", "watchdog_set",
                       "intelligence_openai_set", "intelligence_openai_status", "intelligence_openai_clear",
-                      "intelligence_workspace_tests"}:
+                      "intelligence_workspace_tests", "intelligence_bootstrap_start"}:
         raise ValueError("update_broker_action_invalid")
     payload: dict[str, Any] = {"action": action}
     if action == "enqueue":
@@ -37,6 +37,9 @@ def request(action: str, operation_id: str | None = None, enabled: bool | None =
     elif action in {"intelligence_openai_status", "intelligence_openai_clear"}:
         if operation_id is not None or enabled is not None or api_key is not None or model is not None:
             raise ValueError("openai_configuration_unexpected")
+    elif action == "intelligence_bootstrap_start":
+        if any(value is not None for value in (operation_id, enabled, api_key, model, suite)):
+            raise ValueError("intelligence_bootstrap_request_invalid")
     elif action == "intelligence_workspace_tests":
         if operation_id is not None or enabled is not None or api_key is not None or model is not None:
             raise ValueError("intelligence_test_request_invalid")

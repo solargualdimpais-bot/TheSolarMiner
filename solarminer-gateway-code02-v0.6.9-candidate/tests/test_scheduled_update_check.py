@@ -75,6 +75,29 @@ def test_root_broker_only_enables_watchdog_through_fixed_systemd_unit():
     assert len(calls) == 2
 
 
+def test_root_broker_queues_only_the_fixed_intelligence_bootstrap_unit():
+    calls = []
+    def runner(args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    response = update_broker.handle_request(b'{"action":"intelligence_bootstrap_start"}\n', runner)
+    assert response == {"status": "ok", "queued": True}
+    assert calls[0][0] == ["/usr/bin/systemctl", "start", "--no-block",
+                           "solarminer-intelligence-bootstrap.service"]
+    assert calls[0][1]["timeout"] == 10
+    assert update_broker.handle_request(
+        b'{"action":"intelligence_bootstrap_start","unit":"arbitrary.service"}\n', runner
+    ) == {"status": "error", "reason": "request_invalid"}
+    assert len(calls) == 1
+
+
+def test_helper_client_rejects_parameters_for_bootstrap_action_before_socket_access(monkeypatch):
+    monkeypatch.setattr(update_helper_client.socket, "socket", lambda *_args: pytest.fail("socket must not be opened"))
+    with pytest.raises(ValueError, match="intelligence_bootstrap_request_invalid"):
+        update_helper_client.request("intelligence_bootstrap_start", operation_id="unexpected")
+
+
 def test_root_broker_stores_openai_key_without_returning_it_and_restarts_only_intelligence(monkeypatch):
     stored = []
     calls = []

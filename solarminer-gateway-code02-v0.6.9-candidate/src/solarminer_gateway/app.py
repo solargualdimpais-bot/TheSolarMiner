@@ -70,7 +70,7 @@ from . import smart_device_engine
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.252"
+PACKAGE_VERSION = "0.6.253"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 INTELLIGENCE_LOCAL_TOKEN_PATH = Path(os.environ.get("SOLARMINER_INTELLIGENCE_CLIENT_TOKEN_FILE", "/etc/solarminer/intelligence-client.token"))
@@ -3271,6 +3271,30 @@ def intelligence_provider_status(
     local_state: dict[str, Any] = {"runtime": "unavailable", "installed": False,
                                    "loaded": False, "working": False, "model": "qwen3.5:9b-q4_K_M"}
     agent_state = "unavailable"
+    installation = {
+        "node": Path("/opt/solarminer/intelligence/node-v24.22.1/bin/node").is_file() and
+                os.access("/opt/solarminer/intelligence/node-v24.22.1/bin/node", os.X_OK),
+        "openclaude": Path("/opt/solarminer/intelligence/app/node_modules/.bin/openclaude").is_file() and
+                      os.access("/opt/solarminer/intelligence/app/node_modules/.bin/openclaude", os.X_OK),
+        "ollama": False,
+        "model": False,
+    }
+    try:
+        with http.client.HTTPConnection("127.0.0.1", 11434, timeout=2) as connection:
+            connection.request("GET", "/api/version", headers={"Accept": "application/json"})
+            runtime_response = connection.getresponse()
+            runtime_payload = json.loads(runtime_response.read(4096).decode("utf-8")) if runtime_response.status == 200 else {}
+            installation["ollama"] = isinstance(runtime_payload, dict) and isinstance(runtime_payload.get("version"), str)
+        if installation["ollama"]:
+            with http.client.HTTPConnection("127.0.0.1", 11434, timeout=3) as connection:
+                connection.request("GET", "/api/tags", headers={"Accept": "application/json"})
+                tags_response = connection.getresponse()
+                tags_payload = json.loads(tags_response.read(16000).decode("utf-8")) if tags_response.status == 200 else {}
+            models = tags_payload.get("models", []) if isinstance(tags_payload, dict) else []
+            installation["model"] = any(isinstance(item, dict) and item.get("name") == "qwen3.5:9b-q4_K_M"
+                                         for item in models)
+    except (OSError, ValueError, TimeoutError, http.client.HTTPException):
+        pass
     try:
         with http.client.HTTPConnection("127.0.0.1", 8765, timeout=3) as connection:
             connection.request("GET", "/health", headers={"Accept": "application/json"})
@@ -3294,9 +3318,39 @@ def intelligence_provider_status(
                            "message": "Não foi possível validar o estado da instalação.",
                            "percent": None, "downloaded_bytes": None, "total_bytes": None, "updated_at": None}
     return {"default_provider": "ollama", "agent": agent_state, "ollama": local_state,
-            "bootstrap": bootstrap_state,
+            "bootstrap": bootstrap_state, "installation": installation,
             "openai": {"state": openai_state, "configured": openai_state == "configured",
                        "error_type": openai_error_type, "credential_display": "never_returned"}}
+
+
+@app.post("/api/v1/intelligence/bootstrap")
+def start_intelligence_bootstrap(
+    session: dict[str, Any] = Depends(require_permission("manage_gateway")),
+) -> dict[str, Any]:
+    """Queue the fixed, prerequisite-checked Intelligence installer for Owner recovery."""
+    with db() as conn:
+        _require_owner(session, conn)
+        actor = _revalidate_actor(conn, session, "manage_gateway")
+        if actor["role"] != "owner":
+            raise HTTPException(403, "owner_required")
+    try:
+        current = _read_intelligence_bootstrap_status()
+    except OSError:
+        current = {"state": "unavailable"}
+    if current.get("state") == "running":
+        with db() as conn:
+            audit(conn, session["user_id"], "intelligence.bootstrap.start", "intelligence", "already_running", {})
+        return {"status": "already_running", "queued": False}
+    try:
+        result = update_helper_client.request("intelligence_bootstrap_start")
+    except Exception as exc:
+        with db() as conn:
+            audit(conn, session["user_id"], "intelligence.bootstrap.start", "intelligence", "failed",
+                  {"error_type": type(exc).__name__})
+        raise HTTPException(503, "intelligence_bootstrap_unavailable") from exc
+    with db() as conn:
+        audit(conn, session["user_id"], "intelligence.bootstrap.start", "intelligence", "queued", {})
+    return {"status": "queued" if result.get("queued") is True else "accepted", "queued": True}
 
 
 @app.put("/api/v1/intelligence/provider")

@@ -7,7 +7,7 @@ import { GatewayConnectionManager, CONNECTION_STATES, validateGatewayUrl, classi
 import { isHeicPhoto } from "./photo-format.js";
 import { addFavoriteId, normalizeFavoriteIds, reorderFavoriteIds } from "./favorite-list.js";
 import { homeCacheKey, readHomeDisplayCache, writeHomeDisplayCache } from "./home-startup-cache.js";
-import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, redeemGatewayInvite, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, readGatewayEnergyEngineConfig, readGatewayUserAutomations, createGatewayUserAutomation, updateGatewayUserAutomation, deleteGatewayUserAutomation, dryRunGatewayUserAutomation, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayIntelligenceProvider, saveGatewayIntelligenceProvider, revokeGatewayIntelligenceProvider, askGatewayIntelligence, readGatewayIntelligenceReviews, readGatewayDiagnosticsUpload, saveGatewayDiagnosticsUploadToken, disableGatewayDiagnosticsUpload, sendGatewayDiagnosticsReport, setGatewayWatchdogEnabled, reportGatewayClientDiagnostics, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, syncGatewayTuyaSubdevices, previewGatewayTuyaProductImport, applyGatewayTuyaProductImport, saveGatewayTuyaProductMetadata, controlGatewayAntminer, testGatewayAntminerControl, readGatewayAntminerManagement, writeGatewayAntminerManagement, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, controlGatewayTuyaSetting, saveGatewayTuyaProductDpsDescription, saveGatewayTuyaPidDpsMap, readGatewayDeviceCards, saveGatewayDeviceCard, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, testGatewayTuyaLanReachability, discoverGatewayTuyaLanDevices, scanGatewayLocalNetwork, readGatewayDeviceInventory, readGatewaySmartProductCatalog, readGatewayShellyProductProfiles, readGatewayShellyDevices, discoverGatewayShellyDevices, registerGatewayShellyDevice, renameGatewayShellyDevice, readGatewayShellySettings, saveGatewayShellySettings, registerGatewayShellyBluDevice, discoverGatewayShellyBluDevices, controlGatewayShellySwitch, controlGatewayShellyLight, applyGatewayLocalNetworkMatches, saveGatewayLocalNetworkDevice, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, startGatewayTeslaOAuth, completeGatewayTeslaOAuth, saveGatewayTeslaRelay, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging, readGatewayTeslaLocalPresence } from "./gateway-auth.js";
+import { bootstrapGatewayOwner, recoverGatewayOwner, parseOwnerRecoveryFile, readGatewayBootstrapStatus, loginGateway, loginGatewayWithPassword, redeemGatewayInvite, sessionInfo, createGatewayInvite, listGatewayInvites, revokeGatewayInvite, listGatewayUsers, updateGatewayUserRole, updateGatewayUserStatus, logoutGateway, readGatewayEnergy, readGatewaySiteProfile, saveGatewaySiteProfile, saveGatewaySitePhoto, saveGatewayEnergyEngineConfig, readGatewayEnergyEngineConfig, readGatewayUserAutomations, createGatewayUserAutomation, updateGatewayUserAutomation, deleteGatewayUserAutomation, dryRunGatewayUserAutomation, presenceInfo, checkGatewayUpdate, readGatewayUpdateSource, readGatewayUpdateStatus, applyGatewayUpdate, readGatewayTailscale, readGatewayConsole, readGatewayIntelligenceProvider, startGatewayIntelligenceBootstrap, saveGatewayIntelligenceProvider, revokeGatewayIntelligenceProvider, askGatewayIntelligence, readGatewayIntelligenceReviews, readGatewayDiagnosticsUpload, saveGatewayDiagnosticsUploadToken, disableGatewayDiagnosticsUpload, sendGatewayDiagnosticsReport, setGatewayWatchdogEnabled, reportGatewayClientDiagnostics, readGatewayTerminalDiagnostics, openGatewayTerminalSocket, configureGatewayTailscale, startGatewayTailscale, readGatewayHardwareIntegrationConfig, readGatewayHardwareProvider, saveGatewayHardwareIntegrationConfig, syncGatewayTuyaDevices, syncGatewayTuyaSubdevices, previewGatewayTuyaProductImport, applyGatewayTuyaProductImport, saveGatewayTuyaProductMetadata, controlGatewayAntminer, testGatewayAntminerControl, readGatewayAntminerManagement, writeGatewayAntminerManagement, controlGatewayTuyaSwitch, controlGatewayTuyaLevel, controlGatewayTuyaSetting, saveGatewayTuyaProductDpsDescription, saveGatewayTuyaPidDpsMap, readGatewayDeviceCards, saveGatewayDeviceCard, readGatewayTuyaDeviceEvents, runGatewayTuyaLanDiagnostics, testGatewayTuyaLanReachability, discoverGatewayTuyaLanDevices, scanGatewayLocalNetwork, readGatewayDeviceInventory, readGatewaySmartProductCatalog, readGatewayShellyProductProfiles, readGatewayShellyDevices, discoverGatewayShellyDevices, registerGatewayShellyDevice, renameGatewayShellyDevice, readGatewayShellySettings, saveGatewayShellySettings, registerGatewayShellyBluDevice, discoverGatewayShellyBluDevices, controlGatewayShellySwitch, controlGatewayShellyLight, applyGatewayLocalNetworkMatches, saveGatewayLocalNetworkDevice, readGatewayDeyeCloudStations, importGatewayDeyeCloudHistory, readGatewayTeslaEvConfig, startGatewayTeslaOAuth, completeGatewayTeslaOAuth, saveGatewayTeslaRelay, saveGatewayTeslaEvConfig, readGatewayTeslaEvCharging, readGatewayTeslaLocalPresence } from "./gateway-auth.js";
 
 let automationEditingId = "";
 let energyEngineActiveTab="summary";
@@ -3475,6 +3475,10 @@ async function refreshGatewayIntelligenceProvider() {
   const ollamaStatus = $("#gateway-intelligence-ollama-status"), agentStatus = $("#gateway-intelligence-agent-status");
   const openaiStatus = $("#gateway-intelligence-provider-status"), downloadStatus = $("#gateway-intelligence-download-status");
   const progress = $("#gateway-intelligence-download-progress"), revoke = $("#gateway-intelligence-provider-revoke");
+  const bootstrapButton = $("#gateway-intelligence-bootstrap-start");
+  const ollamaInstallation = $("#gateway-intelligence-ollama-installation");
+  const modelInstallation = $("#gateway-intelligence-model-installation");
+  const agentInstallation = $("#gateway-intelligence-openclaude-installation");
   if (!ollamaStatus || !sessionInfo().authenticated || sessionInfo().user?.role !== "owner") return;
   ollamaStatus.textContent = "A consultar o estado do runtime e do modelo local…";
   try {
@@ -3493,6 +3497,16 @@ async function refreshGatewayIntelligenceProvider() {
     ollamaStatus.textContent = `${runtime} · ${model} · ${modelState} · ${loadState} · ${workState}.`;
     if (openaiStatus) openaiStatus.textContent = cloudState;
     const bootstrap = state.bootstrap || {};
+    const installed = state.installation || {};
+    if (ollamaInstallation) ollamaInstallation.textContent = `Ollama: ${installed.ollama ? "instalado e a responder" : "não instalado ou indisponível"}.`;
+    if (modelInstallation) modelInstallation.textContent = `Modelo local: ${installed.ollama ? (installed.model ? "instalado" : "não instalado") : "não foi possível confirmar porque o Ollama está indisponível"}.`;
+    if (agentInstallation) agentInstallation.textContent = `OpenClaude: ${installed.openclaude ? "instalado" : "não instalado"}; Node: ${installed.node ? "instalado" : "não instalado"}.`;
+    if (bootstrapButton) {
+      const running = bootstrap.state === "running";
+      bootstrapButton.disabled = running;
+      bootstrapButton.textContent = running ? "Instalação em curso…" : "Instalar/atualizar componentes do Intelligence";
+      bootstrapButton.setAttribute("aria-label", running ? "Instalação dos componentes do Intelligence em curso" : "Instalar, reparar ou atualizar os componentes do Intelligence");
+    }
     if (agentStatus) {
       const bootstrapDetail = bootstrap.state && bootstrap.state !== "completed" && bootstrap.state !== "not_started"
         ? ` Bootstrap: ${bootstrap.state}, etapa ${String(bootstrap.stage || "unknown").replace(/_/g, " ")}. ${bootstrap.message || ""}` : "";
@@ -3522,6 +3536,25 @@ async function refreshGatewayIntelligenceProvider() {
     if (progress) progress.hidden = true;
   }
 }
+$("#gateway-intelligence-bootstrap-start")?.addEventListener("click", async event => {
+  const button = event.currentTarget, status = $("#gateway-intelligence-download-status");
+  if (!sessionInfo().authenticated || sessionInfo().user?.role !== "owner") {
+    if (status) status.textContent = "Só o Owner autenticado pode iniciar a instalação.";
+    return;
+  }
+  button.disabled = true;
+  if (status) status.textContent = "A pedir ao Gateway para iniciar a instalação verificada…";
+  try {
+    const result = await startGatewayIntelligenceBootstrap();
+    if (status) status.textContent = result.status === "already_running"
+      ? "A instalação já está em curso; o progresso será atualizado automaticamente."
+      : "Instalação/reparação aceite pelo Gateway. O progresso será atualizado automaticamente.";
+    await refreshGatewayIntelligenceProvider();
+  } catch (error) {
+    if (status) status.textContent = `Não foi possível iniciar a instalação: ${error.message}`;
+    button.disabled = false;
+  }
+});
 async function refreshGatewayIntelligenceReviews() {
   const output = $("#gateway-intelligence-reviews");
   if (!output || !sessionInfo().authenticated || sessionInfo().user?.role !== "owner") return;

@@ -15,6 +15,10 @@ test('Owner has an Intelligence panel with protected provider setup and read-onl
     assert.match(html, new RegExp(`data-intelligence-panel="${tab}"`));
   }
   assert.match(html, /gateway-intelligence-download-progress/);
+  assert.match(html, /gateway-intelligence-ollama-installation/);
+  assert.match(html, /gateway-intelligence-model-installation/);
+  assert.match(html, /gateway-intelligence-openclaude-installation/);
+  assert.match(html, /gateway-intelligence-bootstrap-start/);
   assert.match(html, /gateway-intelligence-status-refresh/);
   assert.match(html, /gateway-intelligence-api-key/);
   assert.match(html, /gateway-intelligence-model/);
@@ -31,12 +35,19 @@ test('Owner has an Intelligence panel with protected provider setup and read-onl
 test('PWA uses authenticated Gateway endpoints for provider setup, revocation and analysis', () => {
   assert.match(auth, /\/api\/v1\/intelligence\/provider/);
   assert.match(auth, /\/api\/v1\/intelligence\/ask/);
+  assert.match(auth, /\/api\/v1\/intelligence\/bootstrap/);
+  assert.match(auth, /startGatewayIntelligenceBootstrap/);
   assert.match(auth, /saveGatewayIntelligenceProvider\(apiKey, model\)/);
   assert.match(auth, /revokeGatewayIntelligenceProvider/);
   assert.match(auth, /askGatewayIntelligence/);
   assert.match(auth, /readGatewayIntelligenceReviews/);
   assert.match(app, /refreshGatewayIntelligenceProvider/);
   assert.match(app, /state\.bootstrap/);
+  assert.match(app, /installed\.ollama \? "instalado e a responder"/);
+  assert.match(app, /installed\.model \? "instalado"/);
+  assert.match(app, /installed\.openclaude \? "instalado"/);
+  assert.match(app, /startGatewayIntelligenceBootstrap\(\)/);
+  assert.match(app, /Instalar\/atualizar componentes do Intelligence/);
   assert.match(app, /gateway-intelligence-download-progress/);
   assert.match(app, /setInterval\(refreshGatewayIntelligenceProvider, 5000\)/);
   assert.match(app, /OpenClaude ativo, mas ainda não pronto/);

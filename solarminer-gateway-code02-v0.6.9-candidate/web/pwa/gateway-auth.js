@@ -287,6 +287,9 @@ export async function readGatewayConsole() {
 export async function readGatewayIntelligenceProvider() {
   return gatewayApi("/api/v1/intelligence/provider");
 }
+export async function startGatewayIntelligenceBootstrap() {
+  return gatewayApi("/api/v1/intelligence/bootstrap", { method: "POST", body: {} });
+}
 export async function saveGatewayIntelligenceProvider(apiKey, model) {
   if (typeof apiKey !== "string" || typeof model !== "string") throw new Error("Configuração OpenAI inválida.");
   return gatewayApi("/api/v1/intelligence/provider", { method: "PUT", body: { api_key: apiKey, model } });

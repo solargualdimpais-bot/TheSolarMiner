@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.185: terminal Owner administrativo para gestão do Gateway.",
+  "description": "The Solar Miner PWA v0.5.186: estado e recuperação do SolarMiner Intelligence.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",

@@ -387,13 +387,21 @@ def test_intelligence_provider_status_reports_local_runtime_model_and_optional_c
 
     class FakeConnection:
         def __init__(self, host, port, timeout):
-            assert (host, port) == ("127.0.0.1", 8765)
-            assert timeout == 3
+            assert host == "127.0.0.1"
+            assert port in {8765, 11434}
+            assert timeout in {2, 3}
+            self.port = port
+            self.path = None
         def __enter__(self): return self
         def __exit__(self, *_args): return False
         def request(self, method, path, *, headers):
-            assert method == "GET" and path == "/health"
+            assert method == "GET"
+            self.path = path
         def getresponse(self):
+            if self.port == 11434 and self.path == "/api/version":
+                return SimpleNamespace(status=200, read=lambda _limit: b'{"version":"0.40.16"}')
+            if self.port == 11434 and self.path == "/api/tags":
+                return SimpleNamespace(status=200, read=lambda _limit: b'{"models":[{"name":"qwen3.5:9b-q4_K_M"}]}')
             health = {"configured": True, "ollama": {
                 "runtime": "available", "model": "qwen3.5:9b-q4_K_M",
                 "installed": True, "loaded": False, "working": False,
@@ -407,11 +415,50 @@ def test_intelligence_provider_status_reports_local_runtime_model_and_optional_c
         "default_provider": "ollama", "agent": "available",
         "ollama": {"runtime": "available", "installed": True, "loaded": False,
                    "working": False, "model": "qwen3.5:9b-q4_K_M"},
+        "installation": {"node": gateway.Path("/opt/solarminer/intelligence/node-v24.22.1/bin/node").is_file(),
+                         "openclaude": gateway.Path("/opt/solarminer/intelligence/app/node_modules/.bin/openclaude").is_file(),
+                         "ollama": True, "model": True},
         "openai": {"state": "not_configured", "configured": False,
                    "error_type": None, "credential_display": "never_returned"},
         "bootstrap": {"state": "running", "stage": "downloading_model", "message": "A descarregar o modelo.",
                       "percent": 42, "downloaded_bytes": 420, "total_bytes": 1000, "updated_at": 1000},
     }
+
+
+def test_owner_can_queue_intelligence_repair_and_action_is_audited(client, monkeypatch):
+    owner = _owner(client)
+    calls = []
+    monkeypatch.setattr(gateway, "_read_intelligence_bootstrap_status", lambda: {
+        "state": "failed", "stage": "installing_ollama", "message": "A instalação falhou.",
+        "percent": None, "downloaded_bytes": None, "total_bytes": None, "updated_at": time.time(),
+    })
+    monkeypatch.setattr(gateway.update_helper_client, "request", lambda action, **kwargs:
+                        calls.append((action, kwargs)) or {"status": "ok", "queued": True})
+
+    response = client.post("/api/v1/intelligence/bootstrap", headers=owner, json={})
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"status": "queued", "queued": True}
+    assert calls == [("intelligence_bootstrap_start", {})]
+    with gateway.db() as conn:
+        audit_row = conn.execute("SELECT outcome FROM audit WHERE action='intelligence.bootstrap.start'").fetchone()
+    assert audit_row[0] == "queued"
+
+
+def test_intelligence_bootstrap_repair_is_not_queued_twice_while_running(client, monkeypatch):
+    owner = _owner(client)
+    calls = []
+    monkeypatch.setattr(gateway, "_read_intelligence_bootstrap_status", lambda: {
+        "state": "running", "stage": "downloading_model", "message": "A descarregar.",
+        "percent": 21, "downloaded_bytes": 10, "total_bytes": 50, "updated_at": time.time(),
+    })
+    monkeypatch.setattr(gateway.update_helper_client, "request", lambda *args, **kwargs: calls.append(args))
+
+    response = client.post("/api/v1/intelligence/bootstrap", headers=owner, json={})
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "already_running", "queued": False}
+    assert calls == []
 
 
 def test_intelligence_ask_forwards_only_authenticated_local_request_and_audits_metadata(client, monkeypatch):

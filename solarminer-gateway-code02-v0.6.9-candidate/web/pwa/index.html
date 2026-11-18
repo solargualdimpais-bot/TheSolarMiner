@@ -102,11 +102,16 @@
           <section data-intelligence-panel="ollama">
             <div class="panel-header"><h4>Ollama local e modelo</h4><button type="button" class="button secondary" id="gateway-intelligence-status-refresh">Consultar estado</button></div>
             <div id="gateway-intelligence-ollama-status" class="connection-result" role="status" aria-live="polite">A consultar o Ollama…</div>
+            <div id="gateway-intelligence-ollama-installation" class="field-note" role="status" aria-live="polite">A verificar se o Ollama está instalado…</div>
+            <div id="gateway-intelligence-model-installation" class="field-note" role="status" aria-live="polite">A verificar se o modelo está instalado…</div>
             <div id="gateway-intelligence-download-status" class="field-note" role="status" aria-live="polite">Ainda sem estado de instalação.</div>
             <progress id="gateway-intelligence-download-progress" max="100" value="0" aria-label="Progresso do download do modelo" hidden></progress>
+            <p class="field-note">Se o runtime local do Intelligence ficar incompleto, o Owner pode instalar, reparar ou atualizar os seus componentes. O Gateway repete as verificações de Tailscale e HTTPS antes de instalar. As atualizações do software Gateway continuam no menu Atualizações.</p>
+            <button type="button" class="button primary" id="gateway-intelligence-bootstrap-start">Instalar/atualizar componentes do Intelligence</button>
           </section>
           <section data-intelligence-panel="openclaude" hidden>
             <h4>Agente residente OpenClaude</h4>
+            <div id="gateway-intelligence-openclaude-installation" class="field-note" role="status" aria-live="polite">A verificar se o agente está instalado…</div>
             <div id="gateway-intelligence-agent-status" class="connection-result" role="status" aria-live="polite">A consultar o serviço residente…</div>
           </section>
           <section data-intelligence-panel="openai" hidden>
@@ -208,7 +213,7 @@
       </dialog>
       </section>
 
-      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.5.185</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
+      <footer class="page-footer"><span>THE SOLAR MINER <span id="app-version">OWNER PWA 0.5.186</span></span><span id="freshness-label">Sem sessão autenticada</span></footer>
     </main>
   </div>
 

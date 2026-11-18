@@ -36,7 +36,7 @@ def test_intelligence_service_waits_for_bootstrap_credentials():
     assert "EnvironmentFile=/etc/solarminer/intelligence-agent.env" in service
     bootstrap = (Path(__file__).parents[1] / "packaging" / "solarminer-intelligence-bootstrap").read_text(encoding="utf-8")
     ready = 'install -o root -g root -m 0644 /dev/null "$READY_FILE"'
-    start = "systemctl enable --now solarminer-intelligence.service"
+    start = "systemctl restart solarminer-intelligence.service"
     assert ready in bootstrap
     assert bootstrap.index(ready) < bootstrap.index(start)
     assert 'rm -f "$READY_FILE"' in bootstrap
@@ -75,3 +75,15 @@ def test_bootstrap_publishes_download_progress_for_owner_console():
                      '"total_bytes":total', '"stage":"downloading_model"',
                      'write_status failed "$CURRENT_STAGE"'):
         assert expected in bootstrap
+
+
+def test_intelligence_bootstrap_can_retry_partial_install_and_apply_pinned_component_updates():
+    root = Path(__file__).parents[1]
+    bootstrap = (root / "packaging" / "solarminer-intelligence-bootstrap").read_text(encoding="utf-8")
+    assert '[ ! -e "$STATE" ] ||' not in bootstrap
+    assert '!= "v$NODE_VERSION"' in bootstrap
+    assert 'OPENCLAUDE_EXISTING' in bootstrap
+    assert 'systemctl restart solarminer-intelligence.service' in bootstrap
+    assert 'systemctl start --no-block solarminer-intelligence-bootstrap.service' not in bootstrap
+    service = (root / "packaging" / "solarminer-intelligence-bootstrap.service").read_text(encoding="utf-8")
+    assert "TimeoutStartSec=2h" in service
