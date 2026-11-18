@@ -6,7 +6,9 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/sbin/solarminer-intelligence-bootstrap
-TimeoutStartSec=15min
+# The bootstrap downloads a multi-gigabyte local model. Allow slower links to
+# finish the verified pull instead of terminating the installer after 15 min.
+TimeoutStartSec=2h
 UMask=0077
 NoNewPrivileges=true
 # This root one-shot installs verified system packages (Ollama, Node, and

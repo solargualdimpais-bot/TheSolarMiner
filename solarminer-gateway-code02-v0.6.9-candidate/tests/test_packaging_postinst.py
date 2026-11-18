@@ -27,6 +27,7 @@ def test_bootstrap_service_can_install_system_runtime_after_security_checks():
     for forbidden in ("PrivateTmp=", "ProtectSystem=", "ProtectHome=", "ReadWritePaths="):
         assert forbidden not in service
     assert "NoNewPrivileges=true" in service
+    assert "TimeoutStartSec=2h" in service
     assert "Tailscale and TLS" in service
     assert "install -d -o root -g root -m 0755 /opt/solarminer/intelligence" in postinst
     assert "install -d -o root -g root -m 0750 /var/lib/solarminer/intelligence" in postinst
