@@ -3479,6 +3479,7 @@ async function refreshGatewayIntelligenceProvider() {
   const ollamaInstallation = $("#gateway-intelligence-ollama-installation");
   const modelInstallation = $("#gateway-intelligence-model-installation");
   const agentInstallation = $("#gateway-intelligence-openclaude-installation");
+  const systemDiagnostics = $("#gateway-intelligence-system-diagnostics");
   if (!ollamaStatus || !sessionInfo().authenticated || sessionInfo().user?.role !== "owner") return;
   ollamaStatus.textContent = "A consultar o estado do runtime e do modelo local…";
   try {
@@ -3501,6 +3502,21 @@ async function refreshGatewayIntelligenceProvider() {
     if (ollamaInstallation) ollamaInstallation.textContent = `Ollama: ${installed.ollama ? (local.runtime === "available" ? "instalado e a responder" : "instalado; serviço sem resposta") : "executável não encontrado"}.`;
     if (modelInstallation) modelInstallation.textContent = `Modelo local: ${installed.ollama ? (installed.model ? "instalado" : "não instalado") : "não foi possível confirmar porque o Ollama está indisponível"}.`;
     if (agentInstallation) agentInstallation.textContent = `OpenClaude: ${installed.openclaude ? "instalado" : "não instalado"}; Node: ${installed.node ? "instalado" : "não instalado"}.`;
+    if (systemDiagnostics) {
+      const diagnostics = state.system_diagnostics || {};
+      const units = diagnostics.units || {};
+      const unitText = ["update_broker", "intelligence_bootstrap_broker", "admin_terminal"]
+        .map(name => `${name.replace(/_/g, " ")}: ${units[name]?.state || "desconhecido"}`).join("; ");
+      const components = diagnostics.system_components || {};
+      const engine = diagnostics.smart_device_engine || {};
+      const paths = diagnostics.paths || {};
+      const pathText = ["intelligence_bootstrap_binary", "intelligence_runtime", "intelligence_state",
+        "intelligence_agent_env", "admin_terminal_socket"].map(name =>
+        `${name.replace(/_/g, " ")}: ${paths[name]?.state || "desconhecido"}`).join("; ");
+      systemDiagnostics.textContent = diagnostics.status
+        ? `Compatibilidade ${diagnostics.status}${diagnostics.reason ? ` (${diagnostics.reason})` : ""}. Debian ${diagnostics.operating_system?.version || "?"}, Python ${diagnostics.python_version || "?"}; app ${diagnostics.application_version || "?"}, pacote Debian ${diagnostics.debian_package_version || "desconhecido"}, release ativa ${diagnostics.active_release || "desconhecida"}, componentes ${components.version || "desconhecida"} (${components.status || "desconhecido"}). ${unitText}; ${pathText}; Smart Device Engine: ${engine.state || "desconhecido"}${engine.last_error_type ? `, erro ${engine.last_error_type}, nova tentativa em ${engine.retry_in_seconds}s` : ""}.`
+        : "Diagnóstico dos componentes de sistema não foi disponibilizado por esta versão do Gateway.";
+    }
     if (bootstrapButton) {
       const running = bootstrap.state === "running";
       bootstrapButton.disabled = running;
@@ -3536,6 +3552,7 @@ async function refreshGatewayIntelligenceProvider() {
     if (ollamaInstallation) ollamaInstallation.textContent = "Ollama: estado de instalação desconhecido porque a consulta ao Gateway falhou.";
     if (modelInstallation) modelInstallation.textContent = "Modelo local: estado de instalação desconhecido porque a consulta ao Gateway falhou.";
     if (agentInstallation) agentInstallation.textContent = "OpenClaude e Node: estado de instalação desconhecido porque a consulta ao Gateway falhou.";
+    if (systemDiagnostics) systemDiagnostics.textContent = "Compatibilidade do sistema desconhecida: a consulta autenticada ao Gateway falhou.";
     if (downloadStatus) downloadStatus.textContent = "O estado e o progresso da instalação não puderam ser consultados no Gateway.";
     if (progress) progress.hidden = true;
   }

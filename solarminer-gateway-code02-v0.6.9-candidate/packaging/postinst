@@ -98,6 +98,11 @@ case "${1:-}" in
     safe_root_dir /opt/solarminer/releases || { echo "Unsafe releases directory" >&2; exit 1; }
     safe_root_dir /opt/solarminer/backups || { echo "Unsafe backups directory" >&2; exit 1; }
     version=$(dpkg-query -W -f='${Version}' solarminer-gateway)
+    # Record which version of the package-owned privileged helpers/units is
+    # actually installed. Online app-only releases update this manifest only
+    # inside the updater's transactional reconciliation step.
+    PYTHONPATH=/usr/lib/solarminer-gateway /usr/bin/python3 -c \
+      'from solarminer_gateway.system_components import initialize_installed_manifest; initialize_installed_manifest("'"$version"'")'
     release="/opt/solarminer/releases/$version"
     if [ -L "$release" ]; then echo "Refusing symlink release: $release" >&2; exit 1; fi
     if [ -e "$release" ]; then
@@ -142,12 +147,24 @@ case "${1:-}" in
       systemctl disable --now solarminer-gateway-watchdog.timer || true
       systemctl enable --now solarminer-error-report.timer
       systemctl enable --now solarminer-tailscale-cert.timer
-      systemctl enable --now solarminer-intelligence-bootstrap.timer
+      if [ -e /run/solarminer/usb-repair-in-progress ] || [ -L /run/solarminer/usb-repair-in-progress ]; then
+        systemctl enable solarminer-intelligence-bootstrap.timer
+      else
+        systemctl enable --now solarminer-intelligence-bootstrap.timer
+      fi
       if command -v tailscale >/dev/null 2>&1; then
         systemctl enable --now tailscaled.service
       fi
       systemctl restart nginx.service || systemctl start nginx.service
-      systemctl restart solarminer-gateway.service || systemctl start solarminer-gateway.service
+      if [ -e /run/solarminer/usb-repair-in-progress ] || [ -L /run/solarminer/usb-repair-in-progress ]; then
+        [ ! -L /run/solarminer ] && [ -f /run/solarminer/usb-repair-in-progress ] && [ ! -L /run/solarminer/usb-repair-in-progress ] &&
+          [ "$(stat -c %u /run/solarminer/usb-repair-in-progress)" = 0 ] || {
+            echo "Unsafe USB repair transaction marker" >&2; exit 1;
+          }
+        echo "USB repair transaction active; deferring Gateway start until the release pointer is switched."
+      else
+        systemctl restart solarminer-gateway.service || systemctl start solarminer-gateway.service
+      fi
       # Public-IP certificate issuance is optional and disabled by default.
       # Tailscale HTTPS is independent of router forwarding and CGNAT.
       if command -v tailscale >/dev/null 2>&1; then

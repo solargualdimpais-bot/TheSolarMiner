@@ -4,7 +4,7 @@ set -eu
 
 [ "$(id -u)" -eq 0 ] || { echo "Executa como root: sh repair-existing-from-usb.sh" >&2; exit 1; }
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-TARGET_VERSION=0.6.257
+TARGET_VERSION=0.6.258
 PACKAGE="$HERE/solarminer-gateway_${TARGET_VERSION}_amd64.deb"
 MANIFEST="$HERE/solarminer-release.json"
 PUBLIC_KEY="$HERE/release-pubkey.pem"
@@ -104,6 +104,15 @@ sh "$TAILSCALE_SETUP" >>"$LOG" 2>&1 || fail "Instalação/verificação Tailscal
 BACKUP_DIR=/var/lib/solarminer/backups
 install -d -o root -g root -m 0700 "$BACKUP_DIR"
 BACKUP="$BACKUP_DIR/gateway-before-usb-repair-$(date -u '+%Y%m%dT%H%M%SZ').sqlite3"
+COMPONENT_MANIFEST=/opt/solarminer/system-components.json
+COMPONENT_MANIFEST_BACKUP="$BACKUP_DIR/system-components-before-usb-repair-$(date -u '+%Y%m%dT%H%M%SZ').json"
+COMPONENT_MANIFEST_PRESENT=0
+if [ -e "$COMPONENT_MANIFEST" ] || [ -L "$COMPONENT_MANIFEST" ]; then
+  [ -f "$COMPONENT_MANIFEST" ] && [ ! -L "$COMPONENT_MANIFEST" ] || fail "Manifesto de componentes existente não é um ficheiro regular seguro."
+  cp -p "$COMPONENT_MANIFEST" "$COMPONENT_MANIFEST_BACKUP"
+  chmod 0600 "$COMPONENT_MANIFEST_BACKUP"
+  COMPONENT_MANIFEST_PRESENT=1
+fi
 python3 - "$BACKUP" <<'PY' || fail "Backup SQLite falhou."
 import os, sqlite3, sys
 with sqlite3.connect("/var/lib/solarminer/gateway.db") as source, sqlite3.connect(sys.argv[1]) as target:
@@ -114,7 +123,21 @@ with sqlite3.connect(sys.argv[1]) as check:
 PY
 log "Backup SQLite criado: $BACKUP"
 
-systemctl stop solarminer-gateway.service || fail "Não foi possível parar o serviço."
+RUN_DIR=/run/solarminer
+REPAIR_MARKER="$RUN_DIR/usb-repair-in-progress"
+[ ! -L "$RUN_DIR" ] || fail "Diretório de runtime inseguro."
+[ -d "$RUN_DIR" ] || install -d -o root -g root -m 0755 "$RUN_DIR" || fail "Não foi possível preparar o diretório runtime."
+[ ! -e "$REPAIR_MARKER" ] && [ ! -L "$REPAIR_MARKER" ] || fail "Já existe uma transação de reparação ou um marcador inseguro."
+(umask 077; set -C; : > "$REPAIR_MARKER") || fail "Não foi possível criar o marcador seguro da reparação."
+if ! chown root:root "$REPAIR_MARKER" || ! chmod 0600 "$REPAIR_MARKER"; then
+  rm -f "$REPAIR_MARKER"
+  fail "Não foi possível proteger o marcador da reparação."
+fi
+if ! systemctl stop solarminer-gateway.service; then
+  rm -f "$REPAIR_MARKER"
+  fail "Não foi possível parar o serviço."
+fi
+systemctl stop solarminer-intelligence-bootstrap.timer >/dev/null 2>&1 || true
 SUCCESS=0
 rollback() {
   status=$?
@@ -144,6 +167,17 @@ os.chown("/var/lib/solarminer/gateway.db", account.pw_uid, account.pw_gid)
 os.chmod("/var/lib/solarminer/gateway.db", 0o600)
 PY
     DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-downgrades "$OLD_PACKAGE" >>"$LOG" 2>&1 || log "ERROR: dpkg não confirmou a reposição do pacote $OLD_VERSION."
+    if [ "$COMPONENT_MANIFEST_PRESENT" -eq 1 ]; then
+      [ ! -L "$COMPONENT_MANIFEST" ] || log "ERROR: manifesto de componentes tornou-se symlink durante rollback."
+      cp "$COMPONENT_MANIFEST_BACKUP" /opt/solarminer/.system-components-rollback
+      chown root:root /opt/solarminer/.system-components-rollback
+      chmod 0644 /opt/solarminer/.system-components-rollback
+      mv -Tf /opt/solarminer/.system-components-rollback "$COMPONENT_MANIFEST" || log "ERROR: não foi possível repor o manifesto de componentes."
+    else
+      rm -f "$COMPONENT_MANIFEST"
+    fi
+    rm -f "$REPAIR_MARKER"
+    systemctl start solarminer-intelligence-bootstrap.timer >/dev/null 2>&1 || true
     systemctl start solarminer-gateway.service >/dev/null 2>&1 || true
     log "Rollback de aplicação/base de dados/pacote tentado; backup original preservado em $BACKUP. Consulta $LOG."
   fi
@@ -190,6 +224,8 @@ if response.status != 200 or proxy_data.get("status") != "ok" or proxy_data.get(
     raise SystemExit(1)
 PY
   then
+    rm -f "$REPAIR_MARKER"
+    systemctl start solarminer-intelligence-bootstrap.timer || fail "Não foi possível reativar o temporizador do Intelligence; rollback será tentado."
     SUCCESS=1
     log "Instalação, ativação, health check da API e do proxy Nginx para $TARGET_VERSION concluídos."
     log "A release anterior $OLD_RELEASE_NAME e o backup $BACKUP foram preservados."

@@ -83,6 +83,16 @@ jobs:
           ! grep -q '^Requires=solarminer-recovery.service$' packaging/solarminer-intelligence-bootstrap-broker@.service
           grep -q '^ExecStartPre=/usr/bin/solarminer-data-volume-check$' packaging/solarminer-intelligence-bootstrap-broker@.service
           grep -q '^ProtectSystem=strict$' packaging/solarminer-intelligence.service
+          grep -q '^ReadWritePaths=/opt/solarminer /var/lib/solarminer /usr/bin /usr/sbin /usr/lib/solarminer-gateway /usr/share/solarminer/intelligence-agent /usr/share/solarminer/intelligence-mcp /usr/lib/systemd/system$' packaging/solarminer-update-apply@.service
+          grep -q 'system_components_version' src/solarminer_gateway/system_update_pipeline.py
+          grep -q 'system_components_backup' src/solarminer_gateway/system_update_pipeline.py
+          grep -q 'initialize_installed_manifest' packaging/postinst
+          grep -q 'usb-repair-in-progress' packaging/postinst
+          grep -q 'usb-repair-in-progress' packaging/repair-existing-from-usb.sh
+          grep -q 'cycle_retry_delay' src/solarminer_gateway/app.py
+          grep -q 'REQUIRED_COMPONENTS' src/solarminer_gateway/system_components.py
+          grep -q 'integrated_diagnostics' src/solarminer_gateway/system_components.py
+          grep -q 'system_diagnostics' src/solarminer_gateway/app.py
           grep -q '^ReadWritePaths=/var/lib/solarminer-intelligence/work /var/lib/solarminer-intelligence/home$' packaging/solarminer-intelligence.service
           grep -q 'install -d -o root -g root -m 0755 /opt/solarminer/intelligence' packaging/postinst
           grep -q 'install -d -o root -g root -m 0750 /var/lib/solarminer/intelligence' packaging/postinst

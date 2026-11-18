@@ -22,7 +22,7 @@ from solarminer_gateway.updates import canonical_manifest
 LINUX_ONLY = pytest.mark.skipif(os.name == "nt", reason="Update pipeline integration tests require POSIX symlinks and fcntl locks")
 
 
-def _make_package(tmp_path: Path, version: str = "0.6.9") -> Path:
+def _make_package(tmp_path: Path, version: str = "0.6.9", *, with_system_components: bool = False) -> Path:
     tree = tmp_path / "deb-tree"
     (tree / "DEBIAN").mkdir(parents=True)
     (tree / "usr/lib/solarminer-gateway/solarminer_gateway").mkdir(parents=True)
@@ -33,6 +33,16 @@ def _make_package(tmp_path: Path, version: str = "0.6.9") -> Path:
     (tree / "usr/share/solarminer/catalog.json").write_text('{}')
     (tree / "usr/share/solarminer/catalog.sig").write_text('signature')
     (tree / "usr/share/solarminer/catalog.pub").write_text('public-key')
+    if with_system_components:
+        from solarminer_gateway.system_components import REQUIRED_COMPONENTS
+        for relative in REQUIRED_COMPONENTS:
+            relative = relative.replace("usr/lib/systemd/system/", "lib/systemd/system/")
+            component = tree / relative
+            component.parent.mkdir(parents=True, exist_ok=True)
+            component.write_text("test system component\n")
+        (tree / "usr/bin/solarminer-test-broker").write_text("new broker\n")
+        unit = tree / "lib/systemd/system/solarminer-test.socket"
+        unit.write_text("[Socket]\nListenStream=/run/solarminer/test.sock\n")
     (tree / "DEBIAN/control").write_text(
         f"Package: solarminer-gateway\nVersion: {version}\nArchitecture: amd64\nMaintainer: Test\nDescription: test update package\n"
     )
@@ -214,7 +224,7 @@ def test_health_check_rejects_nginx_502_even_when_direct_api_is_healthy(
         status = 200
         def __enter__(self): return self
         def __exit__(self, *_args): return False
-        def read(self, _limit): return b'{"status":"ok","package_version":"0.6.100"}'
+        def read(self, _limit): return b'{"status":"ok","package_version":"0.6.100","system_components_version":"0.6.100","system_components_status":"OK","system_components_protocol":1}'
 
     def urlopen(request, **_kwargs):
         if request.full_url == pipeline.health_url:
@@ -229,6 +239,46 @@ def test_health_check_rejects_nginx_502_even_when_direct_api_is_healthy(
     assert pipeline._health("0.6.100", 1) is False
     assert pipeline._last_health_diagnostic["outcome"] == "proxy_http_error"
     assert pipeline._last_health_diagnostic["http_status"] == 502
+
+
+def test_health_check_rejects_system_component_version_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    pipeline = SystemUpdatePipeline(root=tmp_path / "opt/solarminer", health_timeout=1)
+    monkeypatch.setattr("solarminer_gateway.system_update_pipeline.ssl.create_default_context", lambda **kwargs: object())
+
+    class Response:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def read(self, _limit):
+            return b'{"status":"ok","package_version":"0.6.100","system_components_version":"0.6.99","system_components_status":"OK","system_components_protocol":1}'
+
+    monkeypatch.setattr("solarminer_gateway.system_update_pipeline.urllib.request.urlopen", lambda *_args, **_kwargs: Response())
+    now = [0.0]
+    pipeline.clock = lambda: now[0]
+    pipeline.sleep = lambda seconds: now.__setitem__(0, now[0] + seconds)
+
+    assert pipeline._health("0.6.100", 1) is False
+    assert pipeline._last_health_diagnostic["outcome"] == "system_components_version_mismatch"
+    assert pipeline._last_health_diagnostic["reported_system_components_version"] == "0.6.99"
+
+
+def test_health_check_rejects_failed_system_component_integrity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    pipeline = SystemUpdatePipeline(root=tmp_path / "opt/solarminer", health_timeout=1)
+    monkeypatch.setattr("solarminer_gateway.system_update_pipeline.ssl.create_default_context", lambda **kwargs: object())
+
+    class Response:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def read(self, _limit):
+            return b'{"status":"ok","package_version":"0.6.100","system_components_version":"0.6.100","system_components_status":"FAILED","system_components_protocol":1}'
+
+    monkeypatch.setattr("solarminer_gateway.system_update_pipeline.urllib.request.urlopen", lambda *_args, **_kwargs: Response())
+    now = [0.0]
+    pipeline.clock = lambda: now[0]
+    pipeline.sleep = lambda seconds: now.__setitem__(0, now[0] + seconds)
+    assert pipeline._health("0.6.100", 1) is False
+    assert pipeline._last_health_diagnostic["outcome"] == "system_components_not_healthy"
 
 
 @pytest.mark.parametrize(
@@ -319,6 +369,66 @@ def test_apply_rolls_back_pointer_when_new_release_fails_health(tmp_path: Path, 
     with sqlite3.connect(_db) as conn:
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert conn.execute("SELECT state FROM update_operations WHERE id=?", (op_id,)).fetchone()[0] == "ROLLED_BACK"
+
+
+@LINUX_ONLY
+def test_failed_activation_restores_privileged_files_as_well_as_release_pointer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from solarminer_gateway import system_components
+
+    pipeline, root, _previous, _db, op_id = _pipeline_fixture(tmp_path, monkeypatch)
+    # Replace the test package with one that includes actual broker/unit payload.
+    package = _make_package(tmp_path / "with-system", "0.6.9", with_system_components=True)
+    verified = pipeline.data_dir / "releases/verified"
+    shutil.copyfile(package, verified / (package.name + ".verified"))
+    package_path = verified / (package.name + ".verified")
+    sidecar = package_path.with_suffix(package_path.suffix + ".manifest.json")
+    original_manifest = json.loads(sidecar.read_text())
+    original_manifest["package_size"] = package_path.stat().st_size
+    original_manifest["sha256"] = hashlib.sha256(package_path.read_bytes()).hexdigest()
+    original_manifest["signature"] = ""  # Re-sign with the fixture key below.
+    private = Ed25519PrivateKey.generate()
+    pipeline.public_key.write_bytes(private.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo))
+    original_manifest["signature"] = private.sign(canonical_manifest({k: v for k, v in original_manifest.items() if k != "signature"})).hex()
+    sidecar.write_text(json.dumps(original_manifest))
+    with sqlite3.connect(pipeline.db_path) as conn:
+        details = json.loads(conn.execute("SELECT details_json FROM update_operations WHERE id=?", (op_id,)).fetchone()[0])
+        details.update({"package_path": str(package_path), "manifest_path": str(sidecar),
+                       "package_sha256": original_manifest["sha256"]})
+        conn.execute("UPDATE update_operations SET details_json=? WHERE id=?", (json.dumps(details), op_id))
+
+    system_root = tmp_path / "fake-system"
+    old_helper = system_root / "usr/bin/solarminer-test-broker"
+    old_helper.parent.mkdir(parents=True)
+    old_helper.write_text("old broker\n")
+    old_unit = system_root / "usr/lib/systemd/system/solarminer-old.socket"
+    old_unit.parent.mkdir(parents=True)
+    old_unit.write_text("old unit\n")
+    prior_component_files = ["usr/bin/solarminer-test-broker", "lib/systemd/system/solarminer-old.socket"]
+    (root / system_components.MANIFEST_NAME).write_text(json.dumps({
+        "protocol": system_components.PROTOCOL_VERSION, "version": "0.6.8",
+        "files": prior_component_files,
+        "sha256": {"usr/bin/solarminer-test-broker": hashlib.sha256(b"old broker\n").hexdigest(),
+                   "lib/systemd/system/solarminer-old.socket": hashlib.sha256(b"old unit\n").hexdigest()},
+    }))
+    real_reconcile, real_restore = system_components.reconcile, system_components.restore
+    monkeypatch.setattr(system_components, "reconcile",
+                        lambda *args, **kwargs: real_reconcile(*args, **kwargs, system_root=system_root))
+    monkeypatch.setattr(system_components, "restore",
+                        lambda *args, **kwargs: real_restore(*args, **kwargs, system_root=system_root))
+    answers = iter([False, True])
+    monkeypatch.setattr(pipeline, "_health", lambda _expected, _seconds: next(answers))
+    monkeypatch.setattr(pipeline, "_uid", lambda _name: 0)
+    monkeypatch.setattr(pipeline, "_gid", lambda _name: 0)
+    monkeypatch.setattr("solarminer_gateway.system_update_pipeline.os.chown", lambda *_args: None)
+
+    result = pipeline.apply(op_id)
+
+    assert result["status"] == "ROLLED_BACK"
+    assert os.readlink(root / "current") == "releases/0.6.8"
+    assert old_helper.read_text() == "old broker\n"
+    assert old_unit.read_text() == "old unit\n"
+    assert not (system_root / "usr/lib/systemd/system/solarminer-test.socket").exists()
 
 
 @LINUX_ONLY
