@@ -425,6 +425,27 @@ def test_intelligence_provider_status_reports_local_runtime_model_and_optional_c
     }
 
 
+def test_provider_status_still_returns_component_state_when_local_services_and_broker_are_down(client, monkeypatch):
+    owner = _owner(client)
+    monkeypatch.setattr(gateway.update_helper_client, "request",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("broker absent")))
+    monkeypatch.setattr(gateway.http.client, "HTTPConnection",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(ConnectionRefusedError("local service absent")))
+    monkeypatch.setattr(gateway, "_read_intelligence_bootstrap_status", lambda: {
+        "state": "not_started", "stage": "waiting", "message": "A instalação ainda não começou.",
+        "percent": None, "downloaded_bytes": None, "total_bytes": None, "updated_at": None,
+    })
+
+    response = client.get("/api/v1/intelligence/provider", headers=owner)
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["agent"] == "unavailable"
+    assert payload["ollama"]["runtime"] == "unavailable"
+    assert payload["openai"]["state"] == "status_unavailable"
+    assert payload["bootstrap"]["state"] == "not_started"
+
+
 def test_owner_can_queue_intelligence_repair_and_action_is_audited(client, monkeypatch):
     owner = _owner(client)
     calls = []
@@ -443,6 +464,22 @@ def test_owner_can_queue_intelligence_repair_and_action_is_audited(client, monke
     with gateway.db() as conn:
         audit_row = conn.execute("SELECT outcome FROM audit WHERE action='intelligence.bootstrap.start'").fetchone()
     assert audit_row[0] == "queued"
+
+
+def test_bootstrap_falls_back_to_preinstalled_broker_when_new_socket_is_missing(client, monkeypatch):
+    owner = _owner(client)
+    calls = []
+    monkeypatch.setattr(gateway, "_read_intelligence_bootstrap_status", lambda: {"state": "failed"})
+    monkeypatch.setattr(gateway.intelligence_bootstrap_client, "request_start",
+                        lambda: (_ for _ in ()).throw(FileNotFoundError("socket not deployed")))
+    monkeypatch.setattr(gateway.update_helper_client, "request", lambda action:
+                        calls.append(action) or {"status": "ok", "queued": True})
+
+    response = client.post("/api/v1/intelligence/bootstrap", headers=owner, json={})
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"status": "queued", "queued": True}
+    assert calls == ["intelligence_bootstrap_start"]
 
 
 def test_intelligence_bootstrap_repair_is_not_queued_twice_while_running(client, monkeypatch):

@@ -119,9 +119,19 @@ def test_intelligence_bootstrap_broker_fails_closed_if_systemd_rejects_request()
     assert response == {"status": "error", "reason": "intelligence_bootstrap_start_failed"}
 
 
-def test_general_update_broker_no_longer_accepts_intelligence_bootstrap_action():
-    assert update_broker.handle_request(b'{"action":"intelligence_bootstrap_start"}\n') == {
-        "status": "error", "reason": "request_invalid"}
+def test_general_update_broker_keeps_only_fixed_intelligence_bootstrap_action():
+    calls = []
+    def runner(args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    assert update_broker.handle_request(b'{"action":"intelligence_bootstrap_start"}\n', runner) == {
+        "status": "ok", "queued": True}
+    assert calls[0][0] == ["/usr/bin/systemctl", "start", "--no-block",
+                           "solarminer-intelligence-bootstrap.service"]
+    assert update_broker.handle_request(
+        b'{"action":"intelligence_bootstrap_start","unit":"arbitrary.service"}\n', runner
+    ) == {"status": "error", "reason": "request_invalid"}
+    assert len(calls) == 1
 
 
 def test_intelligence_bootstrap_client_uses_dedicated_fixed_socket(monkeypatch):

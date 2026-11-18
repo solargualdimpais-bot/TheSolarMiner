@@ -71,7 +71,7 @@ from . import smart_device_engine
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.254"
+PACKAGE_VERSION = "0.6.255"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 INTELLIGENCE_LOCAL_TOKEN_PATH = Path(os.environ.get("SOLARMINER_INTELLIGENCE_CLIENT_TOKEN_FILE", "/etc/solarminer/intelligence-client.token"))
@@ -3343,7 +3343,14 @@ def start_intelligence_bootstrap(
             audit(conn, session["user_id"], "intelligence.bootstrap.start", "intelligence", "already_running", {})
         return {"status": "already_running", "queued": False}
     try:
-        result = intelligence_bootstrap_client.request_start()
+        try:
+            result = intelligence_bootstrap_client.request_start()
+        except (FileNotFoundError, ConnectionRefusedError):
+            # PWA releases switch the application tree atomically but do not
+            # install new systemd socket units. Older gateways therefore use
+            # the already-installed, fixed-action update broker until a Debian
+            # package install has provisioned the dedicated socket.
+            result = update_helper_client.request("intelligence_bootstrap_start")
     except Exception as exc:
         with db() as conn:
             audit(conn, session["user_id"], "intelligence.bootstrap.start", "intelligence", "failed",
