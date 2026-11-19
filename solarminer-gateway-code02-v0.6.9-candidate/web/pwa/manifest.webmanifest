@@ -2,7 +2,7 @@
   "id": ".",
   "name": "The Solar Miner",
   "short_name": "Solar Miner",
-  "description": "The Solar Miner PWA v0.5.191: diagnóstico do estado do SolarMiner Intelligence.",
+  "description": "The Solar Miner PWA v0.5.192: diagnóstico e recuperação do Gateway.",
   "lang": "pt-PT",
   "start_url": "./",
   "scope": "./",

@@ -101,6 +101,11 @@ def test_bootstrap_uses_packaged_zstd_instead_of_mutating_apt_sources():
     assert "apt-get install" not in bootstrap
 
 
+def test_online_update_unit_cannot_be_killed_before_its_rollback_window():
+    service = (Path(__file__).parents[1] / "packaging" / "solarminer-update-apply@.service").read_text(encoding="utf-8")
+    assert "TimeoutStartSec=20min" in service
+
+
 def test_bootstrap_publishes_download_progress_for_owner_console():
     bootstrap = (Path(__file__).parents[1] / "packaging" / "solarminer-intelligence-bootstrap").read_text(encoding="utf-8")
     for expected in ("/api/pull", '"percent":percent', '"downloaded_bytes":downloaded',

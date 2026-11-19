@@ -102,6 +102,7 @@ async function showOperationResult(title,message){return showOperationDialog({ti
 const terminalUpdateStates=new Set(["COMMITTED","FAILED","ROLLED_BACK","RECOVERY_BLOCKED","CURRENT"]);
 function updateStatusMessage(result){
   const status=String(result?.status||"UNKNOWN").toUpperCase();
+  if(status==="WAITING_FOR_GATEWAY")return "O Gateway não confirmou o resultado dentro do prazo. Não inicies outra atualização. Quando voltar a responder, consulta Atualizações para confirmar se concluiu ou fez rollback.";
   const version=status==="COMMITTED"
     ? result?.target_version||result?.details?.pipeline?.target_version||result?.installed_version||""
     : result?.installed_version||result?.target_version||"";
@@ -111,13 +112,16 @@ function updateStatusMessage(result){
   }
   const details=result?.details||{},pipeline=details.pipeline||{},lastPipeline=result?.last_pipeline_diagnostic||{};
   const diagnostic=pipeline.failure||pipeline.rollback_failure||lastPipeline.failure||lastPipeline.rollback_failure||details.failure||details.reason||"";
-  const diagnosticText=diagnostic?` Motivo registado: ${String(diagnostic).replace(/[_-]+/g," ")}.`:" Consulta a Consola para ver o diagnóstico.";
+  const health=pipeline.health_diagnostic||lastPipeline.health_diagnostic||{},failed=pipeline.failed_command||lastPipeline.failed_command||{};
+  const healthText=health.outcome?` Verificação de saúde: ${String(health.outcome).replace(/[_-]+/g," ")}${health.http_status?` (HTTP ${health.http_status})`:""}.`:"";
+  const commandText=failed.executable?` Último comando: ${failed.executable} ${failed.operation||""}${failed.outcome?` (${failed.outcome})`:""}${failed.error_type?` · ${failed.error_type}`:""}.`:"";
+  const diagnosticText=(diagnostic?` Motivo registado: ${String(diagnostic).replace(/[_-]+/g," ")}.`:" Consulta a Consola para ver o diagnóstico.")+healthText+commandText;
   if(status==="ROLLED_BACK")return `A atualização falhou e o Gateway recuperou a versão anterior${version?` (${version})`:""}.${diagnosticText}`;
   if(status==="FAILED"||status==="RECOVERY_BLOCKED")return `A atualização não foi concluída${version?`. Versão de destino: ${version}`:"."}${diagnosticText}`;
   if(status==="CURRENT")return `O Gateway já está atualizado${version?` com a versão ${version}`:""}.`;
   return `A atualização continua em curso${version?` para a versão ${version}`:""}.`;
 }
-async function watchGatewayUpdate({initial=null,timeoutMs=12*60*1000}={}){
+async function watchGatewayUpdate({initial=null,timeoutMs=22*60*1000}={}){
   let result=initial,started=Date.now();
   updateOperationDialog({title:"Atualização do Gateway",message:updateStatusMessage(result||{}),locked:true,progress:true});
   while(Date.now()-started<timeoutMs){
@@ -126,7 +130,7 @@ async function watchGatewayUpdate({initial=null,timeoutMs=12*60*1000}={}){
     try{result=await readGatewayUpdateStatus();updateOperationDialog({title:"Atualização do Gateway",message:updateStatusMessage(result),locked:true,progress:true});}
     catch{updateOperationDialog({title:"Atualização do Gateway",message:"O Gateway está a reiniciar. A aguardar que volte a responder…",locked:true,progress:true});}
   }
-  return result;
+  return {...(result||{}),status:"WAITING_FOR_GATEWAY"};
 }
 async function applyVerifiedGatewayUpdate(update){
   const button=$("#gateway-update-apply");if(button)button.disabled=true;
@@ -135,7 +139,8 @@ async function applyVerifiedGatewayUpdate(update){
     const accepted=await applyGatewayUpdate(update.available_version);verifiedGatewayUpdate=null;
     const final=await watchGatewayUpdate({initial:accepted});
     const committed=String(final?.status||"").toUpperCase()==="COMMITTED";
-    renderOperationDialog({title:committed?"Atualização concluída":"Atualização terminada",message:updateStatusMessage(final),actions:[{label:"OK",value:"ok",primary:true}]});
+    const waiting=String(final?.status||"").toUpperCase()==="WAITING_FOR_GATEWAY";
+    renderOperationDialog({title:committed?"Atualização concluída":waiting?"Gateway ainda sem resposta":"Atualização terminada",message:updateStatusMessage(final),actions:[{label:"OK",value:"ok",primary:true}]});
   }catch(error){renderOperationDialog({title:"Falha na atualização",message:error.message||"O Gateway não conseguiu aplicar a atualização.",actions:[{label:"OK",value:"ok",primary:true}]});}
   finally{if(button)button.disabled=false;}
   await progress;

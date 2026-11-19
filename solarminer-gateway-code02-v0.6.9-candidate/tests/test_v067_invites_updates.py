@@ -283,6 +283,33 @@ def test_update_status_keeps_last_rollback_reason_after_a_later_check(client):
     assert body["last_pipeline_diagnostic"]["failure"] == "new_release_health_check_failed_after_60s"
 
 
+def test_update_status_exposes_safe_health_and_failed_command_diagnostics(client):
+    token=owner_session(client); headers={"Authorization":f"Bearer {token}"}
+    pipeline={
+        "state":"ROLLED_BACK", "failure":"new_release_health_check_failed_after_180s",
+        "health_diagnostic":{"outcome":"proxy_system_components_not_healthy","http_status":200,
+                             "reported_system_components_status":"FAILED","secret":"never-return"},
+        "failed_command":{"executable":"systemctl","operation":"restart","outcome":"nonzero_exit",
+                          "exit_code":1,"private_path":"/root/never-return"},
+    }
+    with gateway.db() as conn:
+        conn.execute("INSERT INTO update_operations(id,state,installed_version,target_version,created_at,updated_at,details_json) "
+                     "VALUES(?,?,?,?,?,?,?)", ("failed-health", "ROLLED_BACK", "0.6.262", "0.6.263", 1, 1,
+                     json.dumps({"pipeline":pipeline})))
+    response=client.get("/api/v1/system/update/status",headers=headers)
+    assert response.status_code == 200
+    diagnostic=response.json()["last_pipeline_diagnostic"]
+    assert diagnostic["health_diagnostic"] == {
+        "outcome":"proxy_system_components_not_healthy", "http_status":200,
+        "reported_system_components_status":"FAILED",
+    }
+    assert diagnostic["failed_command"] == {
+        "executable":"systemctl", "operation":"restart", "outcome":"nonzero_exit", "exit_code":1,
+    }
+    assert "secret" not in json.dumps(diagnostic)
+    assert "private_path" not in json.dumps(diagnostic)
+
+
 def test_energy_categories_report_embedded_pwa_version(client):
     token=owner_session(client)
     response=client.get("/api/v1/energy/categories",headers={"Authorization":f"Bearer {token}"})

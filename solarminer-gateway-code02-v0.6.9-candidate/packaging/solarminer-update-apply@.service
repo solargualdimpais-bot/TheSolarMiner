@@ -11,7 +11,10 @@ User=root
 Group=root
 ExecStart=/usr/sbin/solarminer-update-apply --operation %i
 ExecStartPre=/usr/bin/solarminer-data-volume-check
-TimeoutStartSec=300
+# Applying, restarting and, if needed, rolling back includes separate bounded
+# service operations plus the new/previous release health checks. Keep systemd
+# from killing the transaction while it is restoring a known-good release.
+TimeoutStartSec=20min
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true

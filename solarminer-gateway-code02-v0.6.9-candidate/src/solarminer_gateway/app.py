@@ -72,7 +72,7 @@ from . import system_components
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.262"
+PACKAGE_VERSION = "0.6.263"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 INTELLIGENCE_LOCAL_TOKEN_PATH = Path(os.environ.get("SOLARMINER_INTELLIGENCE_CLIENT_TOKEN_FILE", "/etc/solarminer/intelligence-client.token"))
@@ -9487,6 +9487,26 @@ def system_update_status(session: dict[str, Any] = Depends(require_permission("r
         safe_pipeline = {key: pipeline[key] for key in
                          ("state", "failure", "rollback_failure", "recovery", "rollback_reason", "finished_at_utc")
                          if isinstance(pipeline.get(key), (str, int, float, bool))}
+        diagnostic_fields = {
+            "health_diagnostic": ("outcome", "http_status", "proxy_outcome", "error_type", "attempts",
+                                  "expected_package_version", "reported_package_version",
+                                  "reported_system_components_status", "reported_system_components_protocol",
+                                  "reported_system_components_version"),
+            "rollback_health_diagnostic": ("outcome", "http_status", "proxy_outcome", "error_type", "attempts",
+                                           "expected_package_version", "reported_package_version",
+                                           "reported_system_components_status", "reported_system_components_protocol",
+                                           "reported_system_components_version"),
+            "failed_command": ("executable", "operation", "timeout_seconds", "outcome", "error_type", "exit_code"),
+            "rollback_command": ("executable", "operation", "timeout_seconds", "outcome", "error_type", "exit_code"),
+        }
+        for group, allowed in diagnostic_fields.items():
+            value = pipeline.get(group)
+            if not isinstance(value, dict):
+                continue
+            safe = {key: value[key] for key in allowed
+                    if isinstance(value.get(key), (str, int, float, bool))}
+            if safe:
+                safe_pipeline[group] = safe
         if safe_pipeline.get("failure") or safe_pipeline.get("rollback_failure"):
             latest_pipeline = {**safe_pipeline, "updated_at": recent["updated_at"]}
             break

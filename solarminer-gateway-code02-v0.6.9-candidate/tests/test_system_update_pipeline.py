@@ -16,7 +16,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from solarminer_gateway.system_update_pipeline import PipelineError, SystemUpdatePipeline, _validate_deployment_root_permissions
+from solarminer_gateway.system_update_pipeline import HEALTH_CHECK_TIMEOUT_SECONDS, PipelineError, SystemUpdatePipeline, _validate_deployment_root_permissions
 from solarminer_gateway.updates import canonical_manifest
 
 LINUX_ONLY = pytest.mark.skipif(os.name == "nt", reason="Update pipeline integration tests require POSIX symlinks and fcntl locks")
@@ -144,7 +144,7 @@ def test_apply_commits_only_after_release_health_check(tmp_path: Path, monkeypat
     result = pipeline.apply(op_id)
     assert result["status"] == "COMMITTED"
     assert os.readlink(root / "current") == "releases/0.6.9"
-    assert checked == [("0.6.9", 60)]
+    assert checked == [("0.6.9", HEALTH_CHECK_TIMEOUT_SECONDS)]
     record = json.loads((root / "update-state.json").read_text())
     assert record["state"] == "COMMITTED" and record["backup_path"]
     with sqlite3.connect(db) as conn:
@@ -152,16 +152,16 @@ def test_apply_commits_only_after_release_health_check(tmp_path: Path, monkeypat
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 
-def test_health_check_has_a_hard_sixty_second_deadline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    pipeline = SystemUpdatePipeline(root=tmp_path / "opt/solarminer", health_timeout=60)
+def test_health_check_has_a_hard_three_minute_deadline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    pipeline = SystemUpdatePipeline(root=tmp_path / "opt/solarminer", health_timeout=HEALTH_CHECK_TIMEOUT_SECONDS)
     now = [0.0]
     monkeypatch.setattr("solarminer_gateway.system_update_pipeline.ssl.create_default_context", lambda **kwargs: object())
     monkeypatch.setattr("solarminer_gateway.system_update_pipeline.urllib.request.urlopen",
                         lambda *args, **kwargs: (_ for _ in ()).throw(OSError("service unavailable")))
     pipeline.clock = lambda: now[0]
     pipeline.sleep = lambda seconds: now.__setitem__(0, now[0] + seconds)
-    assert pipeline._health("0.6.9", 60) is False
-    assert now[0] >= 60.0
+    assert pipeline._health("0.6.9", HEALTH_CHECK_TIMEOUT_SECONDS) is False
+    assert now[0] >= HEALTH_CHECK_TIMEOUT_SECONDS
     assert pipeline._last_health_diagnostic["outcome"] == "endpoint_error"
     assert pipeline._last_health_diagnostic["attempts"] > 0
 
@@ -391,7 +391,7 @@ def test_apply_rolls_back_pointer_when_new_release_fails_health(tmp_path: Path, 
     assert os.readlink(root / "current") == "releases/0.6.8"
     state = json.loads((root / "update-state.json").read_text())
     assert state["state"] == "ROLLED_BACK"
-    assert state["failure"] == "new_release_health_check_failed_after_60s"
+    assert state["failure"] == f"new_release_health_check_failed_after_{HEALTH_CHECK_TIMEOUT_SECONDS}s"
     assert state["health_diagnostic"]["outcome"] == "package_version_mismatch"
     assert state["rollback_health_diagnostic"]["outcome"] == "healthy"
     with sqlite3.connect(_db) as conn:

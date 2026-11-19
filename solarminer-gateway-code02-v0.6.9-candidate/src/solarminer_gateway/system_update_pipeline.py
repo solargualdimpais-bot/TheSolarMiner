@@ -32,6 +32,7 @@ from .updates import UpdateValidationError, load_release_key, verify_manifest
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 TERMINAL = {"COMMITTED", "ROLLED_BACK", "FAILED", "RECOVERY_BLOCKED"}
 ACTIVE_STATES = {"APPLY_QUEUED", "PRECHECK", "BACKUP_CREATED", "STAGED", "SYSTEM_COMPONENTS_UPDATING", "SWITCHED", "SERVICE_RESTARTING", "HEALTH_CHECKING", "ROLLING_BACK"}
+HEALTH_CHECK_TIMEOUT_SECONDS = 180
 
 
 def _utc() -> str:
@@ -71,7 +72,7 @@ class SystemUpdatePipeline:
                  db_path: str | Path | None = None, public_key: str | Path = "/etc/solarminer/release-pubkey.pem",
                  service: str = "solarminer-gateway.service", recovery_timer: str = "solarminer-recovery.timer",
                  health_url: str = "https://127.0.0.1:8443/api/v1/health",
-                 proxy_health_url: str = "https://127.0.0.1/api/v1/health", health_timeout: int = 60,
+                 proxy_health_url: str = "https://127.0.0.1/api/v1/health", health_timeout: int = HEALTH_CHECK_TIMEOUT_SECONDS,
                  system_root: str | Path = "/", runner=subprocess.run, clock=time.monotonic, sleep=time.sleep):
         self.root = Path(root)
         # The production root is `/`; explicit injection keeps reconciliation
@@ -84,7 +85,7 @@ class SystemUpdatePipeline:
         self.recovery_timer = recovery_timer
         self.health_url = health_url
         self.proxy_health_url = proxy_health_url
-        self.health_timeout = min(max(int(health_timeout), 1), 60)
+        self.health_timeout = min(max(int(health_timeout), 1), HEALTH_CHECK_TIMEOUT_SECONDS)
         self._last_health_diagnostic: dict[str, Any] = {"outcome": "not_run", "attempts": 0}
         self._last_command_diagnostic: dict[str, Any] = {"outcome": "not_run"}
         self.runner = runner
@@ -401,7 +402,7 @@ class SystemUpdatePipeline:
                 "status_url": "/api/v1/system/update/status", "health_check_seconds": self.health_timeout}
 
     def _health(self, expected_package_version: str | None, seconds: int) -> bool:
-        deadline = self.clock() + min(max(seconds, 1), 60)
+        deadline = self.clock() + min(max(seconds, 1), HEALTH_CHECK_TIMEOUT_SECONDS)
         attempts = 0
         diagnostic: dict[str, Any] = {"outcome": "no_response", "attempts": 0,
                                       "expected_package_version": expected_package_version}
@@ -631,13 +632,13 @@ class SystemUpdatePipeline:
         target = self.releases / release_name
         if target.exists() or target.is_symlink(): raise PipelineError("release_version_already_exists")
         self._record("PRECHECK", operation_id=op_id, target_version=release_name, previous_target=previous_target,
-                     package_sha256=digest, health_timeout_seconds=60)
+                     package_sha256=digest, health_timeout_seconds=HEALTH_CHECK_TIMEOUT_SECONDS)
         backup = create_database_backup(self.db_path, self.backups)
         backup_path = Path(backup["backup_path"])
         self._record("BACKUP_CREATED", operation_id=op_id, target_version=release_name, previous_target=previous_target,
                      package_sha256=digest, backup_path=str(backup_path), backup_sha256=backup["sha256"],
                      database_user_version=backup["database_user_version"], schema_migration_version=backup["schema_migration_version"],
-                     health_timeout_seconds=60)
+                     health_timeout_seconds=HEALTH_CHECK_TIMEOUT_SECONDS)
         stage = self.releases / (".stage-" + uuid.uuid4().hex)
         stage.mkdir(mode=0o700)
         system_snapshot: Path | None = None
@@ -659,7 +660,7 @@ class SystemUpdatePipeline:
             os.replace(stage, target)
             self._record("STAGED", operation_id=op_id, target_version=release_name, previous_target=previous_target,
                          new_target=os.path.relpath(target, self.root), backup_path=str(backup_path), package_sha256=digest,
-                         health_timeout_seconds=60)
+                         health_timeout_seconds=HEALTH_CHECK_TIMEOUT_SECONDS)
             # Do not run dpkg's postinst during an online update: it rewrites
             # user configuration and performs install-time provisioning. Apply
             # only the package-owned, allowlisted helpers/modules/units under a
@@ -671,21 +672,21 @@ class SystemUpdatePipeline:
                 operation_id_for_state={"operation_id": op_id, "target_version": release_name,
                                         "previous_target": previous_target, "new_target": os.path.relpath(target, self.root),
                                         "backup_path": str(backup_path), "package_sha256": digest,
-                                        "health_timeout_seconds": 60},
+                                        "health_timeout_seconds": HEALTH_CHECK_TIMEOUT_SECONDS},
             )
             self._record("STAGED", operation_id=op_id, target_version=release_name, previous_target=previous_target,
                          new_target=os.path.relpath(target, self.root), backup_path=str(backup_path),
                          system_components_backup=str(system_snapshot), package_sha256=digest,
-                         health_timeout_seconds=60)
+                         health_timeout_seconds=HEALTH_CHECK_TIMEOUT_SECONDS)
             self._switch(target)
             self._record("SWITCHED", operation_id=op_id, target_version=release_name, previous_target=previous_target,
                          new_target=os.path.relpath(target, self.root), backup_path=str(backup_path), package_sha256=digest,
                          system_components_backup=str(system_snapshot) if system_snapshot else None,
-                         health_timeout_seconds=60)
+                         health_timeout_seconds=HEALTH_CHECK_TIMEOUT_SECONDS)
             self._record("SERVICE_RESTARTING", operation_id=op_id, target_version=release_name, previous_target=previous_target,
                          new_target=os.path.relpath(target, self.root), backup_path=str(backup_path), package_sha256=digest,
                          system_components_backup=str(system_snapshot) if system_snapshot else None,
-                         health_timeout_seconds=60)
+                         health_timeout_seconds=HEALTH_CHECK_TIMEOUT_SECONDS)
             # Queue the restart and let the health check observe the real
             # service state. A synchronous `systemctl restart` can time out
             # while systemd is still starting the unit, causing a needless
@@ -693,12 +694,12 @@ class SystemUpdatePipeline:
             self._run(["/usr/bin/systemctl", "restart", "--no-block", self.service], timeout=8, check=True)
             self._record("HEALTH_CHECKING", operation_id=op_id, target_version=release_name, previous_target=previous_target,
                          new_target=os.path.relpath(target, self.root), backup_path=str(backup_path), package_sha256=digest,
-                         health_timeout_seconds=60)
-            if not self._health(release_name, 60):
-                raise PipelineError("new_release_health_check_failed_after_60s")
+                         health_timeout_seconds=HEALTH_CHECK_TIMEOUT_SECONDS)
+            if not self._health(release_name, HEALTH_CHECK_TIMEOUT_SECONDS):
+                raise PipelineError(f"new_release_health_check_failed_after_{HEALTH_CHECK_TIMEOUT_SECONDS}s")
             self._record("COMMITTED", operation_id=op_id, target_version=release_name, previous_target=previous_target,
                          new_target=os.path.relpath(target, self.root), backup_path=str(backup_path), package_sha256=digest,
-                         health_timeout_seconds=60, health_check="passed", finished_at_utc=_utc())
+                         health_timeout_seconds=HEALTH_CHECK_TIMEOUT_SECONDS, health_check="passed", finished_at_utc=_utc())
             return {"status": "COMMITTED", "operation_id": op_id, "version": release_name, "backup_path": str(backup_path)}
         except Exception as exc:
             failed_health_diagnostic = dict(self._last_health_diagnostic)
@@ -712,7 +713,7 @@ class SystemUpdatePipeline:
                          new_target=os.path.relpath(target, self.root) if target.exists() else None,
                          backup_path=str(backup_path),
                          system_components_backup=str(system_snapshot) if system_snapshot else None,
-                         failure=_failure_code(exc), health_timeout_seconds=60,
+                         failure=_failure_code(exc), health_timeout_seconds=HEALTH_CHECK_TIMEOUT_SECONDS,
                          health_diagnostic=failed_health_diagnostic,
                          failed_command=failed_command_diagnostic)
             try:
@@ -722,8 +723,8 @@ class SystemUpdatePipeline:
                     self._restore_system_components(system_snapshot)
                 self._restore_db(backup_path)
                 self._run(["/usr/bin/systemctl", "start", self.service], timeout=20, check=True)
-                if not self._health(str(row["installed_version"]), 60):
-                    raise PipelineError("previous_release_health_check_failed_after_60s")
+                if not self._health(str(row["installed_version"]), HEALTH_CHECK_TIMEOUT_SECONDS):
+                    raise PipelineError(f"previous_release_health_check_failed_after_{HEALTH_CHECK_TIMEOUT_SECONDS}s")
                 self._record("ROLLED_BACK", operation_id=op_id, target_version=release_name, previous_target=previous_target,
                              backup_path=str(backup_path), failure=_failure_code(exc),
                              health_diagnostic=failed_health_diagnostic,
@@ -891,7 +892,7 @@ class SystemUpdatePipeline:
             # synchronously here would deadlock the two units.
             self._run(["/usr/bin/systemctl", "start", "--no-block", self.service], timeout=8, check=True)
         row, _ = self._operation(op_id)
-        if service_was_active and not self._health(str(row["installed_version"]), 60):
+        if service_was_active and not self._health(str(row["installed_version"]), HEALTH_CHECK_TIMEOUT_SECONDS):
             self._record("RECOVERY_BLOCKED", operation_id=op_id, previous_target=previous_raw,
                          backup_path=backup_raw, recovery="previous_release_health_check_failed")
             raise PipelineError("recovery_previous_release_health_check_failed")
