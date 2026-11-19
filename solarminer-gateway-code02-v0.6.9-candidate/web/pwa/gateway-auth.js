@@ -308,7 +308,7 @@ async function intelligenceRequestTraceDiagnosis(requestId, diagnosticFetch = re
     const agentSummary = agentTrace && typeof agentTrace === "object"
       ? ` OpenClaude: ${String(agentTrace.state || "estado desconhecido")}${agentTrace.stage ? ` na etapa “${String(agentTrace.stage).replace(/_/g, " ")}”` : ""}` +
         `${agentTrace.error_type ? ` (${String(agentTrace.error_type)})` : ""}` +
-        `${Number.isFinite(agentTrace.mcp_tool_calls) ? `; chamadas MCP ${agentTrace.mcp_tool_calls}, resultados ${Number(agentTrace.mcp_tool_results) || 0}` : ""}.`
+        `${Number.isFinite(agentTrace.mcp_tool_calls) ? `; chamadas MCP iniciadas ${agentTrace.mcp_tool_calls}, resultados ${Number(agentTrace.mcp_tool_results) || 0}, falhas ${Number(agentTrace.mcp_tool_failures) || 0}` : ""}.`
       : " OpenClaude: sem registo correlacionado.";
     const withAgent = message => `${message}${agentSummary} ${nginxEvidence}`;
     if (trace?.state === "in_progress") {

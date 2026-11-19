@@ -41,7 +41,7 @@ function updateRequestDiagnostic(requestId, { stage, state = 'running', errorTyp
   let entry = requestDiagnostics.get(requestId);
   if (!entry) {
     entry = { request_id: requestId, state: 'in_progress', stage: 'agent_received', startedAt: now,
-      stageStartedAt: now, updatedAt: now, steps: [], mcp_tool_calls: 0, mcp_tool_results: 0 };
+      stageStartedAt: now, updatedAt: now, steps: [], mcp_tool_calls: 0, mcp_tool_results: 0, mcp_tool_failures: 0 };
     requestDiagnostics.set(requestId, entry);
   }
   if (stage && stage !== entry.stage) {
@@ -67,6 +67,7 @@ function requestDiagnosticSnapshot(requestId) {
   return { request_id: entry.request_id, state: entry.state, stage: entry.stage,
     error_type: entry.error_type || null, error_code: entry.error_code || null,
     mcp_tool_calls: entry.mcp_tool_calls, mcp_tool_results: entry.mcp_tool_results,
+    mcp_tool_failures: entry.mcp_tool_failures,
     total_elapsed_ms: Math.max(0, now - entry.startedAt),
     stage_elapsed_ms: Math.max(0, now - entry.stageStartedAt), steps: entry.steps.slice(-12) };
 }
@@ -329,11 +330,14 @@ async function runAnalysis(prompt, { development = false, provider = 'ollama', d
     for await (const message of agentQuery) {
       const blocks = Array.isArray(message?.message?.content) ? message.message.content : [];
       const toolUses = blocks.filter(item => item?.type === 'tool_use').length;
-      const toolResults = blocks.filter(item => item?.type === 'tool_result').length;
+      const toolResultBlocks = blocks.filter(item => item?.type === 'tool_result');
+      const toolResults = toolResultBlocks.length;
+      const toolFailures = toolResultBlocks.filter(item => item.is_error === true).length;
       const textBlocks = blocks.filter(item => item?.type === 'text' && typeof item.text === 'string');
       const entry = typeof diagnosticId === 'string' ? requestDiagnostics.get(diagnosticId) : null;
       if (entry && toolUses) entry.mcp_tool_calls += toolUses;
       if (entry && toolResults) entry.mcp_tool_results += toolResults;
+      if (entry && toolFailures) entry.mcp_tool_failures += toolFailures;
       if (toolResults) updateRequestDiagnostic(diagnosticId, { stage: 'mcp_tool_result' });
       else if (toolUses) updateRequestDiagnostic(diagnosticId, { stage: 'mcp_tool_call' });
       else if (textBlocks.length) updateRequestDiagnostic(diagnosticId, { stage: 'sdk_text_received' });
@@ -425,7 +429,10 @@ const server = http.createServer(async (request, response) => {
     updateRequestDiagnostic(diagnosticId, { stage: 'agent_reading_prompt' });
     const body = await readBody(request);
     const prompt = body?.prompt;
-    if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 8000) return send(response, 422, { error: 'prompt_must_be_1_to_8000_characters' });
+    if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 8000) {
+      updateRequestDiagnostic(diagnosticId, { stage: 'agent_prompt_validation', state: 'failed', errorType: 'ValidationError' });
+      return send(response, 422, { error: 'prompt_must_be_1_to_8000_characters' });
+    }
     const provider = development ? 'ollama' : (body?.provider === undefined ? 'ollama' : body.provider);
     updateRequestDiagnostic(diagnosticId, { stage: 'agent_prompt_received' });
     const result = await runAnalysis(prompt.trim(), { development, provider, diagnosticId });

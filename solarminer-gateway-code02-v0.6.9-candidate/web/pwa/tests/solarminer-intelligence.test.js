@@ -166,8 +166,8 @@ test('Intelligence diagnostics distinguish Gateway transport, API, auth, and boo
     code: 'transport_error', requestId,
   }), { diagnosticFetch: async () => ({ state: 'failed', stage: 'openclaude_agent',
     agent_trace: { state: 'failed', stage: 'sdk_stream_wait', error_type: 'Error',
-      mcp_tool_calls: 1, mcp_tool_results: 0 } }) });
-  assert.match(agentTrace, /OpenClaude: failed na etapa “sdk stream wait” \(Error\); chamadas MCP 1, resultados 0/);
+      mcp_tool_calls: 1, mcp_tool_results: 2, mcp_tool_failures: 1 } }) });
+  assert.match(agentTrace, /OpenClaude: failed na etapa “sdk stream wait” \(Error\); chamadas MCP iniciadas 1, resultados 2, falhas 1/);
 
   const rejectedTrace = await diagnoseGatewayIntelligenceFailure(Object.assign(new TypeError('Failed to fetch'), {
     code: 'transport_error', requestId,

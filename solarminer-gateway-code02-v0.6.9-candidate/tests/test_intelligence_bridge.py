@@ -472,8 +472,10 @@ def test_provider_status_diagnostic_endpoint_distinguishes_unknown_and_rejects_i
     unknown_id = "b2b2b2b2-b2b2-42b2-82b2-b2b2b2b2b2b2"
     unknown = client.get(f"/api/v1/intelligence/provider/diagnostics/{unknown_id}", headers=owner)
     assert unknown.status_code == 200, unknown.text
-    assert unknown.json() == {"state": "not_seen", "request_id": unknown_id,
-                              "reason": "gateway_route_did_not_record_request"}
+    assert unknown.json()["state"] == "not_seen"
+    assert unknown.json()["request_id"] == unknown_id
+    assert unknown.json()["reason"] == "gateway_route_did_not_record_request"
+    assert unknown.json()["agent_trace"]["state"] == "unavailable"
     invalid = client.get("/api/v1/intelligence/provider/diagnostics/not-a-uuid", headers=owner)
     assert invalid.status_code == 422
 
@@ -702,7 +704,7 @@ def test_intelligence_ask_forwards_only_authenticated_local_request_and_audits_m
             observed.update(host=host, port=port, timeout=timeout)
         def connect(self): pass
         def close(self): pass
-        def request(self, method, path, *, body, headers):
+        def request(self, method, path, *, body=None, headers):
             observed.update(method=method, path=path,
                             body=json.loads(body) if body else None, headers=headers)
         def getresponse(self):

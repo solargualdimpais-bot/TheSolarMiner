@@ -24,7 +24,10 @@ export async function* query({ prompt, options }) {
     mainKey: Boolean(process.env.OPENAI_API_KEY),
   }) + '\\n');
   yield { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'mcp__solarminer__solarminer_snapshot' }] } };
-  yield { type: 'user', message: { content: [{ type: 'tool_result', content: 'snapshot' }] } };
+  yield { type: 'user', message: { content: [
+    { type: 'tool_result', content: 'snapshot' },
+    { type: 'tool_result', content: 'unavailable', is_error: true },
+  ] } };
   yield { type: 'assistant', message: { content: [{ type: 'text', text: 'Análise baseada na ponte SolarMiner.' }] } };
 }
 `;
@@ -145,7 +148,8 @@ test('resident agent authenticates requests, persists sessions and only allows t
   assert.equal(trace.state, 'completed');
   assert.equal(trace.stage, 'agent_response_ready');
   assert.equal(trace.mcp_tool_calls, 1);
-  assert.equal(trace.mcp_tool_results, 1);
+  assert.equal(trace.mcp_tool_results, 2);
+  assert.equal(trace.mcp_tool_failures, 1);
   assert.ok(trace.steps.some(step => step.stage === 'sdk_text_received'));
   const explicitCloud = await fetch(`http://127.0.0.1:${port}/v1/analyze`, {
     method: 'POST', headers, body: JSON.stringify({ prompt: 'Usa OpenAI apenas neste pedido.', provider: 'openai' }),

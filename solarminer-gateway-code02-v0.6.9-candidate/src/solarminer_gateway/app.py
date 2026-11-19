@@ -3592,6 +3592,7 @@ def intelligence_provider_request_diagnostic(
                            "error_code": error_code if isinstance(error_code, str) and re.fullmatch(r"[A-Z0-9_]{1,32}", error_code) else None,
                            "mcp_tool_calls": min(1000, max(0, int(payload.get("mcp_tool_calls", 0)))) if isinstance(payload.get("mcp_tool_calls", 0), int) else 0,
                            "mcp_tool_results": min(1000, max(0, int(payload.get("mcp_tool_results", 0)))) if isinstance(payload.get("mcp_tool_results", 0), int) else 0,
+                           "mcp_tool_failures": min(1000, max(0, int(payload.get("mcp_tool_failures", 0)))) if isinstance(payload.get("mcp_tool_failures", 0), int) else 0,
                            "total_elapsed_ms": min(3600000, max(0, int(payload.get("total_elapsed_ms", 0)))) if isinstance(payload.get("total_elapsed_ms", 0), int) else 0,
                            "stage_elapsed_ms": min(3600000, max(0, int(payload.get("stage_elapsed_ms", 0)))) if isinstance(payload.get("stage_elapsed_ms", 0), int) else 0,
                            "steps": []}
