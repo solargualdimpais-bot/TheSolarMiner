@@ -495,6 +495,25 @@ def test_provider_status_diagnostic_endpoint_distinguishes_unknown_and_rejects_i
     assert rejected_trace["credential_status"] == "rejected"
     assert rejected_trace["reason"] == "agent_credential_rejected"
     assert "Authorization" not in json.dumps(rejected.json())
+
+    class RunningAgentConnection:
+        def __init__(self, *_args, **_kwargs): pass
+        def request(self, method, path, *, headers):
+            assert method == "GET" and path == f"/v1/diagnostics/{unknown_id}"
+            assert headers["Authorization"].startswith("Bearer ")
+        def getresponse(self):
+            return SimpleNamespace(status=200, read=lambda _limit: json.dumps({
+                "state": "running", "stage": "sdk_stream_wait", "steps": [],
+            }).encode())
+        def close(self): pass
+
+    monkeypatch.setattr(gateway.http.client, "HTTPConnection", RunningAgentConnection)
+    running = client.get(f"/api/v1/intelligence/provider/diagnostics/{unknown_id}", headers=owner)
+    assert running.status_code == 200
+    running_trace = running.json()["agent_trace"]
+    assert running_trace["state"] == "in_progress"
+    assert running_trace["credential_status"] == "accepted"
+    assert running_trace["stage"] == "sdk_stream_wait"
     invalid = client.get("/api/v1/intelligence/provider/diagnostics/not-a-uuid", headers=owner)
     assert invalid.status_code == 422
 

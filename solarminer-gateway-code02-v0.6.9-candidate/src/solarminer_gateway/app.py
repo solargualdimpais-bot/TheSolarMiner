@@ -72,7 +72,7 @@ from . import system_components
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.270"
+PACKAGE_VERSION = "0.6.271"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 INTELLIGENCE_LOCAL_TOKEN_PATH = Path(os.environ.get("SOLARMINER_INTELLIGENCE_CLIENT_TOKEN_FILE", "/etc/solarminer/intelligence-client.token"))
@@ -3582,10 +3582,10 @@ def intelligence_provider_request_diagnostic(
         finally:
             connection.close()
         if (response.status == 200 and isinstance(payload, dict) and payload.get("state") in {
-                "in_progress", "failed", "completed", "not_seen"}):
+                "running", "in_progress", "failed", "completed", "not_seen"}):
             agent_credential_status = "accepted"
         if not isinstance(payload, dict) or payload.get("state") not in {
-                "in_progress", "failed", "completed", "not_seen"}:
+                "running", "in_progress", "failed", "completed", "not_seen"}:
             agent_trace = {"state": "unavailable",
                            "reason": "agent_credential_rejected" if agent_credential_status == "rejected" else "invalid_agent_trace",
                            "credential_status": agent_credential_status}
@@ -3593,7 +3593,7 @@ def intelligence_provider_request_diagnostic(
             stage = payload.get("stage")
             error_type = payload.get("error_type")
             error_code = payload.get("error_code")
-            agent_trace = {"state": payload["state"],
+            agent_trace = {"state": "in_progress" if payload["state"] == "running" else payload["state"],
                            "stage": stage if isinstance(stage, str) and re.fullmatch(r"[a-z0-9_]{1,48}", stage) else None,
                            "error_type": error_type if isinstance(error_type, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,63}", error_type) else None,
                            "error_code": error_code if isinstance(error_code, str) and re.fullmatch(r"[A-Z0-9_]{1,32}", error_code) else None,

@@ -32,7 +32,7 @@ let requestCount = 0;
 let windowStartedAt = Date.now();
 const requestDiagnostics = new Map();
 
-function updateRequestDiagnostic(requestId, { stage, state = 'running', errorType = null, errorCode = null,
+function updateRequestDiagnostic(requestId, { stage, state = 'in_progress', errorType = null, errorCode = null,
   providerHttpStatus = null } = {}) {
   if (typeof requestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(requestId)) return;
   const now = Date.now();

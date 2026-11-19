@@ -239,6 +239,47 @@ test('resident agent distinguishes non-assistant SDK text from a final answer wi
   assert.equal(JSON.stringify(trace).includes('private SDK text'), false);
 });
 
+test('resident agent reports in-progress using the Gateway diagnostic contract', async t => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), 'solarminer-intelligence-in-progress-'));
+  const port = await unusedPort();
+  const mockPath = path.join(temp, 'slow-sdk.mjs');
+  const ollamaBase = await startMockOllama(t);
+  await writeFile(mockPath, `export async function* query() {
+    await new Promise(resolve => setTimeout(resolve, 600));
+    yield { type: 'assistant', message: { content: [{ type: 'text', text: 'Resposta final.' }] } };
+  }\n`);
+  const child = spawn(process.execPath, [service], {
+    env: { ...process.env, SOLARMINER_OPENCLAUDE_SDK: mockPath,
+      SOLARMINER_INTELLIGENCE_PORT: String(port), SOLARMINER_INTELLIGENCE_STATE: path.join(temp, 'state'),
+      SOLARMINER_INTELLIGENCE_LOCAL_TOKEN: 'local-agent-test-token-12345678901234567890',
+      SOLARMINER_INTELLIGENCE_TOKEN: 'gateway-service-test-token-12345678901234567890',
+      SOLARMINER_OLLAMA_BASE_URL: ollamaBase },
+    stdio: 'ignore',
+  });
+  t.after(async () => {
+    child.kill();
+    if (child.exitCode === null && child.signalCode === null) await once(child, 'exit').catch(() => {});
+    await rm(temp, { recursive: true, force: true });
+  });
+  await waitForHealth(port, child);
+  const diagnosticId = 'e4e4e4e4-e4e4-44e4-84e4-e4e4e4e4e4e4';
+  const analysis = fetch(`http://127.0.0.1:${port}/v1/analyze`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer local-agent-test-token-12345678901234567890',
+      'content-type': 'application/json', 'X-SolarMiner-Diagnostic-ID': diagnosticId },
+    body: JSON.stringify({ prompt: 'Responde brevemente.' }),
+  });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  const trace = await (await fetch(`http://127.0.0.1:${port}/v1/diagnostics/${diagnosticId}`, {
+    headers: { authorization: 'Bearer local-agent-test-token-12345678901234567890' },
+  })).json();
+  assert.equal(trace.state, 'in_progress');
+  assert.equal(trace.stage, 'sdk_stream_wait');
+  const response = await analysis;
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).answer, 'Resposta final.');
+});
+
 test('resident agent returns an explicit 504 when the OpenClaude SDK aborts inference', async t => {
   const temp = await mkdtemp(path.join(os.tmpdir(), 'solarminer-intelligence-timeout-'));
   const port = await unusedPort();
