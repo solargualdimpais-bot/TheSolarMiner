@@ -32,7 +32,14 @@ def test_nginx_proxies_verify_backend_using_certificate_dns_san():
     assert "proxy_send_timeout 315s;" in ask_location
     assert "access_log /var/log/nginx/solarminer-intelligence-access.log solarminer_intelligence;" in ask_location
     assert '"diagnostic_id":"$arg_diagnostic_id"' in nginx_config
+    assert 'location = /api/v1/intelligence/ask' in tailscale_script
+    assert 'access_log /var/log/nginx/solarminer-intelligence-access.log solarminer_intelligence;' in tailscale_script
+    assert 'proxy_set_header Host \\$host;' in tailscale_script
+    assert 'proxy_set_header X-Real-IP \\$remote_addr;' in tailscale_script
+    assert 'proxy_set_header X-Forwarded-For \\$remote_addr;' in tailscale_script
     assert '"upstream_status":"$upstream_status"' in nginx_config
+    assert 'location = /api/v1/intelligence/ask {' in tailscale_script
+    assert 'access_log /var/log/nginx/solarminer-intelligence-access.log solarminer_intelligence;' in tailscale_script
     assert "proxy_ssl_name localhost;" in ask_location
     gateway_app = (ROOT / "src/solarminer_gateway/app.py").read_text(encoding="utf-8")
     agent_service = (ROOT / "tools/solarminer_intelligence_mcp/agent-service.mjs").read_text(encoding="utf-8")

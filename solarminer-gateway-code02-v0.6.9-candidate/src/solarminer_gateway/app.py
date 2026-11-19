@@ -72,7 +72,7 @@ from . import system_components
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.267"
+PACKAGE_VERSION = "0.6.268"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 INTELLIGENCE_LOCAL_TOKEN_PATH = Path(os.environ.get("SOLARMINER_INTELLIGENCE_CLIENT_TOKEN_FILE", "/etc/solarminer/intelligence-client.token"))
@@ -3568,6 +3568,7 @@ def intelligence_provider_request_diagnostic(
             raise HTTPException(403, "owner_required")
     trace = _provider_diagnostic_snapshot(normalized_id)
     agent_trace: dict[str, Any]
+    agent_credential_status = "unknown"
     try:
         local_token = _read_intelligence_local_token()
         connection = http.client.HTTPConnection("127.0.0.1", 8765, timeout=1.5)
@@ -3576,12 +3577,18 @@ def intelligence_provider_request_diagnostic(
                                headers={"Authorization": f"Bearer {local_token}",
                                         "Accept": "application/json"})
             response = connection.getresponse()
+            agent_credential_status = "rejected" if response.status == 401 else "unknown"
             payload = json.loads(response.read(8192).decode("utf-8")) if response.status == 200 else {}
         finally:
             connection.close()
+        if (response.status == 200 and isinstance(payload, dict) and payload.get("state") in {
+                "in_progress", "failed", "completed", "not_seen"}):
+            agent_credential_status = "accepted"
         if not isinstance(payload, dict) or payload.get("state") not in {
                 "in_progress", "failed", "completed", "not_seen"}:
-            agent_trace = {"state": "unavailable", "reason": "invalid_agent_trace"}
+            agent_trace = {"state": "unavailable",
+                           "reason": "agent_credential_rejected" if agent_credential_status == "rejected" else "invalid_agent_trace",
+                           "credential_status": agent_credential_status}
         else:
             stage = payload.get("stage")
             error_type = payload.get("error_type")
@@ -3593,6 +3600,7 @@ def intelligence_provider_request_diagnostic(
                            "mcp_tool_calls": min(1000, max(0, int(payload.get("mcp_tool_calls", 0)))) if isinstance(payload.get("mcp_tool_calls", 0), int) else 0,
                            "mcp_tool_results": min(1000, max(0, int(payload.get("mcp_tool_results", 0)))) if isinstance(payload.get("mcp_tool_results", 0), int) else 0,
                            "mcp_tool_failures": min(1000, max(0, int(payload.get("mcp_tool_failures", 0)))) if isinstance(payload.get("mcp_tool_failures", 0), int) else 0,
+                           "credential_status": agent_credential_status,
                            "total_elapsed_ms": min(3600000, max(0, int(payload.get("total_elapsed_ms", 0)))) if isinstance(payload.get("total_elapsed_ms", 0), int) else 0,
                            "stage_elapsed_ms": min(3600000, max(0, int(payload.get("stage_elapsed_ms", 0)))) if isinstance(payload.get("stage_elapsed_ms", 0), int) else 0,
                            "steps": []}
@@ -3605,7 +3613,8 @@ def intelligence_provider_request_diagnostic(
                     and re.fullmatch(r"[a-z0-9_]{1,48}", item["stage"])
                     and isinstance(item.get("duration_ms"), int) and not isinstance(item.get("duration_ms"), bool)]
     except (OSError, ValueError, TypeError, TimeoutError, http.client.HTTPException) as exc:
-        agent_trace = {"state": "unavailable", "error_type": type(exc).__name__}
+        agent_trace = {"state": "unavailable", "error_type": type(exc).__name__,
+                       "credential_status": agent_credential_status}
     if trace is None:
         return {"state": "not_seen", "request_id": normalized_id,
                 "reason": "gateway_route_did_not_record_request", "agent_trace": agent_trace}

@@ -158,7 +158,7 @@ cp "$ROOT/docs/CHANGELOG_V06181.md" "$STAGE/usr/share/doc/solarminer-gateway/CHA
 cp "$ROOT/docs/CHANGELOG_V06137.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V06137.md"
 cp "$ROOT/docs/CHANGELOG_V06265.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V06265.md"
 cp "$ROOT/docs/CHANGELOG_V06266.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V06266.md"
-cp "$ROOT/docs/CHANGELOG_V06267.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V06267.md"
+cp "$ROOT/docs/CHANGELOG_V06268.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V06268.md"
 cp "$ROOT/docs/SOURCE_PROVENANCE.md" "$STAGE/usr/share/doc/solarminer-gateway/SOURCE_PROVENANCE.md"
 cp "$ROOT/packaging/catalog/catalog.json" "$STAGE/usr/share/solarminer/catalog.json"
 cp "$ROOT/packaging/catalog/catalog.sig" "$STAGE/usr/share/solarminer/catalog.sig"

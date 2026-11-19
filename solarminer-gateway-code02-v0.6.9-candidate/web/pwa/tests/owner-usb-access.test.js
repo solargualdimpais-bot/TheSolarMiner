@@ -106,10 +106,10 @@ test("Intelligence status explains malformed Ollama runtime responses", () => {
 });
 
 test("new PWA static cache version is changed and USB limitations are documented", () => {
-  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.195-intelligence-correlated-request-trace/);
+  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.196-intelligence-correlated-request-trace/);
   assert.match(serviceWorker, /\.\/favorite-list\.js/);
-  assert.match(manifest, /v0\.5\.195/);
-  assert.equal(packageJson.version, "0.5.195");
+  assert.match(manifest, /v0\.5\.196/);
+  assert.equal(packageJson.version, "0.5.196");
   assert.doesNotMatch(html, /gateway-update-refresh|Atualizar estado/);
   assert.doesNotMatch(app, /gateway-update-refresh/);
   const docs = read("OWNER_USB_AND_ACCESS.md");

@@ -289,7 +289,7 @@ async function intelligenceRequestTraceDiagnosis(requestId, diagnosticFetch = re
   if (typeof requestId !== "string" || !/^[0-9a-f-]{36}$/i.test(requestId)) {
     return "O pedido não tem um Diagnostic ID válido; não é possível correlacionar os registos.";
   }
-  const nginxEvidence = `Registo Nginx (OPTIONS/POST): sudo grep -F -- "${requestId}" /var/log/nginx/solarminer-intelligence-access.log.`;
+  const nginxEvidence = "Registo Nginx de OPTIONS/POST: /var/log/nginx/solarminer-intelligence-access.log; correlacionado pelo Diagnostic ID.";
   const safeFailureLabel = error => {
     const status = Number.isInteger(error?.status) ? `HTTP ${error.status}` : null;
     const name = typeof error?.name === "string" && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(error.name)
@@ -305,11 +305,16 @@ async function intelligenceRequestTraceDiagnosis(requestId, diagnosticFetch = re
   try {
     const trace = await diagnosticFetch(requestId);
     const agentTrace = trace?.agent_trace;
+    const credentialStatus = agentTrace?.credential_status === "accepted"
+      ? "Credencial Gateway → OpenClaude: aceite; coincide com a configuração do agente."
+      : agentTrace?.credential_status === "rejected"
+        ? "Credencial Gateway → OpenClaude: rejeitada; pode estar dessincronizada ou ausente no agente."
+        : "Credencial Gateway → OpenClaude: não confirmada.";
     const agentSummary = agentTrace && typeof agentTrace === "object"
-      ? ` OpenClaude: ${String(agentTrace.state || "estado desconhecido")}${agentTrace.stage ? ` na etapa “${String(agentTrace.stage).replace(/_/g, " ")}”` : ""}` +
+      ? ` ${credentialStatus} OpenClaude: ${String(agentTrace.state || "estado desconhecido")}${agentTrace.stage ? ` na etapa “${String(agentTrace.stage).replace(/_/g, " ")}”` : ""}` +
         `${agentTrace.error_type ? ` (${String(agentTrace.error_type)})` : ""}` +
         `${Number.isFinite(agentTrace.mcp_tool_calls) ? `; chamadas MCP iniciadas ${agentTrace.mcp_tool_calls}, resultados ${Number(agentTrace.mcp_tool_results) || 0}, falhas ${Number(agentTrace.mcp_tool_failures) || 0}` : ""}.`
-      : " OpenClaude: sem registo correlacionado.";
+      : ` ${credentialStatus} OpenClaude: sem registo correlacionado.`;
     const withAgent = message => `${message}${agentSummary} ${nginxEvidence}`;
     if (trace?.state === "in_progress") {
       const stage = String(trace.stage || "etapa desconhecida").replace(/_/g, " ");

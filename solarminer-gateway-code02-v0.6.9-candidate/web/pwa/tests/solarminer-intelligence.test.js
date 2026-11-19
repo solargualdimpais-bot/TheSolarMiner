@@ -64,6 +64,10 @@ test('PWA uses authenticated Gateway endpoints for provider setup, revocation an
   assert.match(app, /refreshGatewayIntelligenceProvider/);
   assert.match(app, /Diagnóstico: \$\{diagnosis\}/);
   assert.match(app, /diagnoseGatewayIntelligenceFailure\(error\)/);
+  assert.match(app, /showOperationResult\("Diagnóstico do Intelligence", diagnosis\)/);
+  assert.match(auth, /Credencial Gateway → OpenClaude: aceite/);
+  assert.match(auth, /Credencial Gateway → OpenClaude: rejeitada/);
+  assert.doesNotMatch(auth, /sudo\s+grep.*solarminer-intelligence-access/);
   assert.match(app, /state\.bootstrap/);
   assert.match(app, /installed\.ollama === true \? \(local\.runtime === "available" \? "instalado e a responder" : "instalado; serviço sem resposta"\)/);
   assert.match(app, /installed\.ollama === false \? "executável não encontrado" : "estado de instalação desconhecido/);
@@ -154,6 +158,14 @@ test('Intelligence diagnostics distinguish Gateway transport, API, auth, and boo
   }), { gatewayUrl, fetchImpl: async () => response(200),
     diagnosticFetch: async () => ({ state: 'failed', stage: 'openclaude_agent', error_type: 'Error', error_reason: 'intelligence_permission_denied' }) });
   assert.match(routeFailure, /falha na etapa “openclaude agent” \(Error\), motivo: intelligence permission denied/);
+
+  const rejectedCredentialTrace = await diagnoseGatewayIntelligenceFailure(Object.assign(new TypeError('fetch failed'), {
+    code: 'transport_error', requestId,
+  }), { gatewayUrl, fetchImpl: async () => response(200), diagnosticFetch: async () => ({ state: 'failed',
+    agent_trace: { state: 'unavailable', credential_status: 'rejected', reason: 'agent_credential_rejected' } }) });
+  assert.match(rejectedCredentialTrace, /Credencial Gateway → OpenClaude: rejeitada/);
+  assert.match(rejectedCredentialTrace, /pode estar dessincronizada ou ausente no agente/);
+  assert.doesNotMatch(rejectedCredentialTrace, /Bearer\s+[A-Za-z0-9_-]{20,}/);
 
   const traceLookupFailed = await diagnoseGatewayIntelligenceFailure(Object.assign(new TypeError('Failed to fetch'), {
     code: 'transport_error', requestId,

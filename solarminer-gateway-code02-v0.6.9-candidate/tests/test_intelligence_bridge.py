@@ -467,7 +467,7 @@ def test_intelligence_provider_status_reports_local_runtime_model_and_optional_c
     assert client.get(f"/api/v1/intelligence/provider/diagnostics/{request_id}").status_code == 401
 
 
-def test_provider_status_diagnostic_endpoint_distinguishes_unknown_and_rejects_invalid_ids(client):
+def test_provider_status_diagnostic_endpoint_distinguishes_unknown_and_rejects_invalid_ids(client, monkeypatch):
     owner = _owner(client)
     unknown_id = "b2b2b2b2-b2b2-42b2-82b2-b2b2b2b2b2b2"
     unknown = client.get(f"/api/v1/intelligence/provider/diagnostics/{unknown_id}", headers=owner)
@@ -476,6 +476,24 @@ def test_provider_status_diagnostic_endpoint_distinguishes_unknown_and_rejects_i
     assert unknown.json()["request_id"] == unknown_id
     assert unknown.json()["reason"] == "gateway_route_did_not_record_request"
     assert unknown.json()["agent_trace"]["state"] == "unavailable"
+    assert unknown.json()["agent_trace"]["credential_status"] == "unknown"
+
+    class UnauthorizedAgentConnection:
+        def __init__(self, *_args, **_kwargs): pass
+        def request(self, method, path, *, headers):
+            assert method == "GET" and path == f"/v1/diagnostics/{unknown_id}"
+            assert headers["Authorization"].startswith("Bearer ")
+        def getresponse(self):
+            return SimpleNamespace(status=401, read=lambda _limit: b'{"error":"unauthorized"}')
+        def close(self): pass
+
+    monkeypatch.setattr(gateway.http.client, "HTTPConnection", UnauthorizedAgentConnection)
+    rejected = client.get(f"/api/v1/intelligence/provider/diagnostics/{unknown_id}", headers=owner)
+    assert rejected.status_code == 200
+    rejected_trace = rejected.json()["agent_trace"]
+    assert rejected_trace["credential_status"] == "rejected"
+    assert rejected_trace["reason"] == "agent_credential_rejected"
+    assert "Authorization" not in json.dumps(rejected.json())
     invalid = client.get("/api/v1/intelligence/provider/diagnostics/not-a-uuid", headers=owner)
     assert invalid.status_code == 422
 
@@ -743,6 +761,9 @@ def test_intelligence_ask_forwards_only_authenticated_local_request_and_audits_m
     assert diagnostic.json()["state"] == "completed"
     assert diagnostic.json()["agent_trace"]["stage"] == "agent_response_ready"
     assert diagnostic.json()["agent_trace"]["mcp_tool_calls"] == 1
+    assert observed["method"] == "GET"
+    assert observed["headers"]["Authorization"] == "Bearer local-client-token-123456789012345678901234567890"
+    assert diagnostic.json()["agent_trace"]["credential_status"] == "accepted"
 
     cloud = client.post("/api/v1/intelligence/ask", headers=owner,
                         json={"prompt": "Usa OpenAI apenas nesta pergunta.", "provider": "openai"})

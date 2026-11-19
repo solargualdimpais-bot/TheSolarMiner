@@ -142,6 +142,8 @@ test('resident agent authenticates requests, persists sessions and only allows t
     assert.equal(JSON.parse(result).answer, 'Análise baseada na ponte SolarMiner.');
     assert.equal(JSON.parse(result).provider, 'ollama');
   }
+  const unauthorizedTraceResponse = await fetch(`http://127.0.0.1:${port}/v1/diagnostics/${diagnosticId}`);
+  assert.equal(unauthorizedTraceResponse.status, 401);
   const traceResponse = await fetch(`http://127.0.0.1:${port}/v1/diagnostics/${diagnosticId}`, { headers });
   const trace = await traceResponse.json();
   assert.equal(traceResponse.status, 200);

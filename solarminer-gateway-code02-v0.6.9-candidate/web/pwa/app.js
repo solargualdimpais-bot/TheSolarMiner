@@ -3718,7 +3718,9 @@ $("#gateway-intelligence-ask-form")?.addEventListener("submit", async event => {
     answer.textContent = result.answer || "O agente não devolveu texto.";
     await refreshGatewayIntelligenceProvider();
   } catch (error) {
-    answer.textContent = `A análise não foi concluída. ${await diagnoseGatewayIntelligenceFailure(error)}`;
+    const diagnosis = await diagnoseGatewayIntelligenceFailure(error);
+    answer.textContent = `A análise não foi concluída. ${diagnosis}`;
+    await showOperationResult("Diagnóstico do Intelligence", diagnosis);
   } finally { if (button) button.disabled = false; }
 });
 async function refreshDiagnosticsUploadStatus() {
