@@ -119,7 +119,7 @@ def test_usb_release_bundles_the_previous_gateway_release_for_rollback():
     workflow = (Path(__file__).parents[2] / ".github" / "workflows" / "gateway-release.yml").read_text(encoding="utf-8")
     rollback_lists = [line for line in workflow.splitlines() if "for VERSION in" in line]
     assert len(rollback_lists) == 2
-    assert all("0.6.270" in line for line in rollback_lists)
+    assert all("0.6.271" in line for line in rollback_lists)
 
 
 def test_upgrade_drains_stale_admin_terminal_sessions_before_reopening_socket():

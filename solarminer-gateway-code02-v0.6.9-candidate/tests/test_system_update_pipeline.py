@@ -183,10 +183,13 @@ def test_reconcile_restarts_active_socket_units_after_daemon_reload(tmp_path: Pa
     assert stops == list(expected)
     reload_index = calls.index(["/usr/bin/systemctl", "daemon-reload"])
     assert all(calls.index(["/usr/bin/systemctl", "stop", unit]) < reload_index for unit in expected)
+    drain = ["/usr/bin/systemctl", "stop", "solarminer-admin-terminal@*.service"]
+    reset = ["/usr/bin/systemctl", "reset-failed", "solarminer-admin-terminal@*.service"]
+    assert reload_index < calls.index(drain) < calls.index(reset)
     for unit in expected:
         enable = calls.index(["/usr/bin/systemctl", "enable", "--now", unit])
         verify = calls.index(["/usr/bin/systemctl", "is-active", "--quiet", unit], reload_index + 1)
-        assert reload_index < enable < verify
+        assert calls.index(reset) < enable < verify
 
 
 def test_system_command_timeout_is_classified_with_operation_and_limit(tmp_path: Path):

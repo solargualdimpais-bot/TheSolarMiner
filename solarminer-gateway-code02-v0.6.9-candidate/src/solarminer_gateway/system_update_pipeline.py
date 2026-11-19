@@ -137,7 +137,11 @@ class SystemUpdatePipeline:
 
         `enable --now` is not sufficient when a socket is already active: it
         leaves the old listening unit and inherited socket configuration in
-        place after the package files have been replaced.
+        place after the package files have been replaced. For the accepted
+        administrative-terminal socket, stopping the socket does not stop its
+        per-connection service instances. Drain those explicitly before
+        reopening the socket so an abandoned PTY cannot consume a connection
+        slot across an online release switch.
         """
         for unit in system_components.REQUIRED_SOCKETS:
             active = self._run(["/usr/bin/systemctl", "is-active", "--quiet", unit],
@@ -145,6 +149,10 @@ class SystemUpdatePipeline:
             if active.returncode == 0:
                 self._run(["/usr/bin/systemctl", "stop", unit], timeout=20, check=True)
         self._run(["/usr/bin/systemctl", "daemon-reload"], timeout=15, check=True)
+        self._run(["/usr/bin/systemctl", "stop", "solarminer-admin-terminal@*.service"],
+                  timeout=20, check=False)
+        self._run(["/usr/bin/systemctl", "reset-failed", "solarminer-admin-terminal@*.service"],
+                  timeout=10, check=False)
         for unit in system_components.REQUIRED_SOCKETS:
             self._run(["/usr/bin/systemctl", "enable", "--now", unit], timeout=20, check=True)
             self._run(["/usr/bin/systemctl", "is-active", "--quiet", unit], timeout=10, check=True)
