@@ -366,14 +366,25 @@ const server = http.createServer(async (request, response) => {
     ]);
     const timedOut = error?.name === 'AbortError' || error?.code === 'ABORT_ERR';
     const raw = timedOut ? 'analysis_timeout' : String(error?.message || 'analysis_failed');
-    const message = known.has(raw) ? raw : 'provider_or_agent_request_failed';
+    const errorType = typeof error?.name === 'string' && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(error.name)
+      ? error.name : 'Error';
+    const errorCode = typeof error?.code === 'string' && /^[A-Z0-9_]{1,32}$/.test(error.code)
+      ? error.code : null;
+    const permissionDenied = errorType === 'PermissionError' || errorCode === 'EACCES' || errorCode === 'EPERM';
+    const message = permissionDenied ? 'intelligence_permission_denied'
+      : known.has(raw) ? raw : 'provider_or_agent_request_failed';
+    // Keep the diagnosis useful without logging prompts, paths, environment,
+    // credentials or raw SDK exception text.
+    console.error(JSON.stringify({ event: 'intelligence_analysis_failed', stage: 'openclaude_query',
+      error_type: errorType, error_code: permissionDenied ? errorCode : null, reason: message }));
     const status = message === 'openai_credential_not_configured' || message === 'openai_model_not_configured' ||
       message === 'ollama_runtime_unavailable' || message === 'ollama_model_not_installed' ||
-      message === 'solarminer_service_credential_not_configured' ? 503
+      message === 'solarminer_service_credential_not_configured' || message === 'intelligence_permission_denied' ? 503
       : message === 'analysis_timeout' ? 504
       : message === 'analysis_busy' || message === 'analysis_hourly_limit_reached' ? 429
       : message === 'request_too_large' ? 413 : 502;
-    return send(response, status, { error: message.slice(0, 120) });
+    return send(response, status, { error: message.slice(0, 120), error_type: errorType,
+      ...(permissionDenied && errorCode ? { error_code: errorCode } : {}) });
   }
 });
 

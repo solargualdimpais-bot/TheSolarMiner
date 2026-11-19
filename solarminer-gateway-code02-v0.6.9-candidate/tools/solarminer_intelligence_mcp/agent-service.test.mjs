@@ -195,7 +195,40 @@ test('resident agent returns an explicit 504 when the OpenClaude SDK aborts infe
     body: JSON.stringify({ prompt: 'Teste de timeout.' }),
   });
   assert.equal(response.status, 504);
-  assert.deepEqual(await response.json(), { error: 'analysis_timeout' });
+  assert.deepEqual(await response.json(), { error: 'analysis_timeout', error_type: 'AbortError' });
+});
+
+test('resident agent identifies permission failures without exposing paths or exception text', async t => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), 'solarminer-intelligence-permission-'));
+  const port = await unusedPort();
+  const mockPath = path.join(temp, 'permission-sdk.mjs');
+  const ollamaBase = await startMockOllama(t);
+  await writeFile(mockPath, `export async function* query() { const error = new Error('secret path /root/private'); error.code = 'EACCES'; throw error; }\n`);
+  const child = spawn(process.execPath, [service], {
+    env: { ...process.env, SOLARMINER_OPENCLAUDE_SDK: mockPath,
+      SOLARMINER_INTELLIGENCE_PORT: String(port), SOLARMINER_INTELLIGENCE_STATE: path.join(temp, 'state'),
+      SOLARMINER_INTELLIGENCE_LOCAL_TOKEN: 'local-agent-test-token-12345678901234567890',
+      SOLARMINER_INTELLIGENCE_TOKEN: 'gateway-service-test-token-12345678901234567890',
+      SOLARMINER_OLLAMA_BASE_URL: ollamaBase },
+    stdio: 'ignore',
+  });
+  t.after(async () => {
+    child.kill();
+    if (child.exitCode === null && child.signalCode === null) await once(child, 'exit').catch(() => {});
+    await rm(temp, { recursive: true, force: true });
+  });
+  await waitForHealth(port, child);
+  const response = await fetch(`http://127.0.0.1:${port}/v1/analyze`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer local-agent-test-token-12345678901234567890', 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt: 'Teste de permissões.' }),
+  });
+  assert.equal(response.status, 503);
+  const result = await response.json();
+  assert.equal(result.error, 'intelligence_permission_denied');
+  assert.equal(result.error_code, 'EACCES');
+  assert.equal(result.error_type, 'Error');
+  assert.equal(JSON.stringify(result).includes('/root/private'), false);
 });
 
 test('resident agent defaults to local Ollama without OpenAI credentials and requires a key only for explicit cloud requests', async t => {

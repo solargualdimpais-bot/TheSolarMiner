@@ -294,7 +294,8 @@ async function intelligenceRequestTraceDiagnosis(requestId, diagnosticFetch = re
     }
     if (trace?.state === "failed") {
       const stage = String(trace.stage || "etapa desconhecida").replace(/_/g, " ");
-      return `O Gateway recebeu o pedido e registou uma falha na etapa “${stage}”${trace.error_type ? ` (${trace.error_type})` : ""}. O estado dos componentes pode estar incompleto. Referência de diagnóstico: ${requestId}.`;
+      const reason = typeof trace.error_reason === "string" ? trace.error_reason.replace(/_/g, " ") : "";
+      return `O Gateway recebeu o pedido e registou uma falha na etapa “${stage}”${trace.error_type ? ` (${trace.error_type})` : ""}${reason ? `, motivo: ${reason}` : ""}. O estado dos componentes pode estar incompleto. Referência de diagnóstico: ${requestId}.`;
     }
     if (trace?.state === "completed" || trace?.state === "degraded") {
       const stage = String(trace.stage || "etapa desconhecida").replace(/_/g, " ");
@@ -309,13 +310,17 @@ async function intelligenceRequestTraceDiagnosis(requestId, diagnosticFetch = re
 export async function diagnoseGatewayIntelligenceFailure(error, { gatewayUrl = currentGateway, fetchImpl = globalThis.fetch,
   diagnosticFetch = readGatewayIntelligenceRequestDiagnostic, timeoutMs = 3000 } = {}) {
   if (error?.code === "timeout" || error?.name === "AbortError") {
-    const traceDiagnosis = error.operation === "status"
+    const traceDiagnosis = ["status", "analysis"].includes(error.operation)
       ? await intelligenceRequestTraceDiagnosis(error.requestId, diagnosticFetch) : null;
     if (traceDiagnosis) return traceDiagnosis;
     const seconds = Math.max(1, Math.ceil((Number(error.timeoutMs) || 15000) / 1000));
     return error.operation === "analysis"
       ? `Tempo limite: a análise excedeu ${seconds} segundos sem resposta. Verifica o estado do agente local e tenta novamente quando estiver disponível.`
       : `Tempo limite: a consulta do estado do Intelligence excedeu ${seconds} segundos. A API do Gateway não concluiu a leitura; isto não prova que os componentes estejam ausentes.`;
+  }
+  if (error?.requestId) {
+    const traceDiagnosis = await intelligenceRequestTraceDiagnosis(error.requestId, diagnosticFetch);
+    if (traceDiagnosis) return traceDiagnosis;
   }
   if (error?.status === 401) return "A API do Gateway respondeu, mas a sessão Owner expirou ou foi rejeitada. Inicia sessão novamente.";
   if (error?.status === 403) return "A API do Gateway respondeu, mas esta sessão não tem permissão Owner para consultar o Intelligence.";
@@ -332,7 +337,8 @@ export async function diagnoseGatewayIntelligenceFailure(error, { gatewayUrl = c
     if (error.detail === "ollama_model_not_installed") return "O Ollama respondeu, mas o modelo local pedido não está instalado. Usa Instalar/atualizar componentes do Intelligence para o obter.";
     if (error.detail === "intelligence_credentials_not_configured") return "O agente respondeu, mas falta configurar a credencial do fornecedor selecionado.";
     if (error.detail === "intelligence_analysis_timeout") return "A análise local excedeu o limite de cinco minutos. O Ollama pode continuar ativo; tenta novamente com uma pergunta mais curta ou consulta os registos do agente.";
-    if (error.detail === "intelligence_analysis_failed") return "O agente local respondeu, mas não conseguiu concluir a análise. Consulta o estado do agente e do fornecedor local.";
+    if (error.detail === "intelligence_analysis_failed") return "O agente local respondeu, mas não conseguiu concluir a análise. A referência de diagnóstico identifica a etapa e o tipo de erro.";
+    if (error.detail === "intelligence_permission_denied") return "O OpenClaude ou uma ferramenta local recebeu uma recusa de permissões. A referência de diagnóstico identifica a etapa e o tipo de erro, sem expor caminhos ou credenciais.";
     if (error.detail === "intelligence_provider_configuration_failed") return "O serviço de configuração do fornecedor não respondeu ao Gateway.";
     return `A API do Gateway respondeu com erro interno HTTP ${error.status}; isto não confirma que os modelos estejam ausentes.`;
   }
@@ -360,10 +366,6 @@ export async function diagnoseGatewayIntelligenceFailure(error, { gatewayUrl = c
   if (!health.responded || !info.responded) return "O Gateway responde, mas um endpoint público de saúde falhou. A API pode estar a iniciar ou com uma configuração incompleta.";
   if ([401, 403].includes(health.status) || [401, 403].includes(info.status)) return "O HTTPS e o servidor respondem, mas até um endpoint público está a exigir autenticação. Há uma configuração de acesso/API a verificar; o estado dos componentes continua desconhecido.";
   if (!health.ok || !info.ok) return "O HTTPS e a API respondem, mas um endpoint público foi recusado ou não existe. Há incompatibilidade/configuração do Gateway a verificar.";
-  if (error?.requestId) {
-    const traceDiagnosis = await intelligenceRequestTraceDiagnosis(error.requestId, diagnosticFetch);
-    if (traceDiagnosis) return traceDiagnosis;
-  }
   return error?.code === "transport_error"
     ? "O Gateway e o HTTPS respondem, mas o pedido autenticado ao Intelligence falhou antes de receber uma resposta HTTP. Pode ser uma falha transitória ou específica dessa rota; o browser não consegue apurar mais e os componentes continuam com estado desconhecido."
     : "O Gateway e o HTTPS respondem, mas a consulta autenticada do Intelligence falhou. Verifica a rota, sessão ou autorização; os componentes continuam com estado desconhecido.";

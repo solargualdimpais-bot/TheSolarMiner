@@ -72,7 +72,7 @@ from . import system_components
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.263"
+PACKAGE_VERSION = "0.6.264"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 INTELLIGENCE_LOCAL_TOKEN_PATH = Path(os.environ.get("SOLARMINER_INTELLIGENCE_CLIENT_TOKEN_FILE", "/etc/solarminer/intelligence-client.token"))
@@ -2569,7 +2569,9 @@ app = FastAPI(title="SolarMiner Gateway", version=VERSION, docs_url=None, redoc_
 @app.middleware("http")
 async def report_http_server_errors(request: Request, call_next):
     started = time.perf_counter()
-    provider_diagnostic_id = request.headers.get("X-SolarMiner-Diagnostic-ID") if request.url.path == "/api/v1/intelligence/provider" else None
+    provider_diagnostic_id = request.headers.get("X-SolarMiner-Diagnostic-ID") if request.url.path in {
+        "/api/v1/intelligence/provider", "/api/v1/intelligence/ask",
+    } else None
     if provider_diagnostic_id:
         try:
             provider_diagnostic_id = str(uuid.UUID(provider_diagnostic_id))
@@ -3716,6 +3718,7 @@ def _read_intelligence_bootstrap_status() -> dict[str, Any]:
 
 @app.post("/api/v1/intelligence/ask")
 def intelligence_ask(
+    request: Request,
     payload: IntelligenceAskRequest,
     session: dict[str, Any] = Depends(require_permission("read")),
 ) -> dict[str, Any]:
@@ -3733,6 +3736,8 @@ def intelligence_ask(
                   {"window_seconds": 3600, "limit": 30})
             raise HTTPException(429, "intelligence_hourly_limit_reached")
     try:
+        _provider_diagnostic_update(request.headers.get("X-SolarMiner-Diagnostic-ID"),
+                                    stage="openclaude_agent", state="running")
         local_token = _read_intelligence_local_token()
         if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", local_token):
             raise OSError("local_agent_credential_invalid")
@@ -3756,6 +3761,9 @@ def intelligence_ask(
     except (OSError, ValueError, TypeError, TimeoutError, http.client.HTTPException) as exc:
         error_type = type(exc).__name__
         reason = "intelligence_agent_type_error" if isinstance(exc, TypeError) else "intelligence_agent_request_failed"
+        _provider_diagnostic_update(request.headers.get("X-SolarMiner-Diagnostic-ID"),
+                                    stage="openclaude_agent", state="failed", error_type=error_type,
+                                    error_reason=reason, http_status=503)
         with db() as conn:
             audit(conn, session["user_id"], "intelligence.ask", "openclaude", "failed",
                   {"error_type": error_type, "error_reason": reason,
@@ -3763,10 +3771,26 @@ def intelligence_ask(
         LOG.warning("Intelligence ask failed stage=openclaude_agent error_type=%s reason=%s", error_type, reason)
         raise HTTPException(503, reason) from exc
     if response.status != 200 or not isinstance(response_payload, dict) or not isinstance(response_payload.get("answer"), str):
+        agent_reason = response_payload.get("error") if isinstance(response_payload, dict) else None
+        safe_reasons = {"openai_credential_not_configured", "openai_model_not_configured",
+                        "solarminer_service_credential_not_configured", "ollama_runtime_unavailable",
+                        "ollama_model_not_installed", "analysis_timeout", "analysis_busy",
+                        "analysis_hourly_limit_reached", "request_too_large", "analysis_returned_no_text",
+                        "development_workspace_unavailable", "intelligence_permission_denied",
+                        "provider_or_agent_request_failed"}
+        diagnostic_reason = agent_reason if isinstance(agent_reason, str) and agent_reason in safe_reasons else "provider_or_agent_request_failed"
+        agent_error_type = response_payload.get("error_type") if isinstance(response_payload, dict) else None
+        if not isinstance(agent_error_type, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,63}", agent_error_type):
+            agent_error_type = None
+        _provider_diagnostic_update(request.headers.get("X-SolarMiner-Diagnostic-ID"),
+                                    stage="openclaude_agent", state="failed",
+                                    error_type=agent_error_type, error_reason=diagnostic_reason,
+                                    http_status=response.status)
         with db() as conn:
             audit(conn, session["user_id"], "intelligence.ask", "openclaude", "failed",
-                  {"agent_status": response.status, "prompt_characters": len(payload.prompt)})
-        reason = response_payload.get("error") if isinstance(response_payload, dict) else None
+                  {"agent_status": response.status, "prompt_characters": len(payload.prompt),
+                   "agent_error_type": agent_error_type, "agent_error_reason": diagnostic_reason})
+        reason = diagnostic_reason
         if reason in {"openai_credential_not_configured", "openai_model_not_configured",
                       "solarminer_service_credential_not_configured"}:
             raise HTTPException(503, "intelligence_credentials_not_configured")
@@ -3774,9 +3798,13 @@ def intelligence_ask(
             raise HTTPException(503, reason)
         if reason == "analysis_timeout":
             raise HTTPException(504, "intelligence_analysis_timeout")
+        if reason == "intelligence_permission_denied":
+            raise HTTPException(503, "intelligence_permission_denied")
         if reason == "analysis_busy":
             raise HTTPException(429, "intelligence_agent_busy")
         raise HTTPException(503, "intelligence_analysis_failed")
+    _provider_diagnostic_update(request.headers.get("X-SolarMiner-Diagnostic-ID"),
+                                stage="openclaude_agent", state="completed", http_status=200)
     with db() as conn:
         audit(conn, session["user_id"], "intelligence.ask", "openclaude", "success",
               {"provider": payload.provider, "prompt_characters": len(payload.prompt),

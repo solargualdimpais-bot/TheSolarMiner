@@ -142,7 +142,7 @@ test('Intelligence diagnostics distinguish Gateway transport, API, auth, and boo
 
   const requestId = 'a1a1a1a1-a1a1-41a1-81a1-a1a1a1a1a1a1';
   const timedOutInRoute = await diagnoseGatewayIntelligenceFailure(Object.assign(new Error('timeout'), {
-    code: 'timeout', operation: 'status', requestId, timeoutMs: 45000,
+    code: 'timeout', operation: 'analysis', requestId, timeoutMs: 320000,
   }), { diagnosticFetch: async () => ({ state: 'in_progress', stage: 'openclaude_agent', stage_elapsed_ms: 12000 }) });
   assert.match(timedOutInRoute, /processá-lo na etapa “openclaude agent” há 12 s/);
   assert.match(timedOutInRoute, new RegExp(requestId));
@@ -150,8 +150,8 @@ test('Intelligence diagnostics distinguish Gateway transport, API, auth, and boo
   const routeFailure = await diagnoseGatewayIntelligenceFailure(Object.assign(new TypeError('fetch failed'), {
     code: 'transport_error', requestId,
   }), { gatewayUrl, fetchImpl: async () => response(200),
-    diagnosticFetch: async () => ({ state: 'failed', stage: 'ollama_runtime', error_type: 'TimeoutError' }) });
-  assert.match(routeFailure, /falha na etapa “ollama runtime” \(TimeoutError\)/);
+    diagnosticFetch: async () => ({ state: 'failed', stage: 'openclaude_agent', error_type: 'Error', error_reason: 'intelligence_permission_denied' }) });
+  assert.match(routeFailure, /falha na etapa “openclaude agent” \(Error\), motivo: intelligence permission denied/);
 
   const routeNotSeen = await diagnoseGatewayIntelligenceFailure(Object.assign(new TypeError('fetch failed'), {
     code: 'transport_error', requestId,

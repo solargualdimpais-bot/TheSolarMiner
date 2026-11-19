@@ -1,5 +1,6 @@
 import json
 import time
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -745,6 +746,38 @@ def test_intelligence_ask_reports_type_error_at_local_agent_boundary(client, mon
                                "AND outcome='failed' ORDER BY id DESC LIMIT 1").fetchone()[0]
     assert json.loads(details)["error_type"] == "TypeError"
     assert json.loads(details)["error_reason"] == "intelligence_agent_type_error"
+
+
+def test_intelligence_ask_exposes_safe_permission_failure_trace(client, monkeypatch):
+    owner = _owner(client)
+    monkeypatch.setattr(gateway, "_read_intelligence_local_token",
+                        lambda: "local-client-token-123456789012345678901234567890")
+    diagnostic_id = str(uuid.uuid4())
+
+    class PermissionResponse:
+        status = 503
+        def read(self, _limit):
+            return b'{"error":"intelligence_permission_denied","error_type":"Error","error_code":"EACCES"}'
+
+    class FakeConnection:
+        def __init__(self, *_args, **_kwargs): pass
+        def close(self): pass
+        def request(self, *_args, **_kwargs): pass
+        def getresponse(self): return PermissionResponse()
+
+    monkeypatch.setattr(gateway.http.client, "HTTPConnection", FakeConnection)
+    response = client.post("/api/v1/intelligence/ask",
+                           headers={**owner, "X-SolarMiner-Diagnostic-ID": diagnostic_id},
+                           json={"prompt": "Test permissions"})
+    assert response.status_code == 503
+    assert response.json()["detail"] == "intelligence_permission_denied"
+    trace = client.get(f"/api/v1/intelligence/provider/diagnostics/{diagnostic_id}", headers=owner)
+    assert trace.status_code == 200
+    assert trace.json()["state"] == "failed"
+    assert trace.json()["stage"] == "openclaude_agent"
+    assert trace.json()["error_type"] == "Error"
+    assert trace.json()["error_reason"] == "intelligence_permission_denied"
+    assert "private" not in json.dumps(trace.json()).lower()
 
 
 def test_intelligence_ask_reports_agent_analysis_timeout_as_gateway_504(client, monkeypatch):
