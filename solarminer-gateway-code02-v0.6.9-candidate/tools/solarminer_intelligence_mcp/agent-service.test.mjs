@@ -152,7 +152,12 @@ test('resident agent authenticates requests, persists sessions and only allows t
   assert.equal(trace.mcp_tool_calls, 1);
   assert.equal(trace.mcp_tool_results, 2);
   assert.equal(trace.mcp_tool_failures, 1);
-  assert.ok(trace.steps.some(step => step.stage === 'sdk_text_received'));
+  assert.equal(trace.sdk_messages, 3);
+  assert.equal(trace.sdk_assistant_messages, 2);
+  assert.equal(trace.sdk_assistant_text_blocks, 1);
+  assert.equal(trace.sdk_assistant_text_chars, 'Análise baseada na ponte SolarMiner.'.length);
+  assert.equal(trace.sdk_non_assistant_text_blocks, 0);
+  assert.ok(trace.steps.some(step => step.stage === 'sdk_assistant_text_received'));
   const explicitCloud = await fetch(`http://127.0.0.1:${port}/v1/analyze`, {
     method: 'POST', headers, body: JSON.stringify({ prompt: 'Usa OpenAI apenas neste pedido.', provider: 'openai' }),
   });
@@ -187,6 +192,53 @@ test('resident agent authenticates requests, persists sessions and only allows t
   assert.equal(reports[0].mcpArgs.join(' ').includes('gateway-service-test-token'), false);
 });
 
+test('resident agent distinguishes non-assistant SDK text from a final answer without exposing it', async t => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), 'solarminer-intelligence-empty-stream-'));
+  const port = await unusedPort();
+  const mockPath = path.join(temp, 'empty-sdk.mjs');
+  const ollamaBase = await startMockOllama(t);
+  await writeFile(mockPath, `export async function* query() {
+    yield { type: 'user', message: { content: [{ type: 'text', text: 'private SDK text must not be returned' }] } };
+  }\n`);
+  const child = spawn(process.execPath, [service], {
+    env: { ...process.env, SOLARMINER_OPENCLAUDE_SDK: mockPath,
+      SOLARMINER_INTELLIGENCE_PORT: String(port), SOLARMINER_INTELLIGENCE_STATE: path.join(temp, 'state'),
+      SOLARMINER_INTELLIGENCE_LOCAL_TOKEN: 'local-agent-test-token-12345678901234567890',
+      SOLARMINER_INTELLIGENCE_TOKEN: 'gateway-service-test-token-12345678901234567890',
+      SOLARMINER_OLLAMA_BASE_URL: ollamaBase },
+    stdio: 'ignore',
+  });
+  t.after(async () => {
+    child.kill();
+    if (child.exitCode === null && child.signalCode === null) await once(child, 'exit').catch(() => {});
+    await rm(temp, { recursive: true, force: true });
+  });
+  await waitForHealth(port, child);
+  const diagnosticId = 'b2b2b2b2-b2b2-42b2-82b2-b2b2b2b2b2b2';
+  const response = await fetch(`http://127.0.0.1:${port}/v1/analyze`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer local-agent-test-token-12345678901234567890',
+      'content-type': 'application/json', 'X-SolarMiner-Diagnostic-ID': diagnosticId },
+    body: JSON.stringify({ prompt: 'Consulta o estado do inversor.' }),
+  });
+  assert.equal(response.status, 502);
+  const body = await response.json();
+  assert.equal(body.error, 'analysis_returned_no_text');
+  assert.equal(JSON.stringify(body).includes('private SDK text'), false);
+
+  const trace = await (await fetch(`http://127.0.0.1:${port}/v1/diagnostics/${diagnosticId}`, {
+    headers: { authorization: 'Bearer local-agent-test-token-12345678901234567890' },
+  })).json();
+  assert.equal(trace.state, 'failed');
+  assert.equal(trace.stage, 'sdk_stream_complete_no_assistant_text');
+  assert.equal(trace.error_type, 'EmptyAssistantResponse');
+  assert.equal(trace.sdk_messages, 1);
+  assert.equal(trace.sdk_assistant_text_blocks, 0);
+  assert.equal(trace.sdk_assistant_text_chars, 0);
+  assert.equal(trace.sdk_non_assistant_text_blocks, 1);
+  assert.equal(JSON.stringify(trace).includes('private SDK text'), false);
+});
+
 test('resident agent returns an explicit 504 when the OpenClaude SDK aborts inference', async t => {
   const temp = await mkdtemp(path.join(os.tmpdir(), 'solarminer-intelligence-timeout-'));
   const port = await unusedPort();
@@ -214,6 +266,44 @@ test('resident agent returns an explicit 504 when the OpenClaude SDK aborts infe
   });
   assert.equal(response.status, 504);
   assert.deepEqual(await response.json(), { error: 'analysis_timeout', error_type: 'AbortError' });
+});
+
+test('resident agent preserves only the upstream HTTP status when the SDK rejects a provider response', async t => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), 'solarminer-intelligence-provider-status-'));
+  const port = await unusedPort();
+  const mockPath = path.join(temp, 'provider-error-sdk.mjs');
+  const ollamaBase = await startMockOllama(t);
+  await writeFile(mockPath, `export async function* query() {
+    const error = new Error('private provider response body'); error.name = 'APIError'; error.status = 500; throw error;
+  }\n`);
+  const child = spawn(process.execPath, [service], {
+    env: { ...process.env, SOLARMINER_OPENCLAUDE_SDK: mockPath,
+      SOLARMINER_INTELLIGENCE_PORT: String(port), SOLARMINER_INTELLIGENCE_STATE: path.join(temp, 'state'),
+      SOLARMINER_INTELLIGENCE_LOCAL_TOKEN: 'local-agent-test-token-12345678901234567890',
+      SOLARMINER_INTELLIGENCE_TOKEN: 'gateway-service-test-token-12345678901234567890',
+      SOLARMINER_OLLAMA_BASE_URL: ollamaBase },
+    stdio: 'ignore',
+  });
+  t.after(async () => {
+    child.kill();
+    if (child.exitCode === null && child.signalCode === null) await once(child, 'exit').catch(() => {});
+    await rm(temp, { recursive: true, force: true });
+  });
+  await waitForHealth(port, child);
+  const diagnosticId = 'd3d3d3d3-d3d3-43d3-83d3-d3d3d3d3d3d3';
+  const response = await fetch(`http://127.0.0.1:${port}/v1/analyze`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer local-agent-test-token-12345678901234567890',
+      'content-type': 'application/json', 'X-SolarMiner-Diagnostic-ID': diagnosticId },
+    body: JSON.stringify({ prompt: 'Responde brevemente.' }),
+  });
+  assert.equal(response.status, 502);
+  assert.equal(JSON.stringify(await response.json()).includes('private provider response body'), false);
+  const trace = await (await fetch(`http://127.0.0.1:${port}/v1/diagnostics/${diagnosticId}`, {
+    headers: { authorization: 'Bearer local-agent-test-token-12345678901234567890' },
+  })).json();
+  assert.equal(trace.provider_http_status, 500);
+  assert.equal(trace.error_type, 'APIError');
 });
 
 test('resident agent identifies permission failures without exposing paths or exception text', async t => {

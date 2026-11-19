@@ -1,12 +1,28 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { diagnoseGatewayIntelligenceFailure } from '../gateway-auth.js';
+import { diagnoseGatewayIntelligenceFailure, normalizeGatewayTransportError } from '../gateway-auth.js';
 
 const read = name => readFileSync(new URL(`../${name}`, import.meta.url), 'utf8');
 const html = read('index.html');
 const app = read('app.js');
 const auth = read('gateway-auth.js');
+
+test('PWA wraps immutable fetch failures instead of mutating read-only error properties', () => {
+  const original = new TypeError('attempted to assign to read only property');
+  Object.defineProperty(original, 'code', { value: 17, writable: false, configurable: false });
+  Object.freeze(original);
+
+  const normalized = normalizeGatewayTransportError(original);
+  assert.notEqual(normalized, original);
+  assert.equal(normalized.name, 'TypeError');
+  assert.equal(normalized.message, original.message);
+  assert.equal(normalized.code, 'transport_error');
+  assert.equal(original.code, 17);
+  normalized.operation = 'analysis';
+  normalized.requestId = 'a1a1a1a1-a1a1-41a1-81a1-a1a1a1a1a1a1';
+  assert.equal(normalized.operation, 'analysis');
+});
 
 test('Owner has an Intelligence panel with protected provider setup and read-only scope disclosure', () => {
   assert.match(html, /data-owner-tab="intelligence"/);
@@ -178,8 +194,8 @@ test('Intelligence diagnostics distinguish Gateway transport, API, auth, and boo
     code: 'transport_error', requestId,
   }), { diagnosticFetch: async () => ({ state: 'failed', stage: 'openclaude_agent',
     agent_trace: { state: 'failed', stage: 'sdk_stream_wait', error_type: 'Error',
-      mcp_tool_calls: 1, mcp_tool_results: 2, mcp_tool_failures: 1 } }) });
-  assert.match(agentTrace, /OpenClaude: failed na etapa “sdk stream wait” \(Error\); chamadas MCP iniciadas 1, resultados 2, falhas 1/);
+      provider_http_status: 500, mcp_tool_calls: 1, mcp_tool_results: 2, mcp_tool_failures: 1 } }) });
+  assert.match(agentTrace, /OpenClaude: failed na etapa “sdk stream wait” \(Error\); resposta HTTP do fornecedor 500; chamadas MCP iniciadas 1, resultados 2, falhas 1/);
 
   const rejectedTrace = await diagnoseGatewayIntelligenceFailure(Object.assign(new TypeError('Failed to fetch'), {
     code: 'transport_error', requestId,

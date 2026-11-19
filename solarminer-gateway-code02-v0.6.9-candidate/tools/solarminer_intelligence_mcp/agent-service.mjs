@@ -32,7 +32,8 @@ let requestCount = 0;
 let windowStartedAt = Date.now();
 const requestDiagnostics = new Map();
 
-function updateRequestDiagnostic(requestId, { stage, state = 'running', errorType = null, errorCode = null } = {}) {
+function updateRequestDiagnostic(requestId, { stage, state = 'running', errorType = null, errorCode = null,
+  providerHttpStatus = null } = {}) {
   if (typeof requestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(requestId)) return;
   const now = Date.now();
   for (const [key, value] of requestDiagnostics) {
@@ -41,7 +42,9 @@ function updateRequestDiagnostic(requestId, { stage, state = 'running', errorTyp
   let entry = requestDiagnostics.get(requestId);
   if (!entry) {
     entry = { request_id: requestId, state: 'in_progress', stage: 'agent_received', startedAt: now,
-      stageStartedAt: now, updatedAt: now, steps: [], mcp_tool_calls: 0, mcp_tool_results: 0, mcp_tool_failures: 0 };
+      stageStartedAt: now, updatedAt: now, steps: [], mcp_tool_calls: 0, mcp_tool_results: 0,
+      mcp_tool_failures: 0, sdk_messages: 0, sdk_assistant_messages: 0, sdk_assistant_text_blocks: 0,
+      sdk_assistant_text_chars: 0, sdk_non_assistant_text_blocks: 0 };
     requestDiagnostics.set(requestId, entry);
   }
   if (stage && stage !== entry.stage) {
@@ -53,6 +56,9 @@ function updateRequestDiagnostic(requestId, { stage, state = 'running', errorTyp
   entry.state = state;
   if (errorType) entry.error_type = String(errorType).slice(0, 64);
   if (errorCode && /^[A-Z0-9_]{1,32}$/.test(errorCode)) entry.error_code = errorCode;
+  if (Number.isInteger(providerHttpStatus) && providerHttpStatus >= 400 && providerHttpStatus <= 599) {
+    entry.provider_http_status = providerHttpStatus;
+  }
   entry.updatedAt = now;
   while (requestDiagnostics.size > 64) {
     const oldest = [...requestDiagnostics.entries()].reduce((a, b) => a[1].startedAt <= b[1].startedAt ? a : b)[0];
@@ -66,8 +72,13 @@ function requestDiagnosticSnapshot(requestId) {
   const now = Date.now();
   return { request_id: entry.request_id, state: entry.state, stage: entry.stage,
     error_type: entry.error_type || null, error_code: entry.error_code || null,
+    provider_http_status: entry.provider_http_status || null,
     mcp_tool_calls: entry.mcp_tool_calls, mcp_tool_results: entry.mcp_tool_results,
-    mcp_tool_failures: entry.mcp_tool_failures,
+    mcp_tool_failures: entry.mcp_tool_failures, sdk_messages: entry.sdk_messages,
+    sdk_assistant_messages: entry.sdk_assistant_messages,
+    sdk_assistant_text_blocks: entry.sdk_assistant_text_blocks,
+    sdk_assistant_text_chars: entry.sdk_assistant_text_chars,
+    sdk_non_assistant_text_blocks: entry.sdk_non_assistant_text_blocks,
     total_elapsed_ms: Math.max(0, now - entry.startedAt),
     stage_elapsed_ms: Math.max(0, now - entry.stageStartedAt), steps: entry.steps.slice(-12) };
 }
@@ -329,24 +340,43 @@ async function runAnalysis(prompt, { development = false, provider = 'ollama', d
     updateRequestDiagnostic(diagnosticId, { stage: 'sdk_stream_wait' });
     for await (const message of agentQuery) {
       const blocks = Array.isArray(message?.message?.content) ? message.message.content : [];
+      const messageType = typeof message?.type === 'string' ? message.type : '';
       const toolUses = blocks.filter(item => item?.type === 'tool_use').length;
       const toolResultBlocks = blocks.filter(item => item?.type === 'tool_result');
       const toolResults = toolResultBlocks.length;
       const toolFailures = toolResultBlocks.filter(item => item.is_error === true).length;
       const textBlocks = blocks.filter(item => item?.type === 'text' && typeof item.text === 'string');
       const entry = typeof diagnosticId === 'string' ? requestDiagnostics.get(diagnosticId) : null;
+      if (entry) {
+        entry.sdk_messages += 1;
+        if (messageType === 'assistant') {
+          entry.sdk_assistant_messages += 1;
+          entry.sdk_assistant_text_blocks += textBlocks.length;
+          entry.sdk_assistant_text_chars += textBlocks.reduce((sum, item) => sum + item.text.length, 0);
+        } else {
+          entry.sdk_non_assistant_text_blocks += textBlocks.length;
+        }
+      }
       if (entry && toolUses) entry.mcp_tool_calls += toolUses;
       if (entry && toolResults) entry.mcp_tool_results += toolResults;
       if (entry && toolFailures) entry.mcp_tool_failures += toolFailures;
       if (toolResults) updateRequestDiagnostic(diagnosticId, { stage: 'mcp_tool_result' });
       else if (toolUses) updateRequestDiagnostic(diagnosticId, { stage: 'mcp_tool_call' });
-      else if (textBlocks.length) updateRequestDiagnostic(diagnosticId, { stage: 'sdk_text_received' });
-      if (message?.type === 'assistant') {
+      else if (messageType === 'assistant' && textBlocks.some(item => item.text.trim())) {
+        updateRequestDiagnostic(diagnosticId, { stage: 'sdk_assistant_text_received' });
+      }
+      if (messageType === 'assistant') {
         for (const item of textBlocks) text.push(item.text);
       }
     }
     const answer = text.join('\n').trim().slice(0, 16000);
-    if (!answer) throw new Error('analysis_returned_no_text');
+    if (!answer) {
+      const entry = typeof diagnosticId === 'string' ? requestDiagnostics.get(diagnosticId) : null;
+      const stage = entry?.sdk_assistant_text_blocks
+        ? 'sdk_assistant_text_empty' : 'sdk_stream_complete_no_assistant_text';
+      updateRequestDiagnostic(diagnosticId, { stage, state: 'failed', errorType: 'EmptyAssistantResponse' });
+      throw new Error('analysis_returned_no_text');
+    }
     updateRequestDiagnostic(diagnosticId, { stage: 'sdk_completed', state: 'completed' });
     return { status: 'ok', answer, provider };
   } finally {
@@ -447,14 +477,18 @@ const server = http.createServer(async (request, response) => {
     ]);
     const timedOut = error?.name === 'AbortError' || error?.code === 'ABORT_ERR';
     const raw = timedOut ? 'analysis_timeout' : String(error?.message || 'analysis_failed');
-    const errorType = typeof error?.name === 'string' && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(error.name)
-      ? error.name : 'Error';
+    const errorType = raw === 'analysis_returned_no_text' ? 'EmptyAssistantResponse'
+      : typeof error?.name === 'string' && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(error.name)
+        ? error.name : 'Error';
     const errorCode = typeof error?.code === 'string' && /^[A-Z0-9_]{1,32}$/.test(error.code)
       ? error.code : null;
     const permissionDenied = errorType === 'PermissionError' || errorCode === 'EACCES' || errorCode === 'EPERM';
     const message = permissionDenied ? 'intelligence_permission_denied'
       : known.has(raw) ? raw : 'provider_or_agent_request_failed';
-    updateRequestDiagnostic(diagnosticId, { state: 'failed', errorType, errorCode: permissionDenied ? errorCode : null });
+    const providerHttpStatus = Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599
+      ? error.status : null;
+    updateRequestDiagnostic(diagnosticId, { state: 'failed', errorType,
+      errorCode: permissionDenied ? errorCode : null, providerHttpStatus });
     // Keep the diagnosis useful without logging prompts, paths, environment,
     // credentials or raw SDK exception text.
     console.error(JSON.stringify({ event: 'intelligence_analysis_failed', stage: 'openclaude_query',

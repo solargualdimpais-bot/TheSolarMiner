@@ -95,11 +95,51 @@ def _read_initial() -> tuple[dict, bytearray]:
     return value, bytearray(remainder)
 
 
+def _terminate_child_process_group(child_pid: int, *, grace_seconds: float = 1.0) -> None:
+    """Close an interactive shell without allowing a broker instance to leak.
+
+    Interactive Bash ignores SIGTERM by default. Send SIGHUP first, then use
+    bounded waits and escalate so a disconnected PTY cannot occupy a socket
+    activation slot forever.
+    """
+    import signal
+
+    def wait_briefly() -> bool:
+        deadline = time.monotonic() + max(0.0, grace_seconds)
+        while True:
+            try:
+                waited, _ = os.waitpid(child_pid, os.WNOHANG)
+            except ChildProcessError:
+                return True
+            if waited == child_pid:
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(0.05, remaining))
+
+    for sig in (signal.SIGHUP, signal.SIGTERM):
+        try:
+            os.killpg(child_pid, sig)
+        except OSError:
+            pass
+        if wait_briefly():
+            return
+
+    try:
+        os.killpg(child_pid, signal.SIGKILL)
+    except OSError:
+        pass
+    try:
+        os.waitpid(child_pid, 0)
+    except ChildProcessError:
+        pass
+
+
 def run() -> int:
     import fcntl
     import pty
     import select
-    import signal
     import struct
     import termios
 
@@ -204,11 +244,7 @@ def run() -> int:
         return 1
     finally:
         if child:
-            try:
-                os.killpg(child, signal.SIGTERM)
-                os.waitpid(child, 0)
-            except (OSError, ChildProcessError):
-                pass
+            _terminate_child_process_group(child)
         if master is not None:
             try:
                 os.close(master)

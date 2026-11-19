@@ -34,6 +34,6 @@ test("cached Home favorites are display-only and controls stay tied to live Gate
 
 test("the service worker versions and precaches the new Home cache module", () => {
   const sw = read("service-worker.js");
-  assert.match(sw, /the-solar-miner-static-v0\.5\.196-intelligence-correlated-request-trace/);
+  assert.match(sw, /the-solar-miner-static-v0\.5\.197-intelligence-sdk-response-trace/);
   assert.match(sw, /\.\/home-startup-cache\.js/);
 });

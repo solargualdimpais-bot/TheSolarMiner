@@ -72,7 +72,7 @@ from . import system_components
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.268"
+PACKAGE_VERSION = "0.6.269"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 INTELLIGENCE_LOCAL_TOKEN_PATH = Path(os.environ.get("SOLARMINER_INTELLIGENCE_CLIENT_TOKEN_FILE", "/etc/solarminer/intelligence-client.token"))
@@ -3604,6 +3604,13 @@ def intelligence_provider_request_diagnostic(
                            "total_elapsed_ms": min(3600000, max(0, int(payload.get("total_elapsed_ms", 0)))) if isinstance(payload.get("total_elapsed_ms", 0), int) else 0,
                            "stage_elapsed_ms": min(3600000, max(0, int(payload.get("stage_elapsed_ms", 0)))) if isinstance(payload.get("stage_elapsed_ms", 0), int) else 0,
                            "steps": []}
+            for field in ("sdk_messages", "sdk_assistant_messages", "sdk_assistant_text_blocks",
+                          "sdk_assistant_text_chars", "sdk_non_assistant_text_blocks"):
+                value = payload.get(field, 0)
+                agent_trace[field] = min(1000000, max(0, value)) if isinstance(value, int) and not isinstance(value, bool) else 0
+            provider_status = payload.get("provider_http_status")
+            agent_trace["provider_http_status"] = provider_status if isinstance(provider_status, int) \
+                and not isinstance(provider_status, bool) and 400 <= provider_status <= 599 else None
             raw_steps = payload.get("steps")
             if isinstance(raw_steps, list):
                 agent_trace["steps"] = [

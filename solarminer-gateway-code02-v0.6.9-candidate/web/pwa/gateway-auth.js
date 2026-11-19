@@ -74,8 +74,7 @@ async function gatewayRequest(baseUrl, path, { method = "GET", body, authenticat
       credentials: "omit", cache: "no-store", redirect: "error", signal,
     });
   } catch (error) {
-    if (!error?.status) error.code = error?.name === "AbortError" ? "timeout" : "transport_error";
-    throw error;
+    throw normalizeGatewayTransportError(error);
   }
   let data = null;
   try { data = await response.json(); } catch { /* HTTP error body may be empty or non-JSON. */ }
@@ -112,6 +111,19 @@ async function gatewayRequest(baseUrl, path, { method = "GET", body, authenticat
     throw error;
   }
   return data;
+}
+
+export function normalizeGatewayTransportError(error) {
+  // Browser fetch failures may be DOMException objects whose `code` property
+  // is read-only. Never annotate the original exception: downstream analysis
+  // handlers need a normal, mutable Error instance for Diagnostic ID fields.
+  const message = typeof error?.message === "string" ? error.message : "Gateway request failed";
+  const name = typeof error?.name === "string" && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(error.name)
+    ? error.name : "Error";
+  const normalized = new Error(message);
+  normalized.name = name;
+  normalized.code = name === "AbortError" ? "timeout" : "transport_error";
+  return normalized;
 }
 async function startPresenceHeartbeat() {
   if (heartbeatTimer) clearInterval(heartbeatTimer);
@@ -313,7 +325,9 @@ async function intelligenceRequestTraceDiagnosis(requestId, diagnosticFetch = re
     const agentSummary = agentTrace && typeof agentTrace === "object"
       ? ` ${credentialStatus} OpenClaude: ${String(agentTrace.state || "estado desconhecido")}${agentTrace.stage ? ` na etapa “${String(agentTrace.stage).replace(/_/g, " ")}”` : ""}` +
         `${agentTrace.error_type ? ` (${String(agentTrace.error_type)})` : ""}` +
-        `${Number.isFinite(agentTrace.mcp_tool_calls) ? `; chamadas MCP iniciadas ${agentTrace.mcp_tool_calls}, resultados ${Number(agentTrace.mcp_tool_results) || 0}, falhas ${Number(agentTrace.mcp_tool_failures) || 0}` : ""}.`
+        `${Number.isInteger(agentTrace.provider_http_status) ? `; resposta HTTP do fornecedor ${agentTrace.provider_http_status}` : ""}` +
+        `${Number.isFinite(agentTrace.mcp_tool_calls) ? `; chamadas MCP iniciadas ${agentTrace.mcp_tool_calls}, resultados ${Number(agentTrace.mcp_tool_results) || 0}, falhas ${Number(agentTrace.mcp_tool_failures) || 0}` : ""}` +
+        `${Number.isFinite(agentTrace.sdk_messages) ? `; SDK: ${agentTrace.sdk_messages} eventos, ${Number(agentTrace.sdk_assistant_text_blocks) || 0} blocos de texto do assistente (${Number(agentTrace.sdk_assistant_text_chars) || 0} caracteres), ${Number(agentTrace.sdk_non_assistant_text_blocks) || 0} blocos de texto de outros eventos` : ""}.`
       : ` ${credentialStatus} OpenClaude: sem registo correlacionado.`;
     const withAgent = message => `${message}${agentSummary} ${nginxEvidence}`;
     if (trace?.state === "in_progress") {

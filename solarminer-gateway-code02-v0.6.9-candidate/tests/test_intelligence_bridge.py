@@ -731,6 +731,10 @@ def test_intelligence_ask_forwards_only_authenticated_local_request_and_audits_m
                 return SimpleNamespace(status=200, read=lambda _limit: json.dumps({
                     "state": "completed", "stage": "agent_response_ready", "steps": [],
                     "mcp_tool_calls": 1, "mcp_tool_results": 1,
+                    "sdk_messages": 3, "sdk_assistant_messages": 1,
+                    "sdk_assistant_text_blocks": 1, "sdk_assistant_text_chars": 29,
+                    "sdk_non_assistant_text_blocks": 2,
+                    "provider_http_status": 500,
                 }).encode())
             return SimpleNamespace(status=200, read=lambda _limit: b'{"answer":"Leitura local concluida."}')
 
@@ -762,6 +766,10 @@ def test_intelligence_ask_forwards_only_authenticated_local_request_and_audits_m
     assert diagnostic.json()["state"] == "completed"
     assert diagnostic.json()["agent_trace"]["stage"] == "agent_response_ready"
     assert diagnostic.json()["agent_trace"]["mcp_tool_calls"] == 1
+    assert diagnostic.json()["agent_trace"]["sdk_messages"] == 3
+    assert diagnostic.json()["agent_trace"]["sdk_assistant_text_blocks"] == 1
+    assert diagnostic.json()["agent_trace"]["sdk_non_assistant_text_blocks"] == 2
+    assert diagnostic.json()["agent_trace"]["provider_http_status"] == 500
     assert observed["method"] == "GET"
     assert observed["headers"]["Authorization"] == "Bearer local-client-token-123456789012345678901234567890"
     assert diagnostic.json()["agent_trace"]["credential_status"] == "accepted"

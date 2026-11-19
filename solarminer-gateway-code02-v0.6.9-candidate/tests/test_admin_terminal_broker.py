@@ -1,6 +1,10 @@
 import hashlib
+import os
 import sqlite3
+import signal
 import time
+
+import pytest
 
 from solarminer_gateway import admin_terminal_broker as broker
 
@@ -52,3 +56,24 @@ def test_admin_broker_rejects_non_owner_or_invalidated_session(tmp_path, monkeyp
         token = _database(database, **options)
         monkeypatch.setattr(broker, "DB_PATH", database)
         assert broker._read_owner(token) is None, options
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process-group signaling is required")
+def test_admin_broker_bounds_interactive_shell_cleanup_and_frees_connection_slot(monkeypatch):
+    signals = []
+
+    def killpg(_pid, sig):
+        signals.append(sig)
+
+    def waitpid(_pid, options):
+        if options == 0:
+            return 1234, 0  # SIGKILL has ended and reaped the shell.
+        return 0, 0  # Interactive Bash ignores SIGHUP/SIGTERM during grace.
+
+    monkeypatch.setattr(broker.os, "killpg", killpg)
+    monkeypatch.setattr(broker.os, "waitpid", waitpid)
+    monkeypatch.setattr(broker.time, "sleep", lambda _seconds: None)
+
+    broker._terminate_child_process_group(1234, grace_seconds=0)
+
+    assert signals == [signal.SIGHUP, signal.SIGTERM, signal.SIGKILL]
