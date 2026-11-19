@@ -128,21 +128,37 @@ async function watchGatewayUpdate({initial=null,timeoutMs=22*60*1000}={}){
     if(result&&terminalUpdateStates.has(String(result.status||"").toUpperCase()))return result;
     await new Promise(resolve=>setTimeout(resolve,2500));
     try{result=await readGatewayUpdateStatus();updateOperationDialog({title:"Atualização do Gateway",message:updateStatusMessage(result),locked:true,progress:true});}
-    catch{updateOperationDialog({title:"Atualização do Gateway",message:"O Gateway está a reiniciar. A aguardar que volte a responder…",locked:true,progress:true});}
+    catch{updateOperationDialog({title:"Atualização do Gateway",message:"O Gateway ainda não confirmou o estado. Vou voltar a consultar; não inicies outra atualização.",locked:true,progress:true});}
   }
   return {...(result||{}),status:"WAITING_FOR_GATEWAY"};
 }
 async function applyVerifiedGatewayUpdate(update){
   const button=$("#gateway-update-apply");if(button)button.disabled=true;
   const progress=showOperationDialog({title:"Atualização do Gateway",message:`A iniciar a atualização para a versão ${update.available_version}…`,locked:true,progress:true});
+  verifiedGatewayUpdate=null;
+  if(button)button.hidden=true;
   try{
-    const accepted=await applyGatewayUpdate(update.available_version);verifiedGatewayUpdate=null;
+    let accepted;
+    try{accepted=await applyGatewayUpdate(update.available_version);}
+    catch(error){
+      let observed=null;
+      try{observed=await readGatewayUpdateStatus();}catch{}
+      if(observed?.target_version===update.available_version&&observed.status!=="VERIFIED")accepted=observed;
+      else{
+        const uncertain=["timeout","transport_error"].includes(error?.code);
+        renderOperationDialog({title:uncertain?"Resultado não confirmado":"Falha na atualização",message:uncertain
+          ?"A ligação caiu antes de confirmar se o Gateway aceitou a atualização. Não inicies outra atualização. Quando o Gateway voltar a responder, consulta Atualizações para confirmar o estado."
+          :error.message||"O Gateway rejeitou o pedido de atualização.",actions:[{label:"OK",value:"ok",primary:true}]});
+      }
+    }
+    if(accepted){
     const final=await watchGatewayUpdate({initial:accepted});
     const committed=String(final?.status||"").toUpperCase()==="COMMITTED";
     const waiting=String(final?.status||"").toUpperCase()==="WAITING_FOR_GATEWAY";
     renderOperationDialog({title:committed?"Atualização concluída":waiting?"Gateway ainda sem resposta":"Atualização terminada",message:updateStatusMessage(final),actions:[{label:"OK",value:"ok",primary:true}]});
+    }
   }catch(error){renderOperationDialog({title:"Falha na atualização",message:error.message||"O Gateway não conseguiu aplicar a atualização.",actions:[{label:"OK",value:"ok",primary:true}]});}
-  finally{if(button)button.disabled=false;}
+  finally{if(button){button.disabled=!verifiedGatewayUpdate;button.hidden=!verifiedGatewayUpdate;}}
   await progress;
 }
 const userFacingSaveError = (error) => { const message=String(error?.message||""); if(message.includes("site_location_not_found")) return "O Gateway não encontrou essa cidade. Escreve cidade e país, por exemplo, Coimbra, Portugal."; if(message.includes("site_location_lookup_failed")) return "O Gateway não conseguiu consultar o serviço de localização. Verifica a ligação à Internet e tenta novamente."; if(message.includes("site_photo_not_confirmed")) return "O Gateway respondeu, mas não confirmou que a fotografia ficou guardada. Mantive este ecrã aberto para poderes tentar novamente."; if(message.includes("invalid_site_photo_size_or_format")||message.includes("site_photo_must_be_jpeg_data_url")) return "A fotografia não está num formato aceite ou excede 1,8 MB depois da compressão. Escolhe outra fotografia e tenta novamente."; if(message.includes("invalid_site_photo_base64")) return "A fotografia chegou corrompida ao Gateway. Volta a escolher o ficheiro e tenta novamente."; if(error?.status===413) return "O Gateway rejeitou o envio por exceder o limite de dados. Escolhe uma fotografia mais pequena."; return message||"Não foi possível guardar as alterações."; };

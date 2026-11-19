@@ -753,6 +753,17 @@ def test_same_origin_bootstrap_is_allowed_for_gateway_hosted_pwa(client):
     assert response.status_code == 201, response.text
 
 
+def test_intelligence_diagnostic_header_is_allowed_for_remote_pwa_preflight(client):
+    response = client.options("/api/v1/intelligence/ask", headers={
+        "Origin": "https://solargualdimpais-bot.github.io",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "authorization,content-type,x-solarminer-diagnostic-id",
+    })
+    assert response.status_code == 200, response.text
+    allowed = response.headers.get("access-control-allow-headers", "").lower()
+    assert "x-solarminer-diagnostic-id" in allowed
+
+
 def test_role_permissions_and_required_device_association(client):
     owner, private, _ = create_owner(client)
     bearer = login(client, owner, private).json()["access_token"]

@@ -50,6 +50,7 @@ test('PWA uses authenticated Gateway endpoints for provider setup, revocation an
   assert.match(auth, /X-SolarMiner-Diagnostic-ID/);
   assert.match(auth, /readGatewayIntelligenceRequestDiagnostic/);
   assert.match(auth, /timeoutMs = 320000/);
+  assert.match(auth, /const diagnosticId = crypto\.randomUUID\(\);[\s\S]*?\/api\/v1\/intelligence\/ask[\s\S]*?diagnosticId/);
   assert.match(auth, /intelligence_analysis_timeout/);
   assert.match(auth, /\/api\/v1\/health/);
   assert.match(auth, /\/api\/v1\/info/);

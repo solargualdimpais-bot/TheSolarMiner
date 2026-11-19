@@ -71,7 +71,7 @@ test("terminal WebSocket honors the confirmed Tailscale HTTPS route", () => {
 });
 
 test("service worker only caches allowlisted static resources and versions cache explicitly", () => {
-  assert.match(sw, /the-solar-miner-static-v0\.5\.193-intelligence-request-diagnostics/);
+  assert.match(sw, /the-solar-miner-static-v0\.5\.194-intelligence-request-diagnostics/);
   assert.match(sw, /\.\/home-startup-cache\.js/);
   assert.match(sw, /\.\/favorite-list\.js/);
   assert.match(sw, /url\.pathname\.includes\("\/api\/v1\/"\)/);
@@ -93,6 +93,13 @@ test("Gateway update timeout is reported as unconfirmed and never as a completed
   assert.match(app, /não inicies outra atualização/i);
   assert.match(app, /timeoutMs=22\*60\*1000/);
   assert.match(app, /title:committed\?"Atualização concluída":waiting\?"Gateway ainda sem resposta"/);
+  assert.match(auth, /const timeoutMs = 8000;[\s\S]{0,160}controller\.abort\(\)/);
+  assert.match(auth, /\/api\/v1\/system\/update\/status[\s\S]{0,180}controller\.signal/);
+  assert.match(auth, /const timeoutMs = 20000;[\s\S]{0,160}controller\.abort\(\)/);
+  assert.match(auth, /\/api\/v1\/system\/update\/apply[\s\S]{0,240}controller\.signal/);
+  assert.match(app, /O Gateway ainda não confirmou o estado/);
+  assert.match(app, /observed\?\.target_version===update\.available_version/);
+  assert.match(app, /Resultado não confirmado/);
 });
 
 test("Gateway update failure displays the recorded health and command cause", () => {

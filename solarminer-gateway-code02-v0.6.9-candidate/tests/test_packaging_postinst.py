@@ -102,8 +102,11 @@ def test_bootstrap_uses_packaged_zstd_instead_of_mutating_apt_sources():
 
 
 def test_online_update_unit_cannot_be_killed_before_its_rollback_window():
-    service = (Path(__file__).parents[1] / "packaging" / "solarminer-update-apply@.service").read_text(encoding="utf-8")
+    root = Path(__file__).parents[1] / "packaging"
+    service = (root / "solarminer-update-apply@.service").read_text(encoding="utf-8")
+    recovery = (root / "solarminer-recovery.service").read_text(encoding="utf-8")
     assert "TimeoutStartSec=20min" in service
+    assert "TimeoutStartSec=5min" in recovery
 
 
 def test_bootstrap_publishes_download_progress_for_owner_console():

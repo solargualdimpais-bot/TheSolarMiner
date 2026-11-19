@@ -11,6 +11,10 @@ User=root
 Group=root
 ExecStart=/usr/bin/solarminer-recovery
 ExecStartPre=/usr/bin/solarminer-data-volume-check
+# Recovery may wait for the same 180-second health window as an update,
+# followed by state restoration and service checks. Do not let systemd's
+# shorter default oneshot timeout kill that recovery before it records a result.
+TimeoutStartSec=5min
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true

@@ -383,13 +383,15 @@ export async function revokeGatewayIntelligenceProvider() {
 export async function askGatewayIntelligence(prompt, provider = "ollama") {
   if (typeof prompt !== "string" || !["ollama", "openai"].includes(provider)) throw new Error("Pergunta ou fornecedor inválido.");
   const timeoutMs = 320000;
+  const diagnosticId = crypto.randomUUID();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await gatewayApi("/api/v1/intelligence/ask", { method: "POST", body: { prompt, provider }, signal: controller.signal });
+    return await gatewayApi("/api/v1/intelligence/ask", { method: "POST", body: { prompt, provider }, signal: controller.signal, diagnosticId });
   } catch (error) {
     error.operation = "analysis";
     error.timeoutMs = timeoutMs;
+    error.requestId = diagnosticId;
     throw error;
   } finally { clearTimeout(timer); }
 }
@@ -499,11 +501,23 @@ export async function checkGatewayUpdate(repositoryUrl) {
   return gatewayApi("/api/v1/system/update/check", { method: "POST", body: { repository_url: repositoryUrl.trim() } });
 }
 export async function readGatewayUpdateStatus() {
-  return gatewayApi("/api/v1/system/update/status");
+  const timeoutMs = 8000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try { return await gatewayApi("/api/v1/system/update/status", { signal: controller.signal }); }
+  finally { clearTimeout(timer); }
 }
 export async function applyGatewayUpdate(version) {
   if (typeof version !== "string" || !version) throw new Error("Versão de atualização inválida.");
-  return gatewayApi("/api/v1/system/update/apply", { method: "POST", body: { version, confirm: true } });
+  const timeoutMs = 20000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try { return await gatewayApi("/api/v1/system/update/apply", { method: "POST", body: { version, confirm: true }, signal: controller.signal }); }
+  catch (error) {
+    error.operation = "update_apply";
+    error.timeoutMs = timeoutMs;
+    throw error;
+  } finally { clearTimeout(timer); }
 }
 export async function createGatewayInvite({ role, label }) {
   const result = await gatewayApi("/api/v1/invites", { method: "POST", body: { role, label } });
