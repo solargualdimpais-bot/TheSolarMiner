@@ -487,6 +487,7 @@ def test_provider_status_diagnostic_endpoint_distinguishes_unknown_and_rejects_i
             return SimpleNamespace(status=401, read=lambda _limit: b'{"error":"unauthorized"}')
         def close(self): pass
 
+    monkeypatch.setattr(gateway, "_read_intelligence_local_token", lambda: "local-client-token-123456789012345678901234567890")
     monkeypatch.setattr(gateway.http.client, "HTTPConnection", UnauthorizedAgentConnection)
     rejected = client.get(f"/api/v1/intelligence/provider/diagnostics/{unknown_id}", headers=owner)
     assert rejected.status_code == 200
