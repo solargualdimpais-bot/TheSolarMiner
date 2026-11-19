@@ -119,7 +119,16 @@ def test_usb_release_bundles_the_previous_gateway_release_for_rollback():
     workflow = (Path(__file__).parents[2] / ".github" / "workflows" / "gateway-release.yml").read_text(encoding="utf-8")
     rollback_lists = [line for line in workflow.splitlines() if "for VERSION in" in line]
     assert len(rollback_lists) == 2
-    assert all("0.6.265" in line for line in rollback_lists)
+    assert all("0.6.269" in line for line in rollback_lists)
+
+
+def test_upgrade_drains_stale_admin_terminal_sessions_before_reopening_socket():
+    postinst = (Path(__file__).parents[1] / "packaging" / "postinst").read_text(encoding="utf-8")
+    stop_socket = postinst.index("systemctl stop solarminer-admin-terminal.socket")
+    stop_instances = postinst.index("systemctl stop 'solarminer-admin-terminal@*.service'")
+    reset_instances = postinst.index("systemctl reset-failed 'solarminer-admin-terminal@*.service'")
+    reopen_socket = postinst.index("systemctl enable --now solarminer-admin-terminal.socket")
+    assert stop_socket < stop_instances < reset_instances < reopen_socket
 
 
 def test_bootstrap_publishes_download_progress_for_owner_console():

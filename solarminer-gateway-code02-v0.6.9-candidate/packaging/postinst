@@ -142,6 +142,12 @@ case "${1:-}" in
       systemctl enable --now solarminer-recovery.timer
       systemctl enable --now solarminer-update-broker.socket
       systemctl enable --now solarminer-intelligence-bootstrap-broker.socket
+      # Drain accepted sessions from an older package before reopening the
+      # administrative socket. Those instances may still be running the old
+      # unbounded Bash cleanup and occupy every MaxConnections slot.
+      systemctl stop solarminer-admin-terminal.socket || true
+      systemctl stop 'solarminer-admin-terminal@*.service' || true
+      systemctl reset-failed 'solarminer-admin-terminal@*.service' || true
       systemctl enable --now solarminer-admin-terminal.socket
       systemctl enable --now solarminer-update-check-daily.timer
       systemctl disable --now solarminer-gateway-watchdog.timer || true
