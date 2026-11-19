@@ -44,7 +44,7 @@ def _make_package(tmp_path: Path, version: str = "0.6.9", *, with_system_compone
         unit = tree / "lib/systemd/system/solarminer-test.socket"
         unit.write_text("[Socket]\nListenStream=/run/solarminer/test.sock\n")
     (tree / "DEBIAN/control").write_text(
-        f"Package: solarminer-gateway\nVersion: {version}\nArchitecture: amd64\nMaintainer: Test\nDescription: test update package\n"
+        f"Package: solarminer-gateway\nVersion: {version}\nArchitecture: amd64\nInstalled-Size: 1024\nMaintainer: Test\nDescription: test update package\n"
     )
     out = tmp_path / f"solarminer-gateway_{version}_amd64.deb"
     subprocess.run(["dpkg-deb", "--build", str(tree), str(out)], check=True, capture_output=True)
@@ -133,6 +133,11 @@ def test_retention_keeps_active_and_previous_release_and_prunes_older_owned_arti
                          (version, json.dumps(details), 3 - index))
     monkeypatch.setattr("solarminer_gateway.system_update_pipeline.os.readlink",
                         lambda _path: "releases/0.6.3")
+    # The production image has a dedicated solarminer account; model that
+    # ownership in the hosted runner, which does not create the service user.
+    if hasattr(os, "geteuid"):
+        import pwd
+        monkeypatch.setattr(pwd, "getpwnam", lambda _name: SimpleNamespace(pw_uid=os.geteuid()))
 
     result = pipeline._prune_retained_artifacts()
 
