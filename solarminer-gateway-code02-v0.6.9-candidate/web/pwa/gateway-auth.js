@@ -286,33 +286,79 @@ export async function readGatewayIntelligenceRequestDiagnostic(requestId) {
 }
 async function intelligenceRequestTraceDiagnosis(requestId, diagnosticFetch = readGatewayIntelligenceRequestDiagnostic) {
   if (!requestId) return null;
+  if (typeof requestId !== "string" || !/^[0-9a-f-]{36}$/i.test(requestId)) {
+    return "O pedido não tem um Diagnostic ID válido; não é possível correlacionar os registos.";
+  }
+  const nginxEvidence = `Registo Nginx (OPTIONS/POST): sudo grep -F -- "${requestId}" /var/log/nginx/solarminer-intelligence-access.log.`;
+  const safeFailureLabel = error => {
+    const status = Number.isInteger(error?.status) ? `HTTP ${error.status}` : null;
+    const name = typeof error?.name === "string" && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(error.name)
+      ? error.name : "Error";
+    const code = typeof error?.code === "string" && /^[A-Za-z0-9_-]{1,48}$/.test(error.code)
+      ? error.code : null;
+    const message = typeof error?.message === "string"
+      ? error.message.replace(/[\r\n\t]+/g, " ").replace(/https?:\/\/\S+/gi, "[URL]")
+        .replace(/Bearer\s+\S+/gi, "Bearer [redacted]").slice(0, 120)
+      : "";
+    return status || `${name}${message ? `: ${message}` : ""}${code ? ` (${code})` : ""}`;
+  };
   try {
     const trace = await diagnosticFetch(requestId);
+    const agentTrace = trace?.agent_trace;
+    const agentSummary = agentTrace && typeof agentTrace === "object"
+      ? ` OpenClaude: ${String(agentTrace.state || "estado desconhecido")}${agentTrace.stage ? ` na etapa “${String(agentTrace.stage).replace(/_/g, " ")}”` : ""}` +
+        `${agentTrace.error_type ? ` (${String(agentTrace.error_type)})` : ""}` +
+        `${Number.isFinite(agentTrace.mcp_tool_calls) ? `; chamadas MCP ${agentTrace.mcp_tool_calls}, resultados ${Number(agentTrace.mcp_tool_results) || 0}` : ""}.`
+      : " OpenClaude: sem registo correlacionado.";
+    const withAgent = message => `${message}${agentSummary} ${nginxEvidence}`;
     if (trace?.state === "in_progress") {
       const stage = String(trace.stage || "etapa desconhecida").replace(/_/g, " ");
-      return `O Gateway recebeu o pedido, mas ainda está a processá-lo na etapa “${stage}” há ${Math.max(1, Math.ceil((trace.stage_elapsed_ms || 0) / 1000))} s. O estado dos componentes ainda não foi confirmado. Referência de diagnóstico: ${requestId}.`;
+      return withAgent(`O Gateway recebeu o pedido, mas ainda está a processá-lo na etapa “${stage}” há ${Math.max(1, Math.ceil((trace.stage_elapsed_ms || 0) / 1000))} s. O estado dos componentes ainda não foi confirmado. Referência de diagnóstico: ${requestId}.`);
     }
     if (trace?.state === "failed") {
       const stage = String(trace.stage || "etapa desconhecida").replace(/_/g, " ");
       const reason = typeof trace.error_reason === "string" ? trace.error_reason.replace(/_/g, " ") : "";
-      return `O Gateway recebeu o pedido e registou uma falha na etapa “${stage}”${trace.error_type ? ` (${trace.error_type})` : ""}${reason ? `, motivo: ${reason}` : ""}. O estado dos componentes pode estar incompleto. Referência de diagnóstico: ${requestId}.`;
+      return withAgent(`O Gateway recebeu o pedido e registou uma falha na etapa “${stage}”${trace.error_type ? ` (${trace.error_type})` : ""}${reason ? `, motivo: ${reason}` : ""}. O estado dos componentes pode estar incompleto. Referência de diagnóstico: ${requestId}.`);
     }
     if (trace?.state === "completed" || trace?.state === "degraded") {
       const stage = String(trace.stage || "etapa desconhecida").replace(/_/g, " ");
-      return `O Gateway concluiu o pedido${trace.http_status ? ` com HTTP ${trace.http_status}` : ""}, na etapa “${stage}”, mas a resposta não chegou à PWA. Isto indica uma falha depois do processamento da rota. Referência de diagnóstico: ${requestId}.`;
+      return withAgent(`O Gateway concluiu o pedido${trace.http_status ? ` com HTTP ${trace.http_status}` : ""}, na etapa “${stage}”, mas a resposta não chegou à PWA. Isto indica uma falha depois do processamento da rota. Referência de diagnóstico: ${requestId}.`);
     }
     if (trace?.state === "not_seen") {
-      return `O Gateway e o HTTPS respondem, mas não há registo deste pedido dentro da rota do Intelligence. A falha ocorreu antes do processamento da rota ou o registo já expirou. Os componentes continuam com estado desconhecido. Referência de diagnóstico: ${requestId}.`;
+      return withAgent(`O Gateway não registou este pedido. Se o ficheiro de acesso existir e não tiver linha com este ID, a falha foi antes do Nginx; OPTIONS sem POST aponta para preflight/CORS. Referência de diagnóstico: ${requestId}.`);
     }
-  } catch { /* Older Gateway versions do not expose request traces. */ }
-  return null;
+    if (trace?.state === "rejected") {
+      const status = Number.isInteger(trace.http_status) ? `HTTP ${trace.http_status}` : "sem código HTTP registado";
+      const stage = String(trace.stage || "etapa desconhecida").replace(/_/g, " ");
+      return withAgent(`O Gateway registou que recusou o pedido na etapa “${stage}” (${status}). Referência de diagnóstico: ${requestId}.`);
+    }
+    const state = typeof trace?.state === "string" ? trace.state : "resposta vazia";
+    return withAgent(`O pedido tem Diagnostic ID, mas o Gateway devolveu um estado de diagnóstico não reconhecido (“${state}”). Referência de diagnóstico: ${requestId}.`);
+  } catch (error) {
+    return `Não foi possível consultar o registo do pedido (${safeFailureLabel(error)}). A falha original da pergunta continua por determinar. Referência de diagnóstico: ${requestId}. ${nginxEvidence}`;
+  }
+}
+function appendIntelligenceRequestFailure(message, error) {
+  const name = typeof error?.name === "string" && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(error.name)
+    ? error.name : "Error";
+  const code = typeof error?.code === "string" && /^[A-Za-z0-9_-]{1,48}$/.test(error.code)
+    ? error.code : null;
+  const status = Number.isInteger(error?.status) ? `HTTP ${error.status}` : null;
+  const detail = typeof error?.detail === "string" && /^[a-zA-Z0-9_-]{1,100}$/.test(error.detail)
+    ? ` (${error.detail})` : "";
+  const errorMessage = typeof error?.message === "string"
+    ? error.message.replace(/[\r\n\t]+/g, " ").replace(/https?:\/\/\S+/gi, "[URL]")
+      .replace(/Bearer\s+\S+/gi, "Bearer [redacted]").slice(0, 120)
+    : "";
+  const original = status ? `${status}${detail}` : `${name}${errorMessage ? `: ${errorMessage}` : ""}${code ? ` (${code})` : ""}`;
+  return `${message} Falha original da pergunta: ${original}.`;
 }
 export async function diagnoseGatewayIntelligenceFailure(error, { gatewayUrl = currentGateway, fetchImpl = globalThis.fetch,
   diagnosticFetch = readGatewayIntelligenceRequestDiagnostic, timeoutMs = 3000 } = {}) {
   if (error?.code === "timeout" || error?.name === "AbortError") {
     const traceDiagnosis = ["status", "analysis"].includes(error.operation)
       ? await intelligenceRequestTraceDiagnosis(error.requestId, diagnosticFetch) : null;
-    if (traceDiagnosis) return traceDiagnosis;
+    if (traceDiagnosis) return appendIntelligenceRequestFailure(traceDiagnosis, error);
     const seconds = Math.max(1, Math.ceil((Number(error.timeoutMs) || 15000) / 1000));
     return error.operation === "analysis"
       ? `Tempo limite: a análise excedeu ${seconds} segundos sem resposta. Verifica o estado do agente local e tenta novamente quando estiver disponível.`
@@ -320,7 +366,7 @@ export async function diagnoseGatewayIntelligenceFailure(error, { gatewayUrl = c
   }
   if (error?.requestId) {
     const traceDiagnosis = await intelligenceRequestTraceDiagnosis(error.requestId, diagnosticFetch);
-    if (traceDiagnosis) return traceDiagnosis;
+    if (traceDiagnosis) return appendIntelligenceRequestFailure(traceDiagnosis, error);
   }
   if (error?.status === 401) return "A API do Gateway respondeu, mas a sessão Owner expirou ou foi rejeitada. Inicia sessão novamente.";
   if (error?.status === 403) return "A API do Gateway respondeu, mas esta sessão não tem permissão Owner para consultar o Intelligence.";
@@ -387,7 +433,8 @@ export async function askGatewayIntelligence(prompt, provider = "ollama") {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await gatewayApi("/api/v1/intelligence/ask", { method: "POST", body: { prompt, provider }, signal: controller.signal, diagnosticId });
+    const query = new URLSearchParams({ diagnostic_id: diagnosticId });
+    return await gatewayApi(`/api/v1/intelligence/ask?${query}`, { method: "POST", body: { prompt, provider }, signal: controller.signal, diagnosticId });
   } catch (error) {
     error.operation = "analysis";
     error.timeoutMs = timeoutMs;

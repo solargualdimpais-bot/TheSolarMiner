@@ -51,6 +51,7 @@ test('PWA uses authenticated Gateway endpoints for provider setup, revocation an
   assert.match(auth, /readGatewayIntelligenceRequestDiagnostic/);
   assert.match(auth, /timeoutMs = 320000/);
   assert.match(auth, /const diagnosticId = crypto\.randomUUID\(\);[\s\S]*?\/api\/v1\/intelligence\/ask[\s\S]*?diagnosticId/);
+  assert.match(auth, /new URLSearchParams\(\{ diagnostic_id: diagnosticId \}\)/);
   assert.match(auth, /intelligence_analysis_timeout/);
   assert.match(auth, /\/api\/v1\/health/);
   assert.match(auth, /\/api\/v1\/info/);
@@ -154,11 +155,32 @@ test('Intelligence diagnostics distinguish Gateway transport, API, auth, and boo
     diagnosticFetch: async () => ({ state: 'failed', stage: 'openclaude_agent', error_type: 'Error', error_reason: 'intelligence_permission_denied' }) });
   assert.match(routeFailure, /falha na etapa “openclaude agent” \(Error\), motivo: intelligence permission denied/);
 
+  const traceLookupFailed = await diagnoseGatewayIntelligenceFailure(Object.assign(new TypeError('Failed to fetch'), {
+    code: 'transport_error', requestId,
+  }), { diagnosticFetch: async () => { throw Object.assign(new TypeError('Failed to fetch'), { code: 'transport_error' }); } });
+  assert.match(traceLookupFailed, /Não foi possível consultar o registo do pedido/);
+  assert.match(traceLookupFailed, new RegExp(requestId));
+  assert.match(traceLookupFailed, /Falha original da pergunta: TypeError: Failed to fetch \(transport_error\)/);
+
+  const agentTrace = await diagnoseGatewayIntelligenceFailure(Object.assign(new TypeError('Failed to fetch'), {
+    code: 'transport_error', requestId,
+  }), { diagnosticFetch: async () => ({ state: 'failed', stage: 'openclaude_agent',
+    agent_trace: { state: 'failed', stage: 'sdk_stream_wait', error_type: 'Error',
+      mcp_tool_calls: 1, mcp_tool_results: 0 } }) });
+  assert.match(agentTrace, /OpenClaude: failed na etapa “sdk stream wait” \(Error\); chamadas MCP 1, resultados 0/);
+
+  const rejectedTrace = await diagnoseGatewayIntelligenceFailure(Object.assign(new TypeError('Failed to fetch'), {
+    code: 'transport_error', requestId,
+  }), { diagnosticFetch: async () => ({ state: 'rejected', http_status: 403, request_id: requestId }) });
+  assert.match(rejectedTrace, /recusou o pedido.*HTTP 403/);
+  assert.match(rejectedTrace, new RegExp(requestId));
+
   const routeNotSeen = await diagnoseGatewayIntelligenceFailure(Object.assign(new TypeError('fetch failed'), {
     code: 'transport_error', requestId,
   }), { gatewayUrl, fetchImpl: async () => response(200),
     diagnosticFetch: async () => ({ state: 'not_seen', request_id: requestId }) });
-  assert.match(routeNotSeen, /não há registo deste pedido dentro da rota/);
+  assert.match(routeNotSeen, /não registou este pedido/);
+  assert.match(routeNotSeen, /solarminer-intelligence-access\.log/);
 
   const localAgentUnavailable = await diagnoseGatewayIntelligenceFailure(Object.assign(error(503), { detail: 'intelligence_agent_unavailable' }));
   assert.match(localAgentUnavailable, /serviço local OpenClaude/);

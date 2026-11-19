@@ -700,15 +700,25 @@ def test_intelligence_ask_forwards_only_authenticated_local_request_and_audits_m
     class FakeConnection:
         def __init__(self, host, port, timeout):
             observed.update(host=host, port=port, timeout=timeout)
+        def connect(self): pass
         def close(self): pass
         def request(self, method, path, *, body, headers):
-            observed.update(method=method, path=path, body=json.loads(body), headers=headers)
+            observed.update(method=method, path=path,
+                            body=json.loads(body) if body else None, headers=headers)
         def getresponse(self):
+            if observed["method"] == "GET":
+                return SimpleNamespace(status=200, read=lambda _limit: json.dumps({
+                    "state": "completed", "stage": "agent_response_ready", "steps": [],
+                    "mcp_tool_calls": 1, "mcp_tool_results": 1,
+                }).encode())
             return SimpleNamespace(status=200, read=lambda _limit: b'{"answer":"Leitura local concluida."}')
 
     monkeypatch.setattr(gateway.http.client, "HTTPConnection", FakeConnection)
     prompt = "Analisa os erros recentes do Device Engine."
-    response = client.post("/api/v1/intelligence/ask", headers=owner, json={"prompt": prompt})
+    diagnostic_id = str(uuid.uuid4())
+    response = client.post("/api/v1/intelligence/ask",
+                           params={"diagnostic_id": diagnostic_id}, headers=owner,
+                           json={"prompt": prompt})
 
     assert response.status_code == 200, response.text
     assert response.json()["answer"] == "Leitura local concluida."
@@ -717,6 +727,7 @@ def test_intelligence_ask_forwards_only_authenticated_local_request_and_audits_m
     assert observed["timeout"] == 305
     assert observed["method"] == "POST" and observed["path"] == "/v1/analyze"
     assert observed["headers"]["Authorization"] == "Bearer local-client-token-123456789012345678901234567890"
+    assert observed["headers"]["X-SolarMiner-Diagnostic-ID"] == diagnostic_id
     assert observed["body"] == {"prompt": prompt, "provider": "ollama"}
     with gateway.db() as conn:
         details = conn.execute("SELECT details_json FROM audit WHERE action='intelligence.ask' AND outcome='success'").fetchone()[0]
@@ -724,6 +735,12 @@ def test_intelligence_ask_forwards_only_authenticated_local_request_and_audits_m
     assert prompt not in details and "local-client-token" not in details
     assert json.loads(details)["provider"] == "ollama"
     assert count == 1
+
+    diagnostic = client.get(f"/api/v1/intelligence/provider/diagnostics/{diagnostic_id}", headers=owner)
+    assert diagnostic.status_code == 200
+    assert diagnostic.json()["state"] == "completed"
+    assert diagnostic.json()["agent_trace"]["stage"] == "agent_response_ready"
+    assert diagnostic.json()["agent_trace"]["mcp_tool_calls"] == 1
 
     cloud = client.post("/api/v1/intelligence/ask", headers=owner,
                         json={"prompt": "Usa OpenAI apenas nesta pergunta.", "provider": "openai"})
@@ -764,6 +781,7 @@ def test_intelligence_ask_exposes_safe_permission_failure_trace(client, monkeypa
 
     class FakeConnection:
         def __init__(self, *_args, **_kwargs): pass
+        def connect(self): pass
         def close(self): pass
         def request(self, *_args, **_kwargs): pass
         def getresponse(self): return PermissionResponse()
@@ -795,6 +813,7 @@ def test_intelligence_ask_reports_agent_analysis_timeout_as_gateway_504(client, 
     class FakeConnection:
         def __init__(self, host, port, timeout):
             assert (host, port, timeout) == ("127.0.0.1", 8765, 305)
+        def connect(self): pass
         def close(self): pass
         def request(self, method, path, *, body, headers):
             assert (method, path) == ("POST", "/v1/analyze")

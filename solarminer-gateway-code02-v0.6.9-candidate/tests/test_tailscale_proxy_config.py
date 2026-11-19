@@ -30,10 +30,15 @@ def test_nginx_proxies_verify_backend_using_certificate_dns_san():
     ask_location = nginx_config[ask_start:ask_end]
     assert "proxy_read_timeout 315s;" in ask_location
     assert "proxy_send_timeout 315s;" in ask_location
+    assert "access_log /var/log/nginx/solarminer-intelligence-access.log solarminer_intelligence;" in ask_location
+    assert '"diagnostic_id":"$arg_diagnostic_id"' in nginx_config
+    assert '"upstream_status":"$upstream_status"' in nginx_config
     assert "proxy_ssl_name localhost;" in ask_location
     gateway_app = (ROOT / "src/solarminer_gateway/app.py").read_text(encoding="utf-8")
     agent_service = (ROOT / "tools/solarminer_intelligence_mcp/agent-service.mjs").read_text(encoding="utf-8")
     pwa_auth = (ROOT / "web/pwa/gateway-auth.js").read_text(encoding="utf-8")
+    assert 'request.query_params.get("diagnostic_id")' in gateway_app
+    assert 'new URLSearchParams({ diagnostic_id: diagnosticId })' in pwa_auth
     assert 'HTTPConnection("127.0.0.1", 8765, timeout=305)' in gateway_app
     assert "development ? 20 * 60 * 1000 : 300000" in agent_service
     assert "const timeoutMs = 320000;" in pwa_auth

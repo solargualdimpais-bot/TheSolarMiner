@@ -72,7 +72,7 @@ from . import system_components
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.266"
+PACKAGE_VERSION = "0.6.267"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 INTELLIGENCE_LOCAL_TOKEN_PATH = Path(os.environ.get("SOLARMINER_INTELLIGENCE_CLIENT_TOKEN_FILE", "/etc/solarminer/intelligence-client.token"))
@@ -2569,7 +2569,7 @@ app = FastAPI(title="SolarMiner Gateway", version=VERSION, docs_url=None, redoc_
 @app.middleware("http")
 async def report_http_server_errors(request: Request, call_next):
     started = time.perf_counter()
-    provider_diagnostic_id = request.headers.get("X-SolarMiner-Diagnostic-ID") if request.url.path in {
+    provider_diagnostic_id = (request.headers.get("X-SolarMiner-Diagnostic-ID") or request.query_params.get("diagnostic_id")) if request.url.path in {
         "/api/v1/intelligence/provider", "/api/v1/intelligence/ask",
     } else None
     if provider_diagnostic_id:
@@ -2606,8 +2606,8 @@ async def report_http_server_errors(request: Request, call_next):
         elapsed_ms = round((time.perf_counter() - started) * 1000)
         if provider_diagnostic_id:
             _provider_diagnostic_update(provider_diagnostic_id, state="failed", error_type=type(exc).__name__)
-        LOG.error("Unhandled Gateway request exception route=%s type=%s latency_ms=%d",
-                  route_label(), type(exc).__name__, elapsed_ms)
+        LOG.error("Unhandled Gateway request exception route=%s diagnostic_id=%s type=%s latency_ms=%d",
+                  route_label(), provider_diagnostic_id or "none", type(exc).__name__, elapsed_ms)
         raise
     elapsed_ms = round((time.perf_counter() - started) * 1000)
     if provider_diagnostic_id:
@@ -2616,11 +2616,11 @@ async def report_http_server_errors(request: Request, call_next):
                                     "rejected" if response.status_code >= 400 else None,
                                     http_status=response.status_code)
     if response.status_code >= 500:
-        LOG.error("Gateway returned HTTP server error status=%s route=%s latency_ms=%d",
-                  response.status_code, route_label(), elapsed_ms)
+        LOG.error("Gateway returned HTTP server error status=%s route=%s diagnostic_id=%s latency_ms=%d",
+                  response.status_code, route_label(), provider_diagnostic_id or "none", elapsed_ms)
     elif elapsed_ms >= 1000:
-        LOG.warning("Gateway request slow status=%s route=%s latency_ms=%d",
-                    response.status_code, route_label(), elapsed_ms)
+        LOG.warning("Gateway request slow status=%s route=%s diagnostic_id=%s latency_ms=%d",
+                    response.status_code, route_label(), provider_diagnostic_id or "none", elapsed_ms)
     elif diagnostic_probe and elapsed_ms >= 1000:
         LOG.warning("Gateway diagnostic probe slow status=%s route=%s latency_ms=%d",
                     response.status_code, request.url.path, elapsed_ms)
@@ -3567,9 +3567,48 @@ def intelligence_provider_request_diagnostic(
         if actor["role"] != "owner":
             raise HTTPException(403, "owner_required")
     trace = _provider_diagnostic_snapshot(normalized_id)
+    agent_trace: dict[str, Any]
+    try:
+        local_token = _read_intelligence_local_token()
+        connection = http.client.HTTPConnection("127.0.0.1", 8765, timeout=1.5)
+        try:
+            connection.request("GET", f"/v1/diagnostics/{normalized_id}",
+                               headers={"Authorization": f"Bearer {local_token}",
+                                        "Accept": "application/json"})
+            response = connection.getresponse()
+            payload = json.loads(response.read(8192).decode("utf-8")) if response.status == 200 else {}
+        finally:
+            connection.close()
+        if not isinstance(payload, dict) or payload.get("state") not in {
+                "in_progress", "failed", "completed", "not_seen"}:
+            agent_trace = {"state": "unavailable", "reason": "invalid_agent_trace"}
+        else:
+            stage = payload.get("stage")
+            error_type = payload.get("error_type")
+            error_code = payload.get("error_code")
+            agent_trace = {"state": payload["state"],
+                           "stage": stage if isinstance(stage, str) and re.fullmatch(r"[a-z0-9_]{1,48}", stage) else None,
+                           "error_type": error_type if isinstance(error_type, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,63}", error_type) else None,
+                           "error_code": error_code if isinstance(error_code, str) and re.fullmatch(r"[A-Z0-9_]{1,32}", error_code) else None,
+                           "mcp_tool_calls": min(1000, max(0, int(payload.get("mcp_tool_calls", 0)))) if isinstance(payload.get("mcp_tool_calls", 0), int) else 0,
+                           "mcp_tool_results": min(1000, max(0, int(payload.get("mcp_tool_results", 0)))) if isinstance(payload.get("mcp_tool_results", 0), int) else 0,
+                           "total_elapsed_ms": min(3600000, max(0, int(payload.get("total_elapsed_ms", 0)))) if isinstance(payload.get("total_elapsed_ms", 0), int) else 0,
+                           "stage_elapsed_ms": min(3600000, max(0, int(payload.get("stage_elapsed_ms", 0)))) if isinstance(payload.get("stage_elapsed_ms", 0), int) else 0,
+                           "steps": []}
+            raw_steps = payload.get("steps")
+            if isinstance(raw_steps, list):
+                agent_trace["steps"] = [
+                    {"stage": item["stage"], "duration_ms": min(3600000, max(0, item["duration_ms"]))}
+                    for item in raw_steps[-12:]
+                    if isinstance(item, dict) and isinstance(item.get("stage"), str)
+                    and re.fullmatch(r"[a-z0-9_]{1,48}", item["stage"])
+                    and isinstance(item.get("duration_ms"), int) and not isinstance(item.get("duration_ms"), bool)]
+    except (OSError, ValueError, TypeError, TimeoutError, http.client.HTTPException) as exc:
+        agent_trace = {"state": "unavailable", "error_type": type(exc).__name__}
     if trace is None:
         return {"state": "not_seen", "request_id": normalized_id,
-                "reason": "gateway_route_did_not_record_request"}
+                "reason": "gateway_route_did_not_record_request", "agent_trace": agent_trace}
+    trace["agent_trace"] = agent_trace
     return trace
 
 
@@ -3734,7 +3773,14 @@ def intelligence_ask(
     session: dict[str, Any] = Depends(require_permission("read")),
 ) -> dict[str, Any]:
     """Forward an authenticated Gateway request to the local OpenClaude process."""
+    raw_diagnostic_id = request.headers.get("X-SolarMiner-Diagnostic-ID") or request.query_params.get("diagnostic_id")
+    try:
+        diagnostic_id = str(uuid.UUID(raw_diagnostic_id)) if raw_diagnostic_id else None
+    except (ValueError, AttributeError):
+        diagnostic_id = None
+    _provider_diagnostic_update(diagnostic_id, stage="owner_authenticated", state="running")
     # Persisted per-user hourly limit bounds accidental loops and cloud spend.
+    _provider_diagnostic_update(diagnostic_id, stage="rate_limit_check", state="running")
     window_start = int(time.time()) // 3600 * 3600
     with db() as conn:
         conn.execute("INSERT OR IGNORE INTO intelligence_request_limits(user_id,window_start,request_count) VALUES(?,?,0)",
@@ -3747,8 +3793,7 @@ def intelligence_ask(
                   {"window_seconds": 3600, "limit": 30})
             raise HTTPException(429, "intelligence_hourly_limit_reached")
     try:
-        _provider_diagnostic_update(request.headers.get("X-SolarMiner-Diagnostic-ID"),
-                                    stage="openclaude_agent", state="running")
+        _provider_diagnostic_update(diagnostic_id, stage="agent_credential_read", state="running")
         local_token = _read_intelligence_local_token()
         if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", local_token):
             raise OSError("local_agent_credential_invalid")
@@ -3760,19 +3805,27 @@ def intelligence_ask(
                     raise HTTPException(403, "owner_required_for_cloud_provider")
         connection = http.client.HTTPConnection("127.0.0.1", 8765, timeout=305)
         try:
+            _provider_diagnostic_update(diagnostic_id, stage="agent_connect", state="running")
+            connection.connect()
+            _provider_diagnostic_update(diagnostic_id, stage="agent_connected", state="running")
             connection.request("POST", "/v1/analyze", body=json.dumps({
                 "prompt": payload.prompt, "provider": payload.provider,
             }),
                                headers={"Authorization": f"Bearer {local_token}",
-                                        "Content-Type": "application/json", "Accept": "application/json"})
+                                        "Content-Type": "application/json", "Accept": "application/json",
+                                        **({"X-SolarMiner-Diagnostic-ID": diagnostic_id} if diagnostic_id else {})})
+            _provider_diagnostic_update(diagnostic_id, stage="agent_request_sent", state="running")
             response = connection.getresponse()
+            _provider_diagnostic_update(diagnostic_id, stage="agent_response_headers", state="running",
+                                        http_status=response.status)
             response_payload = json.loads(response.read(20000).decode("utf-8"))
+            _provider_diagnostic_update(diagnostic_id, stage="agent_response_body", state="running")
         finally:
             connection.close()
     except (OSError, ValueError, TypeError, TimeoutError, http.client.HTTPException) as exc:
         error_type = type(exc).__name__
         reason = "intelligence_agent_type_error" if isinstance(exc, TypeError) else "intelligence_agent_request_failed"
-        _provider_diagnostic_update(request.headers.get("X-SolarMiner-Diagnostic-ID"),
+        _provider_diagnostic_update(diagnostic_id,
                                     stage="openclaude_agent", state="failed", error_type=error_type,
                                     error_reason=reason, http_status=503)
         with db() as conn:
@@ -3793,7 +3846,7 @@ def intelligence_ask(
         agent_error_type = response_payload.get("error_type") if isinstance(response_payload, dict) else None
         if not isinstance(agent_error_type, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,63}", agent_error_type):
             agent_error_type = None
-        _provider_diagnostic_update(request.headers.get("X-SolarMiner-Diagnostic-ID"),
+        _provider_diagnostic_update(diagnostic_id,
                                     stage="openclaude_agent", state="failed",
                                     error_type=agent_error_type, error_reason=diagnostic_reason,
                                     http_status=response.status)
@@ -3814,7 +3867,7 @@ def intelligence_ask(
         if reason == "analysis_busy":
             raise HTTPException(429, "intelligence_agent_busy")
         raise HTTPException(503, "intelligence_analysis_failed")
-    _provider_diagnostic_update(request.headers.get("X-SolarMiner-Diagnostic-ID"),
+    _provider_diagnostic_update(diagnostic_id,
                                 stage="openclaude_agent", state="completed", http_status=200)
     with db() as conn:
         audit(conn, session["user_id"], "intelligence.ask", "openclaude", "success",

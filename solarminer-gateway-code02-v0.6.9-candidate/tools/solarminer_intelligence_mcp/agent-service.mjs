@@ -30,6 +30,46 @@ const developmentFileTools = new Set(['Read', 'Edit', 'Write', 'Glob', 'Grep']);
 let active = false;
 let requestCount = 0;
 let windowStartedAt = Date.now();
+const requestDiagnostics = new Map();
+
+function updateRequestDiagnostic(requestId, { stage, state = 'running', errorType = null, errorCode = null } = {}) {
+  if (typeof requestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(requestId)) return;
+  const now = Date.now();
+  for (const [key, value] of requestDiagnostics) {
+    if (now - value.updatedAt > 10 * 60 * 1000) requestDiagnostics.delete(key);
+  }
+  let entry = requestDiagnostics.get(requestId);
+  if (!entry) {
+    entry = { request_id: requestId, state: 'in_progress', stage: 'agent_received', startedAt: now,
+      stageStartedAt: now, updatedAt: now, steps: [], mcp_tool_calls: 0, mcp_tool_results: 0 };
+    requestDiagnostics.set(requestId, entry);
+  }
+  if (stage && stage !== entry.stage) {
+    entry.steps.push({ stage: entry.stage,
+      duration_ms: Math.max(0, now - entry.stageStartedAt) });
+    entry.stage = stage;
+    entry.stageStartedAt = now;
+  }
+  entry.state = state;
+  if (errorType) entry.error_type = String(errorType).slice(0, 64);
+  if (errorCode && /^[A-Z0-9_]{1,32}$/.test(errorCode)) entry.error_code = errorCode;
+  entry.updatedAt = now;
+  while (requestDiagnostics.size > 64) {
+    const oldest = [...requestDiagnostics.entries()].reduce((a, b) => a[1].startedAt <= b[1].startedAt ? a : b)[0];
+    requestDiagnostics.delete(oldest);
+  }
+}
+
+function requestDiagnosticSnapshot(requestId) {
+  const entry = requestDiagnostics.get(requestId);
+  if (!entry) return { state: 'not_seen', request_id: requestId };
+  const now = Date.now();
+  return { request_id: entry.request_id, state: entry.state, stage: entry.stage,
+    error_type: entry.error_type || null, error_code: entry.error_code || null,
+    mcp_tool_calls: entry.mcp_tool_calls, mcp_tool_results: entry.mcp_tool_results,
+    total_elapsed_ms: Math.max(0, now - entry.startedAt),
+    stage_elapsed_ms: Math.max(0, now - entry.stageStartedAt), steps: entry.steps.slice(-12) };
+}
 
 async function persistentSessionId(development = false) {
   await mkdir(cwd, { recursive: true, mode: 0o700 });
@@ -203,7 +243,8 @@ async function localModelStatus() {
   }
 }
 
-async function runAnalysis(prompt, { development = false, provider = 'ollama' } = {}) {
+async function runAnalysis(prompt, { development = false, provider = 'ollama', diagnosticId = null } = {}) {
+  updateRequestDiagnostic(diagnosticId, { stage: 'provider_precheck' });
   const inference = inferenceConfig(provider);
   if (provider === 'ollama') {
     const local = await localModelStatus();
@@ -228,6 +269,7 @@ async function runAnalysis(prompt, { development = false, provider = 'ollama' } 
   // Nginx use slightly longer deadlines so the model's own timeout is decisive.
   const timeout = setTimeout(() => abortController.abort(), development ? 20 * 60 * 1000 : 300000);
   try {
+    updateRequestDiagnostic(diagnosticId, { stage: 'sdk_query_start' });
     const agentQuery = query({
       prompt,
       options: {
@@ -283,12 +325,25 @@ async function runAnalysis(prompt, { development = false, provider = 'ollama' } 
       },
     });
     const text = [];
+    updateRequestDiagnostic(diagnosticId, { stage: 'sdk_stream_wait' });
     for await (const message of agentQuery) {
-      if (message?.type !== 'assistant' || !Array.isArray(message.message?.content)) continue;
-      for (const item of message.message.content) if (item?.type === 'text' && typeof item.text === 'string') text.push(item.text);
+      const blocks = Array.isArray(message?.message?.content) ? message.message.content : [];
+      const toolUses = blocks.filter(item => item?.type === 'tool_use').length;
+      const toolResults = blocks.filter(item => item?.type === 'tool_result').length;
+      const textBlocks = blocks.filter(item => item?.type === 'text' && typeof item.text === 'string');
+      const entry = typeof diagnosticId === 'string' ? requestDiagnostics.get(diagnosticId) : null;
+      if (entry && toolUses) entry.mcp_tool_calls += toolUses;
+      if (entry && toolResults) entry.mcp_tool_results += toolResults;
+      if (toolResults) updateRequestDiagnostic(diagnosticId, { stage: 'mcp_tool_result' });
+      else if (toolUses) updateRequestDiagnostic(diagnosticId, { stage: 'mcp_tool_call' });
+      else if (textBlocks.length) updateRequestDiagnostic(diagnosticId, { stage: 'sdk_text_received' });
+      if (message?.type === 'assistant') {
+        for (const item of textBlocks) text.push(item.text);
+      }
     }
     const answer = text.join('\n').trim().slice(0, 16000);
     if (!answer) throw new Error('analysis_returned_no_text');
+    updateRequestDiagnostic(diagnosticId, { stage: 'sdk_completed', state: 'completed' });
     return { status: 'ok', answer, provider };
   } finally {
     clearTimeout(timeout);
@@ -346,17 +401,36 @@ const server = http.createServer(async (request, response) => {
     try { return send(response, 201, await runScheduledReview()); }
     catch { return send(response, 503, { error: 'scheduled_review_failed' }); }
   }
+  const diagnosticMatch = request.method === 'GET' && request.url.match(/^\/v1\/diagnostics\/([0-9a-f-]{36})$/i);
+  if (diagnosticMatch) {
+    const expected = process.env.SOLARMINER_INTELLIGENCE_LOCAL_TOKEN || '';
+    const supplied = request.headers.authorization?.startsWith('Bearer ') ? request.headers.authorization.slice(7) : '';
+    if (!expected || supplied !== expected) return send(response, 401, { error: 'unauthorized' });
+    return send(response, 200, requestDiagnosticSnapshot(diagnosticMatch[1]));
+  }
   if (request.method !== 'POST' || !['/v1/analyze', '/v1/develop'].includes(request.url)) return send(response, 404, { error: 'not_found' });
   const development = request.url === '/v1/develop';
+  const rawDiagnosticId = request.headers['x-solarminer-diagnostic-id'];
+  const diagnosticId = typeof rawDiagnosticId === 'string' && /^[0-9a-f-]{36}$/i.test(rawDiagnosticId)
+    ? rawDiagnosticId : null;
+  updateRequestDiagnostic(diagnosticId, { stage: 'agent_received' });
   const expected = process.env.SOLARMINER_INTELLIGENCE_LOCAL_TOKEN || '';
   const supplied = request.headers.authorization?.startsWith('Bearer ') ? request.headers.authorization.slice(7) : '';
-  if (!expected || supplied !== expected) return send(response, 401, { error: 'unauthorized' });
+  if (!expected || supplied !== expected) {
+    updateRequestDiagnostic(diagnosticId, { stage: 'agent_authentication', state: 'failed', errorType: 'AuthenticationError' });
+    return send(response, 401, { error: 'unauthorized' });
+  }
+  updateRequestDiagnostic(diagnosticId, { stage: 'agent_authenticated' });
   try {
+    updateRequestDiagnostic(diagnosticId, { stage: 'agent_reading_prompt' });
     const body = await readBody(request);
     const prompt = body?.prompt;
     if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 8000) return send(response, 422, { error: 'prompt_must_be_1_to_8000_characters' });
     const provider = development ? 'ollama' : (body?.provider === undefined ? 'ollama' : body.provider);
-    return send(response, 200, await runAnalysis(prompt.trim(), { development, provider }));
+    updateRequestDiagnostic(diagnosticId, { stage: 'agent_prompt_received' });
+    const result = await runAnalysis(prompt.trim(), { development, provider, diagnosticId });
+    updateRequestDiagnostic(diagnosticId, { stage: 'agent_response_ready', state: 'completed' });
+    return send(response, 200, result);
   } catch (error) {
     const known = new Set([
       'openai_credential_not_configured', 'openai_model_not_configured', 'solarminer_service_credential_not_configured', 'provider_invalid',
@@ -373,6 +447,7 @@ const server = http.createServer(async (request, response) => {
     const permissionDenied = errorType === 'PermissionError' || errorCode === 'EACCES' || errorCode === 'EPERM';
     const message = permissionDenied ? 'intelligence_permission_denied'
       : known.has(raw) ? raw : 'provider_or_agent_request_failed';
+    updateRequestDiagnostic(diagnosticId, { state: 'failed', errorType, errorCode: permissionDenied ? errorCode : null });
     // Keep the diagnosis useful without logging prompts, paths, environment,
     // credentials or raw SDK exception text.
     console.error(JSON.stringify({ event: 'intelligence_analysis_failed', stage: 'openclaude_query',

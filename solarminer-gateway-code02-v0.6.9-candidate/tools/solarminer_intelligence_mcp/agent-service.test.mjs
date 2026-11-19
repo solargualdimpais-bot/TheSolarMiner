@@ -23,6 +23,8 @@ export async function* query({ prompt, options }) {
     mcpEnv: options.mcpServers.solarminer.env,
     mainKey: Boolean(process.env.OPENAI_API_KEY),
   }) + '\\n');
+  yield { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'mcp__solarminer__solarminer_snapshot' }] } };
+  yield { type: 'user', message: { content: [{ type: 'tool_result', content: 'snapshot' }] } };
   yield { type: 'assistant', message: { content: [{ type: 'text', text: 'Análise baseada na ponte SolarMiner.' }] } };
 }
 `;
@@ -126,15 +128,25 @@ test('resident agent authenticates requests, persists sessions and only allows t
   });
   assert.equal(invalid.status, 422);
 
-  for (const prompt of ['Analisa os erros recentes.', 'Compara os dados atuais com o histórico.']) {
+  const diagnosticId = 'a1a1a1a1-a1a1-41a1-81a1-a1a1a1a1a1a1';
+  for (const [index, prompt] of ['Analisa os erros recentes.', 'Compara os dados atuais com o histórico.'].entries()) {
     const response = await fetch(`http://127.0.0.1:${port}/v1/analyze`, {
-      method: 'POST', headers, body: JSON.stringify({ prompt }),
+      method: 'POST', headers: { ...headers, ...(index === 0 ? { 'X-SolarMiner-Diagnostic-ID': diagnosticId } : {}) },
+      body: JSON.stringify({ prompt }),
     });
     const result = await response.text();
     assert.equal(response.status, 200, result);
     assert.equal(JSON.parse(result).answer, 'Análise baseada na ponte SolarMiner.');
     assert.equal(JSON.parse(result).provider, 'ollama');
   }
+  const traceResponse = await fetch(`http://127.0.0.1:${port}/v1/diagnostics/${diagnosticId}`, { headers });
+  const trace = await traceResponse.json();
+  assert.equal(traceResponse.status, 200);
+  assert.equal(trace.state, 'completed');
+  assert.equal(trace.stage, 'agent_response_ready');
+  assert.equal(trace.mcp_tool_calls, 1);
+  assert.equal(trace.mcp_tool_results, 1);
+  assert.ok(trace.steps.some(step => step.stage === 'sdk_text_received'));
   const explicitCloud = await fetch(`http://127.0.0.1:${port}/v1/analyze`, {
     method: 'POST', headers, body: JSON.stringify({ prompt: 'Usa OpenAI apenas neste pedido.', provider: 'openai' }),
   });
