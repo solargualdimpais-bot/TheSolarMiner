@@ -76,6 +76,26 @@ def test_reconcile_system_payload_and_restore_previous_files_atomically(tmp_path
     assert json.loads((deployment / "system-components.json").read_text())["version"] == "0.6.257"
 
 
+def test_reconcile_failure_restores_inside_configured_system_root(tmp_path: Path):
+    package = _package(tmp_path)
+    deployment = tmp_path / "opt/solarminer"
+    system = tmp_path / "system"
+    deployment.mkdir(parents=True)
+    existing = system / "usr/bin/solarminer-new-broker"
+    existing.parent.mkdir(parents=True)
+    existing.write_text("original helper\n")
+
+    def fail_after_snapshot(_snapshot: Path) -> None:
+        raise RuntimeError("socket_quiesce_failed")
+
+    with pytest.raises(RuntimeError, match="socket_quiesce_failed"):
+        reconcile(package, deployment, "0.6.259", operation_id=OPERATION,
+                  system_root=system, on_snapshot_ready=fail_after_snapshot)
+
+    assert existing.read_text() == "original helper\n"
+    assert not (system / "usr/bin/solarminer-update-broker").exists()
+
+
 def test_reconcile_refuses_symlink_component_in_signed_payload(tmp_path: Path):
     package = _package(tmp_path)
     target = package / "usr/bin/solarminer-bad-link"

@@ -1,4 +1,4 @@
-import hashlib, json, os, time
+import hashlib, json, os, sqlite3, time
 from pathlib import Path
 from fastapi.testclient import TestClient
 from cryptography.hazmat.primitives import serialization
@@ -265,6 +265,34 @@ def test_update_check_reports_not_configured_and_apply_stays_disabled(client, mo
     apply=client.post("/api/v1/system/update/apply",headers=headers,json={"version":"0.6.8","confirm":True})
     assert apply.status_code == 503
     assert "independent_recovery_deployment" in apply.json()["detail"]
+
+
+def test_staged_package_retention_keeps_two_committed_and_removes_superseded_verified(tmp_path, monkeypatch):
+    package_dir = tmp_path / "verified"
+    package_dir.mkdir()
+    packages = {}
+    for version in ("0.6.8", "0.6.9", "0.6.10"):
+        package = package_dir / f"solarminer-gateway_{version}_amd64.deb.verified"
+        package.write_bytes(version.encode())
+        package.with_suffix(package.suffix + ".manifest.json").write_text(json.dumps({
+            "package_name": "solarminer-gateway", "version": version,
+        }))
+        packages[version] = package
+    database = tmp_path / "updates.db"
+    monkeypatch.setattr(gateway, "DB_PATH", database)
+    with sqlite3.connect(database) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("CREATE TABLE update_operations(state TEXT,details_json TEXT,updated_at INTEGER)")
+        for state, version, index in (("COMMITTED", "0.6.9", 3), ("COMMITTED", "0.6.8", 2),
+                                      ("VERIFIED", "0.6.10", 1)):
+            details = {"package_path": str(packages[version])}
+            conn.execute("INSERT INTO update_operations VALUES(?,?,?)", (state, json.dumps(details), index))
+
+    result = gateway._prune_staged_gateway_packages(package_dir)
+
+    assert result == {"status": "completed", "retained": 2, "removed": 1}
+    assert packages["0.6.9"].exists() and packages["0.6.8"].exists()
+    assert not packages["0.6.10"].exists()
 
 
 def test_update_status_keeps_last_rollback_reason_after_a_later_check(client):

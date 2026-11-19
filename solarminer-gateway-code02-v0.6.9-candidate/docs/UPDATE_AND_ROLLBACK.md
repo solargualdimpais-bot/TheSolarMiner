@@ -46,8 +46,12 @@ Qualquer falha após o backup entra em `ROLLING_BACK`; se o rollback e a verific
 - O pacote é extraído para uma nova diretoria dentro de `/opt/solarminer/releases/`; a versão ativa nunca é sobrescrita.
 - O apontador `current` muda por symlink temporário + `os.replace`, seguido de `fsync` da diretoria.
 - O serviço é reiniciado pela unidade independente `solarminer-update-apply@UUID.service`.
-- O health check consulta `https://127.0.0.1:8443/api/v1/health` por até 60 segundos, exige HTTP 200, `status=ok` e `package_version` igual à versão pretendida. A integridade SQLite é verificada separadamente no backup/restauro, não em cada sondagem de liveness.
-- Em falha, o helper para o serviço, restaura o symlink anterior, repõe o backup SQLite depois de confirmar o serviço parado, reinicia a release anterior e exige health check da versão anterior durante até 60 segundos.
+- O health check consulta `https://127.0.0.1:8443/api/v1/health` por até 180 segundos, exige HTTP 200, `status=ok` e `package_version` igual à versão pretendida. A integridade SQLite é verificada separadamente no backup/restauro, não em cada sondagem de liveness.
+- Em falha, o helper para o serviço, restaura o symlink anterior, repõe o backup SQLite depois de confirmar o serviço parado, reinicia a release anterior e exige health check da versão anterior durante até 180 segundos.
+
+## Retenção de cópias e espaço
+
+Releases antigas, backups SQLite, snapshots de componentes e pacotes verificados eram mantidos sem limite para preservar rollback. A limpeza agora ocorre antes da verificação final de espaço e após um commit saudável. Mantém a release ativa, a release anterior validada e os artefactos necessários para o rollback; remove apenas cópias antigas geradas pelo atualizador, com diretórios regulares e propriedade da conta esperada (`root` ou `solarminer`, conforme a pasta). Se a base de histórico estiver ilegível ou os diretórios forem symlinks, a limpeza é ignorada em segurança. O helper estima o espaço para a release extraída, o snapshot SQLite e uma reserva de 64 MiB antes de parar o Gateway. Uma limpeza incompleta não reverte uma versão já saudável.
 
 ## Recuperação independente
 

@@ -72,7 +72,7 @@ from . import system_components
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.272"
+PACKAGE_VERSION = "0.6.273"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 INTELLIGENCE_LOCAL_TOKEN_PATH = Path(os.environ.get("SOLARMINER_INTELLIGENCE_CLIENT_TOKEN_FILE", "/etc/solarminer/intelligence-client.token"))
@@ -8809,6 +8809,61 @@ def _update_state_write(conn: sqlite3.Connection, state: str, target_version: st
     return op
 
 
+def _prune_staged_gateway_packages(package_dir: Path) -> dict[str, Any]:
+    """Free only obsolete, verified Gateway packages before downloading a newer one."""
+    removed = 0
+    if (package_dir.is_symlink() or (package_dir.parent).is_symlink()
+            or package_dir.parent.parent.is_symlink()):
+        return {"status": "skipped", "reason": "staging_directory_symlink_rejected", "removed": 0}
+    package_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        staging_root = package_dir.resolve()
+        owner_uid = package_dir.stat().st_uid
+        keep: set[Path] = set()
+        with db() as conn:
+            rows = conn.execute("SELECT state,details_json FROM update_operations "
+                                "ORDER BY updated_at DESC,rowid DESC").fetchall()
+        committed = 0
+        active_states = {"APPLY_QUEUED", "PRECHECK", "BACKUP_CREATED", "STAGED",
+                         "SYSTEM_COMPONENTS_UPDATING", "SWITCHED", "SERVICE_RESTARTING",
+                         "HEALTH_CHECKING", "ROLLING_BACK"}
+        for row in rows:
+            if row["state"] == "COMMITTED":
+                if committed >= 2:
+                    continue
+                committed += 1
+            elif row["state"] not in active_states:
+                continue
+            try:
+                details = json.loads(row["details_json"] or "{}")
+                raw_path = details.get("package_path") if isinstance(details, dict) else None
+                candidate = Path(raw_path).resolve() if isinstance(raw_path, str) else None
+            except (OSError, ValueError, json.JSONDecodeError):
+                candidate = None
+            if candidate is not None and candidate.parent == staging_root:
+                keep.add(candidate)
+        for package in package_dir.glob("*.deb.verified"):
+            try:
+                metadata = package.lstat()
+                sidecar = package.with_suffix(package.suffix + ".manifest.json")
+                if (package.is_symlink() or not package.is_file() or metadata.st_uid != owner_uid
+                        or package.resolve() in keep or sidecar.is_symlink() or not sidecar.is_file()
+                        or sidecar.stat().st_uid != owner_uid):
+                    continue
+                manifest = json.loads(sidecar.read_text(encoding="utf-8"))
+                if (not isinstance(manifest, dict) or manifest.get("package_name") != "solarminer-gateway"
+                        or not isinstance(manifest.get("version"), str)):
+                    continue
+                package.unlink()
+                sidecar.unlink()
+                removed += 1
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+        return {"status": "completed", "retained": len(keep), "removed": removed}
+    except (OSError, sqlite3.Error):
+        return {"status": "skipped", "reason": "staging_cleanup_failed", "removed": removed}
+
+
 def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
                                   manifest_origins: set[str] | None = None,
                                   package_origins: set[str] | None = None,
@@ -8864,11 +8919,12 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
         if package_origin_value not in allowed_package_origins:
             raise update_manager.UpdateValidationError("package_origin_not_authorized")
         data_dir = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
+        package_dir = data_dir / "releases" / "verified"
+        staging_cleanup = _prune_staged_gateway_packages(package_dir)
         free = shutil.disk_usage(data_dir if data_dir.exists() else data_dir.parent).free
         needed = int(manifest["package_size"]) * 2 + 64 * 1024 * 1024
         if free < needed:
             raise update_manager.UpdateValidationError("insufficient_disk_space")
-        package_dir = data_dir / "releases" / "verified"
         package_path = update_manager.download_and_verify_package(manifest, package_dir, allowed_package_origins)
         manifest_path = package_path.with_suffix(package_path.suffix + ".manifest.json")
         manifest_tmp = manifest_path.with_suffix(manifest_path.suffix + ".tmp")
@@ -8888,7 +8944,8 @@ def _check_system_update_manifest(manifest_url: str, session: dict[str, Any], *,
                                 else "update_preflight_unavailable")
         details = {"manifest_signature": "valid", "package_sha256": checked["sha256"],
                    "package_path": str(package_path), "manifest_path": str(manifest_path),
-                   "space_required": needed, "activation_available": activation_available,
+                   "space_required": needed, "staging_cleanup": staging_cleanup,
+                   "activation_available": activation_available,
                    "preflight_reason": preflight_reason}
         if repository_url:
             details["repository_url"] = repository_url
@@ -9607,6 +9664,8 @@ def system_update_status(session: dict[str, Any] = Depends(require_permission("r
                                            "reported_system_components_version"),
             "failed_command": ("executable", "operation", "timeout_seconds", "outcome", "error_type", "exit_code"),
             "rollback_command": ("executable", "operation", "timeout_seconds", "outcome", "error_type", "exit_code"),
+            "storage_diagnostic": ("outcome", "available_bytes", "required_bytes", "release_bytes",
+                                   "database_snapshot_bytes"),
         }
         for group, allowed in diagnostic_fields.items():
             value = pipeline.get(group)
@@ -9616,6 +9675,20 @@ def system_update_status(session: dict[str, Any] = Depends(require_permission("r
                     if isinstance(value.get(key), (str, int, float, bool))}
             if safe:
                 safe_pipeline[group] = safe
+        retention = pipeline.get("retention_cleanup") or pipeline.get("retention_cleanup_before_activation")
+        if isinstance(retention, dict):
+            safe_retention = {key: retention[key] for key in ("status", "reason")
+                              if isinstance(retention.get(key), str)}
+            versions = retention.get("retained_versions")
+            if isinstance(versions, list) and all(isinstance(item, str) for item in versions):
+                safe_retention["retained_versions"] = versions[:3]
+            deleted = retention.get("deleted")
+            if isinstance(deleted, dict):
+                safe_retention["deleted"] = {key: value for key, value in deleted.items()
+                                              if key in {"releases", "database_backups", "component_snapshots",
+                                                         "verified_packages"} and isinstance(value, int)}
+            if safe_retention:
+                safe_pipeline["retention_cleanup"] = safe_retention
         if safe_pipeline.get("failure") or safe_pipeline.get("rollback_failure"):
             latest_pipeline = {**safe_pipeline, "updated_at": recent["updated_at"]}
             break

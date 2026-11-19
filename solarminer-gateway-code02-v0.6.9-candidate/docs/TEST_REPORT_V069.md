@@ -23,7 +23,7 @@ Total aritmético backend sem sobreposição: **206 passed**, zero falhas/ignora
 ## Pipeline de atualização — testes novos
 
 - Pacote `.deb` descartável com manifesto Ed25519, tamanho/hash e payload backend+PWA: a máquina de estados termina em `COMMITTED` quando o health-check injetado confirma a versão esperada. Este teste não contacta um Gateway HTTPS real.
-- Health-check sem resposta: deadline de 60 segundos verificado com relógio simulado, sem esperar um minuto real.
+- Health-check sem resposta: deadline de 180 segundos verificado com relógio simulado, sem esperar três minutos reais.
 - Preflight com recuperação independente indisponível: enqueue recusado.
 - Health-check da nova release falhado: rollback do symlink para a versão anterior, restauro SQLite real a partir do backup temporário e estado terminal `ROLLED_BACK`; o resultado do health-check é injetado neste teste.
 - API: owner e operação `VERIFIED` enfileiram via helper e devolvem HTTP 202; testes sem operação verificada mantêm bloqueio HTTP 503.
@@ -42,5 +42,5 @@ Total aritmético backend sem sobreposição: **206 passed**, zero falhas/ignora
 > Nota de revisão: este relatório antecede as alterações de persistência da origem Owner, verificação diária, serviço/timer systemd e instalador inicial Debian amd64. Os resultados acima não testam essas alterações; executar novamente os testes unitários, testes do pacote e validação num Debian amd64 limpo antes de instalar no Gateway.
 
 - Não foi instalado o `.deb` em Debian/systemd real; `sudoers`, timer, units e helper privilegiado ainda precisam de validação no host de ensaio.
-- Não houve reboot real, corte de energia, SIGKILL em todas as fronteiras do novo pipeline, upgrade com a base real ou health-check durante 60 segundos contra Gateway instalado.
+- Não houve reboot real, corte de energia, SIGKILL em todas as fronteiras do novo pipeline, upgrade com a base real ou health-check durante 180 segundos contra Gateway instalado.
 - Não houve Safari/iPhone/QR nativo/IndexedDB real nem instalação física.

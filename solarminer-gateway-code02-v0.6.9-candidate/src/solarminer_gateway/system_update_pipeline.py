@@ -33,6 +33,7 @@ UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 TERMINAL = {"COMMITTED", "ROLLED_BACK", "FAILED", "RECOVERY_BLOCKED"}
 ACTIVE_STATES = {"APPLY_QUEUED", "PRECHECK", "BACKUP_CREATED", "STAGED", "SYSTEM_COMPONENTS_UPDATING", "SWITCHED", "SERVICE_RESTARTING", "HEALTH_CHECKING", "ROLLING_BACK"}
 HEALTH_CHECK_TIMEOUT_SECONDS = 180
+STORAGE_RESERVE_BYTES = 64 * 1024 * 1024
 
 
 def _utc() -> str:
@@ -88,6 +89,8 @@ class SystemUpdatePipeline:
         self.health_timeout = min(max(int(health_timeout), 1), HEALTH_CHECK_TIMEOUT_SECONDS)
         self._last_health_diagnostic: dict[str, Any] = {"outcome": "not_run", "attempts": 0}
         self._last_command_diagnostic: dict[str, Any] = {"outcome": "not_run"}
+        self._last_storage_diagnostic: dict[str, Any] = {}
+        self._last_retention_diagnostic: dict[str, Any] = {}
         self.runner = runner
         self.clock = clock
         self.sleep = sleep
@@ -113,18 +116,32 @@ class SystemUpdatePipeline:
 
     def _reconcile_system_components(self, stage: Path, version: str, op_id: str,
                                      *, operation_id_for_state: dict[str, Any]) -> Path:
+        def snapshot_ready(path: Path) -> None:
+            self._record("SYSTEM_COMPONENTS_UPDATING", **operation_id_for_state,
+                         system_components_backup=str(path))
+            # The snapshot is durable before stopping services; system_components
+            # does not replace a privileged file until this callback returns.
+            self._quiesce_socket_units()
+
         try:
             snapshot = system_components.reconcile(
                 stage, self.root, version,
                 legacy_files=self._legacy_system_component_files(),
                 operation_id=op_id,
                 system_root=self.system_root,
-                on_snapshot_ready=lambda path: self._record(
-                    "SYSTEM_COMPONENTS_UPDATING", **operation_id_for_state,
-                    system_components_backup=str(path)),
+                on_snapshot_ready=snapshot_ready,
             )
-        except system_components.SystemComponentError as exc:
-            raise PipelineError(str(exc)) from exc
+        except Exception as exc:
+            # reconcile() restores its snapshot if it fails after the quiesce
+            # callback. Reopen the unchanged/restored sockets before returning
+            # control to the transaction rollback path.
+            try:
+                self._reload_socket_units()
+            except Exception as socket_exc:
+                raise PipelineError("system_component_failure_socket_reopen_failed") from socket_exc
+            if isinstance(exc, system_components.SystemComponentError):
+                raise PipelineError(str(exc)) from exc
+            raise
         try:
             self._reload_socket_units()
         except Exception:
@@ -133,31 +150,34 @@ class SystemUpdatePipeline:
         return snapshot
 
     def _reload_socket_units(self) -> None:
-        """Restart package-owned sockets so systemd drops stale loaded units.
-
-        `enable --now` is not sufficient when a socket is already active: it
-        leaves the old listening unit and inherited socket configuration in
-        place after the package files have been replaced. For the accepted
-        administrative-terminal socket, stopping the socket does not stop its
-        per-connection service instances. Drain those explicitly before
-        reopening the socket so an abandoned PTY cannot consume a connection
-        slot across an online release switch.
-        """
-        for unit in system_components.REQUIRED_SOCKETS:
-            active = self._run(["/usr/bin/systemctl", "is-active", "--quiet", unit],
-                               timeout=10, check=False)
-            if active.returncode == 0:
-                self._run(["/usr/bin/systemctl", "stop", unit], timeout=20, check=True)
+        """Reload and reopen package-owned sockets after component replacement."""
         self._run(["/usr/bin/systemctl", "daemon-reload"], timeout=15, check=True)
-        self._run(["/usr/bin/systemctl", "stop", "solarminer-admin-terminal@*.service"],
-                  timeout=20, check=False)
-        self._run(["/usr/bin/systemctl", "reset-failed", "solarminer-admin-terminal@*.service"],
-                  timeout=10, check=False)
         for unit in system_components.REQUIRED_SOCKETS:
             self._run(["/usr/bin/systemctl", "enable", "--now", unit], timeout=20, check=True)
             self._run(["/usr/bin/systemctl", "is-active", "--quiet", unit], timeout=10, check=True)
 
+    def _quiesce_socket_units(self) -> None:
+        """Stop sockets and all loaded terminal sessions before replacing units."""
+        for unit in system_components.REQUIRED_SOCKETS:
+            self._run(["/usr/bin/systemctl", "stop", unit], timeout=20, check=True)
+        result = self._run([
+            "/usr/bin/systemctl", "list-units", "--all", "--type=service",
+            "--plain", "--no-legend", "solarminer-admin-terminal@*.service",
+        ], timeout=15, check=True)
+        prefix = "solarminer-admin-terminal@"
+        suffix = ".service"
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            if not fields:
+                continue
+            unit = fields[0]
+            if (unit.startswith(prefix) and unit.endswith(suffix)
+                    and not any(char in unit for char in ("/", "*", "?"))):
+                self._run(["/usr/bin/systemctl", "stop", unit], timeout=20, check=True)
+                self._run(["/usr/bin/systemctl", "reset-failed", unit], timeout=10, check=True)
+
     def _restore_system_components(self, snapshot: Path) -> None:
+        self._quiesce_socket_units()
         try:
             system_components.restore(snapshot, self.root, system_root=self.system_root)
         except system_components.SystemComponentError as exc:
@@ -387,6 +407,223 @@ class SystemUpdatePipeline:
                 if compared.returncode != 0:
                     raise PipelineError("package_dependency_version_mismatch:" + dependency)
         return package, manifest, digest
+
+    def _check_activation_space(self, package: Path) -> dict[str, Any]:
+        """Refuse activation before stopping services if release/DB snapshot won't fit."""
+        installed_raw = self._run(
+            ["/usr/bin/dpkg-deb", "--field", str(package), "Installed-Size"], timeout=10, check=True
+        ).stdout.strip()
+        if not installed_raw.isdecimal() or int(installed_raw) <= 0:
+            raise PipelineError("package_installed_size_invalid")
+        release_bytes = int(installed_raw) * 1024
+        database_bytes = 0
+        for path in (self.db_path, Path(str(self.db_path) + "-wal"), Path(str(self.db_path) + "-shm")):
+            if path.is_symlink():
+                raise PipelineError("database_or_sidecar_symlink_rejected")
+            if path.exists():
+                metadata = path.stat()
+                if not path.is_file():
+                    raise PipelineError("database_or_sidecar_not_regular_file")
+                database_bytes += metadata.st_size
+        required = release_bytes + database_bytes + STORAGE_RESERVE_BYTES
+        try:
+            available = shutil.disk_usage(self.root).free
+        except OSError as exc:
+            raise PipelineError("deployment_storage_unavailable") from exc
+        diagnostic = {
+            "outcome": "sufficient" if available >= required else "insufficient",
+            "available_bytes": int(available), "required_bytes": int(required),
+            "release_bytes": int(release_bytes), "database_snapshot_bytes": int(database_bytes),
+        }
+        self._last_storage_diagnostic = diagnostic
+        if available < required:
+            raise PipelineError("insufficient_deployment_storage")
+        return diagnostic
+
+    @staticmethod
+    def _safe_release_name(value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        candidate = Path(value)
+        name = candidate.name
+        if (candidate.parent.as_posix() not in {"releases", "."}
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+~_-]{0,63}", name)):
+            return None
+        return name
+
+    @staticmethod
+    def _safe_retention_path(value: object) -> Path | None:
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            return Path(value).resolve()
+        except OSError:
+            return None
+
+    def _prune_retained_artifacts(self) -> dict[str, Any]:
+        """Keep the active/rollback releases and their artifacts; prune older updater-owned copies."""
+        deleted = {"releases": 0, "database_backups": 0, "component_snapshots": 0, "verified_packages": 0}
+        errors: list[str] = []
+        keep_versions: set[str] = set()
+        keep_packages: set[Path] = set()
+        keep_database_backups: set[Path] = set()
+        keep_component_snapshots: set[Path] = set()
+        if (self.root.is_symlink() or self.releases.is_symlink() or self.backups.is_symlink()
+                or self.data_dir.is_symlink() or (self.data_dir / "releases").is_symlink()
+                or (self.data_dir / "releases" / "verified").is_symlink()
+                or (self.backups / "system-components").is_symlink()
+                or self.db_path.is_symlink()):
+            return {"status": "skipped", "reason": "retention_root_symlink_rejected", "deleted": deleted}
+        try:
+            current_target = os.readlink(self.current)
+            current_name = self._safe_release_name(current_target)
+            if current_name:
+                keep_versions.add(current_name)
+        except OSError:
+            errors.append("current_release_unreadable")
+
+        try:
+            with sqlite3.connect(f"file:{self.db_path.resolve().as_posix()}?mode=ro", uri=True, timeout=5) as conn:
+                rows = conn.execute(
+                    "SELECT state,target_version,details_json FROM update_operations "
+                    "ORDER BY updated_at DESC,rowid DESC"
+                ).fetchall()
+        except (sqlite3.Error, OSError):
+            return {"status": "skipped", "reason": "update_history_unavailable", "deleted": deleted}
+
+        committed_kept = 0
+        verified_kept = 0
+        for state, target_version, raw_details in rows:
+            try:
+                details = json.loads(raw_details or "{}")
+            except (TypeError, json.JSONDecodeError):
+                details = {}
+            if not isinstance(details, dict):
+                details = {}
+            pipeline = details.get("pipeline") if isinstance(details.get("pipeline"), dict) else {}
+            preserve_commit = state == "COMMITTED" and committed_kept < 2
+            preserve_verified = state == "VERIFIED" and verified_kept < 1
+            if preserve_verified:
+                verified_kept += 1
+            preserve_active = state in ACTIVE_STATES or preserve_verified
+            if preserve_commit:
+                committed_kept += 1
+                name = self._safe_release_name(target_version)
+                if name:
+                    keep_versions.add(name)
+                if committed_kept == 1:
+                    previous_name = self._safe_release_name(pipeline.get("previous_target"))
+                    if previous_name:
+                        keep_versions.add(previous_name)
+            if preserve_active:
+                name = self._safe_release_name(target_version)
+                if name and state in ACTIVE_STATES:
+                    keep_versions.add(name)
+                previous_name = self._safe_release_name(pipeline.get("previous_target"))
+                if previous_name:
+                    keep_versions.add(previous_name)
+            if preserve_commit or preserve_active:
+                package = self._safe_retention_path(details.get("package_path"))
+                if package:
+                    keep_packages.add(package)
+            if preserve_commit or state in ACTIVE_STATES:
+                backup = self._safe_retention_path(pipeline.get("backup_path"))
+                snapshot = self._safe_retention_path(pipeline.get("system_components_backup"))
+                if backup:
+                    keep_database_backups.add(backup)
+                if snapshot:
+                    keep_component_snapshots.add(snapshot)
+
+        current_state = self._read_state() or {}
+        for key, destination in (("backup_path", keep_database_backups),
+                                 ("system_components_backup", keep_component_snapshots)):
+            if current_state.get("state") in ACTIVE_STATES | {"COMMITTED"}:
+                path = self._safe_retention_path(current_state.get(key))
+                if path:
+                    destination.add(path)
+        if current_state.get("state") in ACTIVE_STATES:
+            for key in ("target_version", "previous_target"):
+                name = self._safe_release_name(current_state.get(key))
+                if name:
+                    keep_versions.add(name)
+
+        owner_uid = os.geteuid() if hasattr(os, "geteuid") else self.root.stat().st_uid
+        for entry in self.releases.iterdir() if self.releases.is_dir() else ():
+            try:
+                metadata = entry.lstat()
+                if (entry.is_symlink() or not entry.is_dir() or metadata.st_uid != owner_uid):
+                    continue
+                name = entry.name
+                if name.startswith(".stage-"):
+                    shutil.rmtree(entry)
+                    deleted["releases"] += 1
+                elif (re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+~_-]{0,63}", name)
+                      and name not in keep_versions):
+                    shutil.rmtree(entry)
+                    deleted["releases"] += 1
+            except OSError as exc:
+                errors.append(type(exc).__name__)
+
+        for backup in self.backups.glob("gateway-*.sqlite3") if self.backups.is_dir() else ():
+            try:
+                metadata = backup.lstat()
+                if (backup.is_symlink() or not backup.is_file() or metadata.st_uid != owner_uid
+                        or backup.resolve() in keep_database_backups):
+                    continue
+                sidecar = backup.with_suffix(backup.suffix + ".json")
+                if sidecar.is_symlink() or (sidecar.exists() and
+                        (not sidecar.is_file() or sidecar.stat().st_uid != owner_uid)):
+                    continue
+                backup.unlink()
+                sidecar.unlink(missing_ok=True)
+                deleted["database_backups"] += 1
+            except OSError as exc:
+                errors.append(type(exc).__name__)
+
+        snapshots_root = self.backups / "system-components"
+        for snapshot in snapshots_root.iterdir() if snapshots_root.is_dir() else ():
+            try:
+                metadata = snapshot.lstat()
+                if (snapshot.is_symlink() or not snapshot.is_dir() or metadata.st_uid != owner_uid
+                        or not UUID_RE.fullmatch(snapshot.name) or snapshot.resolve() in keep_component_snapshots):
+                    continue
+                shutil.rmtree(snapshot)
+                deleted["component_snapshots"] += 1
+            except OSError as exc:
+                errors.append(type(exc).__name__)
+
+        verified_root = self.data_dir / "releases" / "verified"
+        try:
+            if hasattr(os, "geteuid"):
+                import pwd
+                verified_owner_uid = pwd.getpwnam("solarminer").pw_uid
+            else:
+                verified_owner_uid = verified_root.stat().st_uid
+        except (OSError, KeyError):
+            verified_owner_uid = -1
+        for package in verified_root.glob("*.deb.verified") if verified_root.is_dir() else ():
+            try:
+                metadata = package.lstat()
+                sidecar = package.with_suffix(package.suffix + ".manifest.json")
+                if (package.is_symlink() or not package.is_file() or metadata.st_uid != verified_owner_uid
+                        or package.resolve() in keep_packages or sidecar.is_symlink()
+                        or not sidecar.is_file() or sidecar.stat().st_uid != verified_owner_uid):
+                    continue
+                manifest = json.loads(sidecar.read_text(encoding="utf-8"))
+                version = manifest.get("version") if isinstance(manifest, dict) else None
+                if (manifest.get("package_name") != "solarminer-gateway"
+                        or not isinstance(version, str)
+                        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+~_-]{0,63}", version)
+                        or version in keep_versions):
+                    continue
+                package.unlink()
+                sidecar.unlink()
+                deleted["verified_packages"] += 1
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                errors.append(type(exc).__name__)
+        return {"status": "completed_with_warnings" if errors else "completed",
+                "retained_versions": sorted(keep_versions), "deleted": deleted,
+                "errors": errors[:10]}
 
     def enqueue(self, op_id: str) -> dict[str, Any]:
         with self._locked():
@@ -620,7 +857,10 @@ class SystemUpdatePipeline:
                     if state.get("operation_id") == op_id and state.get("state") not in TERMINAL:
                         self._record("FAILED", operation_id=op_id, target_version=state.get("target_version"),
                                      previous_target=state.get("previous_target"), backup_path=state.get("backup_path"),
-                                     failure=_failure_code(exc), finished_at_utc=_utc())
+                                     failure=_failure_code(exc),
+                                     storage_diagnostic=dict(self._last_storage_diagnostic),
+                                     retention_cleanup=dict(self._last_retention_diagnostic),
+                                     finished_at_utc=_utc())
                 except Exception:
                     pass
                 raise
@@ -628,6 +868,8 @@ class SystemUpdatePipeline:
     def _apply_locked(self, op_id: str) -> dict[str, Any]:
         if os.geteuid() != 0: raise PipelineError("root_privileges_required")
         self._last_health_diagnostic = {"outcome": "not_run", "attempts": 0}
+        self._last_storage_diagnostic = {}
+        self._last_retention_diagnostic = {}
         row, details = self._operation(op_id)
         if row["state"] not in {"VERIFIED", "APPLY_QUEUED"}: raise PipelineError("update_operation_not_verified")
         self.preflight()
@@ -639,8 +881,15 @@ class SystemUpdatePipeline:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+~_-]{0,63}", release_name): raise PipelineError("release_version_invalid")
         target = self.releases / release_name
         if target.exists() or target.is_symlink(): raise PipelineError("release_version_already_exists")
+        # Clear safe, obsolete updater-owned copies first; this can recover room
+        # for activation on a nearly full deployment volume. The running and
+        # last known-good releases remain protected by the retention policy.
+        self._last_retention_diagnostic = self._prune_retained_artifacts()
+        storage_diagnostic = self._check_activation_space(package)
         self._record("PRECHECK", operation_id=op_id, target_version=release_name, previous_target=previous_target,
-                     package_sha256=digest, health_timeout_seconds=HEALTH_CHECK_TIMEOUT_SECONDS)
+                     package_sha256=digest, storage_diagnostic=storage_diagnostic,
+                     retention_cleanup_before_activation=self._last_retention_diagnostic,
+                     health_timeout_seconds=HEALTH_CHECK_TIMEOUT_SECONDS)
         backup = create_database_backup(self.db_path, self.backups)
         backup_path = Path(backup["backup_path"])
         self._record("BACKUP_CREATED", operation_id=op_id, target_version=release_name, previous_target=previous_target,
@@ -708,6 +957,18 @@ class SystemUpdatePipeline:
             self._record("COMMITTED", operation_id=op_id, target_version=release_name, previous_target=previous_target,
                          new_target=os.path.relpath(target, self.root), backup_path=str(backup_path), package_sha256=digest,
                          health_timeout_seconds=HEALTH_CHECK_TIMEOUT_SECONDS, health_check="passed", finished_at_utc=_utc())
+            # Retention is post-commit and best-effort: cleanup failure must never
+            # turn a healthy, committed release into a rollback.
+            try:
+                retention = self._prune_retained_artifacts()
+                self._last_retention_diagnostic = retention
+                self._record("COMMITTED", operation_id=op_id, target_version=release_name,
+                             previous_target=previous_target, new_target=os.path.relpath(target, self.root),
+                             backup_path=str(backup_path), package_sha256=digest,
+                             health_timeout_seconds=HEALTH_CHECK_TIMEOUT_SECONDS, health_check="passed",
+                             retention_cleanup=retention, finished_at_utc=_utc())
+            except Exception as cleanup_exc:
+                retention = {"status": "failed", "error_type": type(cleanup_exc).__name__}
             return {"status": "COMMITTED", "operation_id": op_id, "version": release_name, "backup_path": str(backup_path)}
         except Exception as exc:
             failed_health_diagnostic = dict(self._last_health_diagnostic)

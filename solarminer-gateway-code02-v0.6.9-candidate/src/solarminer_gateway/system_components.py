@@ -263,7 +263,7 @@ def reconcile(package_root: Path, deployment_root: Path, version: str,
         return snapshot_root
     except Exception:
         if (snapshot_root / "snapshot.json").is_file():
-            restore(snapshot_root, deployment_root)
+            restore(snapshot_root, deployment_root, system_root=system_root)
         raise
 
 

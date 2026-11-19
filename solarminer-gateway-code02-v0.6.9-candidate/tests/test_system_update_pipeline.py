@@ -65,6 +65,89 @@ def test_deployment_root_rejects_group_or_world_writable_permissions():
 def test_deployment_root_accepts_private_root_owned_permissions():
     _validate_deployment_root_permissions(SimpleNamespace(st_uid=0, st_mode=0o40750))
 
+
+def test_activation_space_check_fails_before_service_mutation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    data_dir = tmp_path / "var/lib/solarminer"
+    pipeline = SystemUpdatePipeline(root=tmp_path / "opt/solarminer", data_dir=data_dir,
+                                    db_path=data_dir / "gateway.db")
+    package = tmp_path / "candidate.deb"
+    package.write_bytes(b"signed package placeholder")
+    database = pipeline.db_path
+    database.parent.mkdir(parents=True)
+    database.write_bytes(b"database")
+    monkeypatch.setattr(pipeline, "_run", lambda *_args, **_kwargs: SimpleNamespace(stdout="1024\n"))
+    disk = {"free": 100 * 1024 * 1024}
+    monkeypatch.setattr("solarminer_gateway.system_update_pipeline.shutil.disk_usage",
+                        lambda _path: SimpleNamespace(free=disk["free"]))
+
+    result = pipeline._check_activation_space(package)
+
+    assert result["outcome"] == "sufficient"
+    assert result["database_snapshot_bytes"] == len(b"database")
+    disk["free"] = 2 * 1024 * 1024
+    with pytest.raises(PipelineError, match="insufficient_deployment_storage"):
+        pipeline._check_activation_space(package)
+
+
+def test_retention_keeps_active_and_previous_release_and_prunes_older_owned_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    data_dir = tmp_path / "var/lib/solarminer"
+    root = tmp_path / "opt/solarminer"
+    pipeline = SystemUpdatePipeline(root=root, data_dir=data_dir, db_path=data_dir / "gateway.db")
+    for directory in (pipeline.releases, pipeline.backups / "system-components",
+                      data_dir / "releases/verified"):
+        directory.mkdir(parents=True, exist_ok=True)
+    versions = ("0.6.1", "0.6.2", "0.6.3")
+    paths: dict[str, dict[str, Path]] = {}
+    for version in versions:
+        release = pipeline.releases / version
+        release.mkdir()
+        (release / "package.marker").write_text(version)
+        package = data_dir / "releases/verified" / f"solarminer-gateway_{version}_amd64.deb.verified"
+        package.write_bytes(version.encode())
+        package.with_suffix(package.suffix + ".manifest.json").write_text(json.dumps({
+            "package_name": "solarminer-gateway", "version": version,
+        }))
+        backup = pipeline.backups / f"gateway-{version}.sqlite3"
+        backup.write_bytes(version.encode())
+        backup.with_suffix(backup.suffix + ".json").write_text("{}")
+        snapshot_id = {"0.6.1": "000000000001", "0.6.2": "000000000002",
+                       "0.6.3": "000000000003"}[version]
+        snapshot = pipeline.backups / "system-components" / ("12345678-1234-4234-8234-" + snapshot_id)
+        snapshot.mkdir()
+        (snapshot / "snapshot.marker").write_text(version)
+        paths[version] = {"package": package, "backup": backup, "snapshot": snapshot}
+
+    with sqlite3.connect(pipeline.db_path) as conn:
+        conn.execute("CREATE TABLE update_operations(state TEXT,target_version TEXT,details_json TEXT,updated_at INTEGER)")
+        for index, version in enumerate(reversed(versions)):
+            previous = versions[max(0, 2 - index - 1)]
+            details = {
+                "package_path": str(paths[version]["package"]),
+                "pipeline": {"previous_target": f"releases/{previous}",
+                             "backup_path": str(paths[version]["backup"]),
+                             "system_components_backup": str(paths[version]["snapshot"])},
+            }
+            conn.execute("INSERT INTO update_operations VALUES('COMMITTED',?,?,?)",
+                         (version, json.dumps(details), 3 - index))
+    monkeypatch.setattr("solarminer_gateway.system_update_pipeline.os.readlink",
+                        lambda _path: "releases/0.6.3")
+
+    result = pipeline._prune_retained_artifacts()
+
+    assert paths["0.6.3"]["package"].exists()
+    assert paths["0.6.2"]["package"].exists()
+    assert not paths["0.6.1"]["package"].exists()
+    assert (pipeline.releases / "0.6.3").exists()
+    assert (pipeline.releases / "0.6.2").exists()
+    assert not (pipeline.releases / "0.6.1").exists()
+    assert paths["0.6.3"]["backup"].exists() and paths["0.6.2"]["backup"].exists()
+    assert not paths["0.6.1"]["backup"].exists()
+    assert paths["0.6.3"]["snapshot"].exists() and paths["0.6.2"]["snapshot"].exists()
+    assert not paths["0.6.1"]["snapshot"].exists()
+    assert result["deleted"]["releases"] == 1
+
 def _pipeline_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, version: str = "0.6.9"):
     root = tmp_path / "opt/solarminer"
     releases = root / "releases"
@@ -166,31 +249,72 @@ def test_health_check_has_a_hard_three_minute_deadline(tmp_path: Path, monkeypat
     assert pipeline._last_health_diagnostic["attempts"] > 0
 
 
-def test_reconcile_restarts_active_socket_units_after_daemon_reload(tmp_path: Path):
+def test_reconcile_quiesces_sockets_before_component_replacement_and_reopens_after(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
     from solarminer_gateway import system_components
 
     calls = []
 
     def runner(args, **kwargs):
         calls.append(list(args))
-        return subprocess.CompletedProcess(args, 0, "active\n", "")
+        events.append(("command", list(args)))
+        if args[1:2] == ["list-units"]:
+            return subprocess.CompletedProcess(
+                args, 0,
+                "solarminer-admin-terminal@1.service loaded active running session 1\n"
+                "solarminer-admin-terminal@2.service loaded inactive dead session 2\n", "")
+        if args[1:2] == ["is-active"]:
+            return subprocess.CompletedProcess(args, 0, "active\n", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
 
     pipeline = SystemUpdatePipeline(root=tmp_path / "opt/solarminer", runner=runner)
-    pipeline._reload_socket_units()
+    pipeline._legacy_system_component_files = lambda: []
+    events = []
+    monkeypatch.setattr(pipeline, "_record", lambda state, **_kwargs: events.append(("state", state)))
+
+    def fake_reconcile(_stage, _root, _version, *, on_snapshot_ready, **_kwargs):
+        snapshot = tmp_path / "snapshot"
+        on_snapshot_ready(snapshot)
+        events.append(("components_replaced", None))
+        return snapshot
+
+    monkeypatch.setattr(system_components, "reconcile", fake_reconcile)
+    pipeline._reconcile_system_components(
+        tmp_path / "stage", "0.6.9", "12345678-1234-4234-8234-123456789abc",
+        operation_id_for_state={"operation_id": "12345678-1234-4234-8234-123456789abc"})
 
     expected = system_components.REQUIRED_SOCKETS
-    stops = [call[2] for call in calls
-             if call[1:2] == ["stop"] and call[2].endswith(".socket")]
+    stops = [call[2] for call in calls if call[1:2] == ["stop"] and call[2].endswith(".socket")]
     assert stops == list(expected)
     reload_index = calls.index(["/usr/bin/systemctl", "daemon-reload"])
     assert all(calls.index(["/usr/bin/systemctl", "stop", unit]) < reload_index for unit in expected)
-    drain = ["/usr/bin/systemctl", "stop", "solarminer-admin-terminal@*.service"]
-    reset = ["/usr/bin/systemctl", "reset-failed", "solarminer-admin-terminal@*.service"]
-    assert reload_index < calls.index(drain) < calls.index(reset)
+    assert calls.index(["/usr/bin/systemctl", "stop", "solarminer-admin-terminal@1.service"]) < reload_index
+    assert calls.index(["/usr/bin/systemctl", "reset-failed", "solarminer-admin-terminal@1.service"]) < reload_index
+    assert calls.index(["/usr/bin/systemctl", "stop", "solarminer-admin-terminal@2.service"]) < reload_index
+    replacement_index = events.index(("components_replaced", None))
+    reload_event_index = events.index(("command", ["/usr/bin/systemctl", "daemon-reload"]))
+    assert all(events.index(("command", call)) < replacement_index
+               for call in calls if call[1:2] == ["stop"])
+    assert replacement_index < reload_event_index
     for unit in expected:
         enable = calls.index(["/usr/bin/systemctl", "enable", "--now", unit])
         verify = calls.index(["/usr/bin/systemctl", "is-active", "--quiet", unit], reload_index + 1)
-        assert calls.index(reset) < enable < verify
+        assert reload_index < enable < verify
+
+
+def test_socket_quiesce_fails_closed_when_a_required_socket_cannot_stop(tmp_path: Path):
+    calls = []
+
+    def runner(args, **_kwargs):
+        calls.append(list(args))
+        code = 1 if args[1:2] == ["stop"] and args[-1] == "solarminer-admin-terminal.socket" else 0
+        return subprocess.CompletedProcess(args, code, "", "stop failed" if code else "")
+
+    pipeline = SystemUpdatePipeline(root=tmp_path / "opt/solarminer", runner=runner)
+    with pytest.raises(PipelineError, match="command_failed:systemctl:stop:exit=1"):
+        pipeline._quiesce_socket_units()
+    assert not any(call[1:2] == ["list-units"] for call in calls)
 
 
 def test_system_command_timeout_is_classified_with_operation_and_limit(tmp_path: Path):
