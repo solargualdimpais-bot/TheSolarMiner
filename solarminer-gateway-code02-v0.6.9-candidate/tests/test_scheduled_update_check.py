@@ -119,6 +119,24 @@ def test_intelligence_bootstrap_broker_fails_closed_if_systemd_rejects_request()
     assert response == {"status": "error", "reason": "intelligence_bootstrap_start_failed"}
 
 
+def test_intelligence_bootstrap_broker_returns_only_allowlisted_privileged_component_status():
+    response = intelligence_bootstrap_broker.handle_request(
+        b'{"action":"system_components_status"}\n',
+        component_status=lambda: {"status":"FAILED", "version":"0.6.265", "protocol":1,
+                                  "reason":"system_component_file_unreadable", "secret":"hidden"})
+    assert response == {"status":"ok", "components":{"status":"FAILED", "version":"0.6.265",
+                        "protocol":1, "reason":"system_component_file_unreadable"}}
+    assert intelligence_bootstrap_broker.handle_request(
+        b'{"action":"system_components_status","path":"/etc/shadow"}\n',
+        component_status=lambda: {"status":"OK"}) == {"status":"error", "reason":"request_invalid"}
+    assert intelligence_bootstrap_broker.handle_request(
+        b'{"action":"system_components_status"}\n',
+        component_status=lambda: {"status":"FAILED", "version":"0.6.265", "protocol":1,
+                                  "reason":"bad reason with path /private"}) == {
+                                      "status":"error",
+                                      "reason":"system_component_verifier_response_invalid"}
+
+
 def test_general_update_broker_keeps_only_fixed_intelligence_bootstrap_action():
     calls = []
     def runner(args, **kwargs):
@@ -153,6 +171,48 @@ def test_intelligence_bootstrap_client_uses_dedicated_fixed_socket(monkeypatch):
     assert intelligence_bootstrap_client.request_start() == {"status": "ok", "queued": True}
     assert calls == [("connect", intelligence_bootstrap_client.DEFAULT_SOCKET_PATH),
                      ("send", b'{"action":"start"}\n')]
+
+
+def test_intelligence_bootstrap_client_reads_component_status_from_fixed_socket(monkeypatch):
+    calls = []
+
+    class FakeSocket:
+        def __init__(self, *_args): pass
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def settimeout(self, value): assert value == 8
+        def connect(self, path): calls.append(("connect", path))
+        def sendall(self, data): calls.append(("send", data))
+        def shutdown(self, _how): pass
+        def recv(self, _size):
+            return b'{"status":"ok","components":{"status":"OK","version":"0.6.265","protocol":1,"reason":null}}\n'
+
+    monkeypatch.setattr(intelligence_bootstrap_client.socket, "AF_UNIX", 1, raising=False)
+    monkeypatch.setattr(intelligence_bootstrap_client.socket, "SOCK_STREAM", 1, raising=False)
+    monkeypatch.setattr(intelligence_bootstrap_client.socket, "socket", FakeSocket)
+    assert intelligence_bootstrap_client.request_system_components_status() == {
+        "status":"OK", "version":"0.6.265", "protocol":1, "reason":None}
+    assert calls == [("connect", intelligence_bootstrap_client.DEFAULT_SOCKET_PATH),
+                     ("send", b'{"action":"system_components_status"}\n')]
+
+
+def test_intelligence_bootstrap_client_rejects_untrusted_component_status_shape(monkeypatch):
+    class FakeSocket:
+        def __init__(self, *_args): pass
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def settimeout(self, _value): pass
+        def connect(self, _path): pass
+        def sendall(self, _data): pass
+        def shutdown(self, _how): pass
+        def recv(self, _size):
+            return b'{"status":"ok","components":{"status":[],"version":null,"protocol":1,"reason":null}}\n'
+
+    monkeypatch.setattr(intelligence_bootstrap_client.socket, "AF_UNIX", 1, raising=False)
+    monkeypatch.setattr(intelligence_bootstrap_client.socket, "SOCK_STREAM", 1, raising=False)
+    monkeypatch.setattr(intelligence_bootstrap_client.socket, "socket", FakeSocket)
+    with pytest.raises(RuntimeError, match="system_component_verifier_response_invalid"):
+        intelligence_bootstrap_client.request_system_components_status()
 
 
 def test_root_broker_stores_openai_key_without_returning_it_and_restarts_only_intelligence(monkeypatch):

@@ -109,6 +109,19 @@ def test_online_update_unit_cannot_be_killed_before_its_rollback_window():
     assert "TimeoutStartSec=5min" in recovery
 
 
+def test_gateway_orders_privileged_component_verifier_socket_before_start():
+    service = (Path(__file__).parents[1] / "packaging" / "solarminer-gateway.service").read_text(encoding="utf-8")
+    assert "After=network.target solarminer-recovery.service solarminer-intelligence-bootstrap-broker.socket" in service
+    assert "Wants=solarminer-intelligence-bootstrap-broker.socket" in service
+
+
+def test_usb_release_bundles_the_previous_gateway_release_for_rollback():
+    workflow = (Path(__file__).parents[2] / ".github" / "workflows" / "gateway-release.yml").read_text(encoding="utf-8")
+    rollback_lists = [line for line in workflow.splitlines() if "for VERSION in" in line]
+    assert len(rollback_lists) == 2
+    assert all("0.6.265" in line for line in rollback_lists)
+
+
 def test_bootstrap_publishes_download_progress_for_owner_console():
     bootstrap = (Path(__file__).parents[1] / "packaging" / "solarminer-intelligence-bootstrap").read_text(encoding="utf-8")
     for expected in ("/api/pull", '"percent":percent', '"downloaded_bytes":downloaded',

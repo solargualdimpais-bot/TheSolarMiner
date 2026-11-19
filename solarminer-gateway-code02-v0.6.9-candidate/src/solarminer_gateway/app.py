@@ -72,7 +72,7 @@ from . import system_components
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.265"
+PACKAGE_VERSION = "0.6.266"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 INTELLIGENCE_LOCAL_TOKEN_PATH = Path(os.environ.get("SOLARMINER_INTELLIGENCE_CLIENT_TOKEN_FILE", "/etc/solarminer/intelligence-client.token"))
@@ -2922,12 +2922,15 @@ async def database_error_handler(_: Request, exc: sqlite3.Error) -> JSONResponse
 
 @app.get("/api/v1/health")
 async def health() -> dict[str, Any]:
-    # Liveness must stay independent of SQLite. Bootstrap and data readiness
-    # have their own API routes; a brief database lock must not make the
-    # watchdog restart a running server or make endpoint checks flap. Keep
-    # this async and I/O-free so slow synchronous device routes cannot occupy
-    # the worker thread needed to answer liveness probes.
-    components = system_components.installed_component_status()
+    # Liveness stays independent of SQLite and device I/O. The privileged,
+    # read-only component digest check is offloaded so it cannot block the
+    # event loop; if its broker is unavailable, report unknown but stay live.
+    try:
+        components = await asyncio.to_thread(intelligence_bootstrap_client.request_system_components_status)
+    except Exception as exc:
+        LOG.warning("Privileged system component verification unavailable (%s)", type(exc).__name__)
+        components = {"status": "UNKNOWN", "version": None, "protocol": None,
+                      "reason": "system_component_verifier_unavailable"}
     return {"status": "ok", "version": VERSION, "package_version": PACKAGE_VERSION,
             "system_components_version": components.get("version"),
             "system_components_protocol": components.get("protocol"),
@@ -3521,8 +3524,16 @@ def intelligence_provider_status(
     else:
         mark("system_diagnostics")
     try:
-        diagnostics = system_components.integrated_diagnostics(PACKAGE_VERSION)
-        mark("complete", state="degraded" if diagnostic_degraded else "completed")
+        try:
+            component_status = intelligence_bootstrap_client.request_system_components_status()
+        except Exception as exc:
+            LOG.warning("Privileged system component verification unavailable (%s)", type(exc).__name__)
+            component_status = {"status": "UNAVAILABLE", "version": None, "protocol": None,
+                                "reason": "system_component_verifier_unavailable"}
+        diagnostics = system_components.integrated_diagnostics(PACKAGE_VERSION,
+                                                               component_status=component_status)
+        mark("complete", state="degraded" if diagnostic_degraded or diagnostics.get("status") != "OK"
+             else "completed")
     except Exception as exc:
         # Keep provider/runtime state usable if optional OS diagnostics fail.
         diagnostics = {"status": "UNAVAILABLE", "reason": "system_diagnostics_failed",

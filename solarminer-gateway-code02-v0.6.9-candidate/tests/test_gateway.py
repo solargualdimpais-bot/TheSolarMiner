@@ -594,11 +594,39 @@ def test_health_endpoint_is_independent_of_database(monkeypatch):
         raise AssertionError("liveness health must not wait on SQLite")
 
     monkeypatch.setattr(gateway, "db", unexpected_database_access)
+    monkeypatch.setattr(gateway.intelligence_bootstrap_client, "request_system_components_status", lambda: {
+        "status": "OK", "version": gateway.PACKAGE_VERSION, "protocol": 1, "reason": None,
+    })
     response = asyncio.run(gateway.health())
 
     assert response["status"] == "ok"
     assert "bootstrap_state" not in response
     assert response["package_version"] == gateway.PACKAGE_VERSION
+    assert response["system_components_status"] == "OK"
+
+
+def test_health_never_reads_protected_components_as_gateway_user(monkeypatch):
+    def forbidden_direct_hash(*_args, **_kwargs):
+        raise AssertionError("Gateway must delegate protected component hashing")
+
+    monkeypatch.setattr(gateway.system_components, "installed_component_status", forbidden_direct_hash)
+    monkeypatch.setattr(gateway.intelligence_bootstrap_client, "request_system_components_status", lambda: {
+        "status": "OK", "version": gateway.PACKAGE_VERSION, "protocol": 1, "reason": None,
+    })
+    response = asyncio.run(gateway.health())
+    assert response["status"] == "ok"
+    assert response["system_components_status"] == "OK"
+
+
+def test_health_liveness_survives_unavailable_privileged_component_verifier(monkeypatch):
+    def unavailable():
+        raise OSError("socket unavailable")
+
+    monkeypatch.setattr(gateway.intelligence_bootstrap_client, "request_system_components_status", unavailable)
+    response = asyncio.run(gateway.health())
+    assert response["status"] == "ok"
+    assert response["system_components_status"] == "UNKNOWN"
+    assert response["system_components_reason"] == "system_component_verifier_unavailable"
 
 
 def test_open_database_connection_does_not_reissue_wal_mode_pragma(tmp_path, monkeypatch):

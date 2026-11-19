@@ -181,3 +181,22 @@ def test_integrated_diagnostics_reports_versions_and_fixed_unit_states_without_s
     assert result["units"]["admin_terminal"]["state"] == "active"
     assert len(calls) == 1 + len(result["units"])
     assert "token" not in str(result).lower()
+
+
+def test_integrated_diagnostics_uses_injected_privileged_component_status(tmp_path: Path, monkeypatch):
+    from solarminer_gateway import system_components
+
+    def forbidden_direct_hash(*_args, **_kwargs):
+        raise AssertionError("use the injected root-verified component status")
+
+    monkeypatch.setattr(system_components, "installed_component_status", forbidden_direct_hash)
+    def runner(args, **_kwargs):
+        if args[0].endswith("dpkg-query"):
+            return type("Result", (), {"returncode": 0, "stdout": "0.6.266\n"})()
+        return type("Result", (), {"returncode": 0, "stdout": "active\n"})()
+
+    verified = {"status": "OK", "version": "0.6.266", "protocol": 1, "reason": None}
+    result = system_components.integrated_diagnostics("0.6.266", deployment_root=tmp_path / "missing",
+                                                      runner=runner, component_status=verified)
+    assert result["system_components"] == verified
+    assert result["status"] == "OK"

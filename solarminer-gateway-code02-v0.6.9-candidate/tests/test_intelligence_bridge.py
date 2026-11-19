@@ -395,7 +395,10 @@ def test_intelligence_provider_status_reports_local_runtime_model_and_optional_c
     monkeypatch.setattr(gateway.system_components, "installed_component_status", lambda: {
         "status": "OK", "version": "0.6.261", "protocol": 1, "reason": None,
     })
-    monkeypatch.setattr(gateway.system_components, "integrated_diagnostics", lambda _version: {
+    monkeypatch.setattr(gateway.intelligence_bootstrap_client, "request_system_components_status", lambda: {
+        "status": "OK", "version": "0.6.261", "protocol": 1, "reason": None,
+    })
+    monkeypatch.setattr(gateway.system_components, "integrated_diagnostics", lambda _version, **_kwargs: {
         "status": "OK", "reason": None, "application_version": "0.6.261",
         "debian_package_version": "0.6.261", "active_release": "0.6.261",
         "system_components": {"status": "OK", "version": "0.6.261", "protocol": 1, "reason": None},

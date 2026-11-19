@@ -437,9 +437,13 @@ def _path_status(path: Path) -> dict[str, Any]:
 
 
 def integrated_diagnostics(active_app_version: str, *, deployment_root: Path = Path("/opt/solarminer"),
-                           runner=subprocess.run) -> dict[str, Any]:
+                           runner=subprocess.run,
+                           component_status: dict[str, Any] | None = None) -> dict[str, Any]:
     """Return bounded, secret-free system coherence diagnostics for the Owner."""
-    components = installed_component_status(deployment_root)
+    # The Gateway account cannot read the intentionally isolated Intelligence
+    # tree. Production callers inject the root broker's allowlisted digest
+    # result; direct hashing remains available to root-owned update code/tests.
+    components = component_status if isinstance(component_status, dict) else installed_component_status(deployment_root)
     compatibility = compatibility_status(active_app_version, components)
     try:
         os_release = platform.freedesktop_os_release()
