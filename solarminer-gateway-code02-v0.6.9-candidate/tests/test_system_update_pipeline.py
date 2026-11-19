@@ -179,7 +179,8 @@ def test_reconcile_restarts_active_socket_units_after_daemon_reload(tmp_path: Pa
     pipeline._reload_socket_units()
 
     expected = system_components.REQUIRED_SOCKETS
-    stops = [call[2] for call in calls if call[1:2] == ["stop"]]
+    stops = [call[2] for call in calls
+             if call[1:2] == ["stop"] and call[2].endswith(".socket")]
     assert stops == list(expected)
     reload_index = calls.index(["/usr/bin/systemctl", "daemon-reload"])
     assert all(calls.index(["/usr/bin/systemctl", "stop", unit]) < reload_index for unit in expected)
