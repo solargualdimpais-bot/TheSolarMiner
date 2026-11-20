@@ -196,6 +196,8 @@ async function runVersion(version, sdkPath) {
     const request = requests[0];
     assert.ok(request, `SDK ${version} did not call Ollama`);
     assert.equal(request.route, '/v1/chat/completions', `SDK ${version} used an unexpected provider protocol`);
+    assert.ok(request.body.messages.some(message => typeof message.content === 'string' && message.content.includes(prompt)),
+      `SDK ${version} did not forward the exact Hello World prompt in its provider messages`);
     assert.equal(request.body.model, model);
     assert.equal(request.body.stream, true);
     assert.equal(request.body.think, undefined,
@@ -212,6 +214,7 @@ async function runVersion(version, sdkPath) {
 
     const report = {
       sdk_version: version,
+      query_prompt_sha256: createHash('sha256').update(prompt).digest('hex'),
       http_requests: requests.map(item => ({
         route: item.route,
         body: {
@@ -259,14 +262,11 @@ try {
   const oldVersion = await runVersion('0.36.0', sdk036Path);
   const newVersion = await runVersion('0.37.0', sdk037Path);
 
-  assert.deepEqual(oldVersion.request.body.messages.map(({ role, content }) => ({ role, content })),
-    newVersion.request.body.messages.map(({ role, content }) => ({ role, content })),
-    'the SDK versions must receive the same prompt and conversation');
   assert.equal(oldVersion.result.answer, newVersion.result.answer,
     'the agent extraction must return the same final text for both SDK versions');
 
   console.log(JSON.stringify({ comparison: [oldVersion.report, newVersion.report],
-    conclusion: 'Both SDK versions processed the same OpenAI-compatible SSE reasoning/content stream and delivered final assistant text through the production agent-service extractor. Neither provider request included a think field on the configured /v1 route. The simple Hello World prompt made no MCP calls. This validates the SDK-to-agent conversion for the fixture, not the Lenovo response or its HTTP 500.' }, null, 2));
+    conclusion: 'Both SDK versions received the same query prompt, processed the OpenAI-compatible SSE reasoning/content stream and delivered final assistant text through the production agent-service extractor. The SDK adds its own prompt/tool context around the user text, which is reported using message lengths and hashes. Neither provider request included a think field on the configured /v1 route. Hello World made no MCP calls. This validates SDK-to-agent conversion for the fixture, not the Lenovo response or its HTTP 500.' }, null, 2));
 } finally {
   await new Promise(resolve => ollamaServer.close(resolve));
   ollamaServer.closeAllConnections();
