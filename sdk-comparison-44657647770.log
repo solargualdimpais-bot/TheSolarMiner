@@ -1,0 +1,235 @@
+{
+  "comparison": [
+    {
+      "sdk_version": "0.36.0",
+      "query_prompt_sha256": "4f31961d8a2ee779b77d7cc5cc4dda89674da8abecf41c1b333e2bbf9a51decb",
+      "http_requests": [
+        {
+          "route": "/v1/chat/completions",
+          "body": {
+            "model": "qwen3.5:9b-q4_K_M",
+            "stream": true,
+            "think": "(field omitted)",
+            "parameter_fields": {
+              "temperature": 1,
+              "max_tokens": 32000,
+              "stream_options": {
+                "include_usage": true
+              }
+            },
+            "options": {},
+            "messages": [
+              {
+                "role": "system",
+                "content_chars": 1172,
+                "content_sha256": "044ecbe3d0ab3f5e87da0e0876091f62ac28aed5c1b6e42e0711423c2676de2a",
+                "tool_call_names": []
+              },
+              {
+                "role": "user",
+                "content_chars": 3786,
+                "content_sha256": "cb692bbd53f89769fbd58c031ab26a5022b03706d28dad7e580eae45d9d3b5a8",
+                "tool_call_names": []
+              }
+            ],
+            "tool_names": [
+              "Agent",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Monitor",
+              "Read",
+              "RepoMap",
+              "Skill",
+              "snip",
+              "ToolSearch",
+              "Write"
+            ]
+          },
+          "ollama_stream": [
+            {
+              "reasoning_chars": 27,
+              "content_chars": 0,
+              "tool_call_names": [],
+              "finish_reason": null,
+              "done": false
+            },
+            {
+              "reasoning_chars": 27,
+              "content_chars": 0,
+              "tool_call_names": [],
+              "finish_reason": null,
+              "done": false
+            },
+            {
+              "reasoning_chars": 0,
+              "content_chars": 15,
+              "tool_call_names": [],
+              "finish_reason": null,
+              "done": false
+            },
+            {
+              "reasoning_chars": 0,
+              "content_chars": 18,
+              "tool_call_names": [],
+              "finish_reason": null,
+              "done": false
+            },
+            {
+              "reasoning_chars": 0,
+              "content_chars": 0,
+              "tool_call_names": [],
+              "finish_reason": "stop",
+              "done": false
+            }
+          ]
+        }
+      ],
+      "sdk_events_received": {
+        "system": 1,
+        "assistant": 1,
+        "result": 1
+      },
+      "sdk_event_shapes": [
+        {
+          "type": "system",
+          "content_block_types": []
+        },
+        {
+          "type": "assistant",
+          "content_block_types": [
+            "text"
+          ]
+        },
+        {
+          "type": "result",
+          "content_block_types": []
+        }
+      ],
+      "assistant_messages": 1,
+      "text_blocks": 1,
+      "extracted_text_chars": 33,
+      "mcp_tool_calls": 0,
+      "mcp_tool_results": 0,
+      "intelligence_http_status": 200,
+      "intelligence_result": "SolarMiner SDK comparison passed."
+    },
+    {
+      "sdk_version": "0.37.0",
+      "query_prompt_sha256": "4f31961d8a2ee779b77d7cc5cc4dda89674da8abecf41c1b333e2bbf9a51decb",
+      "http_requests": [
+        {
+          "route": "/v1/chat/completions",
+          "body": {
+            "model": "qwen3.5:9b-q4_K_M",
+            "stream": true,
+            "think": "(field omitted)",
+            "parameter_fields": {
+              "temperature": 1,
+              "max_tokens": 32000,
+              "stream_options": {
+                "include_usage": true
+              }
+            },
+            "options": {},
+            "messages": [
+              {
+                "role": "system",
+                "content_chars": 1172,
+                "content_sha256": "044ecbe3d0ab3f5e87da0e0876091f62ac28aed5c1b6e42e0711423c2676de2a",
+                "tool_call_names": []
+              },
+              {
+                "role": "user",
+                "content_chars": 3786,
+                "content_sha256": "9a98732d107c9d4d4fb5a95a5fccf3af5ec8b753c9b25266702fb56fc2dc07a4",
+                "tool_call_names": []
+              }
+            ],
+            "tool_names": [
+              "Agent",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Monitor",
+              "Read",
+              "RepoMap",
+              "Skill",
+              "snip",
+              "ToolSearch",
+              "Write"
+            ]
+          },
+          "ollama_stream": [
+            {
+              "reasoning_chars": 27,
+              "content_chars": 0,
+              "tool_call_names": [],
+              "finish_reason": null,
+              "done": false
+            },
+            {
+              "reasoning_chars": 27,
+              "content_chars": 0,
+              "tool_call_names": [],
+              "finish_reason": null,
+              "done": false
+            },
+            {
+              "reasoning_chars": 0,
+              "content_chars": 15,
+              "tool_call_names": [],
+              "finish_reason": null,
+              "done": false
+            },
+            {
+              "reasoning_chars": 0,
+              "content_chars": 18,
+              "tool_call_names": [],
+              "finish_reason": null,
+              "done": false
+            },
+            {
+              "reasoning_chars": 0,
+              "content_chars": 0,
+              "tool_call_names": [],
+              "finish_reason": "stop",
+              "done": false
+            }
+          ]
+        }
+      ],
+      "sdk_events_received": {
+        "system": 1,
+        "assistant": 1,
+        "result": 1
+      },
+      "sdk_event_shapes": [
+        {
+          "type": "system",
+          "content_block_types": []
+        },
+        {
+          "type": "assistant",
+          "content_block_types": [
+            "text"
+          ]
+        },
+        {
+          "type": "result",
+          "content_block_types": []
+        }
+      ],
+      "assistant_messages": 1,
+      "text_blocks": 1,
+      "extracted_text_chars": 33,
+      "mcp_tool_calls": 0,
+      "mcp_tool_results": 0,
+      "intelligence_http_status": 200,
+      "intelligence_result": "SolarMiner SDK comparison passed."
+    }
+  ],
+  "conclusion": "Both SDK versions received the same query prompt, processed the OpenAI-compatible SSE reasoning/content stream and delivered final assistant text through the production agent-service extractor. The SDK adds its own prompt/tool context around the user text, which is reported using message lengths and hashes. Neither provider request included a think field on the configured /v1 route. Hello World made no MCP calls. This validates SDK-to-agent conversion for the fixture, not the Lenovo response or its HTTP 500."
+}
