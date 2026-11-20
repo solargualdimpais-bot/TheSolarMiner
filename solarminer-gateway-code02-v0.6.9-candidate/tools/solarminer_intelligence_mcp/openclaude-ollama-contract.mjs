@@ -53,6 +53,12 @@ const ollamaServer = http.createServer(async (request, response) => {
   const requestRecord = { route: request.url, body, rows: [] };
   ollamaRequests.push(requestRecord);
   const openAiCompatible = request.url === '/v1/chat/completions';
+  if (body.messages.some(message => typeof message.content === 'string' && message.content.includes('[fixture:upstream-500]'))) {
+    requestRecord.fixture_response = 'http_500_json';
+    response.writeHead(500, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ error: { message: 'synthetic Ollama provider failure', type: 'api_error' } }));
+    return;
+  }
   response.writeHead(200, { 'content-type': openAiCompatible ? 'text/event-stream' : 'application/x-ndjson',
     'cache-control': 'no-cache', 'connection': 'keep-alive', 'transfer-encoding': 'chunked' });
   const writeRow = async row => {
@@ -212,6 +218,28 @@ async function runVersion(version, sdkPath) {
     assert.equal(trace.mcp_tool_calls, 0, 'Hello World should not invoke MCP');
     assert.equal(trace.mcp_tool_results, 0, 'Hello World should not return MCP results');
 
+    const errorDiagnosticId = version === '0.36.0'
+      ? '36036036-0360-4036-8036-360360360361'
+      : '37037037-0370-4037-8037-370370370371';
+    const beforeErrorRequest = ollamaRequests.length;
+    const providerErrorResponse = await fetch(`http://127.0.0.1:${port}/v1/analyze`, {
+      method: 'POST', headers: { authorization: `Bearer ${localToken}`, 'content-type': 'application/json',
+        'X-SolarMiner-Diagnostic-ID': errorDiagnosticId },
+      body: JSON.stringify({ prompt: '[fixture:upstream-500]', provider: 'ollama' }),
+      signal: AbortSignal.timeout(30000),
+    });
+    const providerErrorBody = await providerErrorResponse.text();
+    assert.ok(providerErrorResponse.status >= 500 && providerErrorResponse.status <= 599,
+      `SDK ${version} did not surface the simulated upstream 500 as a server error: ${providerErrorBody}`);
+    const errorTraceResponse = await fetch(`http://127.0.0.1:${port}/v1/diagnostics/${errorDiagnosticId}`, {
+      headers: { authorization: `Bearer ${localToken}` },
+    });
+    const errorTrace = await errorTraceResponse.json();
+    assert.equal(errorTraceResponse.status, 200);
+    const errorRequests = ollamaRequests.slice(beforeErrorRequest);
+    assert.ok(errorRequests.some(item => item.fixture_response === 'http_500_json'),
+      `SDK ${version} never sent the simulated error prompt to the provider`);
+
     const report = {
       sdk_version: version,
       query_prompt_sha256: createHash('sha256').update(prompt).digest('hex'),
@@ -250,6 +278,14 @@ async function runVersion(version, sdkPath) {
       mcp_tool_results: trace.mcp_tool_results,
       intelligence_http_status: response.status,
       intelligence_result: result.answer,
+      provider_http_500_experiment: {
+        provider_request_route: errorRequests.find(item => item.fixture_response === 'http_500_json')?.route || null,
+        agent_http_status: providerErrorResponse.status,
+        agent_error_type: JSON.parse(providerErrorBody).error_type || null,
+        diagnostic_error_type: errorTrace.error_type,
+        diagnostic_provider_http_status: errorTrace.provider_http_status,
+        diagnostic_stage: errorTrace.stage,
+      },
     };
     return { report, request, result };
   } finally {
