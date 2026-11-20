@@ -62,15 +62,14 @@ const ollamaServer = http.createServer(async (request, response) => {
     await new Promise(resolve => setTimeout(resolve, 8));
   };
   const afterTool = body.messages.some(message => message.role === 'tool' || message.tool_call_id);
-  if (!afterTool) {
-    const tool = (body.tools || []).map(item => item.function || item).find(item =>
-      typeof item?.name === 'string' && item.name.includes('solarminer_snapshot'));
-    assert.ok(tool, `SDK did not send the read-only SolarMiner MCP tool in its provider request; body_keys=${Object.keys(body).join(',')}; tools=${JSON.stringify((body.tools || []).map(item => item.function?.name || item.name || item.type || 'unknown'))}; mcp_events=${readFileSync(mcpLogPath, 'utf8')}`);
+  const toolSpecs = (body.tools || []).map(item => item.function || item);
+  const snapshotTool = toolSpecs.find(item => typeof item?.name === 'string' && item.name.includes('solarminer_snapshot'));
+  const previousToolCalls = ollamaRequests.at(-2)?.toolCallsSent || [];
+  const requestedSearch = previousToolCalls.includes('ToolSearch');
+  const requestedSnapshot = previousToolCalls.some(name => name.includes('solarminer_snapshot'));
+  const invokeTool = async (toolName, args) => {
+    requestRecord.toolCallsSent = [toolName];
     if (openAiCompatible) {
-      await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
-        choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] });
-      // Ollama's OpenAI-compatible stream carries reasoning and visible answer
-      // separately in delta.reasoning and delta.content.
       if (body.think !== false) {
         await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
           choices: [{ index: 0, delta: { reasoning: 'fixture reasoning chunk one' }, finish_reason: null }] });
@@ -78,8 +77,8 @@ const ollamaServer = http.createServer(async (request, response) => {
           choices: [{ index: 0, delta: { reasoning: 'fixture reasoning chunk two' }, finish_reason: null }] });
       }
       await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
-        choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call-solarminer-snapshot', type: 'function',
-          function: { name: tool.name, arguments: '{}' } }] }, finish_reason: null }] });
+        choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: `call-${toolName.toLowerCase()}`, type: 'function',
+          function: { name: toolName, arguments: JSON.stringify(args) } }] }, finish_reason: null }] });
       await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
         choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] });
       response.write('data: [DONE]\n\n');
@@ -89,15 +88,30 @@ const ollamaServer = http.createServer(async (request, response) => {
         await writeRow({ model, message: { role: 'assistant', thinking: 'fixture reasoning chunk two', content: '' }, done: false });
       }
       await writeRow({ model, message: { role: 'assistant', content: '', tool_calls: [
-        { function: { name: tool.name, arguments: {} } },
+        { function: { name: toolName, arguments: args } },
       ] }, done: true, done_reason: 'tool_calls', prompt_eval_count: 10, eval_count: 2 });
     }
+  };
+  if (!afterTool && !snapshotTool) {
+    const searchTool = toolSpecs.find(item => item?.name === 'ToolSearch');
+    assert.ok(searchTool, `SDK did not expose MCP tools or ToolSearch; body_keys=${Object.keys(body).join(',')}; tools=${JSON.stringify(toolSpecs.map(item => ({ name: item.name, input_schema: item.input_schema || item.parameters })))}; mcp_events=${readFileSync(mcpLogPath, 'utf8')}`);
+    await invokeTool('ToolSearch', { query: 'solarminer snapshot read-only' });
+  } else if (!requestedSnapshot && snapshotTool) {
+    await invokeTool(snapshotTool.name, {});
+  } else if (!requestedSearch && !snapshotTool) {
+    const searchTool = toolSpecs.find(item => item?.name === 'ToolSearch');
+    assert.ok(searchTool, `SDK lost both MCP and ToolSearch tools; tools=${JSON.stringify(toolSpecs.map(item => item.name))}`);
+    await invokeTool('ToolSearch', { query: 'solarminer snapshot read-only' });
+  } else if (requestedSearch && !requestedSnapshot) {
+    assert.ok(snapshotTool, `SDK did not expose the MCP tool after ToolSearch; tools=${JSON.stringify(toolSpecs.map(item => item.name))}; mcp_events=${readFileSync(mcpLogPath, 'utf8')}`);
+    await invokeTool(snapshotTool.name, {});
   } else {
+    requestRecord.toolCallsSent = [];
     if (openAiCompatible) {
+      // Ollama's OpenAI-compatible stream carries reasoning and visible answer
+      // separately in delta.reasoning and delta.content.
       await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
-        choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] });
-      await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
-        choices: [{ index: 0, delta: { content: 'SolarMiner SDK ' }, finish_reason: null }] });
+        choices: [{ index: 0, delta: { role: 'assistant', content: 'SolarMiner SDK ' }, finish_reason: null }] });
       await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
         choices: [{ index: 0, delta: { content: 'comparison passed.' }, finish_reason: null }] });
       await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
