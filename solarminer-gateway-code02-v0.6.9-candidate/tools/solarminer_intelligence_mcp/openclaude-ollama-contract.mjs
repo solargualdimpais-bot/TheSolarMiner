@@ -106,11 +106,10 @@ try {
 
   assert.equal(observedRequest?.method, 'POST');
   assert.equal(observedRequest?.url, '/api/chat');
-  assert.equal(observedRequest?.body?.think, false,
-    'OpenClaude must disable hybrid-model reasoning by default for Ollama');
+  assert.equal(observedRequest?.body?.model, 'qwen3.5:9b-q4_K_M');
   assert.equal(assistantContent, assistantText,
     'OpenClaude query() must yield Ollama assistant content to the host');
-  console.log('PASS: real OpenClaude query() sent think=false to native Ollama chat and yielded assistant text.');
+  console.log('PASS: real OpenClaude query() sent the configured model to native Ollama chat and yielded assistant text.');
 } finally {
   await new Promise(resolve => portServer.close(resolve));
   await rm(root, { recursive: true, force: true });

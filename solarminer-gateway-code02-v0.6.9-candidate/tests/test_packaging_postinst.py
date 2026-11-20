@@ -163,7 +163,7 @@ def test_openclaude_ollama_sdk_pin_matches_real_sdk_release_contract_test():
     assert "error_message" in (root / "src" / "solarminer_gateway" / "app.py").read_text(encoding="utf-8")
     assert "LogsDirectory=solarminer-intelligence" in (root / "packaging" / "solarminer-intelligence.service").read_text(encoding="utf-8")
     assert contract_test.is_file()
-    assert "think" in contract_test.read_text(encoding="utf-8")
+    assert "observedRequest?.body?.model" in contract_test.read_text(encoding="utf-8")
 
 
 def test_gateway_release_version_is_consistent_across_package_entrypoints():
