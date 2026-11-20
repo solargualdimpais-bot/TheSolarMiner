@@ -19,7 +19,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: ${{ github.event.head_commit.message == 'Run 0.6.275 diagnostics release independently' && 'solarminer-gateway-release-0.6.275-diagnostics' || 'solarminer-gateway-release' }}
+  group: ${{ github.event.head_commit.message == 'Run 0.6.275 diagnostics release independently' && 'solarminer-gateway-release-0.6.275-diagnostics' || github.event.head_commit.message == 'Run 0.6.276 Installed-Size release independently' && 'solarminer-gateway-release-0.6.276-installed-size' || 'solarminer-gateway-release' }}
   cancel-in-progress: false
 
 jobs:
