@@ -1,0 +1,22 @@
+node:internal/modules/run_main:107
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
++ actual - expected
+
++ undefined
+- false
+
+    at runVersion (file:///home/runner/work/TheSolarMiner/TheSolarMiner/solarminer-gateway-code02-v0.6.9-candidate/tools/solarminer_intelligence_mcp/openclaude-ollama-contract.mjs:201:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async file:///home/runner/work/TheSolarMiner/TheSolarMiner/solarminer-gateway-code02-v0.6.9-candidate/tools/solarminer_intelligence_mcp/openclaude-ollama-contract.mjs:257:22 {
+  generatedMessage: true,
+  code: 'ERR_ASSERTION',
+  actual: undefined,
+  expected: false,
+  operator: 'strictEqual',
+  diff: 'simple'
+}
+
+Node.js v24.22.1
