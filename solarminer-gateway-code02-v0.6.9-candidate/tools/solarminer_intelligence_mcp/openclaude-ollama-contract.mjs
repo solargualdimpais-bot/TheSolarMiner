@@ -43,7 +43,7 @@ const ollamaServer = http.createServer(async (request, response) => {
       thinking: { values: [true, false], default: true } }));
     return;
   }
-  if (request.method !== 'POST' || request.url !== '/api/chat') {
+  if (request.method !== 'POST' || !['/api/chat', '/v1/chat/completions'].includes(request.url)) {
     response.writeHead(404, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ error: 'fixture_route_not_found' }));
     return;
@@ -52,29 +52,62 @@ const ollamaServer = http.createServer(async (request, response) => {
   const body = JSON.parse(rawBody);
   const requestRecord = { body, rows: [] };
   ollamaRequests.push(requestRecord);
-  response.writeHead(200, { 'content-type': 'application/x-ndjson', 'transfer-encoding': 'chunked' });
+  const openAiCompatible = request.url === '/v1/chat/completions';
+  response.writeHead(200, { 'content-type': openAiCompatible ? 'text/event-stream' : 'application/x-ndjson',
+    'cache-control': 'no-cache', 'connection': 'keep-alive', 'transfer-encoding': 'chunked' });
   const writeRow = async row => {
     requestRecord.rows.push(row);
-    response.write(`${JSON.stringify(row)}\n`);
+    response.write(openAiCompatible ? `data: ${JSON.stringify(row)}\n\n` : `${JSON.stringify(row)}\n`);
     await new Promise(resolve => setTimeout(resolve, 8));
   };
-  // Ollama's native streaming API emits reasoning separately from final
-  // content. When think is explicitly false, the same fixture emits no
-  // reasoning rows, but preserves identical content and stop termination.
-  if (body.think !== false) {
-    await writeRow({ model, message: { role: 'assistant', thinking: 'fixture reasoning chunk one', content: '' }, done: false });
-    await writeRow({ model, message: { role: 'assistant', thinking: 'fixture reasoning chunk two', content: '' }, done: false });
-  }
-  const afterTool = body.messages.some(message => message.role === 'tool');
+  const afterTool = body.messages.some(message => message.role === 'tool' || message.tool_call_id);
   if (!afterTool) {
-    await writeRow({ model, message: { role: 'assistant', content: '', tool_calls: [
-      { function: { name: 'solarminer_snapshot', arguments: {} } },
-    ] }, done: true, done_reason: 'tool_calls', prompt_eval_count: 10, eval_count: 2 });
+    const tool = (body.tools || []).map(item => item.function || item).find(item =>
+      typeof item?.name === 'string' && item.name.includes('solarminer_snapshot'));
+    assert.ok(tool, 'SDK did not send the read-only SolarMiner MCP tool in its provider request');
+    if (openAiCompatible) {
+      await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
+        choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] });
+      // Ollama's OpenAI-compatible stream carries reasoning and visible answer
+      // separately in delta.reasoning and delta.content.
+      if (body.think !== false) {
+        await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
+          choices: [{ index: 0, delta: { reasoning: 'fixture reasoning chunk one' }, finish_reason: null }] });
+        await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
+          choices: [{ index: 0, delta: { reasoning: 'fixture reasoning chunk two' }, finish_reason: null }] });
+      }
+      await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
+        choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call-solarminer-snapshot', type: 'function',
+          function: { name: tool.name, arguments: '{}' } }] }, finish_reason: null }] });
+      await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
+        choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] });
+      response.write('data: [DONE]\n\n');
+    } else {
+      if (body.think !== false) {
+        await writeRow({ model, message: { role: 'assistant', thinking: 'fixture reasoning chunk one', content: '' }, done: false });
+        await writeRow({ model, message: { role: 'assistant', thinking: 'fixture reasoning chunk two', content: '' }, done: false });
+      }
+      await writeRow({ model, message: { role: 'assistant', content: '', tool_calls: [
+        { function: { name: tool.name, arguments: {} } },
+      ] }, done: true, done_reason: 'tool_calls', prompt_eval_count: 10, eval_count: 2 });
+    }
   } else {
-    await writeRow({ model, message: { role: 'assistant', content: 'SolarMiner SDK ' }, done: false });
-    await writeRow({ model, message: { role: 'assistant', content: 'comparison passed.' }, done: false });
-    await writeRow({ model, message: { role: 'assistant', content: '' }, done: true, done_reason: 'stop',
-      prompt_eval_count: 15, eval_count: 5 });
+    if (openAiCompatible) {
+      await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
+        choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] });
+      await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
+        choices: [{ index: 0, delta: { content: 'SolarMiner SDK ' }, finish_reason: null }] });
+      await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
+        choices: [{ index: 0, delta: { content: 'comparison passed.' }, finish_reason: null }] });
+      await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
+      response.write('data: [DONE]\n\n');
+    } else {
+      await writeRow({ model, message: { role: 'assistant', content: 'SolarMiner SDK ' }, done: false });
+      await writeRow({ model, message: { role: 'assistant', content: 'comparison passed.' }, done: false });
+      await writeRow({ model, message: { role: 'assistant', content: '' }, done: true, done_reason: 'stop',
+        prompt_eval_count: 15, eval_count: 5 });
+    }
   }
   response.end();
 });
@@ -182,7 +215,7 @@ async function runVersion(version, sdkPath, expectedThink) {
     const trace = await traceResponse.json();
     const requests = ollamaRequests.slice(firstRequestIndex);
     assert.equal(requests.length, 2,
-      `SDK ${version} must perform one native Ollama MCP tool-call round trip; observations=${JSON.stringify(ollamaHttpObservations.slice(-12))}`);
+      `SDK ${version} must perform one Ollama MCP tool-call round trip; observations=${JSON.stringify(ollamaHttpObservations.slice(-12))}`);
     const request = requests[0];
     assert.ok(request, `SDK ${version} did not call native Ollama /api/chat`);
     assert.equal(request.body.model, model);
@@ -222,12 +255,13 @@ async function runVersion(version, sdkPath, expectedThink) {
           }),
           tool_names: (item.body.tools || []).map(tool => tool.function?.name).filter(Boolean),
         },
-        ollama_ndjson: item.rows.map(row => ({
-          thinking_chars: row.message?.thinking?.length || 0,
-          content_chars: row.message?.content?.length || 0,
-          tool_call_names: (row.message?.tool_calls || []).map(call => call.function?.name).filter(Boolean),
+          ollama_stream: item.rows.map(row => ({
+          reasoning_chars: row.choices?.[0]?.delta?.reasoning?.length || row.message?.thinking?.length || 0,
+          content_chars: row.choices?.[0]?.delta?.content?.length || row.message?.content?.length || 0,
+          tool_call_names: (row.choices?.[0]?.delta?.tool_calls || row.message?.tool_calls || [])
+            .map(call => call.function?.name).filter(Boolean),
+          finish_reason: row.choices?.[0]?.finish_reason || row.done_reason || null,
           done: row.done === true,
-          done_reason: row.done_reason || null,
         })),
       })),
       sdk_events_received: trace.sdk_event_types,
