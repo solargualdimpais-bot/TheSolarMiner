@@ -168,6 +168,15 @@ def test_openclaude_ollama_sdk_pin_matches_real_sdk_release_contract_test():
 
 def test_gateway_release_version_is_consistent_across_package_entrypoints():
     root = Path(__file__).parents[1]
-    assert "Version: 0.6.275" in (root / "packaging" / "control").read_text(encoding="utf-8")
-    assert 'PACKAGE_VERSION = "0.6.275"' in (root / "src" / "solarminer_gateway" / "app.py").read_text(encoding="utf-8")
-    assert "TARGET_VERSION=0.6.275" in (root / "packaging" / "repair-existing-from-usb.sh").read_text(encoding="utf-8")
+    assert "Version: 0.6.276" in (root / "packaging" / "control").read_text(encoding="utf-8")
+    assert 'PACKAGE_VERSION = "0.6.276"' in (root / "src" / "solarminer_gateway" / "app.py").read_text(encoding="utf-8")
+    assert "TARGET_VERSION=0.6.276" in (root / "packaging" / "repair-existing-from-usb.sh").read_text(encoding="utf-8")
+
+
+def test_debian_package_builder_sets_installed_size_and_release_verifies_it():
+    root = Path(__file__).parents[1]
+    build = (root / "packaging" / "build-deb.sh").read_text(encoding="utf-8")
+    workflow = (root.parent / ".github" / "workflows" / "gateway-release.yml").read_text(encoding="utf-8")
+    assert "INSTALLED_SIZE=$(du -sk --exclude=DEBIAN \"$STAGE\" | awk '{print $1}')" in build
+    assert "printf 'Installed-Size: %s\\n' \"$INSTALLED_SIZE\"" in build
+    assert 'dpkg-deb -f "$PACKAGE" Installed-Size' in workflow

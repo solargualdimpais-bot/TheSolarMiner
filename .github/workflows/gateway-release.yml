@@ -232,6 +232,8 @@ jobs:
           test -s "$PACKAGE"
           test "$(dpkg-deb -f "$PACKAGE" Package)" = "solarminer-gateway"
           test "$(dpkg-deb -f "$PACKAGE" Version)" = "$RELEASE_VERSION"
+          INSTALLED_SIZE="$(dpkg-deb -f "$PACKAGE" Installed-Size)"
+          [[ "$INSTALLED_SIZE" =~ ^[0-9]+$ ]] && (( INSTALLED_SIZE > 0 ))
           dpkg-deb -f "$PACKAGE" Depends | grep -F 'python3 (>= 3.13)'
           CONTENTS="$(dpkg-deb -c "$PACKAGE")"
           for EXPECTED in \

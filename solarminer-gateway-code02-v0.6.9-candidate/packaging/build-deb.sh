@@ -100,6 +100,7 @@ cp "$ROOT/docs/EV_TESLA_CHARGING.md" "$STAGE/usr/share/doc/solarminer-gateway/EV
 cp "$ROOT/docs/TESLA_OAUTH_RELAY_ORACLE.md" "$STAGE/usr/share/doc/solarminer-gateway/TESLA_OAUTH_RELAY_ORACLE.md"
 cp "$ROOT/docs/CHANGELOG_V06189.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V06189.md"
 cp "$ROOT/docs/CHANGELOG_V06275.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V06275.md"
+cp "$ROOT/docs/CHANGELOG_V06276.md" "$STAGE/usr/share/doc/solarminer-gateway/CHANGELOG_V06276.md"
 cp "$ROOT/tools/tesla_oauth_relay/relay.py" "$STAGE/usr/share/solarminer/tesla-oauth-relay/relay.py"
 cp "$ROOT/tools/tesla_oauth_relay/run_relay.py" "$STAGE/usr/share/solarminer/tesla-oauth-relay/run_relay.py"
 cp "$ROOT/tools/tesla_oauth_relay/requirements.txt" "$STAGE/usr/share/solarminer/tesla-oauth-relay/requirements.txt"
@@ -176,5 +177,15 @@ PACKAGE_VERSION=$(sed -n 's/^Version: //p' "$ROOT/packaging/control")
 case "$PACKAGE_VERSION" in
   ''|*[!0-9A-Za-z.+:~_-]*) echo "Invalid package version in packaging/control" >&2; exit 1 ;;
 esac
+# The online updater uses this metadata for its pre-activation disk-space check.
+# dpkg-deb does not synthesize it from this package's control file, so calculate
+# a conservative payload size while the complete staging tree is available.
+INSTALLED_SIZE=$(du -sk --exclude=DEBIAN "$STAGE" | awk '{print $1}')
+case "$INSTALLED_SIZE" in
+  ''|*[!0-9]*) echo "Invalid computed Installed-Size" >&2; exit 1 ;;
+esac
+[ "$INSTALLED_SIZE" -gt 0 ] || { echo "Computed Installed-Size must be positive" >&2; exit 1; }
+sed -i '/^Installed-Size:/d' "$STAGE/DEBIAN/control"
+printf 'Installed-Size: %s\n' "$INSTALLED_SIZE" >> "$STAGE/DEBIAN/control"
 OUTPUT="$OUT/solarminer-gateway_${PACKAGE_VERSION}_amd64.deb"
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-0} dpkg-deb --root-owner-group --build "$STAGE" "$OUTPUT"
