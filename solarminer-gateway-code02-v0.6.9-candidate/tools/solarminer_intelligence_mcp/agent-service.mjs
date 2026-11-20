@@ -3,9 +3,12 @@ import { lstat, mkdir, open, readFile, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
+import { installOpenClaudeErrorHook, setIntelligenceDiagnosticContext, writeIntelligenceDiagnostic,
+  sanitizeSdkError } from './sdk-diagnostics.mjs';
 
 const sdkPath = process.env.SOLARMINER_OPENCLAUDE_SDK || '/opt/solarminer/intelligence/app/node_modules/@twigpine/openclaude/dist/sdk.mjs';
 const { query } = await import(pathToFileURL(sdkPath).href);
+installOpenClaudeErrorHook();
 
 const host = '127.0.0.1';
 const port = Number(process.env.SOLARMINER_INTELLIGENCE_PORT || 8765);
@@ -33,7 +36,7 @@ let windowStartedAt = Date.now();
 const requestDiagnostics = new Map();
 
 function updateRequestDiagnostic(requestId, { stage, state = 'in_progress', errorType = null, errorCode = null,
-  providerHttpStatus = null } = {}) {
+  errorMessage = null, providerHttpStatus = null } = {}) {
   if (typeof requestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(requestId)) return;
   const now = Date.now();
   for (const [key, value] of requestDiagnostics) {
@@ -56,10 +59,12 @@ function updateRequestDiagnostic(requestId, { stage, state = 'in_progress', erro
   entry.state = state;
   if (errorType) entry.error_type = String(errorType).slice(0, 64);
   if (errorCode && /^[A-Z0-9_]{1,32}$/.test(errorCode)) entry.error_code = errorCode;
+  if (typeof errorMessage === 'string' && errorMessage) entry.error_message = sanitizeSdkError(errorMessage).message;
   if (Number.isInteger(providerHttpStatus) && providerHttpStatus >= 400 && providerHttpStatus <= 599) {
     entry.provider_http_status = providerHttpStatus;
   }
   entry.updatedAt = now;
+  setIntelligenceDiagnosticContext({ diagnosticId: requestId, stage: entry.stage, startedAt: entry.startedAt });
   while (requestDiagnostics.size > 64) {
     const oldest = [...requestDiagnostics.entries()].reduce((a, b) => a[1].startedAt <= b[1].startedAt ? a : b)[0];
     requestDiagnostics.delete(oldest);
@@ -72,6 +77,7 @@ function requestDiagnosticSnapshot(requestId) {
   const now = Date.now();
   return { request_id: entry.request_id, state: entry.state, stage: entry.stage,
     error_type: entry.error_type || null, error_code: entry.error_code || null,
+    error_message: entry.error_message || null,
     provider_http_status: entry.provider_http_status || null,
     mcp_tool_calls: entry.mcp_tool_calls, mcp_tool_results: entry.mcp_tool_results,
     mcp_tool_failures: entry.mcp_tool_failures, sdk_messages: entry.sdk_messages,
@@ -256,6 +262,8 @@ async function localModelStatus() {
 }
 
 async function runAnalysis(prompt, { development = false, provider = 'ollama', diagnosticId = null } = {}) {
+  const analysisStartedAt = Date.now();
+  setIntelligenceDiagnosticContext({ diagnosticId, stage: 'provider_precheck', startedAt: analysisStartedAt });
   updateRequestDiagnostic(diagnosticId, { stage: 'provider_precheck' });
   const inference = inferenceConfig(provider);
   if (provider === 'ollama') {
@@ -339,6 +347,14 @@ async function runAnalysis(prompt, { development = false, provider = 'ollama', d
     const text = [];
     updateRequestDiagnostic(diagnosticId, { stage: 'sdk_stream_wait' });
     for await (const message of agentQuery) {
+      if (message?.type === 'result' && Array.isArray(message.errors) && message.errors.length) {
+        const errors = message.errors.slice(0, 20);
+        const summaries = errors.map(error => sanitizeSdkError(error).message).filter(Boolean);
+        for (const error of errors) writeIntelligenceDiagnostic({ diagnosticId, stage: `sdk_result_${message.subtype || 'error'}`,
+          durationMs: Date.now() - analysisStartedAt, source: 'openclaude_sdk_result_error', error });
+        if (summaries.length) updateRequestDiagnostic(diagnosticId, { errorType: message.subtype || 'OpenClaudeResultError',
+          errorMessage: summaries.join(' | ') });
+      }
       const blocks = Array.isArray(message?.message?.content) ? message.message.content : [];
       const messageType = typeof message?.type === 'string' ? message.type : '';
       const toolUses = blocks.filter(item => item?.type === 'tool_use').length;
@@ -379,6 +395,14 @@ async function runAnalysis(prompt, { development = false, provider = 'ollama', d
     }
     updateRequestDiagnostic(diagnosticId, { stage: 'sdk_completed', state: 'completed' });
     return { status: 'ok', answer, provider };
+  } catch (error) {
+    const current = typeof diagnosticId === 'string' ? requestDiagnostics.get(diagnosticId) : null;
+    const safeError = sanitizeSdkError(error);
+    writeIntelligenceDiagnostic({ diagnosticId, stage: current?.stage || 'sdk_query_exception',
+      durationMs: Date.now() - analysisStartedAt, source: 'openclaude_query_exception', error });
+    updateRequestDiagnostic(diagnosticId, { state: 'failed', errorType: safeError.name || 'Error',
+      errorCode: typeof error?.code === 'string' ? error.code : null, errorMessage: safeError.message });
+    throw error;
   } finally {
     clearTimeout(timeout);
     active = false;

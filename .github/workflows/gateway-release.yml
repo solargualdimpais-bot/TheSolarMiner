@@ -98,6 +98,8 @@ jobs:
           grep -q 'integrated_diagnostics' src/solarminer_gateway/system_components.py
           grep -q 'system_diagnostics' src/solarminer_gateway/app.py
           grep -q '^ReadWritePaths=/var/lib/solarminer-intelligence/work /var/lib/solarminer-intelligence/home$' packaging/solarminer-intelligence.service
+          grep -q '^LogsDirectory=solarminer-intelligence$' packaging/solarminer-intelligence.service
+          grep -q 'patch-openclaude-sdk-errors.mjs' packaging/solarminer-intelligence-bootstrap
           grep -q 'systemctl restart ollama.service' packaging/solarminer-intelligence-bootstrap
           grep -q 'wait_for_agent_health' packaging/solarminer-intelligence-bootstrap
           grep -q 'validate_ollama_environment' packaging/solarminer-intelligence-bootstrap
@@ -179,7 +181,7 @@ jobs:
 
       - name: Run OpenClaude and SolarMiner MCP integration tests
         working-directory: solarminer-gateway-code02-v0.6.9-candidate
-        run: node --test tools/solarminer_intelligence_mcp/server.test.mjs tools/solarminer_intelligence_mcp/agent-service.test.mjs
+        run: node --test tools/solarminer_intelligence_mcp/server.test.mjs tools/solarminer_intelligence_mcp/agent-service.test.mjs tools/solarminer_intelligence_mcp/sdk-diagnostics.test.mjs
 
       - name: Verify the pinned OpenClaude SDK with the production Node runtime
         uses: actions/setup-node@v4
@@ -191,7 +193,9 @@ jobs:
           set -euxo pipefail
           SDK_ROOT="$(mktemp -d)"
           npm install --prefix "$SDK_ROOT" --omit=dev --no-audit --no-fund \
-            '@twigpine/openclaude@0.37.0' '@modelcontextprotocol/sdk@1.32.1' '@anthropic-ai/sdk@0.137.0'
+            '@twigpine/openclaude@0.36.0' '@modelcontextprotocol/sdk@1.32.1' '@anthropic-ai/sdk@0.137.0'
+          node tools/solarminer_intelligence_mcp/patch-openclaude-sdk-errors.mjs \
+            "$SDK_ROOT/node_modules/@twigpine/openclaude/dist/sdk.mjs"
           node --input-type=module - "$SDK_ROOT/node_modules/@twigpine/openclaude/dist/sdk.mjs" <<'NODE'
           import assert from 'node:assert/strict';
           import { pathToFileURL } from 'node:url';
@@ -235,7 +239,9 @@ jobs:
           for EXPECTED in \
             './usr/sbin/solarminer-intelligence-bootstrap' \
             './usr/lib/solarminer-gateway/solarminer_gateway/intelligence_health.py' \
-            './usr/share/solarminer/intelligence-agent/agent-service.mjs'; do
+            './usr/share/solarminer/intelligence-agent/agent-service.mjs' \
+            './usr/share/solarminer/intelligence-agent/sdk-diagnostics.mjs' \
+            './usr/share/solarminer/intelligence-agent/patch-openclaude-sdk-errors.mjs'; do
             grep -F "$EXPECTED" <<< "$CONTENTS"
           done
           for UNIT in solarminer-intelligence.service solarminer-intelligence-bootstrap-broker.socket solarminer-admin-terminal.socket; do

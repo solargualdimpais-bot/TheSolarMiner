@@ -325,6 +325,7 @@ async function intelligenceRequestTraceDiagnosis(requestId, diagnosticFetch = re
     const agentSummary = agentTrace && typeof agentTrace === "object"
       ? ` ${credentialStatus} OpenClaude: ${String(agentTrace.state || "estado desconhecido")}${agentTrace.stage ? ` na etapa “${String(agentTrace.stage).replace(/_/g, " ")}”` : ""}` +
         `${agentTrace.error_type ? ` (${String(agentTrace.error_type)})` : ""}` +
+        `${typeof agentTrace.error_message === "string" && agentTrace.error_message ? `; detalhe: ${agentTrace.error_message.replace(/[\r\n\t]+/g, " ").replace(/Bearer\s+\S+/gi, "Bearer [redacted]").slice(0, 240)}` : ""}` +
         `${Number.isInteger(agentTrace.provider_http_status) ? `; resposta HTTP do fornecedor ${agentTrace.provider_http_status}` : ""}` +
         `${Number.isFinite(agentTrace.mcp_tool_calls) ? `; chamadas MCP iniciadas ${agentTrace.mcp_tool_calls}, resultados ${Number(agentTrace.mcp_tool_results) || 0}, falhas ${Number(agentTrace.mcp_tool_failures) || 0}` : ""}` +
         `${Number.isFinite(agentTrace.sdk_messages) ? `; SDK: ${agentTrace.sdk_messages} eventos, ${Number(agentTrace.sdk_assistant_text_blocks) || 0} blocos de texto do assistente (${Number(agentTrace.sdk_assistant_text_chars) || 0} caracteres), ${Number(agentTrace.sdk_non_assistant_text_blocks) || 0} blocos de texto de outros eventos` : ""}.`

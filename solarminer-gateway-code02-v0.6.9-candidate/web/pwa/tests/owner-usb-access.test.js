@@ -106,7 +106,7 @@ test("Intelligence status explains malformed Ollama runtime responses", () => {
 });
 
 test("new PWA static cache version is changed and USB limitations are documented", () => {
-  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.197-intelligence-sdk-response-trace/);
+  assert.match(serviceWorker, /the-solar-miner-static-v0\.5\.198-intelligence-persistent-errors/);
   assert.match(serviceWorker, /\.\/favorite-list\.js/);
   assert.match(manifest, /v0\.5\.197/);
   assert.equal(packageJson.version, "0.5.197");

@@ -193,9 +193,9 @@ test('Intelligence diagnostics distinguish Gateway transport, API, auth, and boo
   const agentTrace = await diagnoseGatewayIntelligenceFailure(Object.assign(new TypeError('Failed to fetch'), {
     code: 'transport_error', requestId,
   }), { diagnosticFetch: async () => ({ state: 'failed', stage: 'openclaude_agent',
-    agent_trace: { state: 'failed', stage: 'sdk_stream_wait', error_type: 'Error',
+    agent_trace: { state: 'failed', stage: 'sdk_stream_wait', error_type: 'Error', error_message: 'modelo retornou erro interno',
       provider_http_status: 500, mcp_tool_calls: 1, mcp_tool_results: 2, mcp_tool_failures: 1 } }) });
-  assert.match(agentTrace, /OpenClaude: failed na etapa “sdk stream wait” \(Error\); resposta HTTP do fornecedor 500; chamadas MCP iniciadas 1, resultados 2, falhas 1/);
+  assert.match(agentTrace, /OpenClaude: failed na etapa “sdk stream wait” \(Error\); detalhe: modelo retornou erro interno; resposta HTTP do fornecedor 500; chamadas MCP iniciadas 1, resultados 2, falhas 1/);
 
   const rejectedTrace = await diagnoseGatewayIntelligenceFailure(Object.assign(new TypeError('Failed to fetch'), {
     code: 'transport_error', requestId,

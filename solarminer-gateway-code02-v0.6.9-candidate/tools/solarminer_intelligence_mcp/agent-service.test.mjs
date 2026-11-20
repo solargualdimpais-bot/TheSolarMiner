@@ -29,6 +29,7 @@ export async function* query({ prompt, options }) {
     { type: 'tool_result', content: 'unavailable', is_error: true },
   ] } };
   yield { type: 'assistant', message: { content: [{ type: 'text', text: 'Análise baseada na ponte SolarMiner.' }] } };
+  yield { type: 'result', subtype: 'error_during_execution', errors: ['mock SDK exception token=hiddenMockToken'] };
 }
 `;
 
@@ -93,6 +94,7 @@ test('resident agent authenticates requests, persists sessions and only allows t
       SOLARMINER_OPENCLAUDE_SDK: mockPath,
       SOLARMINER_INTELLIGENCE_PORT: String(port),
       SOLARMINER_INTELLIGENCE_STATE: statePath,
+      SOLARMINER_INTELLIGENCE_DIAGNOSTICS_LOG: path.join(temp, 'diagnostics.log'),
       SOLARMINER_INTELLIGENCE_LOCAL_TOKEN: 'local-agent-test-token-12345678901234567890',
       SOLARMINER_INTELLIGENCE_TOKEN: 'gateway-service-test-token-12345678901234567890',
       SOLARMINER_INTELLIGENCE_URL: `http://127.0.0.1:${auditPort}/api/v1/intelligence`,
@@ -152,12 +154,17 @@ test('resident agent authenticates requests, persists sessions and only allows t
   assert.equal(trace.mcp_tool_calls, 1);
   assert.equal(trace.mcp_tool_results, 2);
   assert.equal(trace.mcp_tool_failures, 1);
-  assert.equal(trace.sdk_messages, 3);
+  assert.equal(trace.sdk_messages, 4);
   assert.equal(trace.sdk_assistant_messages, 2);
   assert.equal(trace.sdk_assistant_text_blocks, 1);
   assert.equal(trace.sdk_assistant_text_chars, 'Análise baseada na ponte SolarMiner.'.length);
   assert.equal(trace.sdk_non_assistant_text_blocks, 0);
   assert.ok(trace.steps.some(step => step.stage === 'sdk_assistant_text_received'));
+  assert.match(trace.error_message, /mock SDK exception/);
+  const diagnosticLog = await readFile(path.join(temp, 'diagnostics.log'), 'utf8');
+  assert.match(diagnosticLog, new RegExp(diagnosticId));
+  assert.match(diagnosticLog, /openclaude_sdk_result_error/);
+  assert.doesNotMatch(diagnosticLog, /hiddenMockToken/);
   const explicitCloud = await fetch(`http://127.0.0.1:${port}/v1/analyze`, {
     method: 'POST', headers, body: JSON.stringify({ prompt: 'Usa OpenAI apenas neste pedido.', provider: 'openai' }),
   });

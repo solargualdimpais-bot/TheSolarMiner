@@ -72,7 +72,7 @@ from . import system_components
 from .error_reporting import install_error_queue_handler
 
 VERSION = "0.6.0"  # Public API compatibility contract; package version is tracked separately.
-PACKAGE_VERSION = "0.6.274"
+PACKAGE_VERSION = "0.6.275"
 DATA_DIR = Path(os.environ.get("SOLARMINER_DATA_DIR", "/var/lib/solarminer"))
 DB_PATH = Path(os.environ.get("SOLARMINER_DB_PATH", str(DATA_DIR / "gateway.db")))
 INTELLIGENCE_LOCAL_TOKEN_PATH = Path(os.environ.get("SOLARMINER_INTELLIGENCE_CLIENT_TOKEN_FILE", "/etc/solarminer/intelligence-client.token"))
@@ -3593,10 +3593,12 @@ def intelligence_provider_request_diagnostic(
             stage = payload.get("stage")
             error_type = payload.get("error_type")
             error_code = payload.get("error_code")
+            error_message = payload.get("error_message")
             agent_trace = {"state": "in_progress" if payload["state"] == "running" else payload["state"],
                            "stage": stage if isinstance(stage, str) and re.fullmatch(r"[a-z0-9_]{1,48}", stage) else None,
                            "error_type": error_type if isinstance(error_type, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,63}", error_type) else None,
                            "error_code": error_code if isinstance(error_code, str) and re.fullmatch(r"[A-Z0-9_]{1,32}", error_code) else None,
+                           "error_message": error_message[:1000] if isinstance(error_message, str) else None,
                            "mcp_tool_calls": min(1000, max(0, int(payload.get("mcp_tool_calls", 0)))) if isinstance(payload.get("mcp_tool_calls", 0), int) else 0,
                            "mcp_tool_results": min(1000, max(0, int(payload.get("mcp_tool_results", 0)))) if isinstance(payload.get("mcp_tool_results", 0), int) else 0,
                            "mcp_tool_failures": min(1000, max(0, int(payload.get("mcp_tool_failures", 0)))) if isinstance(payload.get("mcp_tool_failures", 0), int) else 0,

@@ -157,14 +157,17 @@ def test_openclaude_ollama_sdk_pin_matches_real_sdk_release_contract_test():
     workflow = (root.parent / ".github" / "workflows" / "gateway-release.yml").read_text(encoding="utf-8")
     contract_test = root / "tools" / "solarminer_intelligence_mcp" / "openclaude-ollama-contract.mjs"
 
-    assert "OPENCLAUDE_VERSION=0.37.0" in bootstrap
-    assert "@twigpine/openclaude@0.37.0" in workflow
+    assert "OPENCLAUDE_VERSION=0.36.0" in bootstrap
+    assert "@twigpine/openclaude@0.36.0" in workflow
+    assert "patch-openclaude-sdk-errors.mjs" in bootstrap
+    assert "error_message" in (root / "src" / "solarminer_gateway" / "app.py").read_text(encoding="utf-8")
+    assert "LogsDirectory=solarminer-intelligence" in (root / "packaging" / "solarminer-intelligence.service").read_text(encoding="utf-8")
     assert contract_test.is_file()
     assert "think" in contract_test.read_text(encoding="utf-8")
 
 
 def test_gateway_release_version_is_consistent_across_package_entrypoints():
     root = Path(__file__).parents[1]
-    assert "Version: 0.6.274" in (root / "packaging" / "control").read_text(encoding="utf-8")
-    assert 'PACKAGE_VERSION = "0.6.274"' in (root / "src" / "solarminer_gateway" / "app.py").read_text(encoding="utf-8")
-    assert "TARGET_VERSION=0.6.274" in (root / "packaging" / "repair-existing-from-usb.sh").read_text(encoding="utf-8")
+    assert "Version: 0.6.275" in (root / "packaging" / "control").read_text(encoding="utf-8")
+    assert 'PACKAGE_VERSION = "0.6.275"' in (root / "src" / "solarminer_gateway" / "app.py").read_text(encoding="utf-8")
+    assert "TARGET_VERSION=0.6.275" in (root / "packaging" / "repair-existing-from-usb.sh").read_text(encoding="utf-8")
