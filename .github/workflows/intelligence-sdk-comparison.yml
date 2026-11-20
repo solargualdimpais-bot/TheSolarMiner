@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   compare-sdk-text-path:
@@ -55,6 +55,20 @@ jobs:
           name: openclaude-sdk-comparison-${{ github.run_id }}
           path: ${{ runner.temp }}/sdk-comparison.log
           if-no-files-found: warn
+
+      - name: Save synthetic comparison output on the audit branch
+        if: always()
+        working-directory: .
+        run: |
+          if [ -s "$RUNNER_TEMP/sdk-comparison.log" ]; then
+            report="sdk-comparison-${GITHUB_RUN_ID}.log"
+            cp "$RUNNER_TEMP/sdk-comparison.log" "$report"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add "$report"
+            git commit -m "Record SDK comparison evidence ${GITHUB_RUN_ID}"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
 
       - name: Fail the workflow if the comparison failed
         if: steps.compare.outcome != 'success'
