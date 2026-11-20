@@ -1,0 +1,19 @@
+node:internal/process/promises:394
+    triggerUncaughtException(err, true /* fromPromise */);
+    ^
+
+AssertionError [ERR_ASSERTION]: SDK did not expose the MCP tool after ToolSearch; tools=["Agent","Bash","Edit","Glob","Grep","Monitor","Read","RepoMap","Skill","snip","ToolSearch","Write"]; mcp_events={"method":"initialize","hasId":true}
+{"method":"notifications/initialized","hasId":false}
+{"method":"tools/list","hasId":true}
+
+    at Server.<anonymous> (file:///home/runner/work/TheSolarMiner/TheSolarMiner/solarminer-gateway-code02-v0.6.9-candidate/tools/solarminer_intelligence_mcp/openclaude-ollama-contract.mjs:106:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5) {
+  generatedMessage: false,
+  code: 'ERR_ASSERTION',
+  actual: undefined,
+  expected: true,
+  operator: '==',
+  diff: 'simple'
+}
+
+Node.js v24.22.1
