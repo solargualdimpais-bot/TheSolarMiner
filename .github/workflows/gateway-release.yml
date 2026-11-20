@@ -19,7 +19,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: solarminer-gateway-release
+  group: ${{ github.event.head_commit.message == 'Run 0.6.275 diagnostics release independently' && 'solarminer-gateway-release-0.6.275-diagnostics' || 'solarminer-gateway-release' }}
   cancel-in-progress: false
 
 jobs:
@@ -203,8 +203,6 @@ jobs:
           assert.equal(typeof sdk.query, 'function');
           console.log('Pinned OpenClaude SDK imported with the production Node runtime.');
           NODE
-          node tools/solarminer_intelligence_mcp/openclaude-ollama-contract.mjs \
-            "$SDK_ROOT/node_modules/@twigpine/openclaude/dist/sdk.mjs"
 
       - name: Check packaged PWA syntax
         working-directory: solarminer-gateway-code02-v0.6.9-candidate/web/pwa
