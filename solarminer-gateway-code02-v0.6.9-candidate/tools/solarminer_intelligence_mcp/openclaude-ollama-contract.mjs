@@ -17,10 +17,13 @@ const localToken = 'sdk-comparison-local-token-1234567890';
 const prompt = 'Reply with exactly the text: SolarMiner SDK comparison passed.';
 const answer = 'SolarMiner SDK comparison passed.';
 const ollamaRequests = [];
+const ollamaHttpObservations = [];
 const ollamaServer = http.createServer(async (request, response) => {
   const chunks = [];
   for await (const chunk of request) chunks.push(chunk);
   const rawBody = Buffer.concat(chunks).toString('utf8');
+  ollamaHttpObservations.push({ method: request.method, path: request.url,
+    body_chars: rawBody.length, body_sha256: createHash('sha256').update(rawBody).digest('hex') });
   if (request.method === 'GET' && request.url === '/api/version') {
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ version: '0.13.0-comparison-fixture' }));
@@ -178,7 +181,8 @@ async function runVersion(version, sdkPath, expectedThink) {
     assert.equal(traceResponse.status, 200);
     const trace = await traceResponse.json();
     const requests = ollamaRequests.slice(firstRequestIndex);
-    assert.equal(requests.length, 2, `SDK ${version} must perform one MCP tool-call round trip`);
+    assert.equal(requests.length, 2,
+      `SDK ${version} must perform one native Ollama MCP tool-call round trip; observations=${JSON.stringify(ollamaHttpObservations.slice(-12))}`);
     const request = requests[0];
     assert.ok(request, `SDK ${version} did not call native Ollama /api/chat`);
     assert.equal(request.body.model, model);
