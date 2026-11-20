@@ -153,6 +153,9 @@ test('resident agent authenticates requests, persists sessions and only allows t
   assert.equal(trace.mcp_tool_results, 2);
   assert.equal(trace.mcp_tool_failures, 1);
   assert.equal(trace.sdk_messages, 3);
+  assert.deepEqual(trace.sdk_event_types, { assistant: 2, user: 1 });
+  assert.equal(trace.sdk_event_shapes.length, 3);
+  assert.ok(trace.sdk_event_shapes.some(event => event.type === 'assistant' && event.content_block_types.includes('text')));
   assert.equal(trace.sdk_assistant_messages, 2);
   assert.equal(trace.sdk_assistant_text_blocks, 1);
   assert.equal(trace.sdk_assistant_text_chars, 'Análise baseada na ponte SolarMiner.'.length);

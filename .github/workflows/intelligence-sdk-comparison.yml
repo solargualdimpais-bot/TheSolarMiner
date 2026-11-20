@@ -1,0 +1,50 @@
+name: Compare OpenClaude Ollama SDK text delivery
+
+on:
+  push:
+    branches: [audit/intelligence-sdk-comparison]
+    paths:
+      - ".github/workflows/intelligence-sdk-comparison.yml"
+      - "solarminer-gateway-code02-v0.6.9-candidate/tools/solarminer_intelligence_mcp/**"
+      - "solarminer-gateway-code02-v0.6.9-candidate/tests/test_packaging_postinst.py"
+      - "solarminer-gateway-code02-v0.6.9-candidate/packaging/solarminer-intelligence-bootstrap"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare-sdk-text-path:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out comparison candidate
+        uses: actions/checkout@v5
+
+      - name: Set up production Node runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.22.1
+
+      - name: Install both real SDK versions side by side
+        working-directory: solarminer-gateway-code02-v0.6.9-candidate
+        run: |
+          set -euxo pipefail
+          SDK_ROOT="$(mktemp -d)"
+          echo "SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          npm install --prefix "$SDK_ROOT" --omit=dev --no-audit --no-fund \
+            'openclaude036@npm:@twigpine/openclaude@0.36.0' \
+            'openclaude037@npm:@twigpine/openclaude@0.37.0' \
+            '@modelcontextprotocol/sdk@1.32.1' '@anthropic-ai/sdk@0.137.0'
+
+      - name: Compare provider requests, SDK events, and production agent extraction
+        working-directory: solarminer-gateway-code02-v0.6.9-candidate
+        run: |
+          node tools/solarminer_intelligence_mcp/openclaude-ollama-contract.mjs \
+            "$SDK_ROOT/node_modules/openclaude036/dist/sdk.mjs" \
+            "$SDK_ROOT/node_modules/openclaude037/dist/sdk.mjs" \
+            "$PWD/tools/solarminer_intelligence_mcp/agent-service.mjs"
+
+      - name: Run agent regression tests
+        working-directory: solarminer-gateway-code02-v0.6.9-candidate
+        run: node --test tools/solarminer_intelligence_mcp/server.test.mjs tools/solarminer_intelligence_mcp/agent-service.test.mjs

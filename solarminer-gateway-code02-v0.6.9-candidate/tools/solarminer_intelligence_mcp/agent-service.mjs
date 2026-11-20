@@ -44,7 +44,7 @@ function updateRequestDiagnostic(requestId, { stage, state = 'in_progress', erro
     entry = { request_id: requestId, state: 'in_progress', stage: 'agent_received', startedAt: now,
       stageStartedAt: now, updatedAt: now, steps: [], mcp_tool_calls: 0, mcp_tool_results: 0,
       mcp_tool_failures: 0, sdk_messages: 0, sdk_assistant_messages: 0, sdk_assistant_text_blocks: 0,
-      sdk_assistant_text_chars: 0, sdk_non_assistant_text_blocks: 0 };
+      sdk_assistant_text_chars: 0, sdk_non_assistant_text_blocks: 0, sdk_event_types: {}, sdk_event_shapes: [] };
     requestDiagnostics.set(requestId, entry);
   }
   if (stage && stage !== entry.stage) {
@@ -79,6 +79,8 @@ function requestDiagnosticSnapshot(requestId) {
     sdk_assistant_text_blocks: entry.sdk_assistant_text_blocks,
     sdk_assistant_text_chars: entry.sdk_assistant_text_chars,
     sdk_non_assistant_text_blocks: entry.sdk_non_assistant_text_blocks,
+    sdk_event_types: { ...entry.sdk_event_types },
+    sdk_event_shapes: entry.sdk_event_shapes.slice(-128),
     total_elapsed_ms: Math.max(0, now - entry.startedAt),
     stage_elapsed_ms: Math.max(0, now - entry.stageStartedAt), steps: entry.steps.slice(-12) };
 }
@@ -349,6 +351,12 @@ async function runAnalysis(prompt, { development = false, provider = 'ollama', d
       const entry = typeof diagnosticId === 'string' ? requestDiagnostics.get(diagnosticId) : null;
       if (entry) {
         entry.sdk_messages += 1;
+        if (/^[a-z][a-z0-9_]{0,47}$/.test(messageType)) {
+          entry.sdk_event_types[messageType] = (entry.sdk_event_types[messageType] || 0) + 1;
+        }
+        entry.sdk_event_shapes.push({ type: /^[a-z][a-z0-9_]{0,47}$/.test(messageType) ? messageType : 'unknown',
+          content_block_types: blocks.map(item => typeof item?.type === 'string' && /^[a-z][a-z0-9_]{0,47}$/.test(item.type)
+            ? item.type : 'unknown') });
         if (messageType === 'assistant') {
           entry.sdk_assistant_messages += 1;
           entry.sdk_assistant_text_blocks += textBlocks.length;
