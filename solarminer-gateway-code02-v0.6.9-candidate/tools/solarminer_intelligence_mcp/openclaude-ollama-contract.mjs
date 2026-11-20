@@ -14,7 +14,7 @@ assert.ok(sdk036Path && sdk037Path && agentServicePath,
 
 const model = 'qwen3.5:9b-q4_K_M';
 const localToken = 'sdk-comparison-local-token-1234567890';
-const prompt = 'Reply with exactly the text: SolarMiner SDK comparison passed.';
+const prompt = 'Use the read-only SolarMiner snapshot tool to retrieve the fixture data, then reply with exactly: SolarMiner SDK comparison passed.';
 const answer = 'SolarMiner SDK comparison passed.';
 const ollamaRequests = [];
 const ollamaHttpObservations = [];
@@ -64,7 +64,7 @@ const ollamaServer = http.createServer(async (request, response) => {
   if (!afterTool) {
     const tool = (body.tools || []).map(item => item.function || item).find(item =>
       typeof item?.name === 'string' && item.name.includes('solarminer_snapshot'));
-    assert.ok(tool, 'SDK did not send the read-only SolarMiner MCP tool in its provider request');
+    assert.ok(tool, `SDK did not send the read-only SolarMiner MCP tool in its provider request; body_keys=${Object.keys(body).join(',')}; tools=${JSON.stringify((body.tools || []).map(item => item.function?.name || item.name || item.type || 'unknown'))}`);
     if (openAiCompatible) {
       await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
         choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] });
