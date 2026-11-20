@@ -191,7 +191,7 @@ jobs:
           set -euxo pipefail
           SDK_ROOT="$(mktemp -d)"
           npm install --prefix "$SDK_ROOT" --omit=dev --no-audit --no-fund \
-            '@twigpine/openclaude@0.36.0' '@modelcontextprotocol/sdk@1.32.1' '@anthropic-ai/sdk@0.137.0'
+            '@twigpine/openclaude@0.37.0' '@modelcontextprotocol/sdk@1.32.1' '@anthropic-ai/sdk@0.137.0'
           node --input-type=module - "$SDK_ROOT/node_modules/@twigpine/openclaude/dist/sdk.mjs" <<'NODE'
           import assert from 'node:assert/strict';
           import { pathToFileURL } from 'node:url';
@@ -199,6 +199,8 @@ jobs:
           assert.equal(typeof sdk.query, 'function');
           console.log('Pinned OpenClaude SDK imported with the production Node runtime.');
           NODE
+          node tools/solarminer_intelligence_mcp/openclaude-ollama-contract.mjs \
+            "$SDK_ROOT/node_modules/@twigpine/openclaude/dist/sdk.mjs"
 
       - name: Check packaged PWA syntax
         working-directory: solarminer-gateway-code02-v0.6.9-candidate/web/pwa
