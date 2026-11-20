@@ -186,6 +186,10 @@ case "$INSTALLED_SIZE" in
 esac
 [ "$INSTALLED_SIZE" -gt 0 ] || { echo "Computed Installed-Size must be positive" >&2; exit 1; }
 sed -i '/^Installed-Size:/d' "$STAGE/DEBIAN/control"
-printf 'Installed-Size: %s\n' "$INSTALLED_SIZE" >> "$STAGE/DEBIAN/control"
+awk -v size="$INSTALLED_SIZE" '
+  { lines[NR] = $0; if ($0 !~ /^[[:space:]]*$/) last = NR }
+  END { for (i = 1; i <= last; i++) print lines[i]; print "Installed-Size: " size }
+' "$STAGE/DEBIAN/control" > "$STAGE/DEBIAN/control.tmp"
+mv "$STAGE/DEBIAN/control.tmp" "$STAGE/DEBIAN/control"
 OUTPUT="$OUT/solarminer-gateway_${PACKAGE_VERSION}_amd64.deb"
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-0} dpkg-deb --root-owner-group --build "$STAGE" "$OUTPUT"

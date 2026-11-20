@@ -178,5 +178,6 @@ def test_debian_package_builder_sets_installed_size_and_release_verifies_it():
     build = (root / "packaging" / "build-deb.sh").read_text(encoding="utf-8")
     workflow = (root.parent / ".github" / "workflows" / "gateway-release.yml").read_text(encoding="utf-8")
     assert "INSTALLED_SIZE=$(du -sk --exclude=DEBIAN \"$STAGE\" | awk '{print $1}')" in build
-    assert "printf 'Installed-Size: %s\\n' \"$INSTALLED_SIZE\"" in build
+    assert 'print "Installed-Size: " size' in build
+    assert '"$STAGE/DEBIAN/control.tmp"' in build
     assert 'dpkg-deb -f "$PACKAGE" Installed-Size' in workflow
