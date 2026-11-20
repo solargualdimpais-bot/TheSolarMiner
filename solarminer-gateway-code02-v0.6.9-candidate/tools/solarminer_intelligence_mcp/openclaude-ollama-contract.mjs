@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { appendFileSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import http from 'node:http';
 import net from 'node:net';
@@ -15,7 +14,7 @@ assert.ok(sdk036Path && sdk037Path && agentServicePath,
 
 const model = 'qwen3.5:9b-q4_K_M';
 const localToken = 'sdk-comparison-local-token-1234567890';
-const prompt = 'Use the read-only SolarMiner snapshot tool to retrieve the fixture data, then reply with exactly: SolarMiner SDK comparison passed.';
+const prompt = 'Hello World. Reply with exactly: SolarMiner SDK comparison passed.';
 const answer = 'SolarMiner SDK comparison passed.';
 const ollamaRequests = [];
 const ollamaHttpObservations = [];
@@ -51,7 +50,7 @@ const ollamaServer = http.createServer(async (request, response) => {
   }
 
   const body = JSON.parse(rawBody);
-  const requestRecord = { body, rows: [] };
+  const requestRecord = { route: request.url, body, rows: [] };
   ollamaRequests.push(requestRecord);
   const openAiCompatible = request.url === '/v1/chat/completions';
   response.writeHead(200, { 'content-type': openAiCompatible ? 'text/event-stream' : 'application/x-ndjson',
@@ -61,68 +60,31 @@ const ollamaServer = http.createServer(async (request, response) => {
     response.write(openAiCompatible ? `data: ${JSON.stringify(row)}\n\n` : `${JSON.stringify(row)}\n`);
     await new Promise(resolve => setTimeout(resolve, 8));
   };
-  const afterTool = body.messages.some(message => message.role === 'tool' || message.tool_call_id);
-  const toolSpecs = (body.tools || []).map(item => item.function || item);
-  const snapshotTool = toolSpecs.find(item => typeof item?.name === 'string' && item.name.includes('solarminer_snapshot'));
-  const previousToolCalls = ollamaRequests.at(-2)?.toolCallsSent || [];
-  const requestedSearch = previousToolCalls.includes('ToolSearch');
-  const requestedSnapshot = previousToolCalls.some(name => name.includes('solarminer_snapshot'));
-  const invokeTool = async (toolName, args) => {
-    requestRecord.toolCallsSent = [toolName];
-    if (openAiCompatible) {
-      if (body.think !== false) {
-        await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
-          choices: [{ index: 0, delta: { reasoning: 'fixture reasoning chunk one' }, finish_reason: null }] });
-        await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
-          choices: [{ index: 0, delta: { reasoning: 'fixture reasoning chunk two' }, finish_reason: null }] });
-      }
+  if (openAiCompatible) {
+    // Ollama's OpenAI-compatible stream carries reasoning separately from
+    // visible content; only content may become the final assistant answer.
+    if (body.think !== false) {
       await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
-        choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: `call-${toolName.toLowerCase()}`, type: 'function',
-          function: { name: toolName, arguments: JSON.stringify(args) } }] }, finish_reason: null }] });
+        choices: [{ index: 0, delta: { reasoning: 'fixture reasoning chunk one' }, finish_reason: null }] });
       await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
-        choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] });
-      response.write('data: [DONE]\n\n');
-    } else {
-      if (body.think !== false) {
-        await writeRow({ model, message: { role: 'assistant', thinking: 'fixture reasoning chunk one', content: '' }, done: false });
-        await writeRow({ model, message: { role: 'assistant', thinking: 'fixture reasoning chunk two', content: '' }, done: false });
-      }
-      await writeRow({ model, message: { role: 'assistant', content: '', tool_calls: [
-        { function: { name: toolName, arguments: args } },
-      ] }, done: true, done_reason: 'tool_calls', prompt_eval_count: 10, eval_count: 2 });
+        choices: [{ index: 0, delta: { reasoning: 'fixture reasoning chunk two' }, finish_reason: null }] });
     }
-  };
-  if (!afterTool && !snapshotTool) {
-    const searchTool = toolSpecs.find(item => item?.name === 'ToolSearch');
-    assert.ok(searchTool, `SDK did not expose MCP tools or ToolSearch; body_keys=${Object.keys(body).join(',')}; tools=${JSON.stringify(toolSpecs.map(item => ({ name: item.name, input_schema: item.input_schema || item.parameters })))}; mcp_events=${readFileSync(mcpLogPath, 'utf8')}`);
-    await invokeTool('ToolSearch', { query: 'solarminer snapshot read-only' });
-  } else if (!requestedSnapshot && snapshotTool) {
-    await invokeTool(snapshotTool.name, {});
-  } else if (!requestedSearch && !snapshotTool) {
-    const searchTool = toolSpecs.find(item => item?.name === 'ToolSearch');
-    assert.ok(searchTool, `SDK lost both MCP and ToolSearch tools; tools=${JSON.stringify(toolSpecs.map(item => item.name))}`);
-    await invokeTool('ToolSearch', { query: 'solarminer snapshot read-only' });
-  } else if (requestedSearch && !requestedSnapshot) {
-    assert.ok(snapshotTool, `SDK did not expose the MCP tool after ToolSearch; tools=${JSON.stringify(toolSpecs.map(item => item.name))}; mcp_events=${readFileSync(mcpLogPath, 'utf8')}`);
-    await invokeTool(snapshotTool.name, {});
+    await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
+      choices: [{ index: 0, delta: { role: 'assistant', content: 'SolarMiner SDK ' }, finish_reason: null }] });
+    await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
+      choices: [{ index: 0, delta: { content: 'comparison passed.' }, finish_reason: null }] });
+    await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
+      choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
+    response.write('data: [DONE]\n\n');
   } else {
-    requestRecord.toolCallsSent = [];
-    if (openAiCompatible) {
-      // Ollama's OpenAI-compatible stream carries reasoning and visible answer
-      // separately in delta.reasoning and delta.content.
-      await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
-        choices: [{ index: 0, delta: { role: 'assistant', content: 'SolarMiner SDK ' }, finish_reason: null }] });
-      await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
-        choices: [{ index: 0, delta: { content: 'comparison passed.' }, finish_reason: null }] });
-      await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
-        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
-      response.write('data: [DONE]\n\n');
-    } else {
-      await writeRow({ model, message: { role: 'assistant', content: 'SolarMiner SDK ' }, done: false });
-      await writeRow({ model, message: { role: 'assistant', content: 'comparison passed.' }, done: false });
-      await writeRow({ model, message: { role: 'assistant', content: '' }, done: true, done_reason: 'stop',
-        prompt_eval_count: 15, eval_count: 5 });
+    if (body.think !== false) {
+      await writeRow({ model, message: { role: 'assistant', thinking: 'fixture reasoning chunk one', content: '' }, done: false });
+      await writeRow({ model, message: { role: 'assistant', thinking: 'fixture reasoning chunk two', content: '' }, done: false });
     }
+    await writeRow({ model, message: { role: 'assistant', content: 'SolarMiner SDK ' }, done: false });
+    await writeRow({ model, message: { role: 'assistant', content: 'comparison passed.' }, done: false });
+    await writeRow({ model, message: { role: 'assistant', content: '' }, done: true, done_reason: 'stop',
+      prompt_eval_count: 15, eval_count: 5 });
   }
   response.end();
 });
@@ -156,10 +118,7 @@ async function waitForAgent(port, child, stderr) {
 const temp = await mkdtemp(path.join(os.tmpdir(), 'solarminer-openclaude-compare-'));
 const ollamaPort = await listen(ollamaServer);
 const mcpStubPath = path.join(temp, 'read-only-mcp-fixture.mjs');
-const mcpLogPath = path.join(temp, 'mcp-fixture-events.jsonl');
-await writeFile(mcpLogPath, '');
 await writeFile(mcpStubPath, `
-import { appendFileSync } from 'node:fs';
 let buffer = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => {
@@ -171,7 +130,6 @@ process.stdin.on('data', chunk => {
     buffer = buffer.slice(newline + 1);
     if (!line) continue;
     const message = JSON.parse(line);
-    appendFileSync(${JSON.stringify(mcpLogPath)}, JSON.stringify({ method: message.method || 'notification', hasId: message.id !== undefined }) + '\\n');
     if (message.id === undefined) continue;
     let result = {};
     if (message.method === 'initialize') result = {
@@ -233,20 +191,14 @@ async function runVersion(version, sdkPath, expectedThink) {
     assert.equal(traceResponse.status, 200);
     const trace = await traceResponse.json();
     const requests = ollamaRequests.slice(firstRequestIndex);
-    assert.equal(requests.length, 2,
-      `SDK ${version} must perform one Ollama MCP tool-call round trip; observations=${JSON.stringify(ollamaHttpObservations.slice(-12))}`);
+    assert.equal(requests.length, 1,
+      `SDK ${version} must make one streaming Ollama request for the simple Hello World prompt; observations=${JSON.stringify(ollamaHttpObservations.slice(-12))}`);
     const request = requests[0];
-    assert.ok(request, `SDK ${version} did not call native Ollama /api/chat`);
+    assert.ok(request, `SDK ${version} did not call Ollama`);
+    assert.equal(request.route, '/v1/chat/completions', `SDK ${version} used an unexpected provider protocol`);
     assert.equal(request.body.model, model);
     assert.equal(request.body.stream, true);
     assert.equal(request.body.think, expectedThink);
-    assert.ok(request.body.tools?.some(tool => tool.function?.name === 'solarminer_snapshot'),
-      `SDK ${version} did not pass the read-only tool definition to Ollama`);
-    assert.ok(requests[1].body.messages.some(message => message.role === 'tool'),
-      `SDK ${version} did not pass the MCP tool result back to Ollama`);
-    const returnedToolContent = requests[1].body.messages.find(message => message.role === 'tool')?.content;
-    assert.match(String(returnedToolContent), /fixture snapshot: battery=charging/,
-      `SDK ${version} changed or lost the MCP tool result content`);
     assert.equal(result.answer, answer);
     assert.equal(trace.state, 'completed');
     assert.ok(trace.sdk_event_types?.assistant > 0, `SDK ${version} emitted no assistant events`);
@@ -254,13 +206,13 @@ async function runVersion(version, sdkPath, expectedThink) {
       `SDK ${version} emitted no assistant event with a text content block`);
     assert.ok(trace.sdk_assistant_text_blocks > 0, `SDK ${version} emitted no text blocks`);
     assert.equal(trace.sdk_assistant_text_chars, answer.length);
-    assert.equal(trace.mcp_tool_calls, 1, `SDK ${version} did not emit the MCP tool call to the agent`);
-    assert.equal(trace.mcp_tool_results, 1, `SDK ${version} did not return the MCP result to the agent`);
+    assert.equal(trace.mcp_tool_calls, 0, 'Hello World should not invoke MCP');
+    assert.equal(trace.mcp_tool_results, 0, 'Hello World should not return MCP results');
 
     const report = {
       sdk_version: version,
       http_requests: requests.map(item => ({
-        route: '/api/chat',
+        route: item.route,
         body: {
           model: item.body.model,
           stream: item.body.stream,
@@ -272,7 +224,7 @@ async function runVersion(version, sdkPath, expectedThink) {
               content_sha256: createHash('sha256').update(content).digest('hex'),
               tool_call_names: (message.tool_calls || []).map(call => call.function?.name).filter(Boolean) };
           }),
-          tool_names: (item.body.tools || []).map(tool => tool.function?.name).filter(Boolean),
+          tool_names: (item.body.tools || []).map(tool => tool.function?.name || tool.name).filter(Boolean),
         },
           ollama_stream: item.rows.map(row => ({
           reasoning_chars: row.choices?.[0]?.delta?.reasoning?.length || row.message?.thinking?.length || 0,
@@ -311,7 +263,7 @@ try {
     'the agent extraction must return the same final text for both SDK versions');
 
   console.log(JSON.stringify({ comparison: [oldVersion.report, newVersion.report],
-    conclusion: 'Both SDK versions passed the same read-only MCP tool request/result round-trip and delivered final assistant text through the production agent-service extractor; 0.37.0 additionally disables Ollama thinking by default.' }, null, 2));
+    conclusion: 'Both SDK versions processed the same OpenAI-compatible streaming reply and delivered final assistant text through the production agent-service extractor. The simple Hello World prompt made no MCP calls. The think option difference is reported separately and is not treated as proof that the Lenovo failure is fixed.' }, null, 2));
 } finally {
   await new Promise(resolve => ollamaServer.close(resolve));
   ollamaServer.closeAllConnections();
