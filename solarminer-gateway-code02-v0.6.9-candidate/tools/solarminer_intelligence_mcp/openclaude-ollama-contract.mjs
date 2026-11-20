@@ -146,7 +146,7 @@ process.stdin.on('data', chunk => {
 });
 `);
 
-async function runVersion(version, sdkPath, expectedThink) {
+async function runVersion(version, sdkPath) {
   const port = await unusedPort();
   const statePath = path.join(temp, `state-${version}`);
   const env = {
@@ -198,7 +198,8 @@ async function runVersion(version, sdkPath, expectedThink) {
     assert.equal(request.route, '/v1/chat/completions', `SDK ${version} used an unexpected provider protocol`);
     assert.equal(request.body.model, model);
     assert.equal(request.body.stream, true);
-    assert.equal(request.body.think, expectedThink);
+    assert.equal(request.body.think, undefined,
+      `SDK ${version} sent an unexpected think option on the configured /v1/chat/completions route`);
     assert.equal(result.answer, answer);
     assert.equal(trace.state, 'completed');
     assert.ok(trace.sdk_event_types?.assistant > 0, `SDK ${version} emitted no assistant events`);
@@ -217,6 +218,8 @@ async function runVersion(version, sdkPath, expectedThink) {
           model: item.body.model,
           stream: item.body.stream,
           think: Object.hasOwn(item.body, 'think') ? item.body.think : '(field omitted)',
+          parameter_fields: Object.fromEntries(['think', 'reasoning_effort', 'temperature', 'max_tokens', 'stream_options']
+            .filter(key => Object.hasOwn(item.body, key)).map(key => [key, item.body[key]])),
           options: item.body.options || {},
           messages: item.body.messages.map(message => {
             const content = typeof message.content === 'string' ? message.content : JSON.stringify(message.content ?? '');
@@ -253,8 +256,8 @@ async function runVersion(version, sdkPath, expectedThink) {
 }
 
 try {
-  const oldVersion = await runVersion('0.36.0', sdk036Path, undefined);
-  const newVersion = await runVersion('0.37.0', sdk037Path, false);
+  const oldVersion = await runVersion('0.36.0', sdk036Path);
+  const newVersion = await runVersion('0.37.0', sdk037Path);
 
   assert.deepEqual(oldVersion.request.body.messages.map(({ role, content }) => ({ role, content })),
     newVersion.request.body.messages.map(({ role, content }) => ({ role, content })),
@@ -263,7 +266,7 @@ try {
     'the agent extraction must return the same final text for both SDK versions');
 
   console.log(JSON.stringify({ comparison: [oldVersion.report, newVersion.report],
-    conclusion: 'Both SDK versions processed the same OpenAI-compatible streaming reply and delivered final assistant text through the production agent-service extractor. The simple Hello World prompt made no MCP calls. The think option difference is reported separately and is not treated as proof that the Lenovo failure is fixed.' }, null, 2));
+    conclusion: 'Both SDK versions processed the same OpenAI-compatible SSE reasoning/content stream and delivered final assistant text through the production agent-service extractor. Neither provider request included a think field on the configured /v1 route. The simple Hello World prompt made no MCP calls. This validates the SDK-to-agent conversion for the fixture, not the Lenovo response or its HTTP 500.' }, null, 2));
 } finally {
   await new Promise(resolve => ollamaServer.close(resolve));
   ollamaServer.closeAllConnections();
