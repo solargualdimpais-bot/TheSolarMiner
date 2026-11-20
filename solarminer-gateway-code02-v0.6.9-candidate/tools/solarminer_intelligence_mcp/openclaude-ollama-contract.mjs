@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { appendFileSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import http from 'node:http';
 import net from 'node:net';
@@ -64,7 +65,7 @@ const ollamaServer = http.createServer(async (request, response) => {
   if (!afterTool) {
     const tool = (body.tools || []).map(item => item.function || item).find(item =>
       typeof item?.name === 'string' && item.name.includes('solarminer_snapshot'));
-    assert.ok(tool, `SDK did not send the read-only SolarMiner MCP tool in its provider request; body_keys=${Object.keys(body).join(',')}; tools=${JSON.stringify((body.tools || []).map(item => item.function?.name || item.name || item.type || 'unknown'))}`);
+    assert.ok(tool, `SDK did not send the read-only SolarMiner MCP tool in its provider request; body_keys=${Object.keys(body).join(',')}; tools=${JSON.stringify((body.tools || []).map(item => item.function?.name || item.name || item.type || 'unknown'))}; mcp_events=${readFileSync(mcpLogPath, 'utf8')}`);
     if (openAiCompatible) {
       await writeRow({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', model,
         choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] });
@@ -141,7 +142,10 @@ async function waitForAgent(port, child, stderr) {
 const temp = await mkdtemp(path.join(os.tmpdir(), 'solarminer-openclaude-compare-'));
 const ollamaPort = await listen(ollamaServer);
 const mcpStubPath = path.join(temp, 'read-only-mcp-fixture.mjs');
+const mcpLogPath = path.join(temp, 'mcp-fixture-events.jsonl');
+await writeFile(mcpLogPath, '');
 await writeFile(mcpStubPath, `
+import { appendFileSync } from 'node:fs';
 let buffer = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => {
@@ -153,6 +157,7 @@ process.stdin.on('data', chunk => {
     buffer = buffer.slice(newline + 1);
     if (!line) continue;
     const message = JSON.parse(line);
+    appendFileSync(${JSON.stringify(mcpLogPath)}, JSON.stringify({ method: message.method || 'notification', hasId: message.id !== undefined }) + '\\n');
     if (message.id === undefined) continue;
     let result = {};
     if (message.method === 'initialize') result = {
