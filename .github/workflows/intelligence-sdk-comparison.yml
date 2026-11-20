@@ -38,12 +38,27 @@ jobs:
             '@modelcontextprotocol/sdk@1.32.1' '@anthropic-ai/sdk@0.137.0'
 
       - name: Compare provider requests, SDK events, and production agent extraction
+        id: compare
+        continue-on-error: true
         working-directory: solarminer-gateway-code02-v0.6.9-candidate
         run: |
+          set -o pipefail
           node tools/solarminer_intelligence_mcp/openclaude-ollama-contract.mjs \
             "$SDK_ROOT/node_modules/openclaude036/dist/sdk.mjs" \
             "$SDK_ROOT/node_modules/openclaude037/dist/sdk.mjs" \
-            "$PWD/tools/solarminer_intelligence_mcp/agent-service.mjs"
+            "$PWD/tools/solarminer_intelligence_mcp/agent-service.mjs" 2>&1 | tee "$RUNNER_TEMP/sdk-comparison.log"
+
+      - name: Preserve comparison evidence on success or failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openclaude-sdk-comparison-${{ github.run_id }}
+          path: ${{ runner.temp }}/sdk-comparison.log
+          if-no-files-found: warn
+
+      - name: Fail the workflow if the comparison failed
+        if: steps.compare.outcome != 'success'
+        run: exit 1
 
       - name: Run agent regression tests
         working-directory: solarminer-gateway-code02-v0.6.9-candidate
