@@ -14,6 +14,28 @@ let observedRequest = null;
 const assistantText = 'solarminer-openclaude-sdk-contract-ok';
 
 portServer.on('request', async (request, response) => {
+  if (request.method === 'GET' && request.url === '/api/version') {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ version: '0.0.0-contract-test' }));
+    return;
+  }
+  if (request.method === 'GET' && ['/api/tags', '/api/ps'].includes(request.url)) {
+    const model = { name: 'qwen3.5:9b-q4_K_M', model: 'qwen3.5:9b-q4_K_M', size: 1,
+      details: { family: 'qwen', families: ['qwen'], parameter_size: '9B', quantization_level: 'Q4_K_M' } };
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ models: [model] }));
+    return;
+  }
+  if (request.method === 'GET' && request.url === '/api/show') {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ modelfile: '', parameters: '', template: '', details: { family: 'qwen' } }));
+    return;
+  }
+  if (request.method !== 'POST' || request.url !== '/api/chat') {
+    response.writeHead(404, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ error: 'contract_route_not_found' }));
+    return;
+  }
   const chunks = [];
   for await (const chunk of request) chunks.push(chunk);
   observedRequest = {
@@ -57,13 +79,29 @@ try {
   });
 
   let assistantContent = '';
-  for await (const event of agent) {
-    if (event?.type !== 'assistant') continue;
-    const blocks = event.message?.content;
-    if (Array.isArray(blocks)) {
-      assistantContent += blocks.filter(block => block?.type === 'text' && typeof block.text === 'string')
-        .map(block => block.text).join('');
-    }
+  let watchdog;
+  try {
+    await Promise.race([
+      (async () => {
+        for await (const event of agent) {
+          if (event?.type !== 'assistant') continue;
+          const blocks = event.message?.content;
+          if (Array.isArray(blocks)) {
+            assistantContent += blocks.filter(block => block?.type === 'text' && typeof block.text === 'string')
+              .map(block => block.text).join('');
+          }
+        }
+      })(),
+      new Promise((_, reject) => {
+        watchdog = setTimeout(() => {
+          agent.close();
+          reject(new Error('OpenClaude SDK Ollama contract test timed out'));
+        }, 45_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(watchdog);
+    agent.close();
   }
 
   assert.equal(observedRequest?.method, 'POST');
